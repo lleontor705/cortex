@@ -58,6 +58,7 @@ func (s *ArchivalService) RunArchivalCheck(ctx context.Context) (int, error) {
 	archived := 0
 	for _, obs := range observations {
 		if err := s.repo.Delete(ctx, obs.ID); err != nil {
+			log.Printf("lifecycle: failed to archive observation %d: %v", obs.ID, err)
 			continue
 		}
 		archived++
