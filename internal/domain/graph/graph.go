@@ -164,57 +164,58 @@ func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int
 		maxDepth = MaxTraversalDepth
 	}
 
-	// BFS implementation
+	// BFS with parent pointers to avoid O(B^D * D) path copies
 	type node struct {
 		id    int64
-		path  []int64
 		depth int
 	}
 
 	visited := make(map[int64]bool)
-	queue := []node{{id: fromID, path: []int64{fromID}, depth: 0}}
+	parents := make(map[int64]int64) // child -> parent
+	queue := []node{{id: fromID, depth: 0}}
 	visited[fromID] = true
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
-		// Check depth limit
 		if current.depth >= maxDepth {
 			continue
 		}
 
-		// Get neighbors at depth 1
 		neighbors, err := s.repo.GetRelated(ctx, current.id, 1)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get related observations: %w", err)
 		}
 
 		for _, neighbor := range neighbors {
-			// Found target
 			if neighbor.ID == toID {
-				return append(current.path, toID), nil
+				// Reconstruct path from parent pointers
+				path := []int64{toID}
+				for curr := current.id; curr != fromID; curr = parents[curr] {
+					path = append(path, curr)
+				}
+				path = append(path, fromID)
+				// Reverse
+				for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+					path[i], path[j] = path[j], path[i]
+				}
+				return path, nil
 			}
 
-			// Skip if already visited
 			if visited[neighbor.ID] {
 				continue
 			}
 
 			visited[neighbor.ID] = true
-			newPath := make([]int64, len(current.path)+1)
-			copy(newPath, current.path)
-			newPath[len(current.path)] = neighbor.ID
-
+			parents[neighbor.ID] = current.id
 			queue = append(queue, node{
 				id:    neighbor.ID,
-				path:  newPath,
 				depth: current.depth + 1,
 			})
 		}
 	}
 
-	// No path found
 	return nil, nil
 }
 

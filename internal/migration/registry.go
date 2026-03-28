@@ -2,6 +2,7 @@
 package migration
 
 import (
+	"sort"
 	"sync"
 )
 
@@ -57,13 +58,9 @@ func (r *Registry) GetAll() []Migration {
 	}
 
 	// Sort by version
-	for i := 0; i < len(list); i++ {
-		for j := i + 1; j < len(list); j++ {
-			if list[i].Version > list[j].Version {
-				list[i], list[j] = list[j], list[i]
-			}
-		}
-	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].Version < list[j].Version
+	})
 
 	// Cache the result
 	r.orderedList = list
@@ -108,13 +105,7 @@ func (r *Registry) Versions() []int {
 	}
 
 	// Sort versions
-	for i := 0; i < len(versions); i++ {
-		for j := i + 1; j < len(versions); j++ {
-			if versions[i] > versions[j] {
-				versions[i], versions[j] = versions[j], versions[i]
-			}
-		}
-	}
+	sort.Ints(versions)
 
 	return versions
 }

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -355,13 +356,9 @@ func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 	for _, s := range scoreMap {
 		sorted = append(sorted, s)
 	}
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].score > sorted[i].score {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].score > sorted[j].score
+	})
 
 	results := make([]*domain.SearchResult, 0, limit)
 	for i, s := range sorted {

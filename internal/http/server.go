@@ -7,6 +7,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -35,8 +36,10 @@ type Deps struct {
 
 // Server wraps an http.Server with Cortex handlers.
 type Server struct {
-	httpServer *http.Server
-	deps       *Deps
+	httpServer     *http.Server
+	deps           *Deps
+	graphService   *graphdomain.Service
+	scoringService *scoringdomain.Service
 }
 
 // NewServer creates a new HTTP server on the given address.
@@ -49,7 +52,9 @@ func NewServer(addr string, deps *Deps) *Server {
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
-		deps: deps,
+		deps:           deps,
+		graphService:   graphdomain.NewService(deps.Graph),
+		scoringService: scoringdomain.NewService(deps.Scoring),
 	}
 
 	// Health
@@ -271,7 +276,7 @@ func (s *Server) handleCreateEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := graphdomain.NewService(s.deps.Graph)
+	svc := s.graphService
 	if err := svc.CreateEdge(r.Context(), &edge); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -287,7 +292,7 @@ func (s *Server) handleGetRelated(w http.ResponseWriter, r *http.Request) {
 	}
 	depth := queryInt(r, "depth", 1)
 
-	svc := graphdomain.NewService(s.deps.Graph)
+	svc := s.graphService
 	related, err := svc.GetRelated(r.Context(), id, depth)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -303,7 +308,7 @@ func (s *Server) handleDeleteEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := graphdomain.NewService(s.deps.Graph)
+	svc := s.graphService
 	if err := svc.DeleteEdge(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -320,7 +325,7 @@ func (s *Server) handleGetScore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := scoringdomain.NewService(s.deps.Scoring)
+	svc := s.scoringService
 	score, err := svc.GetScore(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -336,7 +341,7 @@ func (s *Server) handleRecalculateScore(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	svc := scoringdomain.NewService(s.deps.Scoring)
+	svc := s.scoringService
 	newScore, err := svc.CalculateScore(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -350,7 +355,10 @@ func (s *Server) handleRecalculateScore(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Headers already sent; log but cannot write error response
+		log.Printf("writeJSON encode error: %v", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

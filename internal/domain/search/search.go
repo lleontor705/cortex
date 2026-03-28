@@ -14,6 +14,9 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
+// fts5SpecialCharsRe matches FTS5 special operators that can cause syntax errors.
+var fts5SpecialCharsRe = regexp.MustCompile(`[*^~+-]`)
+
 // Service provides business logic for full-text search operations.
 // It wraps a SearchRepository to provide a clean API with query sanitization
 // and result validation.
@@ -133,8 +136,7 @@ func sanitizeQuery(query string) string {
 
 	// Remove FTS5 special operators
 	// These characters have special meaning in FTS5 and can cause syntax errors
-	re := regexp.MustCompile(`[*^~+-]`)
-	query = re.ReplaceAllString(query, "")
+	query = fts5SpecialCharsRe.ReplaceAllString(query, "")
 
 	// Escape double quotes by replacing them with single quotes
 	// This prevents breaking the quoted term syntax

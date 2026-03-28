@@ -14,7 +14,7 @@ type mockArchivalRepo struct {
 	deleted      []int64
 }
 
-func (m *mockArchivalRepo) List(_ context.Context, _ domain.ObservationFilter) ([]*domain.Observation, error) {
+func (m *mockArchivalRepo) ListArchivable(_ context.Context, _ time.Time, _ float64, _ int) ([]*domain.Observation, error) {
 	return m.observations, nil
 }
 
@@ -23,40 +23,19 @@ func (m *mockArchivalRepo) Delete(_ context.Context, id int64) error {
 	return nil
 }
 
-// mockScoringReader implements ScoringReader for testing.
-type mockScoringReader struct {
-	scores map[int64]*domain.ImportanceScore
-}
-
-func (m *mockScoringReader) GetScore(_ context.Context, obsID int64) (*domain.ImportanceScore, error) {
-	if s, ok := m.scores[obsID]; ok {
-		return s, nil
-	}
-	return nil, &domain.NotFoundError{Type: "importance_score", ID: obsID}
-}
-
 func TestRunArchivalCheck(t *testing.T) {
 	now := time.Date(2026, 3, 28, 12, 0, 0, 0, time.UTC)
 	oldDate := now.AddDate(0, 0, -100) // 100 days old
-	recentDate := now.AddDate(0, 0, -10) // 10 days old
 
+	// Mock returns only archivable observations (old + low score)
+	// The filtering is now done by the repository via ListArchivable
 	repo := &mockArchivalRepo{
 		observations: []*domain.Observation{
 			{ID: 1, Title: "Old low score", CreatedAt: oldDate},
-			{ID: 2, Title: "Old high score", CreatedAt: oldDate},
-			{ID: 3, Title: "Recent low score", CreatedAt: recentDate},
 		},
 	}
 
-	scoring := &mockScoringReader{
-		scores: map[int64]*domain.ImportanceScore{
-			1: {ObservationID: 1, Score: 0.05},
-			2: {ObservationID: 2, Score: 2.0},
-			3: {ObservationID: 3, Score: 0.05},
-		},
-	}
-
-	svc := NewArchivalService(repo, scoring, ArchivalConfig{
+	svc := NewArchivalService(repo, ArchivalConfig{
 		MaxAgeDays:      90,
 		MinArchiveScore: 0.1,
 		CheckInterval:   time.Hour,
@@ -68,9 +47,6 @@ func TestRunArchivalCheck(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only obs 1 should be archived (old AND low score)
-	// obs 2: old but high score
-	// obs 3: low score but recent
 	if archived != 1 {
 		t.Errorf("expected 1 archived, got %d", archived)
 	}
@@ -82,9 +58,8 @@ func TestRunArchivalCheck(t *testing.T) {
 
 func TestRunArchivalCheck_NoObservations(t *testing.T) {
 	repo := &mockArchivalRepo{observations: []*domain.Observation{}}
-	scoring := &mockScoringReader{scores: map[int64]*domain.ImportanceScore{}}
 
-	svc := NewArchivalService(repo, scoring, ArchivalConfig{
+	svc := NewArchivalService(repo, ArchivalConfig{
 		MaxAgeDays:      90,
 		MinArchiveScore: 0.1,
 		CheckInterval:   time.Hour,

@@ -25,17 +25,31 @@ func NewStore(db *sql.DB) *Store {
 
 // SaveLinks stores entity links, ignoring duplicates.
 func (s *Store) SaveLinks(ctx context.Context, links []*domain.EntityLink) error {
+	if len(links) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("entity: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO entity_links (observation_id, entity_type, entity_value)
+		 VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("entity: prepare: %w", err)
+	}
+	defer stmt.Close()
+
 	for _, link := range links {
-		_, err := s.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO entity_links (observation_id, entity_type, entity_value)
-			 VALUES (?, ?, ?)`,
-			link.ObservationID, link.EntityType, link.EntityValue,
-		)
-		if err != nil {
+		if _, err := stmt.ExecContext(ctx, link.ObservationID, link.EntityType, link.EntityValue); err != nil {
 			return fmt.Errorf("entity: save link: %w", err)
 		}
 	}
-	return nil
+
+	return tx.Commit()
 }
 
 // GetByObservation retrieves all entity links for an observation.

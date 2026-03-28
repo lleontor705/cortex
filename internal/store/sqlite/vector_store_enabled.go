@@ -138,7 +138,7 @@ func (s *VectorStore) SearchByVector(ctx context.Context, opts domain.VectorSear
 	defer rows.Close()
 
 	// Calculate similarity for each result
-	var results []*domain.VectorSearchResult
+	results := make([]*domain.VectorSearchResult, 0, opts.Limit)
 	for rows.Next() {
 		result, similarity, err := s.scanVectorResultWithSimilarity(rows, queryNorm)
 		if err != nil {
@@ -224,13 +224,11 @@ func (s *VectorStore) IsAvailable() bool {
 // serializeEmbedding converts a float32 slice to a binary BLOB.
 // Uses little-endian byte order for cross-platform compatibility.
 func serializeEmbedding(embedding []float32) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	for _, v := range embedding {
-		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
-			return nil, err
-		}
+	buf := make([]byte, len(embedding)*4)
+	for i, v := range embedding {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
 	}
-	return buf.Bytes(), nil
+	return buf, nil
 }
 
 // deserializeEmbedding converts a binary BLOB back to a float32 slice.

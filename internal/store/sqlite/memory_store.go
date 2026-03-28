@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -323,6 +324,50 @@ func (s *Store) HardDelete(ctx context.Context, id int64) error {
 	}
 
 	return nil
+}
+
+// ListArchivable retrieves observations older than cutoff with score below minScore.
+// Uses a JOIN with importance_scores to avoid N+1 queries during archival.
+func (s *Store) ListArchivable(ctx context.Context, cutoff time.Time, minScore float64, limit int) ([]*domain.Observation, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+
+	query := `
+		SELECT o.id, o.session_id, o.type, o.title, o.content, o.project, o.scope,
+		       o.topic_key, o.created_at, o.updated_at
+		FROM observations o
+		LEFT JOIN importance_scores s ON s.observation_id = o.id
+		WHERE o.deleted_at IS NULL
+		  AND o.created_at < ?
+		  AND (s.score IS NULL OR s.score < ?)
+		ORDER BY o.created_at ASC
+		LIMIT ?
+	`
+
+	rows, err := s.db.QueryContext(ctx, query,
+		cutoff.Format(sqliteDatetimeFormat), minScore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list archivable: %w", err)
+	}
+	defer rows.Close()
+
+	var observations []*domain.Observation
+	for rows.Next() {
+		obs := &domain.Observation{}
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&obs.ID, &obs.SessionID, &obs.Type, &obs.Title, &obs.Content,
+			&obs.Project, &obs.Scope, &obs.TopicKey, &createdAt, &updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("sqlite: scan archivable: %w", err)
+		}
+		obs.CreatedAt, _ = time.Parse(sqliteDatetimeFormat, createdAt)
+		obs.UpdatedAt, _ = time.Parse(sqliteDatetimeFormat, updatedAt)
+		observations = append(observations, obs)
+	}
+
+	return observations, rows.Err()
 }
 
 // List retrieves observations based on filter criteria.
@@ -649,9 +694,15 @@ func normalizeTopicKey(topicKey string) string {
 }
 
 func hashNormalized(content string) string {
-	normalized := strings.ToLower(strings.Join(strings.Fields(content), " "))
-	h := sha256.Sum256([]byte(normalized))
-	return hex.EncodeToString(h[:])
+	h := sha256.New()
+	fields := strings.Fields(content)
+	for i, f := range fields {
+		if i > 0 {
+			io.WriteString(h, " ")
+		}
+		io.WriteString(h, strings.ToLower(f))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func nullableString(s string) interface{} {

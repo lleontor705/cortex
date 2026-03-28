@@ -7,6 +7,8 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -14,16 +16,10 @@ import (
 
 // ArchivalRepository defines the store methods needed for auto-archival.
 type ArchivalRepository interface {
-	// List retrieves observations matching the filter.
-	List(ctx context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error)
+	// ListArchivable retrieves observations older than cutoff with score below minScore.
+	ListArchivable(ctx context.Context, cutoff time.Time, minScore float64, limit int) ([]*domain.Observation, error)
 	// Delete soft-deletes an observation.
 	Delete(ctx context.Context, id int64) error
-}
-
-// ScoringReader provides read-only access to importance scores.
-type ScoringReader interface {
-	// GetScore retrieves the importance score for an observation.
-	GetScore(ctx context.Context, obsID int64) (*domain.ImportanceScore, error)
 }
 
 // ArchivalConfig holds configuration for the archival service.
@@ -35,19 +31,17 @@ type ArchivalConfig struct {
 
 // ArchivalService manages automatic archival of low-importance observations.
 type ArchivalService struct {
-	repo    ArchivalRepository
-	scoring ScoringReader
-	config  ArchivalConfig
-	now     func() time.Time
+	repo   ArchivalRepository
+	config ArchivalConfig
+	now    func() time.Time
 }
 
 // NewArchivalService creates a new archival service.
-func NewArchivalService(repo ArchivalRepository, scoring ScoringReader, cfg ArchivalConfig) *ArchivalService {
+func NewArchivalService(repo ArchivalRepository, cfg ArchivalConfig) *ArchivalService {
 	return &ArchivalService{
-		repo:    repo,
-		scoring: scoring,
-		config:  cfg,
-		now:     time.Now,
+		repo:   repo,
+		config: cfg,
+		now:    time.Now,
 	}
 }
 
@@ -55,34 +49,18 @@ func NewArchivalService(repo ArchivalRepository, scoring ScoringReader, cfg Arch
 // enough and have a score below the minimum threshold.
 func (s *ArchivalService) RunArchivalCheck(ctx context.Context) (int, error) {
 	cutoff := s.now().AddDate(0, 0, -s.config.MaxAgeDays)
-	archived := 0
 
-	// Fetch observations in batches
-	filter := domain.ObservationFilter{
-		Limit: 500,
-	}
-
-	observations, err := s.repo.List(ctx, filter)
+	observations, err := s.repo.ListArchivable(ctx, cutoff, s.config.MinArchiveScore, 500)
 	if err != nil {
-		return 0, fmt.Errorf("lifecycle: list observations: %w", err)
+		return 0, fmt.Errorf("lifecycle: list archivable observations: %w", err)
 	}
 
+	archived := 0
 	for _, obs := range observations {
-		if obs.CreatedAt.After(cutoff) {
+		if err := s.repo.Delete(ctx, obs.ID); err != nil {
 			continue
 		}
-
-		score, err := s.scoring.GetScore(ctx, obs.ID)
-		if err != nil {
-			continue
-		}
-
-		if score.Score < s.config.MinArchiveScore {
-			if err := s.repo.Delete(ctx, obs.ID); err != nil {
-				continue
-			}
-			archived++
-		}
+		archived++
 	}
 
 	return archived, nil
@@ -93,6 +71,8 @@ func (s *ArchivalService) RunArchivalCheck(ctx context.Context) (int, error) {
 func (s *ArchivalService) Start(ctx context.Context) context.CancelFunc {
 	ctx, cancel := context.WithCancel(ctx)
 
+	var running int32
+
 	go func() {
 		ticker := time.NewTicker(s.config.CheckInterval)
 		defer ticker.Stop()
@@ -102,7 +82,22 @@ func (s *ArchivalService) Start(ctx context.Context) context.CancelFunc {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.RunArchivalCheck(ctx) //nolint:errcheck
+				// Skip if a previous check is still running
+				if !atomic.CompareAndSwapInt32(&running, 0, 1) {
+					continue
+				}
+
+				checkCtx, checkCancel := context.WithTimeout(ctx, s.config.CheckInterval)
+				archived, err := s.RunArchivalCheck(checkCtx)
+				checkCancel()
+
+				if err != nil {
+					log.Printf("lifecycle: archival check failed: %v", err)
+				} else if archived > 0 {
+					log.Printf("lifecycle: archived %d observations", archived)
+				}
+
+				atomic.StoreInt32(&running, 0)
 			}
 		}
 	}()

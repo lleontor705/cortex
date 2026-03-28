@@ -116,19 +116,12 @@ func (s *Service) GetScore(ctx context.Context, obsID int64) (*domain.Importance
 }
 
 // RecordAccess increments access count and updates last_accessed timestamp.
-// This should be called whenever an observation is retrieved or used.
+// Score recalculation is deferred to the next explicit CalculateScore call
+// to avoid 5 cascading DB queries per access.
 func (s *Service) RecordAccess(ctx context.Context, obsID int64) error {
 	if err := s.repo.RecordAccess(ctx, obsID); err != nil {
 		return fmt.Errorf("record access for observation %d: %w", obsID, err)
 	}
-
-	// Recalculate score after access change
-	if _, err := s.CalculateScore(ctx, obsID); err != nil {
-		// Log but don't fail - access was recorded successfully
-		// In production, this would use structured logging
-		return fmt.Errorf("record access succeeded but score recalculation failed: %w", err)
-	}
-
 	return nil
 }
 

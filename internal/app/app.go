@@ -100,7 +100,7 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 			interval = time.Hour
 		}
 
-		archivalSvc := lifecycle.NewArchivalService(stores.Observations, stores.Scoring, lifecycle.ArchivalConfig{
+		archivalSvc := lifecycle.NewArchivalService(stores.Observations, lifecycle.ArchivalConfig{
 			MaxAgeDays:      cfg.Memory.AutoArchiveDays,
 			MinArchiveScore: cfg.Memory.MinArchiveScore,
 			CheckInterval:   interval,

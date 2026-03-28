@@ -383,22 +383,15 @@ type Stats struct {
 func (s *Store) GetStats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
 
-	// Count total sessions
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&stats.TotalSessions)
+	// Session counts in a single query
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN ended_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+		FROM sessions
+	`).Scan(&stats.TotalSessions, &stats.ActiveSessions, &stats.EndedSessions)
 	if err != nil {
 		return nil, fmt.Errorf("session store: count sessions: %w", err)
-	}
-
-	// Count active sessions
-	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL").Scan(&stats.ActiveSessions)
-	if err != nil {
-		return nil, fmt.Errorf("session store: count active sessions: %w", err)
-	}
-
-	// Count ended sessions
-	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE ended_at IS NOT NULL").Scan(&stats.EndedSessions)
-	if err != nil {
-		return nil, fmt.Errorf("session store: count ended sessions: %w", err)
 	}
 
 	// Count total observations

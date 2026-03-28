@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -270,12 +271,9 @@ func (s *Store) combineWithRRF(topicResults, keywordResults []*domain.SearchResu
 
 // sortByRRFScore sorts search results by RRF score in descending order.
 func sortByRRFScore(results []*domain.SearchResult) {
-	// Simple insertion sort for small datasets
-	for i := 1; i < len(results); i++ {
-		for j := i; j > 0 && results[j].Rank > results[j-1].Rank; j-- {
-			results[j], results[j-1] = results[j-1], results[j]
-		}
-	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Rank > results[j].Rank
+	})
 }
 
 // scanSearchResult scans a row into a SearchResult with a fixed rank.

@@ -7,6 +7,7 @@ package memory
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -196,22 +197,5 @@ func normalizeTopicKey(key string) string {
 	// - Replace spaces with underscores
 	// - Remove special characters
 	// - Validate format
-	result := key
-	for i := 0; i < len(result); i++ {
-		if result[i] >= 'A' && result[i] <= 'Z' {
-			result = result[:i] + string(result[i]+32) + result[i+1:]
-		}
-	}
-
-	// Trim leading and trailing whitespace
-	start := 0
-	end := len(result)
-	for start < end && (result[start] == ' ' || result[start] == '\t' || result[start] == '\n') {
-		start++
-	}
-	for end > start && (result[end-1] == ' ' || result[end-1] == '\t' || result[end-1] == '\n') {
-		end--
-	}
-
-	return result[start:end]
+	return strings.TrimSpace(strings.ToLower(key))
 }
