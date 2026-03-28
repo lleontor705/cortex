@@ -32,6 +32,9 @@ func setupTestServer(t *testing.T) *Server {
 				tool_name TEXT, project TEXT, scope TEXT NOT NULL DEFAULT 'project', topic_key TEXT,
 				normalized_hash TEXT, revision_count INTEGER NOT NULL DEFAULT 1,
 				duplicate_count INTEGER NOT NULL DEFAULT 1, last_seen_at TEXT,
+				confidence REAL NOT NULL DEFAULT 1.0,
+				source TEXT NOT NULL DEFAULT 'manual',
+				tags TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT,
 				FOREIGN KEY (session_id) REFERENCES sessions(id));

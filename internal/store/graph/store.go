@@ -7,6 +7,7 @@ package graph
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -177,7 +178,9 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 
 	query := fmt.Sprintf(
 		`SELECT id, title, content, type, project, scope, session_id,
-		        COALESCE(topic_key, '') AS topic_key, created_at, updated_at
+		        COALESCE(topic_key, '') AS topic_key,
+		        COALESCE(confidence, 1.0), COALESCE(source, 'manual'), COALESCE(tags, ''),
+		        created_at, updated_at
 		 FROM observations
 		 WHERE id IN (%s) AND deleted_at IS NULL
 		 ORDER BY created_at DESC`, ph,
@@ -192,15 +195,20 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 	var observations []*domain.Observation
 	for rows.Next() {
 		obs := &domain.Observation{}
-		var createdAt, updatedAt string
+		var createdAt, updatedAt, tagsJSON string
 		if err := rows.Scan(
 			&obs.ID, &obs.Title, &obs.Content, &obs.Type, &obs.Project,
-			&obs.Scope, &obs.SessionID, &obs.TopicKey, &createdAt, &updatedAt,
+			&obs.Scope, &obs.SessionID, &obs.TopicKey,
+			&obs.Confidence, &obs.Source, &tagsJSON,
+			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		obs.CreatedAt, _ = parseTime(createdAt)
 		obs.UpdatedAt, _ = parseTime(updatedAt)
+		if tagsJSON != "" {
+			_ = json.Unmarshal([]byte(tagsJSON), &obs.Tags)
+		}
 		observations = append(observations, obs)
 	}
 

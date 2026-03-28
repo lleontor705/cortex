@@ -12,16 +12,19 @@ import "time"
 // during an AI coding session. It can be a manual note, tool usage record,
 // decision, bugfix, pattern, or any other type of observation.
 type Observation struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	Type      string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
-	Project   string    `json:"project"` // Project name or identifier
-	Scope     string    `json:"scope"`   // project, personal
-	SessionID string    `json:"session_id"`
-	TopicKey  string    `json:"topic_key"` // Optional topic key for upserts
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         int64     `json:"id"`
+	Title      string    `json:"title"`
+	Content    string    `json:"content"`
+	Type       string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
+	Project    string    `json:"project"` // Project name or identifier
+	Scope      string    `json:"scope"`   // project, personal
+	SessionID  string    `json:"session_id"`
+	TopicKey   string    `json:"topic_key"`  // Optional topic key for upserts
+	Confidence float64   `json:"confidence"` // Confidence score (0.0 to 1.0), default 1.0
+	Source     string    `json:"source"`     // Origin: manual, ai, auto, import
+	Tags       []string  `json:"tags,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // Session represents a coding session that groups related observations.
@@ -38,12 +41,17 @@ type Session struct {
 // Edge represents a relationship between two observations in the knowledge graph.
 // Edges enable semantic navigation and discovery of related knowledge.
 type Edge struct {
-	ID           int64     `json:"id"`
-	FromObsID    int64     `json:"from_obs_id"`
-	ToObsID      int64     `json:"to_obs_id"`
-	RelationType string    `json:"relation_type"` // references, relates_to, follows
-	Weight       float64   `json:"weight"`        // Strength of relationship (0.0 to 1.0)
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64      `json:"id"`
+	FromObsID    int64      `json:"from_obs_id"`
+	ToObsID      int64      `json:"to_obs_id"`
+	RelationType string     `json:"relation_type"` // references, relates_to, follows
+	Weight       float64    `json:"weight"`        // Strength of relationship (0.0 to 10.0, default 1.0)
+	Confidence   float64    `json:"confidence"`    // Confidence in this relationship (0.0 to 1.0)
+	Source       string     `json:"source,omitempty"`    // Who/what created this edge
+	Reasoning    string     `json:"reasoning,omitempty"` // Why this relationship exists
+	ValidFrom    *time.Time `json:"valid_from,omitempty"`  // Temporal validity start
+	InvalidAt    *time.Time `json:"invalid_at,omitempty"`  // Temporal validity end (NULL = still valid)
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // Prompt represents a user prompt captured during a session for replay
@@ -60,7 +68,7 @@ type Prompt struct {
 // access patterns, recency, and other metrics.
 type ImportanceScore struct {
 	ObservationID int64     `json:"observation_id"`
-	Score         float64   `json:"score"`         // Importance score (0.0 to 1.0)
+	Score         float64   `json:"score"`         // Importance score (0.0 to 5.0)
 	AccessCount   int       `json:"access_count"`  // Number of times accessed
 	LastAccessed  time.Time `json:"last_accessed"` // Last access timestamp
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -71,6 +79,9 @@ type ObservationFilter struct {
 	Project       string     `json:"project,omitempty"`
 	Scope         string     `json:"scope,omitempty"`
 	Type          string     `json:"type,omitempty"`
+	Source        string     `json:"source,omitempty"`
+	Tags          []string   `json:"tags,omitempty"`
+	MinConfidence float64    `json:"min_confidence,omitempty"`
 	Limit         int        `json:"limit,omitempty"`
 	Offset        int        `json:"offset,omitempty"`
 	CreatedBefore *time.Time `json:"created_before,omitempty"`
@@ -109,6 +120,14 @@ const (
 const (
 	ScopeProject  = "project"
 	ScopePersonal = "personal"
+)
+
+// Source types - common values for the Source field
+const (
+	SourceManual = "manual"
+	SourceAI     = "ai"
+	SourceAuto   = "auto"
+	SourceImport = "import"
 )
 
 // Relation types - common values for Edge.RelationType

@@ -36,7 +36,7 @@ const (
 // Common errors
 var (
 	ErrSelfReference = errors.New("cannot create edge from observation to itself")
-	ErrInvalidWeight = errors.New("weight must be greater than 0")
+	ErrInvalidWeight = errors.New("weight must be between 0 and 10")
 	ErrInvalidDepth  = errors.New("depth must be between 1 and 10")
 	ErrEdgeNotFound  = errors.New("edge not found")
 	ErrDuplicateEdge = errors.New("edge already exists with same from_obs_id, to_obs_id, and relation_type")
@@ -67,19 +67,19 @@ func (s *Service) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 		return ErrSelfReference
 	}
 
-	// Validate weight
-	if edge.Weight <= MinWeight {
+	// Set default weight if not specified (zero value from JSON/HTTP)
+	if edge.Weight == 0 {
+		edge.Weight = DefaultWeight
+	}
+
+	// Validate weight range
+	if edge.Weight < MinWeight || edge.Weight > MaxWeight {
 		return ErrInvalidWeight
 	}
 
 	// Validate relation type
 	if !ValidRelationTypes[edge.RelationType] {
 		return fmt.Errorf("%w: %s", domain.ErrInvalidRelation, edge.RelationType)
-	}
-
-	// Set default weight if not specified
-	if edge.Weight == 0 {
-		edge.Weight = DefaultWeight
 	}
 
 	return s.repo.CreateEdge(ctx, edge)
@@ -166,7 +166,7 @@ func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int
 					path = append(path, curr)
 					parent, ok := parents[curr]
 					if !ok {
-						break
+						return nil, fmt.Errorf("graph: BFS internal error: missing parent for node %d", curr)
 					}
 					curr = parent
 				}
