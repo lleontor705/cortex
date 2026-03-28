@@ -114,7 +114,7 @@ func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.
 	if err != nil {
 		return nil, fmt.Errorf("topic key lookup: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*domain.SearchResult
 	for rows.Next() {
@@ -174,7 +174,7 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 	if err != nil {
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*domain.SearchResult
 	for rows.Next() {
