@@ -79,7 +79,7 @@ func TestCheckDev(t *testing.T) {
 func TestCheckWithServer(t *testing.T) {
 	// Mock GitHub API.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(githubRelease{
+		json.NewEncoder(w).Encode(githubRelease{ //nolint:errcheck
 			TagName: "v9.9.9",
 			HTMLURL: "https://github.com/test/release",
 		})
@@ -92,7 +92,7 @@ func TestCheckWithServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {

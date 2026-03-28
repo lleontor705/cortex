@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,7 +21,7 @@ func testDB(t *testing.T) *sql.DB {
 	}
 
 	t.Cleanup(func() {
-		db.Close()
+		_ = db.Close()
 	})
 
 	return db
@@ -762,7 +761,7 @@ func BenchmarkApplyMigration(b *testing.B) {
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	m, err := NewMigrator(db, "")
 	if err != nil {
@@ -793,7 +792,7 @@ func BenchmarkStatus(b *testing.B) {
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	m, err := NewMigrator(db, "")
 	if err != nil {
@@ -820,8 +819,3 @@ func BenchmarkStatus(b *testing.B) {
 	}
 }
 
-// ensureTime helpers
-func init() {
-	// Ensure time.Now() returns consistent format for tests
-	time.Now()
-}

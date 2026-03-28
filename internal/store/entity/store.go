@@ -34,7 +34,7 @@ func (s *Store) SaveLinks(ctx context.Context, links []*domain.EntityLink) error
 	if err != nil {
 		return fmt.Errorf("entity: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT OR IGNORE INTO entity_links (observation_id, entity_type, entity_value)
@@ -42,7 +42,7 @@ func (s *Store) SaveLinks(ctx context.Context, links []*domain.EntityLink) error
 	if err != nil {
 		return fmt.Errorf("entity: prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, link := range links {
 		if _, err := stmt.ExecContext(ctx, link.ObservationID, link.EntityType, link.EntityValue); err != nil {
@@ -63,7 +63,7 @@ func (s *Store) GetByObservation(ctx context.Context, obsID int64) ([]*domain.En
 	if err != nil {
 		return nil, fmt.Errorf("entity: get by observation: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanEntityLinks(rows)
 }
 
@@ -92,7 +92,7 @@ func (s *Store) FindByEntity(ctx context.Context, entityType, entityValue string
 	if err != nil {
 		return nil, fmt.Errorf("entity: find by entity: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanEntityLinks(rows)
 }
 

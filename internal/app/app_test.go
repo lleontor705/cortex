@@ -14,7 +14,7 @@ func TestOpenInMemoryProvidesWorkingStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	session := &domain.Session{
 		ID:        "session-1",

@@ -506,7 +506,7 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory store: count by type: %w", err)
 	}
-	defer typeRows.Close()
+	defer func() { _ = typeRows.Close() }()
 
 	stats.ByType = make(map[string]int)
 	for typeRows.Next() {
@@ -755,9 +755,9 @@ func hashNormalized(content string) string {
 	fields := strings.Fields(content)
 	for i, f := range fields {
 		if i > 0 {
-			io.WriteString(h, " ")
+			_, _ = io.WriteString(h, " ")
 		}
-		io.WriteString(h, strings.ToLower(f))
+		_, _ = io.WriteString(h, strings.ToLower(f))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

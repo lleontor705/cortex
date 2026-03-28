@@ -40,7 +40,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		select {
 		case r := <-updateCh:
 			if r != nil {
-				fmt.Fprintf(stderr, "\nA new version of cortex is available: %s (current: %s)\n%s\n", r.Latest, Version, r.UpdateURL)
+				fmt.Fprintf(stderr, "\nA new version of cortex is available: %s (current: %s)\n%s\n", r.Latest, Version, r.UpdateURL) //nolint:errcheck
 			}
 		default:
 		}
@@ -52,7 +52,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return 0
 	case "version", "--version", "-v":
-		fmt.Fprintf(stdout, "cortex %s\n", Version)
+		fmt.Fprintf(stdout, "cortex %s\n", Version) //nolint:errcheck
 		printUpdateNotice()
 		return 0
 	case "mcp":
@@ -80,7 +80,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "export":
 		exitCode = runExport(args[2:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[1])
+		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[1]) //nolint:errcheck
 		printUsage(stderr)
 		return 1
 	}
@@ -90,7 +90,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `cortex — Persistent memory for AI coding assistants
+	_, _ = fmt.Fprint(w, `cortex — Persistent memory for AI coding assistants
 
 Usage:
   cortex <command> [arguments]
@@ -120,7 +120,7 @@ func openApp() (*app.App, error) {
 
 func runSearch(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: cortex search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
+		fmt.Fprintln(stderr, "usage: cortex search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]") //nolint:errcheck
 		return 1
 	}
 	var queryParts []string
@@ -155,7 +155,7 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 	}
 	query := strings.Join(queryParts, " ")
 	if strings.TrimSpace(query) == "" {
-		fmt.Fprintln(stderr, "error: search query is required")
+		fmt.Fprintln(stderr, "error: search query is required") //nolint:errcheck
 		return 1
 	}
 	a, err := openApp()

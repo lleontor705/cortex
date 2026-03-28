@@ -31,7 +31,7 @@ func ImportFromEngram(ctx context.Context, path string, target EngramImportTarge
 	if err != nil {
 		return nil, fmt.Errorf("open engram db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	result := &EngramImportResult{}
 
@@ -53,7 +53,7 @@ func importSessions(ctx context.Context, db *sql.DB, target EngramImportTarget, 
 	if err != nil {
 		return fmt.Errorf("import sessions query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var id, project, directory, startedAt string
@@ -91,7 +91,7 @@ func importObservations(ctx context.Context, db *sql.DB, target EngramImportTarg
 	if err != nil {
 		return fmt.Errorf("import observations query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var sessionID, typ, title, content, createdAt, updatedAt string
@@ -125,7 +125,7 @@ func importPrompts(ctx context.Context, db *sql.DB, target EngramImportTarget, r
 	if err != nil {
 		return fmt.Errorf("import prompts query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var sessionID, content, createdAt string

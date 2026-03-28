@@ -193,9 +193,9 @@ func TestGetRelated(t *testing.T) {
 
 	// Create edges: 1->2, 2->3, 3->4
 	ctx := context.Background()
-	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs1, ToObsID: obs2, RelationType: "references", Weight: 1.0})
-	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs2, ToObsID: obs3, RelationType: "references", Weight: 1.0})
-	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs3, ToObsID: obs4, RelationType: "references", Weight: 1.0})
+	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs1, ToObsID: obs2, RelationType: "references", Weight: 1.0}) //nolint:errcheck
+	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs2, ToObsID: obs3, RelationType: "references", Weight: 1.0}) //nolint:errcheck
+	store.CreateEdge(ctx, &domain.Edge{FromObsID: obs3, ToObsID: obs4, RelationType: "references", Weight: 1.0}) //nolint:errcheck
 
 	t.Run("depth 1", func(t *testing.T) {
 		results, err := store.GetRelated(ctx, obs1, 1)

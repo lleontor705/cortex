@@ -751,7 +751,7 @@ func TestStore_Update_ValidationErrors(t *testing.T) {
 		Title:     "Test",
 		Content:   "Content",
 	}
-	store.Save(ctx, obs)
+	store.Save(ctx, obs) //nolint:errcheck
 
 	tests := []struct {
 		name    string
