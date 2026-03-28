@@ -168,7 +168,9 @@ func TestRunImportFromJSON(t *testing.T) {
 	// Create a JSON file with observations
 	jsonData := `[{"title":"JSON import test","content":"Imported content","type":"manual","project":"demo","scope":"project","session_id":"json-session"}]`
 	jsonFile := filepath.Join(t.TempDir(), "import.json")
-	os.WriteFile(jsonFile, []byte(jsonData), 0644)
+	if err := os.WriteFile(jsonFile, []byte(jsonData), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}

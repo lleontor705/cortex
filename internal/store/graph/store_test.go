@@ -263,7 +263,9 @@ func TestDeleteEdge(t *testing.T) {
 
 	ctx := context.Background()
 	edge := &domain.Edge{FromObsID: obs1, ToObsID: obs2, RelationType: "references", Weight: 1.0}
-	store.CreateEdge(ctx, edge)
+	if err := store.CreateEdge(ctx, edge); err != nil {
+		t.Fatalf("setup: create edge: %v", err)
+	}
 
 	t.Run("success", func(t *testing.T) {
 		err := store.DeleteEdge(ctx, edge.ID)

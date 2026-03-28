@@ -40,7 +40,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		select {
 		case r := <-updateCh:
 			if r != nil {
-				fmt.Fprintf(stderr, "\nA new version of cortex is available: %s (current: %s)\n%s\n", r.Latest, Version, r.UpdateURL) //nolint:errcheck
+				writef(stderr, "\nA new version of cortex is available: %s (current: %s)\n%s\n", r.Latest, Version, r.UpdateURL)
 			}
 		default:
 		}
@@ -52,7 +52,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return 0
 	case "version", "--version", "-v":
-		fmt.Fprintf(stdout, "cortex %s\n", Version) //nolint:errcheck
+		writef(stdout, "cortex %s\n", Version)
 		printUpdateNotice()
 		return 0
 	case "mcp":
@@ -80,7 +80,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "export":
 		exitCode = runExport(args[2:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[1]) //nolint:errcheck
+		writef(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
 		return 1
 	}
@@ -90,7 +90,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `cortex — Persistent memory for AI coding assistants
+	writef(w, `cortex — Persistent memory for AI coding assistants
 
 Usage:
   cortex <command> [arguments]
@@ -120,7 +120,7 @@ func openApp() (*app.App, error) {
 
 func runSearch(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: cortex search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]") //nolint:errcheck
+		writeln(stderr, "usage: cortex search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
 		return 1
 	}
 	var queryParts []string
@@ -155,31 +155,31 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 	}
 	query := strings.Join(queryParts, " ")
 	if strings.TrimSpace(query) == "" {
-		fmt.Fprintln(stderr, "error: search query is required") //nolint:errcheck
+		writeln(stderr, "error: search query is required")
 		return 1
 	}
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
 	results, err := a.Stores.Search.Search(context.Background(), query, opts)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	if len(results) == 0 {
-		fmt.Fprintf(stdout, "No memories found for: %q\n", query)
+		writef(stdout, "No memories found for: %q\n", query)
 		return 0
 	}
-	fmt.Fprintf(stdout, "Found %d memories:\n\n", len(results))
+	writef(stdout, "Found %d memories:\n\n", len(results))
 	for i, r := range results {
 		project := ""
 		if r.Project != "" {
 			project = fmt.Sprintf(" | project: %s", r.Project)
 		}
-		fmt.Fprintf(stdout, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
+		writef(stdout, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
 			i+1, r.ID, r.Type, r.Title, truncate(r.Content, 300), r.CreatedAt.Format(time.RFC3339), project, r.Scope)
 	}
 	return 0
@@ -187,7 +187,7 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 
 func runSave(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
-		fmt.Fprintln(stderr, "usage: cortex save <title> <content> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--topic TOPIC_KEY]")
+		writeln(stderr, "usage: cortex save <title> <content> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--topic TOPIC_KEY]")
 		return 1
 	}
 	title, content := args[0], args[1]
@@ -218,7 +218,7 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 	}
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -227,10 +227,10 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 	_ = a.Stores.Sessions.Create(ctx, &domain.Session{ID: sessionID, Project: projectOrDefault(project), Directory: currentDir()})
 	obs := &domain.Observation{SessionID: sessionID, Title: title, Content: content, Type: typ, Project: project, Scope: scope, TopicKey: topicKey}
 	if err := a.Stores.Observations.Save(ctx, obs); err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Memory saved: #%d %q (%s)\n", obs.ID, title, typ)
+	writef(stdout, "Memory saved: #%d %q (%s)\n", obs.ID, title, typ)
 	return 0
 }
 
@@ -251,42 +251,42 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 	}
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
 	ctx := context.Background()
 	sessions, err := a.Stores.Sessions.List(ctx, project)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	observations, err := a.Stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Scope: scope, Limit: 20})
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	if len(sessions) == 0 && len(observations) == 0 {
-		fmt.Fprintln(stdout, "No previous session memories found.")
+		writeln(stdout, "No previous session memories found.")
 		return 0
 	}
 	if len(sessions) > 0 {
-		fmt.Fprintln(stdout, "## Recent Sessions")
-		fmt.Fprintln(stdout)
+		writeln(stdout, "## Recent Sessions")
+		writeln(stdout, "")
 		for _, s := range takeSessions(sessions, 5) {
 			status := "active"
 			if s.EndedAt != nil {
 				status = "ended"
 			}
-			fmt.Fprintf(stdout, "- **%s** (%s, %s)\n", s.ID, s.Project, status)
+			writef(stdout, "- **%s** (%s, %s)\n", s.ID, s.Project, status)
 		}
-		fmt.Fprintln(stdout)
+		writeln(stdout, "")
 	}
 	if len(observations) > 0 {
-		fmt.Fprintln(stdout, "## Recent Observations")
-		fmt.Fprintln(stdout)
+		writeln(stdout, "## Recent Observations")
+		writeln(stdout, "")
 		for _, o := range observations {
-			fmt.Fprintf(stdout, "- #%d [%s] %s\n", o.ID, o.Type, o.Title)
+			writef(stdout, "- #%d [%s] %s\n", o.ID, o.Type, o.Title)
 		}
 	}
 	return 0
@@ -295,19 +295,19 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 func runStats(_ []string, stdout, stderr io.Writer) int {
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
 	ctx := context.Background()
 	obsStats, err := a.Stores.Observations.Stats(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	sessStats, err := a.Stores.Sessions.GetStats(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	projects := "none yet"
@@ -316,18 +316,18 @@ func runStats(_ []string, stdout, stderr io.Writer) int {
 	} else if len(obsStats.Projects) > 0 {
 		projects = strings.Join(obsStats.Projects, ", ")
 	}
-	fmt.Fprintf(stdout, "Cortex Memory Stats\n  Sessions:     %d\n  Observations: %d\n  Projects:     %s\n", sessStats.TotalSessions, obsStats.TotalObservations, projects)
+	writef(stdout, "Cortex Memory Stats\n  Sessions:     %d\n  Observations: %d\n  Projects:     %s\n", sessStats.TotalSessions, obsStats.TotalObservations, projects)
 	return 0
 }
 
 func runTimeline(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: cortex timeline <observation_id> [--before N] [--after N]")
+		writeln(stderr, "usage: cortex timeline <observation_id> [--before N] [--after N]")
 		return 1
 	}
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: invalid observation id %q\n", args[0])
+		writef(stderr, "error: invalid observation id %q\n", args[0])
 		return 1
 	}
 
@@ -346,7 +346,7 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -354,7 +354,7 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	obs, err := a.Stores.Observations.GetByID(ctx, id)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 
@@ -364,7 +364,7 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 		Limit:         before,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: list before: %v\n", err)
+		writef(stderr, "cortex: list before: %v\n", err)
 		return 1
 	}
 
@@ -375,22 +375,22 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 		OrderAsc:     true,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: list after: %v\n", err)
+		writef(stderr, "cortex: list after: %v\n", err)
 		return 1
 	}
 
 	// Print before (reverse to show oldest first)
 	for i := len(beforeObs) - 1; i >= 0; i-- {
 		o := beforeObs[i]
-		fmt.Fprintf(stdout, "  #%d [%s] %s\n", o.ID, o.Type, o.Title)
+		writef(stdout, "  #%d [%s] %s\n", o.ID, o.Type, o.Title)
 	}
 
 	// Print target observation highlighted
-	fmt.Fprintf(stdout, ">>> #%d [%s] %s <<<\n    %s\n", obs.ID, obs.Type, obs.Title, truncate(obs.Content, 500))
+	writef(stdout, ">>> #%d [%s] %s <<<\n    %s\n", obs.ID, obs.Type, obs.Title, truncate(obs.Content, 500))
 
 	// Print after
 	for _, o := range afterObs {
-		fmt.Fprintf(stdout, "  #%d [%s] %s\n", o.ID, o.Type, o.Title)
+		writef(stdout, "  #%d [%s] %s\n", o.ID, o.Type, o.Title)
 	}
 
 	return 0
@@ -399,7 +399,7 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 func runMCP(args []string, stdout, stderr io.Writer) int {
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -419,7 +419,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		srv = mcp.NewServer(a.Stores)
 	}
 	if err := server.ServeStdio(srv); err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	_ = stdout
@@ -429,7 +429,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 func runTUI(stdout, stderr io.Writer) int {
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -440,7 +440,7 @@ func runTUI(stdout, stderr io.Writer) int {
 	}
 
 	if err := tui.Run(deps); err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	_ = stdout
@@ -450,7 +450,7 @@ func runTUI(stdout, stderr io.Writer) int {
 func runServe(args []string, stdout, stderr io.Writer) int {
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -467,10 +467,10 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	srv := cortexhttp.NewServer(addr, deps)
-	fmt.Fprintf(stdout, "Cortex HTTP server listening on %s\n", addr)
+	writef(stdout, "Cortex HTTP server listening on %s\n", addr)
 
 	if err := srv.ListenAndServe(); err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	return 0
@@ -482,21 +482,21 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		agent = args[0]
 	}
 	if agent == "" {
-		fmt.Fprintln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex")
+		writeln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex")
 		return 0
 	}
 	path, err := setup.Install(agent)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Installed Cortex integration for %s\n  -> %s\n", agent, path)
+	writef(stdout, "Installed Cortex integration for %s\n  -> %s\n", agent, path)
 	return 0
 }
 
 func runImport(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: cortex import --from-engram --path PATH\n       cortex import --from-json --path FILE")
+		writeln(stderr, "usage: cortex import --from-engram --path PATH\n       cortex import --from-json --path FILE")
 		return 1
 	}
 
@@ -506,7 +506,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	case "--from-json":
 		return importFromJSON(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown import source: %s (use --from-engram or --from-json)\n", args[0])
+		writef(stderr, "unknown import source: %s (use --from-engram or --from-json)\n", args[0])
 		return 1
 	}
 }
@@ -520,13 +520,13 @@ func importFromEngram(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if path == "" {
-		fmt.Fprintln(stderr, "cortex: --path is required for --from-engram")
+		writeln(stderr, "cortex: --path is required for --from-engram")
 		return 1
 	}
 
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -537,11 +537,11 @@ func importFromEngram(args []string, stdout, stderr io.Writer) int {
 		Prompts:      a.Stores.Prompts,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "Imported from Engram\n  Sessions:     %d\n  Observations: %d\n  Prompts:      %d\n",
+	writef(stdout, "Imported from Engram\n  Sessions:     %d\n  Observations: %d\n  Prompts:      %d\n",
 		result.Sessions, result.Observations, result.Prompts)
 	return 0
 }
@@ -555,28 +555,28 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if path == "" {
-		fmt.Fprintln(stderr, "cortex: --path is required for --from-json")
+		writeln(stderr, "cortex: --path is required for --from-json")
 		return 1
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: failed to open file: %v\n", err)
+		writef(stderr, "cortex: failed to open file: %v\n", err)
 		return 1
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Limit to 50 MB to prevent excessive memory usage
 	const maxImportSize = 50 << 20
 	var observations []*domain.Observation
 	if err := json.NewDecoder(io.LimitReader(f, maxImportSize)).Decode(&observations); err != nil {
-		fmt.Fprintf(stderr, "cortex: invalid JSON: %v\n", err)
+		writef(stderr, "cortex: invalid JSON: %v\n", err)
 		return 1
 	}
 
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -591,25 +591,25 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 			})
 		}
 		if err := a.Stores.Observations.Save(ctx, obs); err != nil {
-			fmt.Fprintf(stderr, "warning: skipped %q: %v\n", obs.Title, err)
+			writef(stderr, "warning: skipped %q: %v\n", obs.Title, err)
 			continue
 		}
 		saved++
 	}
 
-	fmt.Fprintf(stdout, "Imported %d of %d observations from JSON\n", saved, len(observations))
+	writef(stdout, "Imported %d of %d observations from JSON\n", saved, len(observations))
 	return 0
 }
 
 func runMigrate(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: cortex migrate <up|down|status> [--target VERSION]")
+		writeln(stderr, "usage: cortex migrate <up|down|status> [--target VERSION]")
 		return 1
 	}
 
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -619,10 +619,10 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "up":
 		if err := a.Migrator.Up(ctx); err != nil {
-			fmt.Fprintf(stderr, "cortex: migration up failed: %v\n", err)
+			writef(stderr, "cortex: migration up failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintln(stdout, "Migrations applied successfully")
+		writeln(stdout, "Migrations applied successfully")
 		return 0
 
 	case "down":
@@ -631,37 +631,37 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 			if args[i] == "--target" && i+1 < len(args) {
 				target, err = strconv.Atoi(args[i+1])
 				if err != nil {
-					fmt.Fprintf(stderr, "cortex: invalid target version: %s\n", args[i+1])
+					writef(stderr, "cortex: invalid target version: %s\n", args[i+1])
 					return 1
 				}
 				i++
 			}
 		}
 		if err := a.Migrator.Down(ctx, target); err != nil {
-			fmt.Fprintf(stderr, "cortex: migration down failed: %v\n", err)
+			writef(stderr, "cortex: migration down failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "Migrations rolled back to version %d\n", target)
+		writef(stdout, "Migrations rolled back to version %d\n", target)
 		return 0
 
 	case "status":
 		statuses, err := a.Migrator.Status(ctx)
 		if err != nil {
-			fmt.Fprintf(stderr, "cortex: %v\n", err)
+			writef(stderr, "cortex: %v\n", err)
 			return 1
 		}
-		fmt.Fprintln(stdout, "Migration Status:")
+		writeln(stdout, "Migration Status:")
 		for _, s := range statuses {
 			applied := "pending"
 			if s.Applied {
 				applied = fmt.Sprintf("applied at %s", s.AppliedAt)
 			}
-			fmt.Fprintf(stdout, "  %03d %-20s %s\n", s.Version, s.Name, applied)
+			writef(stdout, "  %03d %-20s %s\n", s.Version, s.Name, applied)
 		}
 		return 0
 
 	default:
-		fmt.Fprintf(stderr, "unknown migrate subcommand: %s (use up, down, or status)\n", args[0])
+		writef(stderr, "unknown migrate subcommand: %s (use up, down, or status)\n", args[0])
 		return 1
 	}
 }
@@ -687,7 +687,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 
 	a, err := openApp()
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	defer a.Close()
@@ -699,24 +699,24 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 
 	observations, err := a.Stores.Observations.List(context.Background(), filter)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: %v\n", err)
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 
 	data, err := json.MarshalIndent(observations, "", "  ")
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: failed to marshal JSON: %v\n", err)
+		writef(stderr, "cortex: failed to marshal JSON: %v\n", err)
 		return 1
 	}
 
 	if output != "" {
 		if err := os.WriteFile(output, data, 0600); err != nil {
-			fmt.Fprintf(stderr, "cortex: failed to write file: %v\n", err)
+			writef(stderr, "cortex: failed to write file: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "Exported %d observations to %s\n", len(observations), output)
+		writef(stdout, "Exported %d observations to %s\n", len(observations), output)
 	} else {
-		fmt.Fprintln(stdout, string(data))
+		writeln(stdout, string(data))
 	}
 
 	return 0
@@ -757,4 +757,14 @@ func takeSessions(sessions []*domain.Session, n int) []*domain.Session {
 		return sessions
 	}
 	return sessions[:n]
+}
+
+// writef writes formatted output, discarding any write error (unactionable for CLI output).
+func writef(w io.Writer, format string, args ...interface{}) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+// writeln writes a line, discarding any write error.
+func writeln(w io.Writer, s string) {
+	_, _ = fmt.Fprintln(w, s)
 }

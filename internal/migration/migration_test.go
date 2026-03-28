@@ -673,7 +673,7 @@ func TestMigrationOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query migrations: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var versions []int
 	for rows.Next() {

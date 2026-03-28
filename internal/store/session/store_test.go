@@ -824,7 +824,7 @@ func BenchmarkStore_Create(b *testing.B) {
 		_ = store.Create(ctx, session)
 	}
 
-	db.Close()
+	_ = db.Close()
 }
 
 func BenchmarkStore_GetByID(b *testing.B) {
