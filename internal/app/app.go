@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -47,6 +48,12 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	if opts.InMemory || cfg.Database.InMemory {
 		dbCfg = database.InMemoryConfig()
 	} else {
+		// Ensure parent directory exists for the database file
+		if dir := filepath.Dir(cfg.Database.Path); dir != "." {
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				return nil, fmt.Errorf("app: create data directory %s: %w", dir, err)
+			}
+		}
 		dbCfg.Path = cfg.Database.Path
 		dbCfg.EnableWAL = cfg.Database.Pragma.JournalMode == "WAL"
 		dbCfg.CacheSize = cfg.Database.Pragma.CacheSize

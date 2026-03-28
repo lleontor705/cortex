@@ -58,18 +58,9 @@ func TestNewManager_InMemory(t *testing.T) {
 func TestNewManager_EmptyPath(t *testing.T) {
 	cfg := DatabaseConfig{} // Empty path
 
-	m, err := NewManager(cfg)
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	defer func() {
-		if err := m.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}()
-
-	if m.Path() != "cortex.db" {
-		t.Errorf("expected default path 'cortex.db', got %q", m.Path())
+	_, err := NewManager(cfg)
+	if err == nil {
+		t.Fatal("expected error for empty path, got nil")
 	}
 }
 

@@ -122,6 +122,8 @@ Six migrations in `migrations/`: init schema (001), FTS5 (002), graph edges (003
 
 Loaded from `cortex.yaml` / env vars (`CORTEX_<SECTION>_<KEY>`). Eight sections: `server`, `database` (path, pragma), `mcp`, `http` (port, host), `logging` (level, format), `search` (default_limit, max_limit, fts5, vector, fusion_k), `memory` (max_observation_length, dedupe_window, auto_archive_days, importance_decay_half_life, min_archive_score), `lifecycle` (enable_auto_archive, archive_check_interval).
 
+**Centralized data directory**: All data is stored under `~/.cortex/` by default. The database defaults to `~/.cortex/cortex.db`, and config is searched in `~/.cortex/cortex.yaml` (among other paths). The directory is auto-created on first run.
+
 ## CLI Commands
 
 `mcp`, `search`, `save`, `timeline` (with --before/--after), `context`, `stats`, `setup`, `import` (--from-engram, --from-json), `export` (--project, --output), `migrate` (up/down/status), `serve` (HTTP REST API), `tui`, `version`, `help`.

@@ -3,10 +3,32 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/viper"
 )
+
+// CortexDir returns the centralized data directory (~/.cortex/).
+// It uses $HOME, $USERPROFILE, or os.UserHomeDir() to resolve the home directory.
+func CortexDir() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = os.Getenv("USERPROFILE")
+	}
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	if home == "" {
+		return ".cortex"
+	}
+	return filepath.Join(home, ".cortex")
+}
+
+// DefaultDBPath returns the default database path (~/.cortex/cortex.db).
+func DefaultDBPath() string {
+	return filepath.Join(CortexDir(), "cortex.db")
+}
 
 // Config represents the main configuration structure
 type Config struct {
@@ -92,7 +114,7 @@ var defaults = Config{
 		Version: "0.1.0",
 	},
 	Database: DatabaseConfig{
-		Path:     "cortex.db",
+		Path:     "", // resolved dynamically by DefaultDBPath()
 		InMemory: false,
 		Pragma: PragmaConfig{
 			JournalMode: "WAL",
@@ -190,7 +212,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.name", defaults.Server.Name)
 	v.SetDefault("server.version", defaults.Server.Version)
 
-	v.SetDefault("database.path", defaults.Database.Path)
+	v.SetDefault("database.path", DefaultDBPath())
 	v.SetDefault("database.in_memory", defaults.Database.InMemory)
 	v.SetDefault("database.pragma.journal_mode", defaults.Database.Pragma.JournalMode)
 	v.SetDefault("database.pragma.synchronous", defaults.Database.Pragma.Synchronous)

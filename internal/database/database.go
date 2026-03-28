@@ -86,7 +86,7 @@ type Manager struct {
 // NewManager creates a new database manager with the given configuration.
 func NewManager(cfg DatabaseConfig) (*Manager, error) {
 	if cfg.Path == "" {
-		cfg.Path = "cortex.db"
+		return nil, fmt.Errorf("database: path is required")
 	}
 	if cfg.MaxOpenConns <= 0 {
 		cfg.MaxOpenConns = 25
