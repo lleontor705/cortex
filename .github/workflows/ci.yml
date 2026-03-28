@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - develop
+      - master
 
 permissions:
   contents: read
@@ -20,7 +23,7 @@ jobs:
           go-version: "1.26"
 
       - name: Run unit tests
-        run: go test ./...
+        run: go test -v -count=1 ./...
 
   e2e-tests:
     name: E2E Tests
@@ -35,4 +38,21 @@ jobs:
           go-version: "1.26"
 
       - name: Run e2e tests
-        run: go test -tags integration ./...
+        run: go test -v -count=1 -tags integration ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
