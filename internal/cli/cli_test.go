@@ -202,7 +202,7 @@ func createEngramFixtureDB(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	stmts := []string{
 		`CREATE TABLE sessions (

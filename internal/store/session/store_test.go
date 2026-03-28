@@ -868,7 +868,7 @@ func BenchmarkStore_GetByID(b *testing.B) {
 		_, _ = store.GetByID(ctx, "benchmark-session")
 	}
 
-	db.Close()
+	_ = db.Close()
 }
 
 func BenchmarkStore_List(b *testing.B) {
@@ -914,5 +914,5 @@ func BenchmarkStore_List(b *testing.B) {
 		_, _ = store.List(ctx, "benchmark-project")
 	}
 
-	db.Close()
+	_ = db.Close()
 }

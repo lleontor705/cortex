@@ -163,7 +163,7 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	results, err := a.Stores.Search.Search(context.Background(), query, opts)
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -221,7 +221,7 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	ctx := context.Background()
 	sessionID := defaultSessionID(project)
 	_ = a.Stores.Sessions.Create(ctx, &domain.Session{ID: sessionID, Project: projectOrDefault(project), Directory: currentDir()})
@@ -254,7 +254,7 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	ctx := context.Background()
 	sessions, err := a.Stores.Sessions.List(ctx, project)
 	if err != nil {
@@ -298,7 +298,7 @@ func runStats(_ []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	ctx := context.Background()
 	obsStats, err := a.Stores.Observations.Stats(ctx)
 	if err != nil {
@@ -349,7 +349,7 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	ctx := context.Background()
 	obs, err := a.Stores.Observations.GetByID(ctx, id)
@@ -402,7 +402,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	toolsFilter := ""
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--tools=") {
@@ -432,7 +432,7 @@ func runTUI(stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	deps := &tui.Deps{
 		Observations: a.Stores.Observations,
@@ -453,7 +453,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	addr := fmt.Sprintf("%s:%d", a.Config.HTTP.Host, a.Config.HTTP.Port)
 
@@ -529,7 +529,7 @@ func importFromEngram(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	result, err := migration.ImportFromEngram(context.Background(), path, migration.EngramImportTarget{
 		Observations: a.Stores.Observations,
@@ -579,7 +579,7 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	ctx := context.Background()
 	saved := 0
@@ -612,7 +612,7 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	ctx := context.Background()
 
@@ -690,7 +690,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	filter := domain.ObservationFilter{
 		Project: project,
