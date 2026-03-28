@@ -36,7 +36,14 @@ func (s *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 		 FROM importance_scores WHERE observation_id = ?`, obsID,
 	)
 
-	return scanImportanceScore(row)
+	score, err := scanImportanceScore(row)
+	if err != nil {
+		if domain.IsNotFoundError(err) {
+			return nil, &domain.NotFoundError{Type: "importance_score", ID: obsID}
+		}
+		return nil, err
+	}
+	return score, nil
 }
 
 // UpdateScore adjusts the importance score by the given increment, clamped to [0.0, 5.0].

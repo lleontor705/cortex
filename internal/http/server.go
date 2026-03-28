@@ -225,7 +225,10 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Summary string `json:"summary"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
 
 	if err := s.deps.Sessions.End(r.Context(), id, body.Summary); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

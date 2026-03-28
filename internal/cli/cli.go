@@ -335,17 +335,25 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Get observations before (older)
-	beforeObs, _ := a.Stores.Observations.List(ctx, domain.ObservationFilter{
+	beforeObs, err := a.Stores.Observations.List(ctx, domain.ObservationFilter{
 		CreatedBefore: &obs.CreatedAt,
 		Limit:         before,
 	})
+	if err != nil {
+		fmt.Fprintf(stderr, "cortex: list before: %v\n", err)
+		return 1
+	}
 
 	// Get observations after (newer)
-	afterObs, _ := a.Stores.Observations.List(ctx, domain.ObservationFilter{
+	afterObs, err := a.Stores.Observations.List(ctx, domain.ObservationFilter{
 		CreatedAfter: &obs.CreatedAt,
 		Limit:        after,
 		OrderAsc:     true,
 	})
+	if err != nil {
+		fmt.Fprintf(stderr, "cortex: list after: %v\n", err)
+		return 1
+	}
 
 	// Print before (reverse to show oldest first)
 	for i := len(beforeObs) - 1; i >= 0; i-- {
@@ -556,6 +564,7 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 			})
 		}
 		if err := a.Stores.Observations.Save(ctx, obs); err != nil {
+			fmt.Fprintf(stderr, "warning: skipped %q: %v\n", obs.Title, err)
 			continue
 		}
 		saved++
