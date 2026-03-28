@@ -10,8 +10,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -122,11 +124,13 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO observations (
 				session_id, type, title, content, project, scope, topic_key,
-				normalized_hash, revision_count, duplicate_count, last_seen_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'))
+				normalized_hash, revision_count, duplicate_count, last_seen_at,
+				confidence, source, tags
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), ?, ?, ?)
 		`,
 			obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
 			nullableString(topicKey), normHash,
+			obs.Confidence, obs.Source, tagsToJSON(obs.Tags),
 		)
 		if err != nil {
 			return fmt.Errorf("memory store: insert observation: %w", err)
@@ -152,7 +156,7 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 func (s *Store) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, session_id, type, title, content, project, scope, topic_key,
-		       created_at, updated_at
+		       confidence, source, tags, created_at, updated_at
 		FROM observations
 		WHERE id = ? AND deleted_at IS NULL
 	`, id)
@@ -174,7 +178,7 @@ func (s *Store) GetByTopicKey(ctx context.Context, project, topicKey string) (*d
 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, session_id, type, title, content, project, scope, topic_key,
-		       created_at, updated_at
+		       confidence, source, tags, created_at, updated_at
 		FROM observations
 		WHERE topic_key = ?
 		  AND ifnull(project, '') = ifnull(?, '')
@@ -246,12 +250,14 @@ func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
 			UPDATE observations
 			SET type = ?, title = ?, content = ?, project = ?, scope = ?,
 			    topic_key = ?, normalized_hash = ?, revision_count = revision_count + 1,
-			    updated_at = ?
+			    updated_at = ?,
+			    confidence = ?, source = ?, tags = ?
 			WHERE id = ? AND deleted_at IS NULL
 		`,
 			obsType, obs.Title, obs.Content, obs.Project, scope,
 			nullableString(topicKey), normHash,
 			now.Format(time.RFC3339Nano),
+			obs.Confidence, obs.Source, tagsToJSON(obs.Tags),
 			obs.ID,
 		)
 		if err != nil {
@@ -335,7 +341,7 @@ func (s *Store) ListArchivable(ctx context.Context, cutoff time.Time, minScore f
 
 	query := `
 		SELECT o.id, o.session_id, o.type, o.title, o.content, o.project, o.scope,
-		       o.topic_key, o.created_at, o.updated_at
+		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
 		FROM observations o
 		LEFT JOIN importance_scores s ON s.observation_id = o.id
 		WHERE o.deleted_at IS NULL
@@ -356,14 +362,19 @@ func (s *Store) ListArchivable(ctx context.Context, cutoff time.Time, minScore f
 	for rows.Next() {
 		obs := &domain.Observation{}
 		var createdAt, updatedAt string
+		var source, tagsJSON sql.NullString
 		if err := rows.Scan(
 			&obs.ID, &obs.SessionID, &obs.Type, &obs.Title, &obs.Content,
-			&obs.Project, &obs.Scope, &obs.TopicKey, &createdAt, &updatedAt,
+			&obs.Project, &obs.Scope, &obs.TopicKey,
+			&obs.Confidence, &source, &tagsJSON,
+			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite: scan archivable: %w", err)
 		}
-		obs.CreatedAt, _ = time.Parse(sqliteDatetimeFormat, createdAt)
-		obs.UpdatedAt, _ = time.Parse(sqliteDatetimeFormat, updatedAt)
+		obs.Source = source.String
+		obs.Tags = tagsFromJSON(tagsJSON.String)
+		obs.CreatedAt = parseTime(createdAt)
+		obs.UpdatedAt = parseTime(updatedAt)
 		observations = append(observations, obs)
 	}
 
@@ -379,7 +390,7 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 
 	query := `
 		SELECT id, session_id, type, title, content, project, scope, topic_key,
-		       created_at, updated_at
+		       confidence, source, tags, created_at, updated_at
 		FROM observations
 		WHERE deleted_at IS NULL
 	`
@@ -398,6 +409,21 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 	if filter.Type != "" {
 		query += " AND type = ?"
 		args = append(args, filter.Type)
+	}
+
+	if filter.Source != "" {
+		query += " AND source = ?"
+		args = append(args, filter.Source)
+	}
+
+	if filter.MinConfidence > 0 {
+		query += " AND confidence >= ?"
+		args = append(args, filter.MinConfidence)
+	}
+
+	for _, tag := range filter.Tags {
+		query += " AND EXISTS (SELECT 1 FROM json_each(tags) WHERE json_each.value = ?)"
+		args = append(args, tag)
 	}
 
 	if filter.CreatedBefore != nil {
@@ -570,11 +596,13 @@ func (s *Store) updateObservationTx(tx *sql.Tx, id int64, obs *domain.Observatio
 		UPDATE observations
 		SET type = ?, title = ?, content = ?, project = ?, scope = ?,
 		    topic_key = ?, normalized_hash = ?, revision_count = revision_count + 1,
-		    last_seen_at = datetime('now'), updated_at = datetime('now')
+		    last_seen_at = datetime('now'), updated_at = datetime('now'),
+		    confidence = ?, source = ?, tags = ?
 		WHERE id = ? AND deleted_at IS NULL
 	`,
 		obsType, obs.Title, obs.Content, obs.Project, scope,
-		nullableString(topicKey), normHash, id,
+		nullableString(topicKey), normHash,
+		obs.Confidence, obs.Source, tagsToJSON(obs.Tags), id,
 	)
 	return err
 }
@@ -593,7 +621,7 @@ func (s *Store) incrementDuplicateCountTx(tx *sql.Tx, id int64) error {
 func (s *Store) loadObservationTx(tx *sql.Tx, obs *domain.Observation) error {
 	row := tx.QueryRow(`
 		SELECT id, session_id, type, title, content, project, scope, topic_key,
-		       created_at, updated_at
+		       confidence, source, tags, created_at, updated_at
 		FROM observations
 		WHERE id = ? AND deleted_at IS NULL
 	`, obs.ID)
@@ -614,11 +642,13 @@ func (s *Store) scanObservation(row *sql.Row) (*domain.Observation, error) {
 
 func (s *Store) scanObservationRow(row *sql.Row, obs *domain.Observation) error {
 	var createdAtStr, updatedAtStr string
-	var project, topicKey sql.NullString
+	var project, topicKey, source sql.NullString
+	var tagsJSON sql.NullString
 
 	err := row.Scan(
 		&obs.ID, &obs.SessionID, &obs.Type, &obs.Title, &obs.Content,
 		&project, &obs.Scope, &topicKey,
+		&obs.Confidence, &source, &tagsJSON,
 		&createdAtStr, &updatedAtStr,
 	)
 	if err != nil {
@@ -630,6 +660,8 @@ func (s *Store) scanObservationRow(row *sql.Row, obs *domain.Observation) error 
 
 	obs.Project = project.String
 	obs.TopicKey = topicKey.String
+	obs.Source = source.String
+	obs.Tags = tagsFromJSON(tagsJSON.String)
 
 	obs.CreatedAt = parseTime(createdAtStr)
 	obs.UpdatedAt = parseTime(updatedAtStr)
@@ -643,11 +675,13 @@ func (s *Store) scanObservations(rows *sql.Rows) ([]*domain.Observation, error) 
 	for rows.Next() {
 		var obs domain.Observation
 		var createdAtStr, updatedAtStr string
-		var project, topicKey sql.NullString
+		var project, topicKey, source sql.NullString
+		var tagsJSON sql.NullString
 
 		err := rows.Scan(
 			&obs.ID, &obs.SessionID, &obs.Type, &obs.Title, &obs.Content,
 			&project, &obs.Scope, &topicKey,
+			&obs.Confidence, &source, &tagsJSON,
 			&createdAtStr, &updatedAtStr,
 		)
 		if err != nil {
@@ -656,6 +690,8 @@ func (s *Store) scanObservations(rows *sql.Rows) ([]*domain.Observation, error) 
 
 		obs.Project = project.String
 		obs.TopicKey = topicKey.String
+		obs.Source = source.String
+		obs.Tags = tagsFromJSON(tagsJSON.String)
 
 		obs.CreatedAt = parseTime(createdAtStr)
 		obs.UpdatedAt = parseTime(updatedAtStr)
@@ -668,6 +704,27 @@ func (s *Store) scanObservations(rows *sql.Rows) ([]*domain.Observation, error) 
 	}
 
 	return observations, nil
+}
+
+// ─── Tag JSON Helpers ───────────────────────────────────────────────────────
+
+func tagsToJSON(tags []string) interface{} {
+	if len(tags) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(tags)
+	return string(b)
+}
+
+func tagsFromJSON(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var tags []string
+	if err := json.Unmarshal([]byte(s), &tags); err != nil {
+		return nil
+	}
+	return tags
 }
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
@@ -729,6 +786,9 @@ func parseTime(s string) time.Time {
 	// Try SQLite datetime format
 	if t, err := time.Parse(sqliteDatetimeFormat, s); err == nil {
 		return t
+	}
+	if s != "" {
+		log.Printf("sqlite: failed to parse time %q", s)
 	}
 	return time.Time{}
 }

@@ -226,6 +226,9 @@ func createEngramFixtureDB(t *testing.T, path string) {
 			revision_count INTEGER NOT NULL DEFAULT 1,
 			duplicate_count INTEGER NOT NULL DEFAULT 1,
 			last_seen_at TEXT,
+			confidence REAL NOT NULL DEFAULT 1.0,
+			source TEXT NOT NULL DEFAULT 'manual',
+			tags TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			deleted_at TEXT

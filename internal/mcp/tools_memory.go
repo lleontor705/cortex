@@ -65,6 +65,15 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 				mcp.WithString("topic_key",
 					mcp.Description("Optional topic identifier for upserts (e.g. architecture/auth-model). Reuses and updates the latest observation in same project+scope."),
 				),
+				mcp.WithNumber("confidence",
+					mcp.Description("Confidence score 0.0-1.0 (default: 1.0). Lower values indicate less certainty."),
+				),
+				mcp.WithString("source",
+					mcp.Description("Origin of this observation: manual (default), ai, auto, import"),
+				),
+				mcp.WithString("tags",
+					mcp.Description("Comma-separated tags (e.g. 'auth,jwt,security')"),
+				),
 			),
 			handleSave(stores),
 		)
@@ -447,9 +456,25 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		project := stringArg(req, "project")
 		scope := stringArg(req, "scope")
 		topicKey := stringArg(req, "topic_key")
+		source := stringArg(req, "source")
+		tagsStr := stringArg(req, "tags")
+		confidence := floatArg(req, "confidence", 1.0)
 
 		if typ == "" {
 			typ = "manual"
+		}
+		if source == "" {
+			source = domain.SourceManual
+		}
+
+		var tags []string
+		if tagsStr != "" {
+			for _, t := range strings.Split(tagsStr, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					tags = append(tags, t)
+				}
+			}
 		}
 		if sessionID == "" {
 			sessionID = defaultSessionID(project)
@@ -465,13 +490,16 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		})
 
 		obs := &domain.Observation{
-			Title:     title,
-			Content:   content,
-			Type:      typ,
-			SessionID: sessionID,
-			Project:   project,
-			Scope:     scope,
-			TopicKey:  topicKey,
+			Title:      title,
+			Content:    content,
+			Type:       typ,
+			SessionID:  sessionID,
+			Project:    project,
+			Scope:      scope,
+			TopicKey:   topicKey,
+			Confidence: confidence,
+			Source:     source,
+			Tags:       tags,
 		}
 
 		if err := stores.Observations.Save(ctx, obs); err != nil {
@@ -1022,10 +1050,7 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 		duplicates := 0
 
 		for _, learning := range learnings {
-			title := learning
-			if len(title) > 60 {
-				title = title[:60] + "..."
-			}
+			title := truncate(learning, 60)
 
 			obs := &domain.Observation{
 				SessionID: sessionID,

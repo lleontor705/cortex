@@ -538,14 +538,17 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "cortex: failed to read file: %v\n", err)
+		fmt.Fprintf(stderr, "cortex: failed to open file: %v\n", err)
 		return 1
 	}
+	defer f.Close()
 
+	// Limit to 50 MB to prevent excessive memory usage
+	const maxImportSize = 50 << 20
 	var observations []*domain.Observation
-	if err := json.Unmarshal(data, &observations); err != nil {
+	if err := json.NewDecoder(io.LimitReader(f, maxImportSize)).Decode(&observations); err != nil {
 		fmt.Fprintf(stderr, "cortex: invalid JSON: %v\n", err)
 		return 1
 	}
@@ -686,7 +689,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if output != "" {
-		if err := os.WriteFile(output, data, 0644); err != nil {
+		if err := os.WriteFile(output, data, 0600); err != nil {
 			fmt.Fprintf(stderr, "cortex: failed to write file: %v\n", err)
 			return 1
 		}

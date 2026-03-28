@@ -8,6 +8,7 @@ package scoring
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"time"
 
@@ -249,8 +250,7 @@ func (s *Service) DecayScores(ctx context.Context) error {
 		}
 
 		if err := s.repo.SetScore(ctx, score.ObservationID, newScore); err != nil {
-			// Log but continue with other scores
-			// In production, use structured logging
+			log.Printf("scoring: decay set score for observation %d: %v", score.ObservationID, err)
 			continue
 		}
 	}
@@ -268,7 +268,7 @@ func (s *Service) RecalculateAll(ctx context.Context) error {
 
 	for _, score := range scores {
 		if _, err := s.CalculateScore(ctx, score.ObservationID); err != nil {
-			// Log but continue with other scores
+			log.Printf("scoring: recalculate score for observation %d: %v", score.ObservationID, err)
 			continue
 		}
 	}

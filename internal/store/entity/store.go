@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -112,7 +113,11 @@ func scanEntityLinks(rows *sql.Rows) ([]*domain.EntityLink, error) {
 		if err := rows.Scan(&link.ID, &link.ObservationID, &link.EntityType, &link.EntityValue, &createdAt); err != nil {
 			return nil, err
 		}
-		link.CreatedAt, _ = time.Parse(sqliteDatetimeFormat, createdAt)
+		if t, err := time.Parse(sqliteDatetimeFormat, createdAt); err == nil {
+			link.CreatedAt = t
+		} else if createdAt != "" {
+			log.Printf("entity: failed to parse time %q", createdAt)
+		}
 		links = append(links, link)
 	}
 	return links, rows.Err()

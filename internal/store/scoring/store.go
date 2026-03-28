@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"time"
 
@@ -204,8 +205,8 @@ func (s *Store) GetObservation(ctx context.Context, obsID int64) (*domain.Observ
 		return nil, fmt.Errorf("scoring: get observation: %w", err)
 	}
 
-	obs.CreatedAt, _ = time.Parse(sqliteDatetimeFormat, createdAt)
-	obs.UpdatedAt, _ = time.Parse(sqliteDatetimeFormat, updatedAt)
+	obs.CreatedAt = parseScoringTime(createdAt)
+	obs.UpdatedAt = parseScoringTime(updatedAt)
 
 	return obs, nil
 }
@@ -228,9 +229,9 @@ func scanImportanceScore(row *sql.Row) (*domain.ImportanceScore, error) {
 	}
 
 	if lastAccessed.Valid {
-		score.LastAccessed, _ = time.Parse(sqliteDatetimeFormat, lastAccessed.String)
+		score.LastAccessed = parseScoringTime(lastAccessed.String)
 	}
-	score.UpdatedAt, _ = time.Parse(sqliteDatetimeFormat, updatedAt)
+	score.UpdatedAt = parseScoringTime(updatedAt)
 
 	return score, nil
 }
@@ -251,9 +252,9 @@ func scanImportanceScores(rows *sql.Rows) ([]*domain.ImportanceScore, error) {
 		}
 
 		if lastAccessed.Valid {
-			score.LastAccessed, _ = time.Parse(sqliteDatetimeFormat, lastAccessed.String)
+			score.LastAccessed = parseScoringTime(lastAccessed.String)
 		}
-		score.UpdatedAt, _ = time.Parse(sqliteDatetimeFormat, updatedAt)
+		score.UpdatedAt = parseScoringTime(updatedAt)
 
 		scores = append(scores, score)
 	}
@@ -263,6 +264,20 @@ func scanImportanceScores(rows *sql.Rows) ([]*domain.ImportanceScore, error) {
 	}
 
 	return scores, nil
+}
+
+// parseScoringTime parses a time string, logging a warning if it fails.
+func parseScoringTime(s string) time.Time {
+	if t, err := time.Parse(sqliteDatetimeFormat, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	if s != "" {
+		log.Printf("scoring: failed to parse time %q", s)
+	}
+	return time.Time{}
 }
 
 // Ensure Store implements scoring.Repository.

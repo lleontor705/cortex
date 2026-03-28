@@ -13,12 +13,19 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o cortex ./cmd/cortex
 # Runtime image
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl \
+    && addgroup -S cortex && adduser -S cortex -G cortex \
+    && mkdir -p /home/cortex/.cortex && chown cortex:cortex /home/cortex/.cortex
 
 COPY --from=builder /build/cortex /usr/local/bin/cortex
 COPY --from=builder /build/migrations /migrations
 
+USER cortex
+
 EXPOSE 7438
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:7438/health || exit 1
 
 ENTRYPOINT ["cortex"]
 CMD ["mcp"]

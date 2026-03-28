@@ -41,6 +41,9 @@ func setupTestStores(t *testing.T) *Stores {
 				scope TEXT NOT NULL DEFAULT 'project', topic_key TEXT,
 				normalized_hash TEXT, revision_count INTEGER NOT NULL DEFAULT 1,
 				duplicate_count INTEGER NOT NULL DEFAULT 1, last_seen_at TEXT,
+				confidence REAL NOT NULL DEFAULT 1.0,
+				source TEXT NOT NULL DEFAULT 'manual',
+				tags TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT,
 				FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -71,6 +74,8 @@ func setupTestStores(t *testing.T) *Stores {
 				id INTEGER PRIMARY KEY AUTOINCREMENT, from_obs_id INTEGER NOT NULL,
 				to_obs_id INTEGER NOT NULL, relation_type TEXT NOT NULL,
 				weight REAL NOT NULL DEFAULT 1.0,
+				confidence REAL NOT NULL DEFAULT 1.0,
+				source TEXT, reasoning TEXT, valid_from TEXT, invalid_at TEXT,
 				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				FOREIGN KEY (from_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
 				FOREIGN KEY (to_obs_id) REFERENCES observations(id) ON DELETE CASCADE,

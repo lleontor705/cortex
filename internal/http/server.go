@@ -7,6 +7,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +23,13 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+)
+
+const (
+	// maxRequestBodySize limits JSON request bodies to 1 MB.
+	maxRequestBodySize = 1 << 20
+	// maxLimit caps the maximum number of results per query.
+	maxLimit = 100
 )
 
 // Deps bundles store dependencies for HTTP handlers.
@@ -115,11 +123,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // ─── Observations ───────────────────────────────────────────────────────────
 
 func (s *Server) handleListObservations(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 20)
+	if limit > maxLimit {
+		limit = maxLimit
+	}
 	filter := domain.ObservationFilter{
 		Project: r.URL.Query().Get("project"),
 		Scope:   r.URL.Query().Get("scope"),
 		Type:    r.URL.Query().Get("type"),
-		Limit:   queryInt(r, "limit", 20),
+		Limit:   limit,
 		Offset:  queryInt(r, "offset", 0),
 	}
 
@@ -133,7 +145,7 @@ func (s *Server) handleListObservations(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleCreateObservation(w http.ResponseWriter, r *http.Request) {
 	var obs domain.Observation
-	if err := json.NewDecoder(r.Body).Decode(&obs); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&obs); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -172,7 +184,7 @@ func (s *Server) handleUpdateObservation(w http.ResponseWriter, r *http.Request)
 	}
 
 	var obs domain.Observation
-	if err := json.NewDecoder(r.Body).Decode(&obs); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&obs); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -213,7 +225,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var sess domain.Session
-	if err := json.NewDecoder(r.Body).Decode(&sess); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&sess); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -230,7 +242,7 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Summary string `json:"summary"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -271,7 +283,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateEdge(w http.ResponseWriter, r *http.Request) {
 	var edge domain.Edge
-	if err := json.NewDecoder(r.Body).Decode(&edge); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&edge); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

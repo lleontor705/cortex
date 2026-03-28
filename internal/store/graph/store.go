@@ -7,7 +7,9 @@ package graph
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -38,9 +40,11 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight)
-		 VALUES (?, ?, ?, ?)`,
+		`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, source, reasoning, valid_from, invalid_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight,
+		edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning),
+		nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -174,7 +178,9 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 
 	query := fmt.Sprintf(
 		`SELECT id, title, content, type, project, scope, session_id,
-		        COALESCE(topic_key, '') AS topic_key, created_at, updated_at
+		        COALESCE(topic_key, '') AS topic_key,
+		        COALESCE(confidence, 1.0), COALESCE(source, 'manual'), COALESCE(tags, ''),
+		        created_at, updated_at
 		 FROM observations
 		 WHERE id IN (%s) AND deleted_at IS NULL
 		 ORDER BY created_at DESC`, ph,
@@ -189,24 +195,89 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 	var observations []*domain.Observation
 	for rows.Next() {
 		obs := &domain.Observation{}
-		var createdAt, updatedAt string
+		var createdAt, updatedAt, tagsJSON string
 		if err := rows.Scan(
 			&obs.ID, &obs.Title, &obs.Content, &obs.Type, &obs.Project,
-			&obs.Scope, &obs.SessionID, &obs.TopicKey, &createdAt, &updatedAt,
+			&obs.Scope, &obs.SessionID, &obs.TopicKey,
+			&obs.Confidence, &obs.Source, &tagsJSON,
+			&createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		obs.CreatedAt, _ = parseTime(createdAt)
 		obs.UpdatedAt, _ = parseTime(updatedAt)
+		if tagsJSON != "" {
+			_ = json.Unmarshal([]byte(tagsJSON), &obs.Tags)
+		}
 		observations = append(observations, obs)
 	}
 
 	return observations, rows.Err()
 }
 
-// parseTime parses a SQLite datetime string.
-func parseTime(s string) (t time.Time, err error) {
-	return time.Parse(sqliteDatetimeFormat, s)
+// parseTime parses a SQLite datetime string, logging a warning if it fails.
+func parseTime(s string) (time.Time, error) {
+	t, err := time.Parse(sqliteDatetimeFormat, s)
+	if err != nil && s != "" {
+		log.Printf("graph: failed to parse time %q", s)
+	}
+	return t, err
+}
+
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.Format(sqliteDatetimeFormat)
+}
+
+// GetEdgesForObservation retrieves all edges where the observation is either source or target.
+func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
+	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+	                 valid_from, invalid_at, created_at
+	          FROM edges
+	          WHERE from_obs_id = ? OR to_obs_id = ?
+	          ORDER BY created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, obsID, obsID)
+	if err != nil {
+		return nil, fmt.Errorf("graph: get edges for observation %d: %w", obsID, err)
+	}
+	defer rows.Close()
+
+	var edges []*domain.Edge
+	for rows.Next() {
+		edge := &domain.Edge{}
+		var createdAt string
+		var validFrom, invalidAt sql.NullString
+		if err := rows.Scan(
+			&edge.ID, &edge.FromObsID, &edge.ToObsID, &edge.RelationType, &edge.Weight,
+			&edge.Confidence, &edge.Source, &edge.Reasoning,
+			&validFrom, &invalidAt, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("graph: scan edge: %w", err)
+		}
+		edge.CreatedAt, _ = parseTime(createdAt)
+		if validFrom.Valid {
+			t, _ := parseTime(validFrom.String)
+			edge.ValidFrom = &t
+		}
+		if invalidAt.Valid {
+			t, _ := parseTime(invalidAt.String)
+			edge.InvalidAt = &t
+		}
+		edges = append(edges, edge)
+	}
+
+	return edges, rows.Err()
 }
 
 // Ensure Store implements domain.GraphRepository.

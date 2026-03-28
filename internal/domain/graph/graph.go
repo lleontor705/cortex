@@ -15,22 +15,13 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
-// Relation types - common values for Edge.RelationType
-const (
-	RelationReferences  = "references"
-	RelationRelatesTo   = "relates_to"
-	RelationFollows     = "follows"
-	RelationSupersedes  = "supersedes"
-	RelationContradicts = "contradicts"
-)
-
 // ValidRelationTypes contains all allowed relation types for edges.
 var ValidRelationTypes = map[string]bool{
-	RelationReferences:  true,
-	RelationRelatesTo:   true,
-	RelationFollows:     true,
-	RelationSupersedes:  true,
-	RelationContradicts: true,
+	domain.RelationReferences:  true,
+	domain.RelationRelatesTo:   true,
+	domain.RelationFollows:     true,
+	domain.RelationSupersedes:  true,
+	domain.RelationContradicts: true,
 }
 
 // Business rule constants
@@ -44,12 +35,11 @@ const (
 
 // Common errors
 var (
-	ErrSelfReference   = errors.New("cannot create edge from observation to itself")
-	ErrInvalidWeight   = errors.New("weight must be greater than 0")
-	ErrInvalidRelation = errors.New("invalid relation type")
-	ErrInvalidDepth    = errors.New("depth must be between 1 and 10")
-	ErrEdgeNotFound    = errors.New("edge not found")
-	ErrDuplicateEdge   = errors.New("edge already exists with same from_obs_id, to_obs_id, and relation_type")
+	ErrSelfReference = errors.New("cannot create edge from observation to itself")
+	ErrInvalidWeight = errors.New("weight must be between 0 and 10")
+	ErrInvalidDepth  = errors.New("depth must be between 1 and 10")
+	ErrEdgeNotFound  = errors.New("edge not found")
+	ErrDuplicateEdge = errors.New("edge already exists with same from_obs_id, to_obs_id, and relation_type")
 )
 
 // Service provides graph operations for managing relationships between observations.
@@ -77,19 +67,19 @@ func (s *Service) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 		return ErrSelfReference
 	}
 
-	// Validate weight
-	if edge.Weight <= MinWeight {
+	// Set default weight if not specified (zero value from JSON/HTTP)
+	if edge.Weight == 0 {
+		edge.Weight = DefaultWeight
+	}
+
+	// Validate weight range
+	if edge.Weight < MinWeight || edge.Weight > MaxWeight {
 		return ErrInvalidWeight
 	}
 
 	// Validate relation type
 	if !ValidRelationTypes[edge.RelationType] {
-		return fmt.Errorf("%w: %s", ErrInvalidRelation, edge.RelationType)
-	}
-
-	// Set default weight if not specified
-	if edge.Weight == 0 {
-		edge.Weight = DefaultWeight
+		return fmt.Errorf("%w: %s", domain.ErrInvalidRelation, edge.RelationType)
 	}
 
 	return s.repo.CreateEdge(ctx, edge)
@@ -122,27 +112,7 @@ func (s *Service) DeleteEdge(ctx context.Context, id int64) error {
 // GetRelationships retrieves all edges for an observation (both outgoing and incoming).
 // This is useful for displaying the full context of relationships for a given observation.
 func (s *Service) GetRelationships(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
-	// Get all edges where this observation is involved
-	related, err := s.repo.GetRelated(ctx, obsID, 1)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract edges from related observations
-	// Note: This is a simplified implementation. A full implementation
-	// would have a dedicated repository method to fetch edges directly.
-	edges := make([]*domain.Edge, 0, len(related))
-	for _, obs := range related {
-		// Create edge representation (this is approximate)
-		edges = append(edges, &domain.Edge{
-			FromObsID:    obsID,
-			ToObsID:      obs.ID,
-			RelationType: RelationRelatesTo,
-			Weight:       DefaultWeight,
-		})
-	}
-
-	return edges, nil
+	return s.repo.GetEdgesForObservation(ctx, obsID)
 }
 
 // FindPath finds a path between two observations using Breadth-First Search (BFS).
@@ -192,8 +162,13 @@ func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int
 			if neighbor.ID == toID {
 				// Reconstruct path from parent pointers
 				path := []int64{toID}
-				for curr := current.id; curr != fromID; curr = parents[curr] {
+				for curr := current.id; curr != fromID; {
 					path = append(path, curr)
+					parent, ok := parents[curr]
+					if !ok {
+						return nil, fmt.Errorf("graph: BFS internal error: missing parent for node %d", curr)
+					}
+					curr = parent
 				}
 				path = append(path, fromID)
 				// Reverse
