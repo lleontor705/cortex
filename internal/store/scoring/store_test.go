@@ -192,8 +192,8 @@ func TestRecordAccess(t *testing.T) {
 	})
 
 	t.Run("multiple accesses", func(t *testing.T) {
-		store.RecordAccess(ctx, obsID)
-		store.RecordAccess(ctx, obsID)
+		store.RecordAccess(ctx, obsID) //nolint:errcheck
+		store.RecordAccess(ctx, obsID) //nolint:errcheck
 
 		score, _ := store.GetScore(ctx, obsID)
 		if score.AccessCount != 3 {
@@ -307,9 +307,9 @@ func TestGetTopByScore(t *testing.T) {
 	obs3 := createTestObservation(t, db, "Obs 3", "other-project", "s1")
 
 	ctx := context.Background()
-	store.SetScore(ctx, obs1, 4.0)
-	store.SetScore(ctx, obs2, 2.0)
-	store.SetScore(ctx, obs3, 3.0)
+	store.SetScore(ctx, obs1, 4.0) //nolint:errcheck
+	store.SetScore(ctx, obs2, 2.0) //nolint:errcheck
+	store.SetScore(ctx, obs3, 3.0) //nolint:errcheck
 
 	t.Run("all projects", func(t *testing.T) {
 		scores, err := store.GetTopByScore(ctx, "", 10)
@@ -380,8 +380,8 @@ func TestGetIncomingEdgeCount(t *testing.T) {
 	ctx := context.Background()
 
 	// Create edges: obs1->obs2, obs3->obs2
-	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'references', 1.0)`, obs1, obs2)
-	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2)
+	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'references', 1.0)`, obs1, obs2) //nolint:errcheck
+	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2)  //nolint:errcheck
 
 	t.Run("with edges", func(t *testing.T) {
 		count, err := store.GetIncomingEdgeCount(ctx, obs2)
@@ -434,7 +434,7 @@ func TestGetObservation(t *testing.T) {
 	})
 
 	t.Run("soft deleted", func(t *testing.T) {
-		db.Exec(`UPDATE observations SET deleted_at = datetime('now') WHERE id = ?`, obsID)
+		db.Exec(`UPDATE observations SET deleted_at = datetime('now') WHERE id = ?`, obsID) //nolint:errcheck
 		_, err := store.GetObservation(ctx, obsID)
 		if !domain.IsNotFoundError(err) {
 			t.Fatalf("expected NotFoundError for soft-deleted obs, got %v", err)

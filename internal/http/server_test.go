@@ -107,7 +107,7 @@ func TestObservationCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	// Create session first
-	srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "demo", Directory: "."})
+	srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "demo", Directory: "."}) //nolint:errcheck
 
 	// Create observation
 	body, _ := json.Marshal(domain.Observation{
@@ -123,7 +123,7 @@ func TestObservationCRUD(t *testing.T) {
 	}
 
 	var created domain.Observation
-	json.Unmarshal(w.Body.Bytes(), &created)
+	json.Unmarshal(w.Body.Bytes(), &created) //nolint:errcheck
 	if created.ID == 0 {
 		t.Fatal("expected non-zero ID")
 	}
@@ -163,8 +163,8 @@ func TestSearchEndpoint(t *testing.T) {
 	handler := srv.httpServer.Handler
 	ctx := context.Background()
 
-	srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "demo", Directory: "."})
-	srv.deps.Observations.Save(ctx, &domain.Observation{
+	srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "demo", Directory: "."}) //nolint:errcheck
+	srv.deps.Observations.Save(ctx, &domain.Observation{ //nolint:errcheck
 		SessionID: "s1", Title: "JWT auth middleware", Content: "Switched to JWT",
 		Type: "decision", Project: "demo", Scope: "project",
 	})

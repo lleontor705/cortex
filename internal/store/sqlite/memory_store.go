@@ -356,7 +356,7 @@ func (s *Store) ListArchivable(ctx context.Context, cutoff time.Time, minScore f
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list archivable: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var observations []*domain.Observation
 	for rows.Next() {
@@ -455,7 +455,7 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 	if err != nil {
 		return nil, fmt.Errorf("memory store: list observations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanObservations(rows)
 }
@@ -482,7 +482,7 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory store: get projects: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var project string
@@ -506,7 +506,7 @@ func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory store: count by type: %w", err)
 	}
-	defer typeRows.Close()
+	defer func() { _ = typeRows.Close() }()
 
 	stats.ByType = make(map[string]int)
 	for typeRows.Next() {
@@ -755,9 +755,9 @@ func hashNormalized(content string) string {
 	fields := strings.Fields(content)
 	for i, f := range fields {
 		if i > 0 {
-			io.WriteString(h, " ")
+			_, _ = io.WriteString(h, " ")
 		}
-		io.WriteString(h, strings.ToLower(f))
+		_, _ = io.WriteString(h, strings.ToLower(f))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

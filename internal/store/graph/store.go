@@ -152,7 +152,7 @@ func (s *Store) getNeighborObservations(ctx context.Context, ids []int64) ([]str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var neighbors []struct{ ID int64 }
 	for rows.Next() {
@@ -190,7 +190,7 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var observations []*domain.Observation
 	for rows.Next() {
@@ -251,7 +251,7 @@ func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*dom
 	if err != nil {
 		return nil, fmt.Errorf("graph: get edges for observation %d: %w", obsID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var edges []*domain.Edge
 	for rows.Next() {

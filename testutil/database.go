@@ -105,7 +105,7 @@ func (db *TestDB) Cleanup() {
 
 	db.closed = true
 
-	if err := db.Manager.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		db.t.Errorf("testutil: close database: %v", err)
 	}
 }

@@ -360,7 +360,7 @@ func TestStore_Save_TopicKeyNormalization(t *testing.T) {
 			}
 
 			// Clean up for next test
-			db.Exec("DELETE FROM observations WHERE id = ?", obs.ID)
+			_, _ = db.Exec("DELETE FROM observations WHERE id = ?", obs.ID)
 			_ = i // avoid unused variable warning
 		})
 	}
@@ -751,7 +751,7 @@ func TestStore_Update_ValidationErrors(t *testing.T) {
 		Title:     "Test",
 		Content:   "Content",
 	}
-	store.Save(ctx, obs)
+	store.Save(ctx, obs) //nolint:errcheck
 
 	tests := []struct {
 		name    string

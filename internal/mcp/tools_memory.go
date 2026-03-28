@@ -1058,6 +1058,7 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 				Title:     title,
 				Content:   learning,
 				Project:   project,
+				Source:    source,
 				Scope:     "project",
 				TopicKey:  fmt.Sprintf("learning/%s", normalizeTopicSegment(title)),
 			}

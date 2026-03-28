@@ -274,7 +274,7 @@ func TestHandleGraph(t *testing.T) {
 	obs2 := saveObs(t, stores, "Graph Obs 2", "demo", "s1")
 
 	// Create edge
-	stores.Graph.CreateEdge(context.Background(), &domain.Edge{
+	stores.Graph.CreateEdge(context.Background(), &domain.Edge{ //nolint:errcheck
 		FromObsID: obs1.ID, ToObsID: obs2.ID, RelationType: "references", Weight: 1.0,
 	})
 

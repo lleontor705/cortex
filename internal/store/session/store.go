@@ -189,7 +189,7 @@ func (s *Store) List(ctx context.Context, project string) ([]*domain.Session, er
 	if err != nil {
 		return nil, fmt.Errorf("session store: list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanSessions(rows)
 }
@@ -220,7 +220,7 @@ func (s *Store) Recent(ctx context.Context, project string, limit int) ([]*domai
 	if err != nil {
 		return nil, fmt.Errorf("session store: recent sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanSessions(rows)
 }
@@ -281,7 +281,7 @@ func (s *Store) RecentWithStats(ctx context.Context, project string, limit int) 
 	if err != nil {
 		return nil, fmt.Errorf("session store: recent sessions with stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*SessionStats
 	for rows.Next() {
@@ -407,7 +407,7 @@ func (s *Store) GetStats(ctx context.Context) (*Stats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session store: list projects: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var project string

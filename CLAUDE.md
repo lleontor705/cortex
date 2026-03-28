@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Cortex is a memory server for AI coding assistants, built as a single Go binary with SQLite + FTS5. It aims for 100% API compatibility with Engram while adding knowledge graph, importance scoring, auto-archival, and optional vector search. Interfaces: MCP server, HTTP API, CLI, TUI.
 
+## Branching Model (Gitflow)
+
+- **`master`** — Production-ready code. Only receives merges from `release/*` or `hotfix/*` branches. Every merge triggers the release pipeline (tests → approval → GoReleaser).
+- **`develop`** — Integration branch. All feature work merges here first.
+- **`feat/*`** — Feature branches, created from `develop`, merged back to `develop` via PR.
+- **`release/*`** — Release prep branches, created from `develop`, merged to both `master` and `develop`.
+- **`hotfix/*`** — Urgent fixes, created from `master`, merged to both `master` and `develop`.
+
+PRs to `develop`: run CI (unit + e2e + lint).
+PRs to `master`: run CI + release pipeline with manual approval gate via `production` environment.
+
 ## Build & Development Commands
 
 ```bash

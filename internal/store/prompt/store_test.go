@@ -632,7 +632,7 @@ func BenchmarkStore_Save(b *testing.B) {
 		_ = store.Save(ctx, prompt)
 	}
 
-	db.Close()
+	_ = db.Close()
 }
 
 func BenchmarkStore_Search(b *testing.B) {
@@ -687,5 +687,5 @@ func BenchmarkStore_Search(b *testing.B) {
 		_, _ = store.Search(ctx, "searchable content", "benchmark-project", 10)
 	}
 
-	db.Close()
+	_ = db.Close()
 }

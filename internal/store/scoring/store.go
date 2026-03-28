@@ -130,7 +130,7 @@ func (s *Store) GetAllScores(ctx context.Context) ([]*domain.ImportanceScore, er
 	if err != nil {
 		return nil, fmt.Errorf("scoring: get all scores: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanImportanceScores(rows)
 }
@@ -166,7 +166,7 @@ func (s *Store) GetTopByScore(ctx context.Context, project string, limit int) ([
 	if err != nil {
 		return nil, fmt.Errorf("scoring: get top by score: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanImportanceScores(rows)
 }
