@@ -26,6 +26,24 @@ var (
 
 	// Symbols: function names, types — FooBar(), type Config, class Service
 	symbolPattern = regexp.MustCompile(`(?:func\s+|type\s+|class\s+|function\s+|def\s+|const\s+|var\s+)([A-Za-z_][A-Za-z0-9_]*)`)
+
+	// SQL tables: FROM users, JOIN orders, INSERT INTO accounts
+	sqlTablePattern = regexp.MustCompile(`(?i)(?:FROM|JOIN|INTO|UPDATE)\s+` + "`?" + `([a-zA-Z_][a-zA-Z0-9_]*)` + "`?")
+
+	// API endpoints: GET /api/users/:id, POST /auth/login
+	endpointPattern = regexp.MustCompile(`(?:GET|POST|PUT|DELETE|PATCH)\s+(/[a-zA-Z0-9/_\-{}:.]+)`)
+
+	// Environment variables: $DATABASE_URL, ${HOME}, $PATH
+	envVarPattern = regexp.MustCompile(`\$\{?([A-Z_][A-Z0-9_]{2,})\}?`)
+
+	// Version references: v1.2.3, Node 18.4, Python 3.11.2, Go 1.26
+	versionPattern = regexp.MustCompile(`(?:^|\s)v(\d+\.\d+(?:\.\d+)?)(?:\s|$|[,;)])|(?:Node|Python|Go|Java|Ruby|Rust)\s+(\d+(?:\.\d+)+)`)
+
+	// CLI flags: --verbose, --output=json, -p
+	cliFlagPattern = regexp.MustCompile(`\s(--[a-z][a-z0-9-]{2,}|-[a-zA-Z])\b`)
+
+	// Error patterns: Error: ECONNREFUSED, panic: runtime error, Exception: NullPointer
+	errorPattern = regexp.MustCompile(`(?:Error|panic|Exception|FATAL):\s*([^\n.]{10,80})`)
 )
 
 // Service handles entity extraction and storage.
@@ -117,7 +135,67 @@ func Extract(obs *domain.Observation) []*domain.EntityLink {
 		}
 	}
 
+	// SQL tables
+	for _, m := range sqlTablePattern.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && !isSQLKeyword(m[1]) {
+			add(domain.EntitySQLTable, m[1])
+		}
+	}
+
+	// API endpoints
+	for _, m := range endpointPattern.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 {
+			add(domain.EntityEndpoint, m[1])
+		}
+	}
+
+	// Environment variables
+	for _, m := range envVarPattern.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && m[1] != "" {
+			add(domain.EntityEnvVar, m[1])
+		}
+	}
+
+	// Version references
+	for _, m := range versionPattern.FindAllStringSubmatch(text, -1) {
+		v := m[1]
+		if v == "" {
+			v = m[2]
+		}
+		if v != "" {
+			add(domain.EntityVersion, v)
+		}
+	}
+
+	// CLI flags
+	for _, m := range cliFlagPattern.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 {
+			add(domain.EntityCLIFlag, strings.TrimSpace(m[1]))
+		}
+	}
+
+	// Error patterns
+	for _, m := range errorPattern.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 {
+			add(domain.EntityError, strings.TrimSpace(m[1]))
+		}
+	}
+
 	return links
+}
+
+// isSQLKeyword returns true for SQL keywords that are not table names.
+func isSQLKeyword(s string) bool {
+	keywords := map[string]bool{
+		"SELECT": true, "WHERE": true, "GROUP": true, "ORDER": true,
+		"HAVING": true, "LIMIT": true, "OFFSET": true, "VALUES": true,
+		"SET": true, "AND": true, "OR": true, "NOT": true, "NULL": true,
+		"AS": true, "ON": true, "IN": true, "IS": true, "BY": true,
+		"ASC": true, "DESC": true, "DISTINCT": true, "EXISTS": true,
+		"BETWEEN": true, "LIKE": true, "CASE": true, "WHEN": true,
+		"THEN": true, "ELSE": true, "END": true, "ALL": true,
+	}
+	return keywords[strings.ToUpper(s)]
 }
 
 // isLikelyFile checks if a string looks like a real file path.

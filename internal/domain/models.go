@@ -131,9 +131,15 @@ type EntityLink struct {
 
 // Entity types
 const (
-	EntityFile    = "file"
-	EntityURL     = "url"
-	EntityPackage = "package"
-	EntitySymbol  = "symbol"
-	EntityConcept = "concept"
+	EntityFile     = "file"
+	EntityURL      = "url"
+	EntityPackage  = "package"
+	EntitySymbol   = "symbol"
+	EntityConcept  = "concept"
+	EntitySQLTable = "sql_table"
+	EntityEndpoint = "endpoint"
+	EntityEnvVar   = "env_var"
+	EntityVersion  = "version"
+	EntityCLIFlag  = "cli_flag"
+	EntityError    = "error"
 )
