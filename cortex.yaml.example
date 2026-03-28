@@ -1,0 +1,59 @@
+# Cortex Configuration Example
+# Copy this file to cortex.yaml or ~/.cortex/config.yaml
+
+# Server identification
+server:
+  name: cortex
+  version: 0.1.0
+
+# Database configuration
+database:
+  # Path to SQLite database file (ignored if in_memory is true)
+  path: cortex.db
+  
+  # Use in-memory database (useful for testing)
+  in_memory: false
+  
+  # SQLite pragma settings for performance optimization
+  pragma:
+    # WAL mode for better concurrent performance
+    journal_mode: WAL
+    
+    # Balance between safety and performance
+    synchronous: NORMAL
+    
+    # Cache size in pages (negative = kilobytes, -64000 = 64MB)
+    cache_size: -64000
+    
+    # Enable foreign key constraints
+    foreign_keys: true
+    
+    # Store temporary tables in memory
+    temp_store: MEMORY
+    
+    # Memory-mapped I/O size (268435456 = 256MB)
+    mmap_size: 268435456
+
+# MCP (Model Context Protocol) server configuration
+mcp:
+  # Enable MCP server
+  enabled: true
+
+# HTTP API server configuration
+http:
+  # Enable HTTP API server
+  enabled: true
+  
+  # Port to listen on
+  port: 8080
+  
+  # Host to bind to (use 0.0.0.0 for all interfaces)
+  host: localhost
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  level: info
+  
+  # Log format: json, text, plain
+  format: json
