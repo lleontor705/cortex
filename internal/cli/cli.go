@@ -20,6 +20,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// Version is set by main at startup from the ldflags-injected value.
+var Version = "dev"
+
 // Run dispatches Cortex CLI commands.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
@@ -32,7 +35,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return 0
 	case "version", "--version", "-v":
-		fmt.Fprintln(stdout, "cortex dev")
+		fmt.Fprintf(stdout, "cortex %s\n", Version)
 		return 0
 	case "search":
 		return runSearch(args[2:], stdout, stderr)
