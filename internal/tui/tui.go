@@ -13,7 +13,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/store/search"
@@ -99,5 +98,3 @@ func truncate(s string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-// Suppress unused import.
-var _ = strings.TrimSpace

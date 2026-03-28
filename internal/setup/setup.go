@@ -322,5 +322,3 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-// Suppress unused import warning.
-var _ = strings.TrimSpace

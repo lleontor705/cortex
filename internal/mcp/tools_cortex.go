@@ -194,7 +194,7 @@ func handleGraph(stores *Stores) server.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "- [%d] %s (%s) — %s\n", obs.ID, obs.Title, obs.Type, truncate(obs.Content, 80))
 		}
 
-		return textResult(sb.String())
+		return textResult("%s", sb.String())
 	}
 }
 
@@ -311,7 +311,7 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 				i+1, r.ID, r.Title, r.Type, r.Rank, truncate(r.Content, 120))
 		}
 
-		return textResult(sb.String())
+		return textResult("%s", sb.String())
 	}
 }
 

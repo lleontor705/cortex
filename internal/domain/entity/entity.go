@@ -16,7 +16,7 @@ import (
 // Extraction patterns
 var (
 	// File paths: src/auth/middleware.ts, internal/store/store.go, ./config.yaml
-	filePattern = regexp.MustCompile(`(?:^|[\s,(])([a-zA-Z0-9_./-]+\.[a-zA-Z]{1,10})(?:[\s,):]|$)`)
+	filePattern = regexp.MustCompile(`(?:^|[\s,(])([a-zA-Z0-9_/-]+\.[a-zA-Z]{1,10})(?:[\s,).;:]|$)`)
 
 	// URLs: https://example.com, http://localhost:8080/api
 	urlPattern = regexp.MustCompile(`https?://[^\s"'>)\]]+`)

@@ -7,11 +7,9 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -372,6 +370,3 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 	return n
 }
 
-// Suppress unused import warnings.
-var _ = strings.TrimSpace
-var _ = fmt.Sprintf

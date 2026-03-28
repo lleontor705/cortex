@@ -54,8 +54,8 @@ func TestRunSetupCodexWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", configPath, err)
 	}
-	if !strings.Contains(string(raw), "command = \"cortex\"") {
-		t.Fatalf("config.toml = %q", string(raw))
+	if !strings.Contains(string(raw), "[mcp_servers.cortex]") {
+		t.Fatalf("config.toml missing [mcp_servers.cortex]: %q", string(raw))
 	}
 }
 
