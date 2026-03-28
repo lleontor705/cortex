@@ -1,11 +1,9 @@
 name: Release
 
 on:
-  pull_request:
+  push:
     branches:
       - master
-    types:
-      - closed
   workflow_dispatch:
     inputs:
       tag:
@@ -17,20 +15,10 @@ permissions:
   contents: write
 
 jobs:
-  # ── Stage 1: Verify merge and run tests ────────────────────────────────
-  check-merge:
-    name: Verify PR Merged
-    runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.merged == true
-    steps:
-      - run: echo "PR was merged or manual dispatch — proceeding."
-
+  # ── Stage 1: Run full test suite ───────────────────────────────────────
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: check-merge
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +34,6 @@ jobs:
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: check-merge
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,7 +49,6 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    needs: check-merge
     steps:
       - name: Checkout
         uses: actions/checkout@v4
