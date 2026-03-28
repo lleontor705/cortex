@@ -59,6 +59,9 @@ type GraphRepository interface {
 
 	// DeleteEdge removes a relationship between observations.
 	DeleteEdge(ctx context.Context, id int64) error
+
+	// GetEdgesForObservation retrieves all edges where the observation is either source or target.
+	GetEdgesForObservation(ctx context.Context, obsID int64) ([]*Edge, error)
 }
 
 // PromptRepository defines the interface for user prompt storage.

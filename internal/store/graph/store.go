@@ -38,9 +38,11 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight)
-		 VALUES (?, ?, ?, ?)`,
+		`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, source, reasoning, valid_from, invalid_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight,
+		edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning),
+		nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -207,6 +209,62 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 // parseTime parses a SQLite datetime string.
 func parseTime(s string) (t time.Time, err error) {
 	return time.Parse(sqliteDatetimeFormat, s)
+}
+
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.Format(sqliteDatetimeFormat)
+}
+
+// GetEdgesForObservation retrieves all edges where the observation is either source or target.
+func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
+	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+	                 valid_from, invalid_at, created_at
+	          FROM edges
+	          WHERE from_obs_id = ? OR to_obs_id = ?
+	          ORDER BY created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, obsID, obsID)
+	if err != nil {
+		return nil, fmt.Errorf("graph: get edges for observation %d: %w", obsID, err)
+	}
+	defer rows.Close()
+
+	var edges []*domain.Edge
+	for rows.Next() {
+		edge := &domain.Edge{}
+		var createdAt string
+		var validFrom, invalidAt sql.NullString
+		if err := rows.Scan(
+			&edge.ID, &edge.FromObsID, &edge.ToObsID, &edge.RelationType, &edge.Weight,
+			&edge.Confidence, &edge.Source, &edge.Reasoning,
+			&validFrom, &invalidAt, &createdAt,
+		); err != nil {
+			return nil, fmt.Errorf("graph: scan edge: %w", err)
+		}
+		edge.CreatedAt, _ = parseTime(createdAt)
+		if validFrom.Valid {
+			t, _ := parseTime(validFrom.String)
+			edge.ValidFrom = &t
+		}
+		if invalidAt.Valid {
+			t, _ := parseTime(invalidAt.String)
+			edge.InvalidAt = &t
+		}
+		edges = append(edges, edge)
+	}
+
+	return edges, rows.Err()
 }
 
 // Ensure Store implements domain.GraphRepository.
