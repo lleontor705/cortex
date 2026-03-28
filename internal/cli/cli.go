@@ -13,10 +13,11 @@ import (
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
-	"github.com/lleontor705/cortex/internal/tui"
 	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/migration"
 	"github.com/lleontor705/cortex/internal/setup"
+	"github.com/lleontor705/cortex/internal/tui"
+	"github.com/lleontor705/cortex/internal/update"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -30,42 +31,62 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Launch update check in background (non-blocking).
+	updateCh := make(chan *update.Result, 1)
+	go func() { updateCh <- update.Check(Version) }()
+
+	// printUpdateNotice drains the channel and prints if newer version found.
+	printUpdateNotice := func() {
+		select {
+		case r := <-updateCh:
+			if r != nil {
+				fmt.Fprintf(stderr, "\nA new version of cortex is available: %s (current: %s)\n%s\n", r.Latest, Version, r.UpdateURL)
+			}
+		default:
+		}
+	}
+
+	var exitCode int
 	switch args[1] {
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return 0
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "cortex %s\n", Version)
+		printUpdateNotice()
 		return 0
-	case "search":
-		return runSearch(args[2:], stdout, stderr)
-	case "save":
-		return runSave(args[2:], stdout, stderr)
-	case "context":
-		return runContext(args[2:], stdout, stderr)
-	case "stats":
-		return runStats(args[2:], stdout, stderr)
-	case "timeline":
-		return runTimeline(args[2:], stdout, stderr)
 	case "mcp":
 		return runMCP(args[2:], stdout, stderr)
-	case "tui":
-		return runTUI(stdout, stderr)
 	case "serve":
 		return runServe(args[2:], stdout, stderr)
+	case "tui":
+		return runTUI(stdout, stderr)
+	case "search":
+		exitCode = runSearch(args[2:], stdout, stderr)
+	case "save":
+		exitCode = runSave(args[2:], stdout, stderr)
+	case "context":
+		exitCode = runContext(args[2:], stdout, stderr)
+	case "stats":
+		exitCode = runStats(args[2:], stdout, stderr)
+	case "timeline":
+		exitCode = runTimeline(args[2:], stdout, stderr)
 	case "setup":
-		return runSetup(args[2:], stdout, stderr)
+		exitCode = runSetup(args[2:], stdout, stderr)
 	case "import":
-		return runImport(args[2:], stdout, stderr)
+		exitCode = runImport(args[2:], stdout, stderr)
 	case "migrate":
-		return runMigrate(args[2:], stdout, stderr)
+		exitCode = runMigrate(args[2:], stdout, stderr)
 	case "export":
-		return runExport(args[2:], stdout, stderr)
+		exitCode = runExport(args[2:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
 		return 1
 	}
+
+	printUpdateNotice()
+	return exitCode
 }
 
 func printUsage(w io.Writer) {
