@@ -1,0 +1,53 @@
+version: 2
+
+builds:
+  - main: ./cmd/cortex
+    binary: cortex
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "cortex_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    include:
+      - "^feat"
+      - "^fix"
+      - "^refactor"
+      - "^perf"
+    exclude:
+      - "^docs"
+      - "^test"
+      - "^ci"
+      - "^chore\\(deps\\)"
+
+brews:
+  - repository:
+      owner: lleontor705
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/lleontor705/cortex"
+    description: "Persistent memory for AI coding agents — knowledge graph, importance scoring, vector search"
+    license: "MIT"
+    commit_msg_template: "chore: update cortex formula to {{ .Tag }}"

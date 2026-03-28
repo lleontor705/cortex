@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cortex",
+  "description": "Persistent memory for AI coding agents — knowledge graph, importance scoring, vector search",
+  "owner": {
+    "name": "lleontor705",
+    "email": ""
+  },
+  "plugins": [
+    {
+      "name": "cortex",
+      "description": "Persistent memory with knowledge graph, importance scoring, compaction recovery, and Memory Protocol. Gives Claude a brain that survives across sessions.",
+      "version": "0.1.0",
+      "author": {
+        "name": "lleontor705"
+      },
+      "source": "./plugin/claude-code",
+      "category": "productivity",
+      "homepage": "https://github.com/lleontor705/cortex"
+    }
+  ]
+}

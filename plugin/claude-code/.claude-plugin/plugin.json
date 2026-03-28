@@ -1,0 +1,11 @@
+{
+  "name": "cortex",
+  "description": "Persistent memory with knowledge graph, importance scoring, and compaction recovery. Gives Claude a brain that survives across sessions.",
+  "version": "0.1.0",
+  "author": {
+    "name": "lleontor705"
+  },
+  "homepage": "https://github.com/lleontor705/cortex",
+  "repository": "https://github.com/lleontor705/cortex",
+  "license": "MIT"
+}
