@@ -12,10 +12,12 @@ Cortex is a memory server for AI coding assistants, built as a single Go binary 
 - **`develop`** — Integration branch. All feature work merges here first.
 - **`feat/*`** — Feature branches, created from `develop`, merged back to `develop` via PR.
 - **`release/*`** — Release prep branches, created from `develop`, merged to both `master` and `develop`.
-- **`hotfix/*`** — Urgent fixes, created from `master`, merged to both `master` and `develop`.
+- **`hotfix/*`** — Urgent fixes, created from `master`, merged to both `master` and `develop` via separate PRs.
 
 PRs to `develop`: run CI (unit + e2e + lint).
 PRs to `master`: run CI + release pipeline with manual approval gate via `production` environment.
+
+Note: No auto-sync of master → develop after release. Since releases come from merging develop into master, they're already in sync. Only hotfixes require manually merging master back to develop.
 
 ## Build & Development Commands
 
