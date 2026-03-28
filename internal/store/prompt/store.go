@@ -113,7 +113,7 @@ func (s *Store) List(ctx context.Context, project string, limit int) ([]*domain.
 	if err != nil {
 		return nil, fmt.Errorf("prompt store: list prompts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanPrompts(rows)
 }
@@ -138,7 +138,7 @@ func (s *Store) ListBySession(ctx context.Context, sessionID string) ([]*domain.
 	if err != nil {
 		return nil, fmt.Errorf("prompt store: list by session: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanPrompts(rows)
 }
@@ -196,7 +196,7 @@ func (s *Store) Search(ctx context.Context, query string, project string, limit 
 	if err != nil {
 		return nil, fmt.Errorf("prompt store: search prompts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanPrompts(rows)
 }

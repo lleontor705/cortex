@@ -152,7 +152,7 @@ func TestTestDB_Query(t *testing.T) {
 	db.MustExec("INSERT INTO query_test (value) VALUES ('a'), ('b'), ('c')")
 
 	rows := db.Query("SELECT value FROM query_test ORDER BY id")
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var values []string
 	for rows.Next() {

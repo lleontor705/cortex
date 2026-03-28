@@ -88,7 +88,7 @@ func (m *Migrator) loadAppliedMigrations() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var version int
@@ -277,7 +277,7 @@ func (m *Migrator) applyMigration(ctx context.Context, migration Migration) erro
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Execute Up SQL
 	if _, err := tx.Exec(migration.UpSQL); err != nil {
@@ -313,7 +313,7 @@ func (m *Migrator) rollbackMigration(ctx context.Context, migration Migration) e
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Execute Down SQL
 	if _, err := tx.Exec(migration.DownSQL); err != nil {

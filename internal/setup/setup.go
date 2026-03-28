@@ -170,7 +170,7 @@ func addClaudeCodeAllowlist(settingsPath string) {
 	if err != nil {
 		return
 	}
-	writeFile(settingsPath, string(out)+"\n")
+	_ = writeFile(settingsPath, string(out)+"\n")
 }
 
 // ─── OpenCode ───────────────────────────────────────────────────────────────
@@ -216,7 +216,7 @@ func installOpenCode(home, bin string) (string, error) {
 				fmt.Sprintf(`return %s`, jsonString(bin)),
 				1,
 			)
-			writeFile(pluginDst, patched)
+			_ = writeFile(pluginDst, patched)
 			break
 		}
 	}
@@ -244,7 +244,7 @@ func installGeminiCLI(home, bin string) (string, error) {
 
 	// Write system prompt with Memory Protocol
 	systemPath := filepath.Join(home, ".gemini", "system.md")
-	writeFile(systemPath, memoryProtocol)
+	_ = writeFile(systemPath, memoryProtocol)
 
 	return configPath, nil
 }
@@ -270,8 +270,8 @@ experimental_compact_prompt_file = "%s"
 	}
 
 	// Write instruction files
-	writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol)
-	writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt)
+	_ = writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol)
+	_ = writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt)
 
 	return configPath, nil
 }

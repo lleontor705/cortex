@@ -779,7 +779,7 @@ func BenchmarkService_Save(b *testing.B) {
 			Project:   "benchmark-project",
 			SessionID: "session-123",
 		}
-		svc.Save(context.Background(), obs)
+		svc.Save(context.Background(), obs) //nolint:errcheck
 	}
 }
 
@@ -794,11 +794,11 @@ func BenchmarkService_Get(b *testing.B) {
 		Project:   "benchmark-project",
 		SessionID: "session-123",
 	}
-	svc.Save(context.Background(), obs)
+	svc.Save(context.Background(), obs) //nolint:errcheck
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		svc.Get(context.Background(), obs.ID)
+		svc.Get(context.Background(), obs.ID) //nolint:errcheck
 	}
 }
 
@@ -814,11 +814,11 @@ func BenchmarkService_List(b *testing.B) {
 			Project:   "benchmark-project",
 			SessionID: "session-123",
 		}
-		svc.Save(context.Background(), obs)
+		svc.Save(context.Background(), obs) //nolint:errcheck
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		svc.List(context.Background(), domain.ObservationFilter{Limit: 20})
+		svc.List(context.Background(), domain.ObservationFilter{Limit: 20}) //nolint:errcheck
 	}
 }

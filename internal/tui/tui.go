@@ -39,12 +39,6 @@ type Model struct {
 	deps         *Deps
 	state        State
 	observations []*domain.Observation
-	cursor       int
-	searchQuery  string
-	selected     *domain.Observation
-	width        int
-	height       int
-	err          error
 }
 
 // New creates a new TUI model.

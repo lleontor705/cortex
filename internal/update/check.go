@@ -50,7 +50,7 @@ func Check(currentVersion string) *Result {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
