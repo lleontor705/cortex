@@ -40,6 +40,15 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithNumber("weight",
 					mcp.Description("Relationship strength 0.0-10.0 (default: 1.0)"),
 				),
+				mcp.WithNumber("confidence",
+					mcp.Description("Confidence in this relationship 0.0-1.0 (default: 1.0)"),
+				),
+				mcp.WithString("source",
+					mcp.Description("Who/what created this edge (e.g. 'ai', 'manual')"),
+				),
+				mcp.WithString("reasoning",
+					mcp.Description("Why this relationship exists"),
+				),
 			),
 			handleRelate(stores),
 		)
@@ -145,12 +154,21 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 		toID := int64(intArg(req, "to_id", 0))
 		relationType := stringArg(req, "relation_type")
 		weight := floatArg(req, "weight", 1.0)
+		confidence := floatArg(req, "confidence", 1.0)
+		source := stringArg(req, "source")
+		reasoning := stringArg(req, "reasoning")
 
 		if fromID == 0 || toID == 0 {
 			return errorResult("from_id and to_id are required")
 		}
 		if relationType == "" {
 			return errorResult("relation_type is required — use: references, relates_to, follows, supersedes, contradicts")
+		}
+		if weight < 0 || weight > 10 {
+			return errorResult("weight must be between 0.0 and 10.0")
+		}
+		if confidence < 0 || confidence > 1 {
+			return errorResult("confidence must be between 0.0 and 1.0")
 		}
 
 		svc := graphdomain.NewService(stores.Graph)
@@ -159,6 +177,9 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 			ToObsID:      toID,
 			RelationType: relationType,
 			Weight:       weight,
+			Confidence:   confidence,
+			Source:       source,
+			Reasoning:    reasoning,
 		}
 
 		if err := svc.CreateEdge(ctx, edge); err != nil {
