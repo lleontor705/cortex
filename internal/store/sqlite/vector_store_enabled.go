@@ -135,7 +135,7 @@ func (s *VectorStore) SearchByVector(ctx context.Context, opts domain.VectorSear
 	if err != nil {
 		return nil, fmt.Errorf("vector store: search query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Calculate similarity for each result
 	results := make([]*domain.VectorSearchResult, 0, opts.Limit)

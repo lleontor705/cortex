@@ -84,7 +84,7 @@ func TestCheckWithServer(t *testing.T) {
 			HTMLURL: "https://github.com/test/release",
 		})
 	}))
-	defer ts.Close()
+	defer ts.Close() //nolint:errcheck
 
 	// Override the check function by calling the logic directly.
 	// We test isNewer separately; this verifies the JSON parsing path.
