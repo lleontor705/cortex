@@ -174,6 +174,14 @@ func (s *Service) applyDefaults(obs *domain.Observation) {
 	if obs.Scope == "" {
 		obs.Scope = domain.ScopeProject
 	}
+
+	if obs.Confidence < 0 || obs.Confidence > 1 {
+		obs.Confidence = 1.0
+	}
+
+	if obs.Source == "" {
+		obs.Source = domain.SourceManual
+	}
 }
 
 // setTimestamps sets CreatedAt and UpdatedAt.
