@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -206,9 +207,13 @@ func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([
 	return observations, rows.Err()
 }
 
-// parseTime parses a SQLite datetime string.
-func parseTime(s string) (t time.Time, err error) {
-	return time.Parse(sqliteDatetimeFormat, s)
+// parseTime parses a SQLite datetime string, logging a warning if it fails.
+func parseTime(s string) (time.Time, error) {
+	t, err := time.Parse(sqliteDatetimeFormat, s)
+	if err != nil && s != "" {
+		log.Printf("graph: failed to parse time %q", s)
+	}
+	return t, err
 }
 
 func nullableString(s string) interface{} {

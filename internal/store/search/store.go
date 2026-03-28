@@ -8,7 +8,9 @@ package search
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -84,8 +86,8 @@ func (s *Store) searchWithTopicKey(ctx context.Context, query string, opts domai
 func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
 	baseQuery := `
 		SELECT 
-			o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id, 
-			o.topic_key, o.created_at, o.updated_at
+			o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
+			o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
 		FROM observations o
 		WHERE o.topic_key = ? AND o.deleted_at IS NULL
 	`
@@ -142,8 +144,8 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 	// Column order in FTS5: title, content, tool_name, type, project, scope, topic_key
 	baseQuery := `
 		SELECT 
-			o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id, 
-			o.topic_key, o.created_at, o.updated_at,
+			o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
+			o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at,
 			bm25(observations_fts, 1.0, 2.0, 0.5, 0.5, 0.5, 0.5, 0.5) as rank
 		FROM observations_fts fts
 		JOIN observations o ON o.id = fts.rowid
@@ -280,11 +282,12 @@ func sortByRRFScore(results []*domain.SearchResult) {
 func (s *Store) scanSearchResult(rows *sql.Rows, rank float64) (*domain.SearchResult, error) {
 	var result domain.SearchResult
 	var createdAtStr, updatedAtStr string
-	var topicKey sql.NullString
+	var topicKey, source, tagsJSON sql.NullString
 
 	err := rows.Scan(
 		&result.ID, &result.Title, &result.Content, &result.Type,
 		&result.Project, &result.Scope, &result.SessionID, &topicKey,
+		&result.Confidence, &source, &tagsJSON,
 		&createdAtStr, &updatedAtStr,
 	)
 	if err != nil {
@@ -294,8 +297,12 @@ func (s *Store) scanSearchResult(rows *sql.Rows, rank float64) (*domain.SearchRe
 	if topicKey.Valid {
 		result.TopicKey = topicKey.String
 	}
-	result.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
-	result.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
+	result.Source = source.String
+	if tagsJSON.Valid {
+		json.Unmarshal([]byte(tagsJSON.String), &result.Tags)
+	}
+	result.CreatedAt = parseSearchTime(createdAtStr)
+	result.UpdatedAt = parseSearchTime(updatedAtStr)
 	result.Rank = rank
 
 	return &result, nil
@@ -305,11 +312,12 @@ func (s *Store) scanSearchResult(rows *sql.Rows, rank float64) (*domain.SearchRe
 func (s *Store) scanSearchResultWithRank(rows *sql.Rows, rank *float64) (*domain.SearchResult, error) {
 	var result domain.SearchResult
 	var createdAtStr, updatedAtStr string
-	var topicKey sql.NullString
+	var topicKey, source, tagsJSON sql.NullString
 
 	err := rows.Scan(
 		&result.ID, &result.Title, &result.Content, &result.Type,
 		&result.Project, &result.Scope, &result.SessionID, &topicKey,
+		&result.Confidence, &source, &tagsJSON,
 		&createdAtStr, &updatedAtStr, rank,
 	)
 	if err != nil {
@@ -319,8 +327,12 @@ func (s *Store) scanSearchResultWithRank(rows *sql.Rows, rank *float64) (*domain
 	if topicKey.Valid {
 		result.TopicKey = topicKey.String
 	}
-	result.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
-	result.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
+	result.Source = source.String
+	if tagsJSON.Valid {
+		json.Unmarshal([]byte(tagsJSON.String), &result.Tags)
+	}
+	result.CreatedAt = parseSearchTime(createdAtStr)
+	result.UpdatedAt = parseSearchTime(updatedAtStr)
 
 	return &result, nil
 }
@@ -382,6 +394,20 @@ func normalizeScope(scope string) string {
 	default:
 		return scope
 	}
+}
+
+// parseSearchTime parses a time string, logging a warning if it fails.
+func parseSearchTime(s string) time.Time {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t
+	}
+	if s != "" {
+		log.Printf("search: failed to parse time %q", s)
+	}
+	return time.Time{}
 }
 
 // Ensure Store implements domain.SearchRepository
