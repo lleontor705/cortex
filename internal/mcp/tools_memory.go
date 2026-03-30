@@ -1187,13 +1187,15 @@ func hasAny(text string, words ...string) bool {
 }
 
 // normalizeTopicSegment converts a string into a URL-safe slug.
+// ⚡ Bolt Optimization: Use pre-compiled regex to avoid compilation overhead on every call
+var normalizeTopicPattern = regexp.MustCompile(`[^a-z0-9]+`)
+
 func normalizeTopicSegment(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	if v == "" {
 		return ""
 	}
-	re := regexp.MustCompile(`[^a-z0-9]+`)
-	v = re.ReplaceAllString(v, " ")
+	v = normalizeTopicPattern.ReplaceAllString(v, " ")
 	v = strings.Join(strings.Fields(v), "-")
 	if len(v) > 100 {
 		v = v[:100]
@@ -1203,8 +1205,18 @@ func normalizeTopicSegment(s string) string {
 
 // ─── Passive Capture: Learning Extraction ────────────────────────────────────
 
-var learningHeaderPattern = regexp.MustCompile(
-	`(?im)^#{2,3}\s+(?:Aprendizajes(?:\s+Clave)?|Key\s+Learnings?|Learnings?):?\s*$`,
+// ⚡ Bolt Optimization: Pre-compile all regex patterns used in parsing to avoid repeated
+// compilation overhead during text processing.
+var (
+	learningHeaderPattern = regexp.MustCompile(
+		`(?im)^#{2,3}\s+(?:Aprendizajes(?:\s+Clave)?|Key\s+Learnings?|Learnings?):?\s*$`,
+	)
+	nextHeaderPattern     = regexp.MustCompile(`\n#{1,3} `)
+	numberedListPattern   = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`)
+	bulletListPattern     = regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`)
+	markdownBoldPattern   = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	markdownCodePattern   = regexp.MustCompile("`([^`]+)`")
+	markdownItalicPattern = regexp.MustCompile(`\*([^*]+)\*`)
 )
 
 const (
@@ -1225,14 +1237,14 @@ func extractLearnings(text string) []string {
 		sectionText := text[sectionStart:]
 
 		// Cut off at next major section header
-		if nextHeader := regexp.MustCompile(`\n#{1,3} `).FindStringIndex(sectionText); nextHeader != nil {
+		if nextHeader := nextHeaderPattern.FindStringIndex(sectionText); nextHeader != nil {
 			sectionText = sectionText[:nextHeader[0]]
 		}
 
 		var learnings []string
 
 		// Try numbered items: "1. text" or "1) text"
-		numbered := regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+		numbered := numberedListPattern.FindAllStringSubmatch(sectionText, -1)
 		if len(numbered) > 0 {
 			for _, m := range numbered {
 				cleaned := cleanMarkdown(m[1])
@@ -1244,7 +1256,7 @@ func extractLearnings(text string) []string {
 
 		// Fall back to bullet items: "- text" or "* text"
 		if len(learnings) == 0 {
-			bullets := regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+			bullets := bulletListPattern.FindAllStringSubmatch(sectionText, -1)
 			for _, m := range bullets {
 				cleaned := cleanMarkdown(m[1])
 				if len(cleaned) >= minLearningLength && len(strings.Fields(cleaned)) >= minLearningWords {
@@ -1263,8 +1275,8 @@ func extractLearnings(text string) []string {
 
 // cleanMarkdown strips basic markdown formatting and collapses whitespace.
 func cleanMarkdown(text string) string {
-	text = regexp.MustCompile(`\*\*([^*]+)\*\*`).ReplaceAllString(text, "$1") // bold
-	text = regexp.MustCompile("`([^`]+)`").ReplaceAllString(text, "$1")       // inline code
-	text = regexp.MustCompile(`\*([^*]+)\*`).ReplaceAllString(text, "$1")     // italic
+	text = markdownBoldPattern.ReplaceAllString(text, "$1") // bold
+	text = markdownCodePattern.ReplaceAllString(text, "$1") // inline code
+	text = markdownItalicPattern.ReplaceAllString(text, "$1") // italic
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
