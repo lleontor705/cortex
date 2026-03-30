@@ -24,26 +24,31 @@ var (
 	// Go/Python/JS packages: github.com/foo/bar, @scope/package, from 'react'
 	packagePattern = regexp.MustCompile(`(?:github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|@[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|from\s+['"]([a-zA-Z0-9@/_.-]+)['"])`)
 
+	// ⚡ Bolt Optimization: Added word boundaries (\b) to all applicable regex patterns
+	// This prevents the Go regexp engine from trying to backtrack at every single byte position
+	// when searching for keywords, significantly improving overall matching performance and
+	// reducing CPU time spent in regexp.tryBacktrack. It also prevents false positives.
+
 	// Symbols: function names, types — FooBar(), type Config, class Service
-	symbolPattern = regexp.MustCompile(`(?:func\s+|type\s+|class\s+|function\s+|def\s+|const\s+|var\s+)([A-Za-z_][A-Za-z0-9_]*)`)
+	symbolPattern = regexp.MustCompile(`\b(?:func|type|class|function|def|const|var)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 	// SQL tables: FROM users, JOIN orders, INSERT INTO accounts
-	sqlTablePattern = regexp.MustCompile(`(?i)(?:FROM|JOIN|INTO|UPDATE)\s+` + "`?" + `([a-zA-Z_][a-zA-Z0-9_]*)` + "`?")
+	sqlTablePattern = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+` + "`?" + `([a-zA-Z_][a-zA-Z0-9_]*)` + "`?")
 
 	// API endpoints: GET /api/users/:id, POST /auth/login
-	endpointPattern = regexp.MustCompile(`(?:GET|POST|PUT|DELETE|PATCH)\s+(/[a-zA-Z0-9/_\-{}:.]+)`)
+	endpointPattern = regexp.MustCompile(`\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[a-zA-Z0-9/_\-{}:.]+)`)
 
 	// Environment variables: $DATABASE_URL, ${HOME}, $PATH
-	envVarPattern = regexp.MustCompile(`\$\{?([A-Z_][A-Z0-9_]{2,})\}?`)
+	envVarPattern = regexp.MustCompile(`\$([A-Z_][A-Z0-9_]{2,})|\$\{([A-Z_][A-Z0-9_]{2,})\}`)
 
 	// Version references: v1.2.3, Node 18.4, Python 3.11.2, Go 1.26
-	versionPattern = regexp.MustCompile(`(?:^|\s)v(\d+\.\d+(?:\.\d+)?)(?:\s|$|[,;)])|(?:Node|Python|Go|Java|Ruby|Rust)\s+(\d+(?:\.\d+)+)`)
+	versionPattern = regexp.MustCompile(`\bv(\d+\.\d+(?:\.\d+)?)\b|\b(?:Node|Python|Go|Java|Ruby|Rust)\s+(\d+(?:\.\d+)+)`)
 
 	// CLI flags: --verbose, --output=json, -p
 	cliFlagPattern = regexp.MustCompile(`\s(--[a-z][a-z0-9-]{2,}|-[a-zA-Z])\b`)
 
 	// Error patterns: Error: ECONNREFUSED, panic: runtime error, Exception: NullPointer
-	errorPattern = regexp.MustCompile(`(?:Error|panic|Exception|FATAL):\s*([^\n.]{10,80})`)
+	errorPattern = regexp.MustCompile(`\b(?:Error|panic|Exception|FATAL):\s*([^\n.]{10,80})`)
 )
 
 // Service handles entity extraction and storage.
@@ -151,8 +156,14 @@ func Extract(obs *domain.Observation) []*domain.EntityLink {
 
 	// Environment variables
 	for _, m := range envVarPattern.FindAllStringSubmatch(text, -1) {
+		v := ""
 		if len(m) > 1 && m[1] != "" {
-			add(domain.EntityEnvVar, m[1])
+			v = m[1]
+		} else if len(m) > 2 && m[2] != "" {
+			v = m[2]
+		}
+		if v != "" {
+			add(domain.EntityEnvVar, v)
 		}
 	}
 
