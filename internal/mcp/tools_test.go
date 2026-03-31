@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -76,6 +77,10 @@ func setupTestStores(t *testing.T) *Stores {
 				weight REAL NOT NULL DEFAULT 1.0,
 				confidence REAL NOT NULL DEFAULT 1.0,
 				source TEXT, reasoning TEXT, valid_from TEXT, invalid_at TEXT,
+				evolution_id INTEGER,
+				evolution_type TEXT NOT NULL DEFAULT 'original',
+				fact_state TEXT NOT NULL DEFAULT 'current',
+				change_reason TEXT,
 				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				FOREIGN KEY (from_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
 				FOREIGN KEY (to_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
@@ -99,18 +104,35 @@ func setupTestStores(t *testing.T) *Stores {
 			END;`,
 		DownSQL: `DROP TRIGGER IF EXISTS importance_init; DROP TABLE IF EXISTS importance_scores;`,
 	})
+	registry.Register(migration.Migration{
+		Version: 5,
+		Name:    "temporal_snapshots",
+		UpSQL: `
+			CREATE TABLE temporal_snapshots (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				snapshot_key TEXT NOT NULL,
+				timestamp DATETIME NOT NULL,
+				description TEXT,
+				observation_count INTEGER NOT NULL DEFAULT 0,
+				edge_count INTEGER NOT NULL DEFAULT 0,
+				root_observation_id INTEGER,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);`,
+		DownSQL: `DROP TABLE IF EXISTS temporal_snapshots;`,
+	})
 
 	testDB := testutil.NewTestDBWithMigrations(t, registry)
 	db := testDB.DB()
 
 	return &Stores{
-		Observations: sqlitestore.NewStore(db),
-		Sessions:     session.NewStore(db),
-		Search:       search.NewStore(db),
-		Prompts:      prompt.NewStore(db),
-		Graph:        graphstore.NewStore(db),
-		Scoring:      scoringstore.NewStore(db),
-		Vectors:      sqlitestore.NewVectorStore(db),
+		Observations:      sqlitestore.NewStore(db),
+		Sessions:          session.NewStore(db),
+		Search:            search.NewStore(db),
+		Prompts:           prompt.NewStore(db),
+		Graph:             graphstore.NewStore(db),
+		Scoring:           scoringstore.NewStore(db),
+		Vectors:           sqlitestore.NewVectorStore(db),
+		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(db),
 	}
 }
 
@@ -178,7 +200,7 @@ func resultText(result *mcp.CallToolResult) string {
 	return ""
 }
 
-// ─── Engram-compatible tool tests ───────────────────────────────────────────
+// --- Engram-compatible tool tests -------------------------------------------
 
 func TestHandleSave(t *testing.T) {
 	stores := setupTestStores(t)
@@ -214,6 +236,72 @@ func TestHandleSearch(t *testing.T) {
 	if !strings.Contains(text, "JWT auth middleware") {
 		t.Errorf("expected to find 'JWT auth middleware', got %q", text)
 	}
+	if !strings.Contains(text, "explain:") {
+		t.Errorf("expected explainability output, got %q", text)
+	}
+}
+
+func TestHandleTimeline_IncludesRevisionHistory(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+
+	obs := saveObs(t, stores, "Original Title", "demo", "s1")
+	time.Sleep(10 * time.Millisecond)
+	obs.Title = "Updated Title"
+	obs.Content = "Updated content"
+	obs.TopicKey = "architecture/auth"
+	if err := stores.Observations.Update(context.Background(), obs); err != nil {
+		t.Fatalf("update observation: %v", err)
+	}
+
+	handler := handleTimeline(stores)
+	result := callTool(t, handler, map[string]interface{}{
+		"observation_id": float64(obs.ID),
+	})
+
+	text := resultText(result)
+	if !strings.Contains(text, "--- Revision History ---") {
+		t.Fatalf("expected revision history in timeline, got %q", text)
+	}
+	if !strings.Contains(text, "Original Title") {
+		t.Fatalf("expected original title in revision history, got %q", text)
+	}
+	if !strings.Contains(text, "[update]") {
+		t.Fatalf("expected update reason in revision history, got %q", text)
+	}
+}
+
+func TestHandleRevisionHistory(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+
+	obs := saveObs(t, stores, "Original Title", "demo", "s1")
+	time.Sleep(10 * time.Millisecond)
+	obs.Title = "Updated Title"
+	obs.Content = "Updated content"
+	if err := stores.Observations.Update(context.Background(), obs); err != nil {
+		t.Fatalf("update observation: %v", err)
+	}
+
+	handler := handleRevisionHistory(stores)
+	result := callTool(t, handler, map[string]interface{}{
+		"observation_id": float64(obs.ID),
+		"limit":          float64(5),
+	})
+
+	var history []map[string]any
+	if err := json.Unmarshal([]byte(resultText(result)), &history); err != nil {
+		t.Fatalf("expected JSON revision history, got error %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 revision entry, got %d", len(history))
+	}
+	if history[0]["reason"] != "update" {
+		t.Fatalf("expected reason update, got %#v", history[0]["reason"])
+	}
+	if history[0]["title"] != "Original Title" {
+		t.Fatalf("expected original title, got %#v", history[0]["title"])
+	}
 }
 
 func TestHandleDelete(t *testing.T) {
@@ -246,7 +334,7 @@ func TestHandleSave_MissingTitle(t *testing.T) {
 	}
 }
 
-// ─── Cortex-exclusive tool tests ────────────────────────────────────────────
+// --- Cortex-exclusive tool tests --------------------------------------------
 
 func TestHandleRelate(t *testing.T) {
 	stores := setupTestStores(t)
@@ -351,6 +439,41 @@ func TestHandleRelate_MissingParams(t *testing.T) {
 	handler := handleRelate(stores)
 	result := callTool(t, handler, map[string]interface{}{})
 
+	text := resultText(result)
+	if !strings.Contains(text, "required") {
+		t.Errorf("expected error about required params, got %q", text)
+	}
+}
+
+func TestHandleMergeProjects(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+
+	// Save observations to different project variants
+	saveObs(t, stores, "Auth from MyApp", "myapp", "s1")
+	saveObs(t, stores, "Auth from MYAPP", "MYAPP", "s1")
+	saveObs(t, stores, "Auth from my-app", "my-app", "s1")
+
+	handler := handleMergeProjects(stores)
+	result := callTool(t, handler, map[string]interface{}{
+		"from": "MYAPP, my-app",
+		"to":   "myapp",
+	})
+
+	text := resultText(result)
+	if !strings.Contains(text, "myapp") {
+		t.Errorf("expected canonical name in result, got %q", text)
+	}
+	if !strings.Contains(text, "observations") {
+		t.Errorf("expected observations count in result, got %q", text)
+	}
+}
+
+func TestHandleMergeProjects_MissingParams(t *testing.T) {
+	stores := setupTestStores(t)
+	handler := handleMergeProjects(stores)
+
+	result := callTool(t, handler, map[string]interface{}{})
 	text := resultText(result)
 	if !strings.Contains(text, "required") {
 		t.Errorf("expected error about required params, got %q", text)

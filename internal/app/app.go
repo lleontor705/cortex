@@ -11,8 +11,8 @@ import (
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/database"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
-	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/internal/store/bundle"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/internal/store/graph"
 	"github.com/lleontor705/cortex/internal/store/prompt"
@@ -33,7 +33,7 @@ type App struct {
 	Config         *config.Config
 	DB             *database.Manager
 	Migrator       *migration.Migrator
-	Stores         *mcp.Stores
+	Stores         *bundle.Stores
 	archivalCancel context.CancelFunc
 }
 
@@ -75,15 +75,18 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("app: apply migrations: %w", err)
 	}
 
-	stores := &mcp.Stores{
-		Observations: sqlitestore.NewStore(manager.DB()),
-		Sessions:     session.NewStore(manager.DB()),
-		Search:       search.NewStore(manager.DB()),
-		Prompts:      prompt.NewStore(manager.DB()),
-		Graph:        graphstore.NewStore(manager.DB()),
-		Scoring:      scoringstore.NewStore(manager.DB()),
-		Vectors:      sqlitestore.NewVectorStore(manager.DB()),
-		Entities:     entitystore.NewStore(manager.DB()),
+	stores := &bundle.Stores{
+		Observations:      sqlitestore.NewStore(manager.DB()),
+		Sessions:          session.NewStore(manager.DB()),
+		Search:            search.NewStore(manager.DB()),
+		Prompts:           prompt.NewStore(manager.DB()),
+		Graph:             graphstore.NewStore(manager.DB()),
+		Scoring:           scoringstore.NewStore(manager.DB()),
+		Vectors:           sqlitestore.NewVectorStore(manager.DB()),
+		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(manager.DB()),
+		Entities:          entitystore.NewStore(manager.DB()),
+		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
+		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
 	}
 
 	a := &App{

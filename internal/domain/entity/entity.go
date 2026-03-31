@@ -24,7 +24,7 @@ var (
 	// Go/Python/JS packages: github.com/foo/bar, @scope/package, from 'react'
 	packagePattern = regexp.MustCompile(`(?:github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|@[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|from\s+['"]([a-zA-Z0-9@/_.-]+)['"])`)
 
-	// Symbols: function names, types — FooBar(), type Config, class Service
+	// Symbols: function names, types -- FooBar(), type Config, class Service
 	symbolPattern = regexp.MustCompile(`(?:func\s+|type\s+|class\s+|function\s+|def\s+|const\s+|var\s+)([A-Za-z_][A-Za-z0-9_]*)`)
 
 	// SQL tables: FROM users, JOIN orders, INSERT INTO accounts
@@ -202,7 +202,7 @@ func isSQLKeyword(s string) bool {
 func isLikelyFile(s string) bool {
 	// Must contain at least one path separator or be a dotfile
 	if !strings.Contains(s, "/") && !strings.HasPrefix(s, ".") {
-		// Single filename — check extension
+		// Single filename -- check extension
 		parts := strings.Split(s, ".")
 		if len(parts) < 2 {
 			return false

@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ObservationRepository defines the interface for observation persistence operations.
 // Implementations must handle CRUD operations and support filtering.

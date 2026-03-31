@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -492,6 +493,281 @@ func TestSanitizeFTS(t *testing.T) {
 	}
 }
 
+func TestSearchStore_ReturnsPreviewInsteadOfFullContent(t *testing.T) {
+	db := setupTestDB(t)
+	longContent := strings.Repeat("prefix ", 40) + "authentication keyword " + strings.Repeat("suffix ", 40)
+	insertTestObservation(t, db, 1, "Long", longContent, "manual", "test-project", "project")
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "authentication", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Content == longContent {
+		t.Fatal("expected search to return preview content instead of full content")
+	}
+	if !strings.Contains(strings.ToLower(results[0].Content), "authentication") {
+		t.Fatal("expected preview to keep the matching term")
+	}
+}
+
+func TestSearchStore_SearchScoreBreakdown(t *testing.T) {
+	t.Run("keyword results expose bm25 breakdown", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 1, "JWT Authentication", "Implement JWT auth", "decision", "test-project", "project")
+
+		store := NewStore(db)
+		results, err := store.Search(context.Background(), "JWT", domain.SearchOptions{Project: "test-project"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].ScoreBreakdown.Strategy != "enhanced" {
+			t.Fatalf("expected enhanced strategy, got %q", results[0].ScoreBreakdown.Strategy)
+		}
+		if results[0].ScoreBreakdown.KeywordBM25 == 0 {
+			t.Fatal("expected keyword bm25 score to be populated")
+		}
+	})
+
+	t.Run("hybrid results expose fusion and topic breakdown", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservationWithTopicKey(t, db, 1, "Auth Config", "JWT settings", "decision", "test-project", "project", "auth/setup")
+		insertTestObservation(t, db, 2, "Auth Guide", "JWT authentication guide", "manual", "test-project", "project")
+
+		store := NewStore(db)
+		results, err := store.Search(context.Background(), "auth/setup", domain.SearchOptions{Project: "test-project"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected hybrid results, got none")
+		}
+		if results[0].ScoreBreakdown.Strategy != "enhanced" {
+			t.Fatalf("expected enhanced strategy, got %q", results[0].ScoreBreakdown.Strategy)
+		}
+		if results[0].ScoreBreakdown.FusionScore == 0 {
+			t.Fatal("expected fusion score to be populated")
+		}
+		if !results[0].ScoreBreakdown.TopicKeyExact {
+			t.Fatal("expected topic key exact flag on fused topic result")
+		}
+	})
+}
+
+// TestSearchEnhanced_RecencyBoost tests that recently accessed observations rank higher.
+func TestSearchEnhanced_RecencyBoost(t *testing.T) {
+	db := setupTestDB(t)
+
+	insertTestObservation(t, db, 1, "Old auth design", "Authentication design from long ago", "decision", "test-project", "project")
+	insertTestObservation(t, db, 2, "New auth design", "Authentication design recently accessed", "decision", "test-project", "project")
+
+	// Old: last accessed 30 days ago
+	insertImportanceScore(t, db, 1, 2.0, 5, time.Now().Add(-30*24*time.Hour))
+	// New: last accessed 1 hour ago
+	insertImportanceScore(t, db, 2, 2.0, 5, time.Now().Add(-1*time.Hour))
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "auth", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+
+	// New auth (recently accessed) should rank higher
+	if results[0].ID != 2 {
+		t.Errorf("expected recently accessed obs (ID=2) to rank first, got ID=%d", results[0].ID)
+	}
+
+	// Verify RecencyBoost is populated in ScoreBreakdown
+	foundBoost := false
+	for _, r := range results {
+		if r.ScoreBreakdown.RecencyBoost > 0 {
+			foundBoost = true
+			break
+		}
+	}
+	if !foundBoost {
+		t.Error("expected RecencyBoost to be populated in at least one result")
+	}
+}
+
+// TestSearchEnhanced_TopicKeyExpansion tests that topic key expansion finds related observations.
+func TestSearchEnhanced_TopicKeyExpansion(t *testing.T) {
+	db := setupTestDB(t)
+
+	insertTestObservationWithTopicKey(t, db, 1, "Auth model", "Architecture of auth", "architecture", "test-project", "project", "architecture/auth-model")
+	insertTestObservationWithTopicKey(t, db, 2, "Auth bug", "Token leak found", "bugfix", "test-project", "project", "bug/auth-token-leak")
+	insertTestObservation(t, db, 3, "auth test", "Unit test for auth", "manual", "test-project", "project")
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "auth", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 results, got %d", len(results))
+	}
+
+	// Verify topic key expansion flag is set on at least one result
+	foundExpansion := false
+	for _, r := range results {
+		if r.ScoreBreakdown.TopicKeyExpand {
+			foundExpansion = true
+			break
+		}
+	}
+	if !foundExpansion {
+		t.Error("expected TopicKeyExpand=true on at least one result")
+	}
+}
+
+// TestSearchEnhanced_ImportanceRanking tests that importance scores influence ranking.
+func TestSearchEnhanced_ImportanceRanking(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Use identical titles and content so BM25 scores are equal -- importance breaks the tie
+	insertTestObservation(t, db, 1, "database guide", "A guide about database usage", "manual", "test-project", "project")
+	insertTestObservation(t, db, 2, "database guide", "A guide about database usage", "manual", "test-project", "project")
+	insertTestObservation(t, db, 3, "database guide", "A guide about database usage", "manual", "test-project", "project")
+
+	// Set importance scores: obs1=4.0 (highest), obs2=1.0, obs3=0.0
+	insertImportanceScore(t, db, 1, 4.0, 20, time.Now().Add(-1*time.Hour))
+	insertImportanceScore(t, db, 2, 1.0, 2, time.Now().Add(-1*time.Hour))
+	insertImportanceScore(t, db, 3, 0.0, 0, time.Now().Add(-1*time.Hour))
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "database", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) < 3 {
+		t.Fatalf("expected at least 3 results, got %d", len(results))
+	}
+
+	// Verify ImportanceRank is populated in at least one result
+	foundImportance := false
+	for _, r := range results {
+		if r.ScoreBreakdown.ImportanceRank > 0 {
+			foundImportance = true
+			break
+		}
+	}
+	if !foundImportance {
+		t.Error("expected ImportanceRank to be populated in at least one result")
+	}
+
+	// The highest importance obs (ID=1, score=4.0) should rank above the lowest (ID=3, score=0.0)
+	rank1, rank3 := -1, -1
+	for i, r := range results {
+		if r.ID == 1 {
+			rank1 = i
+		}
+		if r.ID == 3 {
+			rank3 = i
+		}
+	}
+	if rank1 >= 0 && rank3 >= 0 && rank1 > rank3 {
+		t.Errorf("expected obs1 (importance=4.0) to rank above obs3 (importance=0.0), but rank1=%d, rank3=%d", rank1, rank3)
+	}
+}
+
+// TestSearchEnhanced_GraphExpansion tests that graph neighbors of top results are included.
+func TestSearchEnhanced_GraphExpansion(t *testing.T) {
+	db := setupTestDB(t)
+
+	insertTestObservation(t, db, 1, "JWT auth", "JWT authentication implementation", "decision", "test-project", "project")
+	insertTestObservation(t, db, 2, "Session tokens", "Session token management", "decision", "test-project", "project")
+	insertTestObservation(t, db, 3, "Database config", "Database configuration settings", "config", "test-project", "project")
+
+	// Create edge: obs1 -> obs2 (references)
+	insertEdge(t, db, 1, 2, "references")
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "JWT", domain.SearchOptions{
+		Project:     "test-project",
+		Limit:       10,
+		GraphExpand: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should find obs1 (direct match) and obs2 (via graph expansion)
+	foundIDs := make(map[int64]bool)
+	for _, r := range results {
+		foundIDs[r.ID] = true
+	}
+
+	if !foundIDs[1] {
+		t.Error("expected obs1 (JWT auth, direct match) in results")
+	}
+	if !foundIDs[2] {
+		t.Error("expected obs2 (Session tokens, via graph expansion) in results")
+	}
+	if foundIDs[3] {
+		t.Error("expected obs3 (Database config, no connection) NOT in results")
+	}
+}
+
+// TestSearchEnhanced_PRF tests pseudo-relevance feedback expanding recall.
+func TestSearchEnhanced_PRF(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Insert observations with overlapping vocabulary
+	insertTestObservation(t, db, 1, "JWT authentication", "JWT token authentication implementation details", "decision", "test-project", "project")
+	insertTestObservation(t, db, 2, "Auth middleware setup", "Authentication middleware token validation pipeline", "decision", "test-project", "project")
+	insertTestObservation(t, db, 3, "Token validation logic", "Token authentication validation logic implementation", "decision", "test-project", "project")
+	insertTestObservation(t, db, 4, "Session management", "Session authentication token management system", "decision", "test-project", "project")
+	insertTestObservation(t, db, 5, "Unrelated database query", "Database query optimization techniques", "config", "test-project", "project")
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "JWT", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// JWT authentication should be found (direct match)
+	foundIDs := make(map[int64]bool)
+	for _, r := range results {
+		foundIDs[r.ID] = true
+	}
+
+	if !foundIDs[1] {
+		t.Error("expected obs1 (JWT authentication) in results")
+	}
+
+	// PRF should help find related auth/token observations
+	// At minimum, obs1 should be present; PRF may expand to find obs2, obs3, or obs4
+	// Unrelated database query (obs5) should ideally not appear
+	t.Logf("PRF results: found %d results, IDs: %v", len(results), foundIDs)
+	if foundIDs[5] && !foundIDs[2] && !foundIDs[3] {
+		t.Error("PRF found unrelated database query but missed related auth observations")
+	}
+}
+
 // TestNormalizeScope tests scope normalization.
 func TestNormalizeScope(t *testing.T) {
 	tests := []struct {
@@ -538,6 +814,18 @@ func setupTestDB(t *testing.T) *sql.DB {
 		Name:    "add_fts",
 		UpSQL:   getFTSMigrationSQL(),
 		DownSQL: getFTSMigrationDownSQL(),
+	})
+	registry.Register(migration.Migration{
+		Version: 3,
+		Name:    "add_importance_scores",
+		UpSQL:   getImportanceScoresMigrationSQL(),
+		DownSQL: "DROP TABLE IF EXISTS importance_scores;",
+	})
+	registry.Register(migration.Migration{
+		Version: 4,
+		Name:    "add_edges",
+		UpSQL:   getEdgesMigrationSQL(),
+		DownSQL: "DROP TABLE IF EXISTS edges;",
 	})
 
 	// Apply migrations
@@ -746,4 +1034,61 @@ DROP TRIGGER IF EXISTS obs_fts_delete;
 DROP TRIGGER IF EXISTS obs_fts_insert;
 DROP TABLE IF EXISTS observations_fts;
 `
+}
+
+func getImportanceScoresMigrationSQL() string {
+	return `
+CREATE TABLE IF NOT EXISTS importance_scores (
+    observation_id INTEGER PRIMARY KEY,
+    score REAL NOT NULL DEFAULT 0.0,
+    access_count INTEGER NOT NULL DEFAULT 0,
+    last_accessed DATETIME,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+`
+}
+
+func getEdgesMigrationSQL() string {
+	return `
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_obs_id INTEGER NOT NULL,
+    to_obs_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1.0,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source TEXT, reasoning TEXT, valid_from TEXT, invalid_at TEXT,
+    evolution_id INTEGER, evolution_type TEXT NOT NULL DEFAULT 'original',
+    fact_state TEXT NOT NULL DEFAULT 'current', change_reason TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (from_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
+    UNIQUE(from_obs_id, to_obs_id, relation_type)
+);
+`
+}
+
+func insertImportanceScore(t *testing.T, db *sql.DB, obsID int64, score float64, accessCount int, lastAccessed time.Time) {
+	t.Helper()
+
+	_, err := db.Exec(`
+		INSERT INTO importance_scores (observation_id, score, access_count, last_accessed, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, obsID, score, accessCount, lastAccessed.Format(time.RFC3339), time.Now().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("insert importance score: %v", err)
+	}
+}
+
+func insertEdge(t *testing.T, db *sql.DB, fromID, toID int64, relationType string) {
+	t.Helper()
+
+	_, err := db.Exec(`
+		INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, created_at)
+		VALUES (?, ?, ?, 1.0, 1.0, ?)
+	`, fromID, toID, relationType, time.Now().Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("insert edge: %v", err)
+	}
 }

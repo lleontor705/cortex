@@ -98,7 +98,7 @@ func (s *TemporalService) GetEvolutionPath(ctx context.Context, edgeID int64) ([
 	// Filter and return evolution path in chronological order
 	var evolutionPath []*domain.Edge
 	for _, e := range allEdges {
-		if e.EvolutionID != nil && *e.EvolutionID == edge.EvolutionID {
+		if e.EvolutionID != nil && edge.EvolutionID != nil && *e.EvolutionID == *edge.EvolutionID {
 			evolutionPath = append(evolutionPath, e)
 		}
 	}
@@ -190,18 +190,20 @@ func (s *TemporalService) CreateTemporalSnapshot(ctx context.Context, snapshotKe
 		Description:     description,
 		ObservationCount: obsCount,
 		EdgeCount:       edgeCount,
-		RootObservationID: &rootObsID,
+		RootObservationID: rootObsID,
 	}
 	
-	return s.snapshotRepo.CreateSnapshot(ctx, snapshot)
+	if err := s.snapshotRepo.CreateSnapshot(ctx, snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 // GetTemporalRelevant retrieves observations relevant at a specific time point,
 // respecting temporal validity and fact evolution.
 func (s *TemporalService) GetTemporalRelevant(ctx context.Context, obsID int64, at time.Time, depth int) ([]*domain.Observation, error) {
 	// Get edges valid at the specified time
-	temporalEdges, err := s.GetTemporalEdges(ctx, obsID, at)
-	if err != nil {
+	if _, err := s.GetTemporalEdges(ctx, obsID, at); err != nil {
 		return nil, err
 	}
 	

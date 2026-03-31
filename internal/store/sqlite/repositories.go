@@ -1,15 +1,14 @@
-// Package store provides concrete implementations of repository interfaces
+// Package sqlite provides concrete implementations of repository interfaces
 // for SQLite-based persistence in Cortex.
 //
 // This package contains the actual database implementations that bridge
 // the domain models with SQLite storage, implementing all the repository
 // interfaces defined in the domain package.
-package store
+package sqlite
 
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -441,7 +440,7 @@ func (r *TemporalSnapshotRepository) GetByID(ctx context.Context, id int64) (*do
 	}
 	
 	if rootObsID.Valid {
-		snapshot.RootObservationID = &rootObsID.Int64
+		snapshot.RootObservationID = rootObsID.Int64
 	}
 	
 	return snapshot, nil
@@ -481,7 +480,7 @@ func (r *TemporalSnapshotRepository) GetBySnapshotKey(ctx context.Context, snaps
 		}
 		
 		if rootObsID.Valid {
-			snapshot.RootObservationID = &rootObsID.Int64
+			snapshot.RootObservationID = rootObsID.Int64
 		}
 		
 		snapshots = append(snapshots, snapshot)
@@ -524,7 +523,7 @@ func (r *TemporalSnapshotRepository) GetSnapshotsInRange(ctx context.Context, fr
 		}
 		
 		if rootObsID.Valid {
-			snapshot.RootObservationID = &rootObsID.Int64
+			snapshot.RootObservationID = rootObsID.Int64
 		}
 		
 		snapshots = append(snapshots, snapshot)
@@ -567,7 +566,7 @@ func (r *TemporalSnapshotRepository) GetByRootObservation(ctx context.Context, r
 		}
 		
 		if rootObsID.Valid {
-			snapshot.RootObservationID = &rootObsID.Int64
+			snapshot.RootObservationID = rootObsID.Int64
 		}
 		
 		snapshots = append(snapshots, snapshot)

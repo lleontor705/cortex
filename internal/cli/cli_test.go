@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/lleontor705/cortex/internal/app"
+	"github.com/lleontor705/cortex/internal/domain"
 	_ "modernc.org/sqlite"
 )
 
@@ -34,6 +37,55 @@ func TestRunSaveThenSearch(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "JWT auth") {
 		t.Fatalf("search stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "explain:") {
+		t.Fatalf("search stdout missing explainability = %q", stdout.String())
+	}
+}
+
+func TestRunRevisions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	if code := Run([]string{"cortex", "save", "Original Title", "Original content", "--project", "demo"}, stdout, stderr); code != 0 {
+		t.Fatalf("save code = %d, stderr = %q", code, stderr.String())
+	}
+
+	a, err := app.Open(t.Context(), app.Options{})
+	if err != nil {
+		t.Fatalf("open app: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	obs, err := a.Stores.Observations.GetByID(t.Context(), 1)
+	if err != nil {
+		t.Fatalf("get obs: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	obs.Title = "Updated Title"
+	obs.Content = "Updated content"
+	obs.Type = domain.TypeBugfix
+	if err := a.Stores.Observations.Update(t.Context(), obs); err != nil {
+		t.Fatalf("update obs: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "revisions", "1"}, stdout, stderr); code != 0 {
+		t.Fatalf("revisions code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Revision history for observation #1") {
+		t.Fatalf("revisions stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[update]") {
+		t.Fatalf("revisions stdout missing reason = %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Original Title") {
+		t.Fatalf("revisions stdout missing original title = %q", stdout.String())
 	}
 }
 
@@ -192,6 +244,109 @@ func TestRunImportFromJSON(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "JSON import test") {
 		t.Fatalf("search stdout = %q", stdout.String())
+	}
+}
+
+func TestRunSyncExportAndStatus(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	// Save data first
+	Run([]string{"cortex", "save", "Sync test", "Content to sync", "--project", "demo"}, stdout, stderr)
+	stdout.Reset()
+	stderr.Reset()
+
+	// Export sync
+	code := Run([]string{"cortex", "sync", "--all"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("sync export code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Exported chunk") {
+		t.Fatalf("sync export stdout = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+
+	// Check status
+	code = Run([]string{"cortex", "sync", "--status"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("sync status code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Local chunks:") {
+		t.Fatalf("sync status stdout = %q", stdout.String())
+	}
+}
+
+func TestRunSyncImport(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	// Import with nothing to import
+	code := Run([]string{"cortex", "sync", "--import"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("sync import code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Imported 0 chunks") {
+		t.Fatalf("sync import stdout = %q", stdout.String())
+	}
+}
+
+func TestRunMergeProjects(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	// Save observations to different project variants
+	Run([]string{"cortex", "save", "Auth from myapp", "Content A", "--project", "myapp"}, stdout, stderr)
+	Run([]string{"cortex", "save", "Auth from MYAPP", "Content B", "--project", "MYAPP"}, stdout, stderr)
+	stdout.Reset()
+	stderr.Reset()
+
+	// Merge
+	code := Run([]string{"cortex", "merge-projects", "--from", "MYAPP", "--to", "myapp"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("merge-projects code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Merged into") {
+		t.Fatalf("merge-projects stdout = %q", stdout.String())
+	}
+}
+
+func TestRunMergeProjectsDryRun(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"cortex", "merge-projects", "--from", "A,B", "--to", "c", "--dry-run"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("merge-projects dry-run code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Dry run") {
+		t.Fatalf("merge-projects dry-run stdout = %q", stdout.String())
+	}
+}
+
+func TestRunMergeProjectsMissingArgs(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := Run([]string{"cortex", "merge-projects"}, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("merge-projects no args should fail, got code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "usage:") {
+		t.Fatalf("merge-projects stderr = %q", stderr.String())
 	}
 }
 

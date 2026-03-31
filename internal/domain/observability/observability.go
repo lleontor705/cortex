@@ -170,8 +170,13 @@ func (s *ObservabilityService) evaluateRelevance(ctx context.Context, operations
 		avgRelevance = totalRelevance / float64(successfulRetrievals)
 	}
 	
+	score := float64(0)
+	if totalQueries > 0 {
+		score = float64(successfulRetrievals) / float64(totalQueries)
+	}
+
 	return &domain.QualityMetrics{
-		Score:             float64(successfulRetrievals) / float64(totalQueries),
+		Score:             score,
 		TotalQueries:      totalQueries,
 		SuccessfulRetrievals: successfulRetrievals,
 		AverageLatency:    avgLatency,
@@ -183,7 +188,7 @@ func (s *ObservabilityService) evaluateRelevance(ctx context.Context, operations
 func (s *ObservabilityService) evaluateCompleteness(ctx context.Context, operations []*domain.Metrics, from, to time.Time) *domain.QualityMetrics {
 	// Get total system state
 	totalObservations, _ := s.observationRepo.CountAll(ctx)
-	totalEdges, _ := s.graphRepo.CountAllEdges(ctx)
+	_, _ = s.graphRepo.CountAllEdges(ctx)
 	
 	var saveOps, relatedOps int
 	var coverageScore float64
@@ -317,14 +322,17 @@ func (s *ObservabilityService) GetHealthCheck(ctx context.Context) (*domain.Heal
 		avgDuration += float64(op.Duration)
 	}
 	
-	avgDuration /= float64(len(operations))
+	if len(operations) > 0 {
+		avgDuration /= float64(len(operations))
+	}
 	
 	// Determine health status
 	status := "healthy"
-	if failedOps > len(operations)*0.1 { // > 10% failure rate
+	totalOps := len(operations)
+	if float64(failedOps) > float64(totalOps)*0.1 { // > 10% failure rate
 		status = "degraded"
 	}
-	if slowOps > len(operations)*0.3 { // > 30% slow operations
+	if float64(slowOps) > float64(totalOps)*0.3 { // > 30% slow operations
 		status = "degraded"
 	}
 	
@@ -341,20 +349,3 @@ func (s *ObservabilityService) GetHealthCheck(ctx context.Context) (*domain.Heal
 	return health, nil
 }
 
-// GetSystemMetricsResponse is the response type for aggregated metrics.
-type GetSystemMetricsResponse struct {
-	SessionID         string               `json:"session_id"`
-	TimeRange         *domain.TimeRange    `json:"time_range"`
-	TotalOperations   int                  `json:"total_operations"`
-	SuccessfulOps     int                  `json:"successful_ops"`
-	FailedOps         int                  `json:"failed_ops"`
-	AvgDurationMs     float64              `json:"avg_duration_ms"`
-	TotalMemoryUsage  int64                `json:"total_memory_usage"`
-	TotalObservations int                  `json:"total_observations"`
-	TotalEdges        int                  `json:"total_edges"`
-	AvgQueryComplexity float64              `json:"avg_query_complexity"`
-	AvgConfidence     float64              `json:"avg_confidence"`
-	EvaluatedAt       time.Time            `json:"evaluated_at"`
-	OperationBreakdown map[string]int      `json:"operation_breakdown"`
-	TopSlowOperations []string            `json:"top_slow_operations"`
-}

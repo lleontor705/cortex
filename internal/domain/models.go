@@ -97,17 +97,31 @@ type ObservationFilter struct {
 
 // SearchOptions provides options for full-text search queries.
 type SearchOptions struct {
-	Query   string `json:"query"`
-	Type    string `json:"type,omitempty"`
-	Project string `json:"project,omitempty"`
-	Scope   string `json:"scope,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
+	Query       string  `json:"query"`
+	Type        string  `json:"type,omitempty"`
+	Project     string  `json:"project,omitempty"`
+	Scope       string  `json:"scope,omitempty"`
+	Limit       int     `json:"limit,omitempty"`
+	FusionK     float64 `json:"fusion_k,omitempty"`      // RRF constant (default 60, lower = favor top ranks)
+	GraphExpand bool    `json:"graph_expand,omitempty"`   // Boost graph neighbors of top results
 }
 
 // SearchResult represents a search result with relevance ranking.
 type SearchResult struct {
 	Observation
-	Rank float64 `json:"rank"` // Relevance score from FTS
+	Rank           float64              `json:"rank"` // Relevance score from FTS
+	ScoreBreakdown SearchScoreBreakdown `json:"score_breakdown,omitempty"`
+}
+
+// SearchScoreBreakdown explains which retrieval path produced a result.
+type SearchScoreBreakdown struct {
+	Strategy       string  `json:"strategy,omitempty"`         // keyword, topic_key, hybrid
+	TopicKeyExact  bool    `json:"topic_key_exact,omitempty"`  // exact topic key hit
+	TopicKeyExpand bool    `json:"topic_key_expand,omitempty"` // topic key expansion (LIKE match)
+	KeywordBM25    float64 `json:"keyword_bm25,omitempty"`     // raw BM25 score for keyword search
+	FusionScore    float64 `json:"fusion_score,omitempty"`     // RRF score for hybrid search
+	RecencyBoost   float64 `json:"recency_boost,omitempty"`    // recency decay multiplier (0-1)
+	ImportanceRank float64 `json:"importance_rank,omitempty"`  // importance score contribution
 }
 
 // Observation types - common values for the Type field
@@ -171,6 +185,21 @@ type Metrics struct {
 	ConfidenceScore    float64   `json:"confidence_score"`  // Average confidence score
 }
 
+// AggregatedMetrics represents rolled-up performance metrics for a time range.
+type AggregatedMetrics struct {
+	TimeRange           *TimeRange `json:"time_range,omitempty"`
+	TotalOperations     int        `json:"total_operations"`
+	SuccessfulOps       int        `json:"successful_ops"`
+	FailedOps           int        `json:"failed_ops"`
+	AvgDurationMs       float64    `json:"avg_duration_ms"`
+	TotalMemoryUsage    int64      `json:"total_memory_usage"`
+	AvgObservationCount float64    `json:"avg_observation_count"`
+	AvgEdgeCount        float64    `json:"avg_edge_count"`
+	AvgQueryComplexity  float64    `json:"avg_query_complexity"`
+	AvgConfidenceScore  float64    `json:"avg_confidence_score"`
+	EvaluatedAt         time.Time  `json:"evaluated_at"`
+}
+
 // QualityMetrics represents memory quality evaluation metrics.
 type QualityMetrics struct {
 	ID                    int64     `json:"id"`
@@ -228,12 +257,7 @@ const (
 	FactStateSuperseded  = "superseded"
 )
 
-// Relation types with enhanced temporal support
+// Additional temporal relation types.
 const (
-	RelationReferences  = "references"
-	RelationRelatesTo   = "relates_to"
-	RelationFollows     = "follows"
-	RelationContradicts = "contradicts"
-	RelationSupersedes  = "supersedes"
-	RelationTemporal    = "temporal" // New: tracks how facts evolve over time
+	RelationTemporal = "temporal" // Tracks how facts evolve over time
 )

@@ -124,9 +124,9 @@ func (s *Service) SearchPrompts(ctx context.Context, query string, project strin
 //  5. Adding prefix matching for the last term (to support partial matches)
 //
 // Examples:
-//   - "fix auth bug" → `"fix" AND "auth" AND "bug*"`
-//   - "JWT token" → `"JWT" AND "token*"`
-//   - "user's data" → `"user's" AND "data*"`
+//   - "fix auth bug" -> `"fix" AND "auth" AND "bug*"`
+//   - "JWT token" -> `"JWT" AND "token*"`
+//   - "user's data" -> `"user's" AND "data*"`
 func sanitizeQuery(query string) string {
 	// Trim whitespace
 	query = strings.TrimSpace(query)
