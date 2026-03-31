@@ -695,10 +695,7 @@ func (s *Store) pseudoRelevanceFeedback(ctx context.Context, originalQuery strin
 	}
 
 	// Build expanded query: original terms + top PRF terms
-	expandedTerms := make([]string, 0)
-	for _, t := range extractSearchTerms(originalQuery) {
-		expandedTerms = append(expandedTerms, t)
-	}
+	expandedTerms := append([]string{}, extractSearchTerms(originalQuery)...)
 	for _, tc := range ranked {
 		expandedTerms = append(expandedTerms, tc.term)
 	}
