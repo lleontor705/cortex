@@ -66,13 +66,13 @@ func (r *MetricsRepository) GetTemporalMetrics(ctx context.Context, sessionID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	
+	defer func() { _ = rows.Close() }()
+
 	var metrics []*domain.Metrics
 	for rows.Next() {
 		metric := &domain.Metrics{}
 		var errorPtr sql.NullString
-		
+
 		err := rows.Scan(
 			&metric.ID,
 			&metric.SessionID,
@@ -91,14 +91,14 @@ func (r *MetricsRepository) GetTemporalMetrics(ctx context.Context, sessionID st
 		if err != nil {
 			return nil, err
 		}
-		
+
 		if errorPtr.Valid {
 			metric.Error = errorPtr.String
 		}
-		
+
 		metrics = append(metrics, metric)
 	}
-	
+
 	return metrics, nil
 }
 
@@ -106,18 +106,18 @@ func (r *MetricsRepository) GetTemporalMetrics(ctx context.Context, sessionID st
 func (r *MetricsRepository) GetByOperationType(ctx context.Context, operationType string, from, to time.Time) ([]*domain.Metrics, error) {
 	query := `
 		SELECT id, session_id, operation_type, duration_ms, result_count, success, error,
-		       memory_usage_bytes, timestamp, observation_count, edge_count, 
+		       memory_usage_bytes, timestamp, observation_count, edge_count,
 		       query_complexity, confidence_score
-		FROM metrics 
+		FROM metrics
 		WHERE operation_type = ? AND timestamp >= ? AND timestamp <= ?
 		ORDER BY timestamp DESC
 	`
-	
+
 	rows, err := r.db.QueryContext(ctx, query, operationType, from, to)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var metrics []*domain.Metrics
 	for rows.Next() {
@@ -262,7 +262,7 @@ func (r *QualityMetricsRepository) GetBySession(ctx context.Context, sessionID s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
@@ -305,7 +305,7 @@ func (r *QualityMetricsRepository) GetByType(ctx context.Context, evaluationType
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
@@ -348,7 +348,7 @@ func (r *QualityMetricsRepository) GetLatest(ctx context.Context, limit int) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
@@ -459,7 +459,7 @@ func (r *TemporalSnapshotRepository) GetBySnapshotKey(ctx context.Context, snaps
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {
@@ -502,7 +502,7 @@ func (r *TemporalSnapshotRepository) GetSnapshotsInRange(ctx context.Context, fr
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {
@@ -545,7 +545,7 @@ func (r *TemporalSnapshotRepository) GetByRootObservation(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {

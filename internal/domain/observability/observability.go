@@ -194,11 +194,11 @@ func (s *ObservabilityService) evaluateCompleteness(ctx context.Context, operati
 	var coverageScore float64
 	
 	for _, op := range operations {
-		if op.OperationType == "save" {
+		switch op.OperationType {
+		case "save":
 			saveOps++
-		} else if op.OperationType == "get_related" {
+		case "get_related":
 			relatedOps++
-			// Coverage based on connections
 			if totalObservations > 0 {
 				coverageScore += float64(op.ResultCount) / float64(totalObservations)
 			}

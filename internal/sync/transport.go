@@ -71,11 +71,11 @@ func (ft *FileTransport) WriteChunk(chunkID string, data []byte, _ ChunkEntry) e
 	if err != nil {
 		return fmt.Errorf("create chunk file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gz := gzip.NewWriter(f)
 	if _, err := gz.Write(data); err != nil {
-		gz.Close()
+		_ = gz.Close()
 		return fmt.Errorf("write gzip data: %w", err)
 	}
 	if err := gz.Close(); err != nil {
@@ -91,13 +91,13 @@ func (ft *FileTransport) ReadChunk(chunkID string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open chunk %s: %w", chunkID, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("gzip reader for chunk %s: %w", chunkID, err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	data, err := io.ReadAll(gz)
 	if err != nil {
