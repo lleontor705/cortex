@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,7 +17,9 @@ import (
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/migration"
+	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/lleontor705/cortex/internal/setup"
+	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/tui"
 	"github.com/lleontor705/cortex/internal/update"
 	"github.com/mark3labs/mcp-go/server"
@@ -71,6 +75,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runStats(args[2:], stdout, stderr)
 	case "timeline":
 		exitCode = runTimeline(args[2:], stdout, stderr)
+	case "revisions":
+		exitCode = runRevisions(args[2:], stdout, stderr)
 	case "setup":
 		exitCode = runSetup(args[2:], stdout, stderr)
 	case "import":
@@ -79,6 +85,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runMigrate(args[2:], stdout, stderr)
 	case "export":
 		exitCode = runExport(args[2:], stdout, stderr)
+	case "sync":
+		exitCode = runSync(args[2:], stdout, stderr)
+	case "merge-projects":
+		exitCode = runMergeProjects(args[2:], stdout, stderr)
 	default:
 		writef(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
@@ -90,7 +100,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	writef(w, `cortex — Persistent memory for AI coding assistants
+	writef(w, `cortex -- Persistent memory for AI coding assistants
 
 Usage:
   cortex <command> [arguments]
@@ -100,12 +110,15 @@ Commands:
   search <query>         Search memories
   save <title> <content> Save a memory
   timeline <obs_id>      Show chronological context around an observation
+  revisions <obs_id>     Show revision history for an observation
   context [project]      Show recent memory context
   stats                  Show memory statistics
   setup [agent]          Install agent integration
   import --from-engram   Import data from an Engram database
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
+  sync                   Sync memories via git-friendly chunks
+  merge-projects         Merge project name variants into one canonical name
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
@@ -144,9 +157,12 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 			}
 		case "--limit":
 			if i+1 < len(args) {
-				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					opts.Limit = n
+				n, err := strconv.Atoi(args[i+1])
+				if err != nil {
+					writef(stderr, "error: invalid --limit value %q\n", args[i+1])
+					return 1
 				}
+				opts.Limit = n
 				i++
 			}
 		default:
@@ -179,8 +195,12 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 		if r.Project != "" {
 			project = fmt.Sprintf(" | project: %s", r.Project)
 		}
-		writef(stdout, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
+		writef(stdout, "[%d] #%d (%s) - %s\n    %s\n    %s%s | scope: %s\n",
 			i+1, r.ID, r.Type, r.Title, truncate(r.Content, 300), r.CreatedAt.Format(time.RFC3339), project, r.Scope)
+		if explanation := formatSearchBreakdown(r.ScoreBreakdown); explanation != "" {
+			writef(stdout, "    explain: %s\n", explanation)
+		}
+		writeln(stdout, "")
 	}
 	return 0
 }
@@ -336,10 +356,20 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 	for i := 1; i < len(args); i++ {
 		switch {
 		case args[i] == "--before" && i+1 < len(args):
-			before, _ = strconv.Atoi(args[i+1])
+			n, convErr := strconv.Atoi(args[i+1])
+			if convErr != nil {
+				writef(stderr, "error: invalid --before value %q\n", args[i+1])
+				return 1
+			}
+			before = n
 			i++
 		case args[i] == "--after" && i+1 < len(args):
-			after, _ = strconv.Atoi(args[i+1])
+			n, convErr := strconv.Atoi(args[i+1])
+			if convErr != nil {
+				writef(stderr, "error: invalid --after value %q\n", args[i+1])
+				return 1
+			}
+			after = n
 			i++
 		}
 	}
@@ -393,6 +423,93 @@ func runTimeline(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "  #%d [%s] %s\n", o.ID, o.Type, o.Title)
 	}
 
+	return 0
+}
+
+type cliRevisionSnapshot struct {
+	Reason   string `json:"reason"`
+	Previous struct {
+		Title         string `json:"title"`
+		Content       string `json:"content"`
+		RevisionCount int    `json:"revision_count"`
+	} `json:"previous"`
+}
+
+func runRevisions(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		writeln(stderr, "usage: cortex revisions <observation_id> [--limit N]")
+		return 1
+	}
+
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		writef(stderr, "error: invalid observation id %q\n", args[0])
+		return 1
+	}
+
+	limit := 20
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--limit" && i+1 < len(args) {
+			n, convErr := strconv.Atoi(args[i+1])
+			if convErr != nil {
+				writef(stderr, "error: invalid --limit value %q\n", args[i+1])
+				return 1
+			}
+			limit = n
+			i++
+		}
+	}
+
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	if _, err := a.Stores.Observations.GetByID(context.Background(), id); err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+
+	snapshots, err := a.Stores.TemporalSnapshots.GetByRootObservation(context.Background(), id)
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	if len(snapshots) == 0 {
+		writef(stdout, "No revision history found for observation #%d\n", id)
+		return 0
+	}
+
+	if limit <= 0 {
+		limit = 20
+	}
+
+	writef(stdout, "Revision history for observation #%d\n\n", id)
+	count := 0
+	for _, snapshot := range snapshots {
+		if count >= limit {
+			break
+		}
+		var parsed cliRevisionSnapshot
+		if err := json.Unmarshal([]byte(snapshot.Description), &parsed); err != nil {
+			continue
+		}
+		reason := parsed.Reason
+		if reason == "" {
+			reason = "revision"
+		}
+		writef(stdout, "[%d] %s [%s] rev=%d %s\n", count+1, snapshot.Timestamp.Format(time.RFC3339), reason, parsed.Previous.RevisionCount, parsed.Previous.Title)
+		if parsed.Previous.Content != "" {
+			writef(stdout, "    %s\n", truncate(parsed.Previous.Content, 150))
+		}
+		writeln(stdout, "")
+		count++
+	}
+	if count == 0 {
+		writef(stdout, "No revision history found for observation #%d\n", id)
+	}
 	return 0
 }
 
@@ -456,17 +573,24 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = a.Close() }()
 
 	addr := fmt.Sprintf("%s:%d", a.Config.HTTP.Host, a.Config.HTTP.Port)
-
-	deps := &cortexhttp.Deps{
-		Observations: a.Stores.Observations,
-		Sessions:     a.Stores.Sessions,
-		Search:       a.Stores.Search,
-		Prompts:      a.Stores.Prompts,
-		Graph:        a.Stores.Graph,
-		Scoring:      a.Stores.Scoring,
+	if !isLoopbackHost(a.Config.HTTP.Host) && strings.TrimSpace(a.Config.HTTP.Token) == "" {
+		writef(stderr, "cortex: refusing to expose HTTP API on non-local host %q without http.token configured\n", a.Config.HTTP.Host)
+		return 1
 	}
 
-	srv := cortexhttp.NewServer(addr, deps)
+	deps := &cortexhttp.Deps{
+		Observations:      a.Stores.Observations,
+		Sessions:          a.Stores.Sessions,
+		Search:            a.Stores.Search,
+		Prompts:           a.Stores.Prompts,
+		Graph:             a.Stores.Graph,
+		Scoring:           a.Stores.Scoring,
+		TemporalSnapshots: a.Stores.TemporalSnapshots,
+	}
+
+	srv := cortexhttp.NewServer(addr, deps, cortexhttp.Options{
+		AuthToken: a.Config.HTTP.Token,
+	})
 	writef(stdout, "Cortex HTTP server listening on %s\n", addr)
 
 	if err := srv.ListenAndServe(); err != nil {
@@ -722,12 +846,164 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runSync(args []string, stdout, stderr io.Writer) int {
+	var doImport, doStatus, syncAll bool
+	var project string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--import":
+			doImport = true
+		case "--status":
+			doStatus = true
+		case "--all":
+			syncAll = true
+		case "--project":
+			if i+1 < len(args) {
+				project = args[i+1]
+				i++
+			}
+		}
+	}
+
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	syncDir := filepath.Dir(a.Config.Database.Path)
+	transport := cortsync.NewFileTransport(syncDir)
+	syncer := cortsync.NewSyncer(a.Stores.Observations, transport)
+	ctx := context.Background()
+
+	if doStatus {
+		local, remote, pending, err := syncer.Status(ctx)
+		if err != nil {
+			writef(stderr, "sync status: %v\n", err)
+			return 1
+		}
+		writef(stdout, "Local chunks:  %d\nRemote chunks: %d\nPending import: %d\n", local, remote, pending)
+		return 0
+	}
+
+	if doImport {
+		result, err := syncer.Import(ctx)
+		if err != nil {
+			writef(stderr, "sync import: %v\n", err)
+			return 1
+		}
+		writef(stdout, "Imported %d chunks (%d skipped): %d sessions, %d observations, %d prompts\n",
+			result.ChunksImported, result.ChunksSkipped,
+			result.SessionsImported, result.ObservationsImported, result.PromptsImported)
+		return 0
+	}
+
+	// Default: export
+	if !syncAll && project == "" {
+		project = projectpkg.DetectProject(currentDir())
+	}
+
+	username := cortsync.GetUsername()
+	result, err := syncer.Export(ctx, username, project)
+	if err != nil {
+		writef(stderr, "sync export: %v\n", err)
+		return 1
+	}
+	if result.IsEmpty {
+		writeln(stdout, "Nothing new to sync.")
+		return 0
+	}
+	writef(stdout, "Exported chunk %s: %d sessions, %d observations, %d prompts\n",
+		result.ChunkID, result.SessionsExported, result.ObservationsExported, result.PromptsExported)
+	writeln(stdout, "To share: git add ~/.cortex/ && git commit -m 'sync cortex memories'")
+	return 0
+}
+
+func runMergeProjects(args []string, stdout, stderr io.Writer) int {
+	var from, to string
+	var dryRun bool
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--from":
+			if i+1 < len(args) {
+				from = args[i+1]
+				i++
+			}
+		case "--to":
+			if i+1 < len(args) {
+				to = args[i+1]
+				i++
+			}
+		case "--dry-run":
+			dryRun = true
+		}
+	}
+
+	if from == "" || to == "" {
+		writeln(stderr, "usage: cortex merge-projects --from 'Name1,Name2' --to canonical-name [--dry-run]")
+		return 1
+	}
+
+	var sources []string
+	for _, s := range strings.Split(from, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			sources = append(sources, s)
+		}
+	}
+
+	if dryRun {
+		writef(stdout, "Dry run: would merge %v -> %q\n", sources, to)
+		return 0
+	}
+
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	result, err := a.Stores.Observations.MergeProjects(context.Background(), sources, to)
+	if err != nil {
+		writef(stderr, "merge-projects: %v\n", err)
+		return 1
+	}
+
+	writef(stdout, "Merged into %q: %d observations, %d sessions updated.\n",
+		result.Canonical, result.ObservationsUpdated, result.SessionsUpdated)
+	if len(result.SourcesMerged) > 0 {
+		writef(stdout, "Sources merged: %v\n", result.SourcesMerged)
+	}
+	return 0
+}
+
 func truncate(s string, max int) string {
 	runes := []rune(s)
 	if len(runes) <= max {
 		return s
 	}
 	return string(runes[:max]) + "..."
+}
+
+func formatSearchBreakdown(b domain.SearchScoreBreakdown) string {
+	parts := make([]string, 0, 4)
+	if b.Strategy != "" {
+		parts = append(parts, "strategy="+b.Strategy)
+	}
+	if b.TopicKeyExact {
+		parts = append(parts, "topic_key_exact=true")
+	}
+	if b.KeywordBM25 != 0 {
+		parts = append(parts, fmt.Sprintf("bm25=%.4f", b.KeywordBM25))
+	}
+	if b.FusionScore != 0 {
+		parts = append(parts, fmt.Sprintf("fusion=%.4f", b.FusionScore))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func defaultSessionID(project string) string {
@@ -750,6 +1026,17 @@ func currentDir() string {
 		return "."
 	}
 	return wd
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func takeSessions(sessions []*domain.Session, n int) []*domain.Session {

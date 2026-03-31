@@ -135,7 +135,41 @@ func (m *mockRepository) List(ctx context.Context, filter domain.ObservationFilt
 	return results, nil
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
+func (m *mockRepository) CountAll(ctx context.Context) (int, error) {
+	return len(m.observations), nil
+}
+
+func (m *mockRepository) CountByRoot(ctx context.Context, rootObsID int64) (int, error) {
+	return 0, nil
+}
+
+func (m *mockRepository) GetBySource(ctx context.Context, source string, limit int) ([]*domain.Observation, error) {
+	var results []*domain.Observation
+	for _, obs := range m.observations {
+		if obs.Source == source {
+			results = append(results, obs)
+		}
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func (m *mockRepository) GetByType(ctx context.Context, obsType string, limit int) ([]*domain.Observation, error) {
+	var results []*domain.Observation
+	for _, obs := range m.observations {
+		if obs.Type == obsType {
+			results = append(results, obs)
+		}
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// --- Tests -------------------------------------------------------------------
 
 func TestNewService(t *testing.T) {
 	repo := newMockRepository()

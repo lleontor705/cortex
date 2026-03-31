@@ -64,20 +64,20 @@ func Run(deps *Deps) error {
 	m.observations = obs
 
 	// Print a simple interactive-style view
-	fmt.Println("╔══════════════════════════════════════════════════════════╗")
-	fmt.Println("║  Cortex Memory Browser                                  ║")
-	fmt.Println("╠══════════════════════════════════════════════════════════╣")
+	fmt.Println("+----------------------------------------------------------+")
+	fmt.Println("|  Cortex Memory Browser                                  |")
+	fmt.Println("+----------------------------------------------------------+")
 
 	if len(m.observations) == 0 {
-		fmt.Println("║  No observations found.                                  ║")
+		fmt.Println("-  No observations found.                                  -")
 	} else {
 		for i, obs := range m.observations {
 			title := truncate(obs.Title, 45)
-			fmt.Printf("║  %3d. [%-9s] %-45s ║\n", i+1, obs.Type, title)
+			fmt.Printf("-  %3d. [%-9s] %-45s -\n", i+1, obs.Type, title)
 		}
 	}
 
-	fmt.Println("╚══════════════════════════════════════════════════════════╝")
+	fmt.Println("+----------------------------------------------------------+")
 	fmt.Printf("\nShowing %d observations. Full TUI requires BubbleTea dependency.\n", len(m.observations))
 	fmt.Println("Install with: go get github.com/charmbracelet/bubbletea")
 

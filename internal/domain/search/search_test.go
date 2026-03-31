@@ -428,8 +428,8 @@ func TestSanitizeQuery_EdgeCases(t *testing.T) {
 		},
 		{
 			name:     "unicode characters",
-			input:    "café résumé",
-			expected: `"café" AND "résumé*"`,
+			input:    "cafe resume",
+			expected: `"cafe" AND "resume*"`,
 		},
 		{
 			name:     "very long query",

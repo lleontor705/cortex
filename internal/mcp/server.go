@@ -5,41 +5,24 @@
 //
 // Tool profiles allow agents to load only the tools they need:
 //
-//	cortex mcp                        → all tools (default)
-//	cortex mcp --tools=agent          → Engram-compatible memory tools
-//	cortex mcp --tools=admin          → delete, stats, timeline
+//	cortex mcp                        -> all tools (default)
+//	cortex mcp --tools=agent          -> Engram-compatible memory tools
+//	cortex mcp --tools=admin          -> delete, stats, timeline
 package mcp
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	entitystore "github.com/lleontor705/cortex/internal/store/entity"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	"github.com/lleontor705/cortex/internal/store/prompt"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	"github.com/lleontor705/cortex/internal/store/search"
-	"github.com/lleontor705/cortex/internal/store/session"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Stores bundles all store dependencies needed by MCP tool handlers.
-type Stores struct {
-	Observations *sqlitestore.Store
-	Sessions     *session.Store
-	Search       *search.Store
-	Prompts      *prompt.Store
-	Graph        *graphstore.Store
-	Scoring      *scoringstore.Store
-	Vectors      *sqlitestore.VectorStore
-	Entities     *entitystore.Store
-}
+// Stores is an alias for bundle.Stores for backward compatibility.
+type Stores = bundle.Stores
 
-// ─── Tool Profiles ──────────────────────────────────────────────────────────
+// --- Tool Profiles ---
 
 // ProfileAgent contains 11 Engram-compatible memory tools for AI agent workflows
 // plus Cortex-exclusive tools (graph, scoring, hybrid search).
@@ -59,14 +42,17 @@ var ProfileAgent = map[string]bool{
 	"mem_graph":             true,
 	"mem_score":             true,
 	"mem_search_hybrid":     true,
+	"mem_revision_history":  true,
 }
 
 // ProfileAdmin contains tools for manual curation (TUI, CLI, dashboards).
 var ProfileAdmin = map[string]bool{
-	"mem_delete":   true,
-	"mem_stats":    true,
-	"mem_timeline": true,
-	"mem_archive":  true,
+	"mem_delete":           true,
+	"mem_stats":            true,
+	"mem_timeline":         true,
+	"mem_revision_history": true,
+	"mem_archive":          true,
+	"mem_merge_projects":   true,
 }
 
 // Profiles maps profile names to their tool sets.
@@ -107,27 +93,26 @@ func ResolveTools(input string) map[string]bool {
 	return result
 }
 
-// ─── Server ─────────────────────────────────────────────────────────────────
-
 const serverInstructions = `Cortex provides persistent memory for AI coding assistants.
 
 MEMORY (Engram-compatible):
-  mem_save — save decisions, bugs, discoveries PROACTIVELY
-  mem_search — find past work via FTS5
-  mem_context — recent session history
-  mem_session_summary — MANDATORY before ending session
-  mem_get_observation — full content by ID
-  mem_save_prompt — save user prompt
+  mem_save - save decisions, bugs, discoveries PROACTIVELY
+  mem_search - find past work via FTS5
+  mem_context - recent session history
+  mem_session_summary - MANDATORY before ending session
+  mem_get_observation - full content by ID
+  mem_save_prompt - save user prompt
 
 CORTEX-EXCLUSIVE:
-  mem_relate — create relationship between observations
-  mem_graph — traverse knowledge graph from an observation
-  mem_score — get/recalculate importance score
-  mem_archive — archive an observation
-  mem_search_hybrid — hybrid FTS5 + vector search
+  mem_relate - create relationship between observations
+  mem_graph - traverse knowledge graph from an observation
+  mem_score - get/recalculate importance score
+  mem_archive - archive an observation
+  mem_search_hybrid - hybrid FTS5 + vector search
+  mem_revision_history - structured revision snapshots for an observation
 
 DEFERRED: mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end,
-  mem_stats, mem_delete, mem_timeline, mem_capture_passive`
+  mem_stats, mem_delete, mem_timeline, mem_revision_history, mem_capture_passive`
 
 // NewServer creates an MCP server with ALL tools registered.
 func NewServer(stores *Stores) *server.MCPServer {
@@ -146,6 +131,7 @@ func NewServerWithTools(stores *Stores, allowlist map[string]bool) *server.MCPSe
 
 	registerMemoryTools(srv, stores, allowlist)
 	registerCortexTools(srv, stores, allowlist)
+	registerTemporalTools(srv, stores, allowlist)
 	return srv
 }
 
@@ -157,7 +143,7 @@ func shouldRegister(name string, allowlist map[string]bool) bool {
 	return allowlist[name]
 }
 
-// ─── Argument Helpers ───────────────────────────────────────────────────────
+// --- Argument Helpers ---
 
 func stringArg(req mcp.CallToolRequest, key string) string {
 	v, _ := req.GetArguments()[key].(string)
@@ -180,7 +166,7 @@ func boolArg(req mcp.CallToolRequest, key string, defaultVal bool) bool {
 	return v
 }
 
-// ─── Response Helpers ───────────────────────────────────────────────────────
+// --- Response Helpers ---
 
 func textResult(format string, args ...any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(fmt.Sprintf(format, args...)), nil
@@ -190,9 +176,3 @@ func errorResult(format string, args ...any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(fmt.Sprintf(format, args...)), nil
 }
 
-// ─── Unused import guard ────────────────────────────────────────────────────
-
-var (
-	_ = context.Background
-	_ = domain.TypeManual
-)

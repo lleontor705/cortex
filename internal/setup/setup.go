@@ -8,6 +8,7 @@ package setup
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,9 +30,9 @@ var cortexMCPTools = []string{
 }
 
 // memoryProtocol is the Memory Protocol instructions injected into agents.
-const memoryProtocol = `## Cortex Persistent Memory — Protocol
+const memoryProtocol = `## Cortex Persistent Memory -- Protocol
 
-You have cortex memory tools. Save decisions, bugs, discoveries PROACTIVELY — do NOT wait.
+You have cortex memory tools. Save decisions, bugs, discoveries PROACTIVELY -- do NOT wait.
 
 ### WHEN TO SAVE (mandatory after each):
 - Architecture/design decision made
@@ -46,7 +47,7 @@ You have cortex memory tools. Save decisions, bugs, discoveries PROACTIVELY — 
 - Starting work on something that might have been done before
 - User's FIRST message references the project
 
-### SESSION CLOSE — before saying "done":
+### SESSION CLOSE -- before saying "done":
 Call mem_session_summary with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 
 ### KNOWLEDGE GRAPH:
@@ -55,7 +56,7 @@ Use mem_graph to explore connections.
 `
 
 // compactPrompt is the compaction recovery instruction.
-const compactPrompt = `FIRST ACTION REQUIRED — context was compacted. Follow these steps IN ORDER:
+const compactPrompt = `FIRST ACTION REQUIRED -- context was compacted. Follow these steps IN ORDER:
 
 1. Call mem_session_summary with the compacted summary above to persist it.
 2. Call mem_context to recover recent session history.
@@ -74,10 +75,10 @@ type Result struct {
 // SupportedAgents returns descriptions of supported agents.
 func SupportedAgents() map[string]string {
 	return map[string]string{
-		"claude-code": "Claude Code — Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
-		"opencode":    "OpenCode — MCP registration with Memory Protocol",
-		"gemini-cli":  "Gemini CLI — MCP registration plus system prompt compaction recovery",
-		"codex":       "Codex — MCP registration plus model/compaction instruction files",
+		"claude-code": "Claude Code -- Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
+		"opencode":    "OpenCode -- MCP registration with Memory Protocol",
+		"gemini-cli":  "Gemini CLI -- MCP registration plus system prompt compaction recovery",
+		"codex":       "Codex -- MCP registration plus model/compaction instruction files",
 	}
 }
 
@@ -104,7 +105,7 @@ func Install(agent string) (string, error) {
 	}
 }
 
-// ─── Claude Code ────────────────────────────────────────────────────────────
+// --- Claude Code ------------------------------------------------------------
 
 func installClaudeCode(home, bin string) (string, error) {
 	// Write durable MCP config at user level (survives plugin updates)
@@ -170,10 +171,12 @@ func addClaudeCodeAllowlist(settingsPath string) {
 	if err != nil {
 		return
 	}
-	_ = writeFile(settingsPath, string(out)+"\n")
+	if err := writeFile(settingsPath, string(out)+"\n"); err != nil {
+		log.Printf("setup: failed to write settings %s: %v", settingsPath, err)
+	}
 }
 
-// ─── OpenCode ───────────────────────────────────────────────────────────────
+// --- OpenCode ---------------------------------------------------------------
 
 func installOpenCode(home, bin string) (string, error) {
 	configDir := filepath.Join(home, ".config", "opencode")
@@ -216,7 +219,9 @@ func installOpenCode(home, bin string) (string, error) {
 				fmt.Sprintf(`return %s`, jsonString(bin)),
 				1,
 			)
-			_ = writeFile(pluginDst, patched)
+			if wErr := writeFile(pluginDst, patched); wErr != nil {
+				log.Printf("setup: failed to write plugin %s: %v", pluginDst, wErr)
+			}
 			break
 		}
 	}
@@ -224,7 +229,7 @@ func installOpenCode(home, bin string) (string, error) {
 	return mcpPath, nil
 }
 
-// ─── Gemini CLI ─────────────────────────────────────────────────────────────
+// --- Gemini CLI -------------------------------------------------------------
 
 func installGeminiCLI(home, bin string) (string, error) {
 	configPath := filepath.Join(home, ".gemini", "settings.json")
@@ -244,12 +249,14 @@ func installGeminiCLI(home, bin string) (string, error) {
 
 	// Write system prompt with Memory Protocol
 	systemPath := filepath.Join(home, ".gemini", "system.md")
-	_ = writeFile(systemPath, memoryProtocol)
+	if err := writeFile(systemPath, memoryProtocol); err != nil {
+		log.Printf("setup: failed to write system prompt %s: %v", systemPath, err)
+	}
 
 	return configPath, nil
 }
 
-// ─── Codex ──────────────────────────────────────────────────────────────────
+// --- Codex ------------------------------------------------------------------
 
 func installCodex(home, bin string) (string, error) {
 	configDir := filepath.Join(home, ".codex")
@@ -270,13 +277,17 @@ experimental_compact_prompt_file = "%s"
 	}
 
 	// Write instruction files
-	_ = writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol)
-	_ = writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt)
+	if err := writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol); err != nil {
+		log.Printf("setup: failed to write instructions: %v", err)
+	}
+	if err := writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt); err != nil {
+		log.Printf("setup: failed to write compact prompt: %v", err)
+	}
 
 	return configPath, nil
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// --- Helpers ----------------------------------------------------------------
 
 // resolveBinaryPath returns the absolute path to the cortex binary.
 // Uses os.Executable() with symlink resolution for stability across

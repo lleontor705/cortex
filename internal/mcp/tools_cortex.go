@@ -15,7 +15,7 @@ import (
 
 // registerCortexTools registers the 5 Cortex-exclusive MCP tools.
 func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
-	// ─── mem_relate ─────────────────────────────────────────────────────
+	// --- mem_relate -----------------------------------------------------
 	if shouldRegister("mem_relate", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_relate",
@@ -54,7 +54,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// ─── mem_graph ──────────────────────────────────────────────────────
+	// --- mem_graph ------------------------------------------------------
 	if shouldRegister("mem_graph", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_graph",
@@ -76,7 +76,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// ─── mem_score ──────────────────────────────────────────────────────
+	// --- mem_score ------------------------------------------------------
 	if shouldRegister("mem_score", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_score",
@@ -98,7 +98,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// ─── mem_archive ────────────────────────────────────────────────────
+	// --- mem_archive ----------------------------------------------------
 	if shouldRegister("mem_archive", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_archive",
@@ -117,7 +117,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// ─── mem_search_hybrid ──────────────────────────────────────────────
+	// --- mem_search_hybrid ----------------------------------------------
 	if shouldRegister("mem_search_hybrid", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search_hybrid",
@@ -129,7 +129,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithDescription("Search using FTS5 full-text search. When vector search is enabled, combines FTS5 and vector results using Reciprocal Rank Fusion. Falls back to FTS5-only when vectors are disabled."),
 				mcp.WithString("query",
 					mcp.Required(),
-					mcp.Description("Search query — natural language or keywords"),
+					mcp.Description("Search query -- natural language or keywords"),
 				),
 				mcp.WithString("project",
 					mcp.Description("Filter by project name"),
@@ -144,9 +144,28 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 			handleSearchHybrid(stores),
 		)
 	}
+
+	// --- mem_merge_projects (admin) ---
+	if shouldRegister("mem_merge_projects", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_merge_projects",
+				mcp.WithDescription("Merge memories from multiple project name variants into one canonical name. Use when project names have drifted (e.g., 'MyApp', 'myapp', 'my-app' should all be 'myapp')."),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithString("from",
+					mcp.Required(),
+					mcp.Description("Comma-separated list of project names to merge FROM"),
+				),
+				mcp.WithString("to",
+					mcp.Required(),
+					mcp.Description("The canonical project name to merge INTO"),
+				),
+			),
+			handleMergeProjects(stores),
+		)
+	}
 }
 
-// ─── Cortex Tool Handlers ───────────────────────────────────────────────────
+// --- Cortex Tool Handlers ---------------------------------------------------
 
 func handleRelate(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -162,7 +181,7 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("from_id and to_id are required")
 		}
 		if relationType == "" {
-			return errorResult("relation_type is required — use: references, relates_to, follows, supersedes, contradicts")
+			return errorResult("relation_type is required -- use: references, relates_to, follows, supersedes, contradicts")
 		}
 		if weight < 0 || weight > 10 {
 			return errorResult("weight must be between 0.0 and 10.0")
@@ -213,7 +232,7 @@ func handleGraph(stores *Stores) server.ToolHandlerFunc {
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Related observations for ID %d (depth: %d, found: %d):\n\n", obsID, depth, len(related))
 		for _, obs := range related {
-			fmt.Fprintf(&sb, "- [%d] %s (%s) — %s\n", obs.ID, obs.Title, obs.Type, truncate(obs.Content, 80))
+			fmt.Fprintf(&sb, "- [%d] %s (%s) -- %s\n", obs.ID, obs.Title, obs.Type, truncate(obs.Content, 80))
 		}
 
 		return textResult("%s", sb.String())
@@ -244,7 +263,7 @@ func handleScore(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("Failed to get score: %s", err)
 		}
 
-		return textResult("Observation %d — score: %.2f, access_count: %d, last_accessed: %s",
+		return textResult("Observation %d -- score: %.2f, access_count: %d, last_accessed: %s",
 			obsID, score.Score, score.AccessCount, score.LastAccessed.Format("2006-01-02 15:04:05"))
 	}
 }
@@ -329,8 +348,12 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "Search results for %q [%s] (%d found):\n\n", query, searchMode, len(ftsResults))
 		for i, r := range ftsResults {
-			fmt.Fprintf(&sb, "%d. [%d] %s (%s, rank: %.2f)\n   %s\n\n",
+			fmt.Fprintf(&sb, "%d. [%d] %s (%s, rank: %.2f)\n   %s\n",
 				i+1, r.ID, r.Title, r.Type, r.Rank, truncate(r.Content, 120))
+			if explanation := formatSearchBreakdown(r.ScoreBreakdown); explanation != "" {
+				fmt.Fprintf(&sb, "   explain: %s\n", explanation)
+			}
+			sb.WriteString("\n")
 		}
 
 		return textResult("%s", sb.String())
@@ -390,6 +413,36 @@ func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 	}
 
 	return results
+}
+
+func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		from := stringArg(req, "from")
+		to := stringArg(req, "to")
+
+		if from == "" || to == "" {
+			return errorResult("both 'from' and 'to' are required")
+		}
+
+		var sources []string
+		for _, s := range strings.Split(from, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				sources = append(sources, s)
+			}
+		}
+		if len(sources) == 0 {
+			return errorResult("'from' must contain at least one project name")
+		}
+
+		result, err := stores.Observations.MergeProjects(ctx, sources, to)
+		if err != nil {
+			return errorResult("merge failed: %s", err)
+		}
+
+		return textResult("Merged into %q: %d observations, %d sessions updated. Sources merged: %v",
+			result.Canonical, result.ObservationsUpdated, result.SessionsUpdated, result.SourcesMerged)
+	}
 }
 
 // floatArg extracts a float64 argument with a default value.

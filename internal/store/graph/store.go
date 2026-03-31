@@ -66,7 +66,7 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 }
 
 // GetRelated retrieves observations related to the given observation ID,
-// up to the specified depth using iterative BFS.
+// up to the specified depth using a recursive CTE.
 func (s *Store) GetRelated(ctx context.Context, obsID int64, depth int) ([]*domain.Observation, error) {
 	if depth <= 0 {
 		depth = 1
@@ -75,35 +75,58 @@ func (s *Store) GetRelated(ctx context.Context, obsID int64, depth int) ([]*doma
 		depth = 10
 	}
 
-	visited := map[int64]bool{obsID: true}
-	currentLevel := []int64{obsID}
+	query := `
+		WITH RECURSIVE related(id, lvl) AS (
+			SELECT ?, 0
+			UNION
+			SELECT CASE
+				WHEN e.from_obs_id = related.id THEN e.to_obs_id
+				ELSE e.from_obs_id
+			END, related.lvl + 1
+			FROM edges e
+			JOIN related ON (e.from_obs_id = related.id OR e.to_obs_id = related.id)
+			WHERE related.lvl < ?
+		)
+		SELECT DISTINCT o.id, o.title, o.content, o.type, o.project, o.scope,
+		       o.session_id, COALESCE(o.topic_key, '') AS topic_key,
+		       COALESCE(o.confidence, 1.0), COALESCE(o.source, 'manual'),
+		       COALESCE(o.tags, ''), o.created_at, o.updated_at
+		FROM observations o
+		JOIN related r ON r.id = o.id
+		WHERE o.deleted_at IS NULL AND o.id != ?
+		ORDER BY o.created_at DESC
+	`
 
-	for d := 0; d < depth && len(currentLevel) > 0; d++ {
-		nextLevel := []int64{}
+	rows, err := s.db.QueryContext(ctx, query, obsID, depth, obsID)
+	if err != nil {
+		return nil, fmt.Errorf("graph: get related: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
 
-		neighbors, err := s.getNeighborObservations(ctx, currentLevel)
-		if err != nil {
-			return nil, fmt.Errorf("graph: get related at depth %d: %w", d+1, err)
+	var observations []*domain.Observation
+	for rows.Next() {
+		obs := &domain.Observation{}
+		var createdAt, updatedAt, tagsJSON string
+		if err := rows.Scan(
+			&obs.ID, &obs.Title, &obs.Content, &obs.Type, &obs.Project,
+			&obs.Scope, &obs.SessionID, &obs.TopicKey,
+			&obs.Confidence, &obs.Source, &tagsJSON,
+			&createdAt, &updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("graph: scan related observation: %w", err)
 		}
-
-		for _, obs := range neighbors {
-			if !visited[obs.ID] {
-				visited[obs.ID] = true
-				nextLevel = append(nextLevel, obs.ID)
-			}
+		obs.CreatedAt, _ = parseTime(createdAt)
+		obs.UpdatedAt, _ = parseTime(updatedAt)
+		if tagsJSON != "" {
+			_ = json.Unmarshal([]byte(tagsJSON), &obs.Tags)
 		}
-
-		currentLevel = nextLevel
+		observations = append(observations, obs)
 	}
 
-	// Remove the seed observation from visited
-	delete(visited, obsID)
-
-	if len(visited) == 0 {
-		return []*domain.Observation{}, nil
+	if observations == nil {
+		return []*domain.Observation{}, rows.Err()
 	}
-
-	return s.getObservationsByIDs(ctx, visited)
+	return observations, rows.Err()
 }
 
 // DeleteEdge removes a relationship between observations.
@@ -125,94 +148,66 @@ func (s *Store) DeleteEdge(ctx context.Context, id int64) error {
 	return nil
 }
 
-// getNeighborObservations returns observation IDs connected to any of the given IDs.
-func (s *Store) getNeighborObservations(ctx context.Context, ids []int64) ([]struct{ ID int64 }, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, 0, len(ids)*2)
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	ph := strings.Join(placeholders, ",")
-
-	// Query both directions
-	argsAll := append(args, args...)
-	query := fmt.Sprintf(
-		`SELECT DISTINCT to_obs_id AS neighbor_id FROM edges WHERE from_obs_id IN (%s)
-		 UNION
-		 SELECT DISTINCT from_obs_id AS neighbor_id FROM edges WHERE to_obs_id IN (%s)`,
-		ph, ph,
-	)
-
-	rows, err := s.db.QueryContext(ctx, query, argsAll...)
-	if err != nil {
+// scanEdgeRow scans a single edge row including evolution fields.
+func (s *Store) scanEdgeRow(row *sql.Row) (*domain.Edge, error) {
+	edge := &domain.Edge{}
+	var createdAt string
+	var validFrom, invalidAt sql.NullString
+	var evolutionID sql.NullInt64
+	if err := row.Scan(
+		&edge.ID, &edge.FromObsID, &edge.ToObsID, &edge.RelationType, &edge.Weight,
+		&edge.Confidence, &edge.Source, &edge.Reasoning,
+		&validFrom, &invalidAt, &createdAt,
+		&evolutionID, &edge.EvolutionType, &edge.FactState, &edge.ChangeReason,
+	); err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-
-	var neighbors []struct{ ID int64 }
-	for rows.Next() {
-		var n struct{ ID int64 }
-		if err := rows.Scan(&n.ID); err != nil {
-			return nil, err
-		}
-		neighbors = append(neighbors, n)
+	edge.CreatedAt, _ = parseTime(createdAt)
+	if validFrom.Valid {
+		t, _ := parseTime(validFrom.String)
+		edge.ValidFrom = &t
 	}
-
-	return neighbors, rows.Err()
+	if invalidAt.Valid {
+		t, _ := parseTime(invalidAt.String)
+		edge.InvalidAt = &t
+	}
+	if evolutionID.Valid {
+		edge.EvolutionID = &evolutionID.Int64
+	}
+	return edge, nil
 }
 
-// getObservationsByIDs fetches full observation records for the given IDs.
-func (s *Store) getObservationsByIDs(ctx context.Context, ids map[int64]bool) ([]*domain.Observation, error) {
-	placeholders := make([]string, 0, len(ids))
-	args := make([]interface{}, 0, len(ids))
-	for id := range ids {
-		placeholders = append(placeholders, "?")
-		args = append(args, id)
-	}
-	ph := strings.Join(placeholders, ",")
-
-	query := fmt.Sprintf(
-		`SELECT id, title, content, type, project, scope, session_id,
-		        COALESCE(topic_key, '') AS topic_key,
-		        COALESCE(confidence, 1.0), COALESCE(source, 'manual'), COALESCE(tags, ''),
-		        created_at, updated_at
-		 FROM observations
-		 WHERE id IN (%s) AND deleted_at IS NULL
-		 ORDER BY created_at DESC`, ph,
-	)
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var observations []*domain.Observation
+// scanEdgeRows scans multiple edge rows including evolution fields.
+func (s *Store) scanEdgeRows(rows *sql.Rows) ([]*domain.Edge, error) {
+	var edges []*domain.Edge
 	for rows.Next() {
-		obs := &domain.Observation{}
-		var createdAt, updatedAt, tagsJSON string
+		edge := &domain.Edge{}
+		var createdAt string
+		var validFrom, invalidAt sql.NullString
+		var evolutionID sql.NullInt64
 		if err := rows.Scan(
-			&obs.ID, &obs.Title, &obs.Content, &obs.Type, &obs.Project,
-			&obs.Scope, &obs.SessionID, &obs.TopicKey,
-			&obs.Confidence, &obs.Source, &tagsJSON,
-			&createdAt, &updatedAt,
+			&edge.ID, &edge.FromObsID, &edge.ToObsID, &edge.RelationType, &edge.Weight,
+			&edge.Confidence, &edge.Source, &edge.Reasoning,
+			&validFrom, &invalidAt, &createdAt,
+			&evolutionID, &edge.EvolutionType, &edge.FactState, &edge.ChangeReason,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("graph: scan edge: %w", err)
 		}
-		obs.CreatedAt, _ = parseTime(createdAt)
-		obs.UpdatedAt, _ = parseTime(updatedAt)
-		if tagsJSON != "" {
-			_ = json.Unmarshal([]byte(tagsJSON), &obs.Tags)
+		edge.CreatedAt, _ = parseTime(createdAt)
+		if validFrom.Valid {
+			t, _ := parseTime(validFrom.String)
+			edge.ValidFrom = &t
 		}
-		observations = append(observations, obs)
+		if invalidAt.Valid {
+			t, _ := parseTime(invalidAt.String)
+			edge.InvalidAt = &t
+		}
+		if evolutionID.Valid {
+			edge.EvolutionID = &evolutionID.Int64
+		}
+		edges = append(edges, edge)
 	}
-
-	return observations, rows.Err()
+	return edges, rows.Err()
 }
 
 // parseTime parses a SQLite datetime string, logging a warning if it fails.
@@ -242,7 +237,9 @@ func nullableTime(t *time.Time) interface{} {
 func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
 	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
-	                 valid_from, invalid_at, created_at
+	                 valid_from, invalid_at, created_at,
+	                 evolution_id, COALESCE(evolution_type, 'original'),
+	                 COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
 	          FROM edges
 	          WHERE from_obs_id = ? OR to_obs_id = ?
 	          ORDER BY created_at DESC`
@@ -253,31 +250,124 @@ func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*dom
 	}
 	defer func() { _ = rows.Close() }()
 
-	var edges []*domain.Edge
-	for rows.Next() {
-		edge := &domain.Edge{}
-		var createdAt string
-		var validFrom, invalidAt sql.NullString
-		if err := rows.Scan(
-			&edge.ID, &edge.FromObsID, &edge.ToObsID, &edge.RelationType, &edge.Weight,
-			&edge.Confidence, &edge.Source, &edge.Reasoning,
-			&validFrom, &invalidAt, &createdAt,
-		); err != nil {
-			return nil, fmt.Errorf("graph: scan edge: %w", err)
+	return s.scanEdgeRows(rows)
+}
+
+// GetEdge retrieves a specific edge by its ID.
+func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+		       valid_from, invalid_at, created_at,
+		       evolution_id, COALESCE(evolution_type, 'original'),
+		       COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+		FROM edges
+		WHERE id = ?
+	`, id)
+
+	edge, err := s.scanEdgeRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, &domain.NotFoundError{Type: "edge", ID: id}
 		}
-		edge.CreatedAt, _ = parseTime(createdAt)
-		if validFrom.Valid {
-			t, _ := parseTime(validFrom.String)
-			edge.ValidFrom = &t
-		}
-		if invalidAt.Valid {
-			t, _ := parseTime(invalidAt.String)
-			edge.InvalidAt = &t
-		}
-		edges = append(edges, edge)
+		return nil, fmt.Errorf("graph: get edge %d: %w", id, err)
 	}
 
-	return edges, rows.Err()
+	return edge, nil
+}
+
+// GetEvolutionChain retrieves all edges that share the same endpoints.
+func (s *Store) GetEvolutionChain(ctx context.Context, fromObsID, toObsID int64) ([]*domain.Edge, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+		       valid_from, invalid_at, created_at,
+		       evolution_id, COALESCE(evolution_type, 'original'),
+		       COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+		FROM edges
+		WHERE from_obs_id = ? AND to_obs_id = ?
+		ORDER BY created_at ASC
+	`, fromObsID, toObsID)
+	if err != nil {
+		return nil, fmt.Errorf("graph: get evolution chain: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanEdgeRows(rows)
+}
+
+// CountEdgesByObservation counts edges connected to a specific observation.
+func (s *Store) CountEdgesByObservation(ctx context.Context, obsID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM edges
+		WHERE from_obs_id = ? OR to_obs_id = ?
+	`, obsID, obsID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("graph: count edges by observation %d: %w", obsID, err)
+	}
+	return count, nil
+}
+
+// CountAllEdges counts all edges in the system.
+func (s *Store) CountAllEdges(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM edges`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("graph: count all edges: %w", err)
+	}
+	return count, nil
+}
+
+// GetContradictions retrieves contradiction edges created in a time range.
+func (s *Store) GetContradictions(ctx context.Context, from, to time.Time) ([]*domain.Edge, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+		       valid_from, invalid_at, created_at,
+		       evolution_id, COALESCE(evolution_type, 'original'),
+		       COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+		FROM edges
+		WHERE relation_type = ? AND created_at >= ? AND created_at <= ?
+		ORDER BY created_at DESC
+	`, domain.RelationContradicts, from.Format(sqliteDatetimeFormat), to.Format(sqliteDatetimeFormat))
+	if err != nil {
+		return nil, fmt.Errorf("graph: get contradictions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanEdgeRows(rows)
+}
+
+// UpdateEdge updates mutable edge fields by ID.
+func (s *Store) UpdateEdge(ctx context.Context, edge *domain.Edge) error {
+	if edge == nil {
+		return &domain.ValidationError{Field: "edge", Message: "edge cannot be nil"}
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE edges
+		SET relation_type = ?, weight = ?, confidence = ?, source = ?, reasoning = ?,
+		    valid_from = ?, invalid_at = ?
+		WHERE id = ?
+	`,
+		edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning),
+		nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt), edge.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("graph: update edge %d: %w", edge.ID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("graph: rows affected for edge %d: %w", edge.ID, err)
+	}
+	if rows == 0 {
+		return &domain.NotFoundError{Type: "edge", ID: edge.ID}
+	}
+
+	return nil
 }
 
 // Ensure Store implements domain.GraphRepository.

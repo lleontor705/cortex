@@ -1,0 +1,42 @@
+# Cortex
+
+> Persistent memory server for AI coding assistants. Single Go binary with SQLite + FTS5, knowledge graph, importance scoring, and temporal evolution tracking. 100% Engram API compatible with extended capabilities. Interfaces: MCP server, HTTP REST API, CLI, TUI.
+
+Cortex stores observations (decisions, bugfixes, patterns, discoveries) across coding sessions and makes them retrievable via a 7-signal enhanced search pipeline: FTS5 BM25, recency decay, importance scoring, topic key expansion, pseudo-relevance feedback, graph neighborhood expansion, and configurable RRF fusion.
+
+- Local-first: all data in ~/.cortex/cortex.db (SQLite + WAL mode)
+- MCP-native: stdio transport for AI agent integration
+- Knowledge graph: typed edges between observations with temporal validity
+- Auto-archival: soft-delete stale low-score observations
+- Git sync: chunk-based gzipped JSONL with manifest for conflict-free multi-machine sharing
+
+## Docs
+
+- [README](https://github.com/lleontor705/cortex/blob/master/README.md): Installation, quickstart, feature overview
+- [CLAUDE.md](https://github.com/lleontor705/cortex/blob/master/CLAUDE.md): Architecture, build commands, design decisions, MCP tools reference
+- [cortex.yaml.example](https://github.com/lleontor705/cortex/blob/master/cortex.yaml.example): Full configuration reference with defaults
+
+## API
+
+- [MCP Tools](https://github.com/lleontor705/cortex/blob/master/internal/mcp/tools_memory.go): 14 Engram-compatible memory tools (mem_save, mem_search, mem_context, etc.)
+- [Cortex Tools](https://github.com/lleontor705/cortex/blob/master/internal/mcp/tools_cortex.go): 6 exclusive tools (mem_relate, mem_graph, mem_score, mem_archive, mem_search_hybrid, mem_merge_projects)
+- [Temporal Tools](https://github.com/lleontor705/cortex/blob/master/internal/mcp/temporal_tools.go): 10 temporal graph tools (edge evolution, fact states, snapshots)
+- [HTTP API](https://github.com/lleontor705/cortex/blob/master/internal/http/server.go): 17 REST endpoints for observations, sessions, search, graph, scoring, import/export
+
+## Code
+
+- [Domain Models](https://github.com/lleontor705/cortex/blob/master/internal/domain/models.go): Core types (Observation, Session, Edge, ImportanceScore, SearchScoreBreakdown)
+- [Domain Interfaces](https://github.com/lleontor705/cortex/blob/master/internal/domain/interfaces.go): Repository contracts (12 interfaces)
+- [Search Store](https://github.com/lleontor705/cortex/blob/master/internal/store/search/store.go): Enhanced search pipeline with 7-signal RRF fusion
+- [Graph Store](https://github.com/lleontor705/cortex/blob/master/internal/store/graph/store.go): Knowledge graph with recursive CTE traversal
+- [Scoring Service](https://github.com/lleontor705/cortex/blob/master/internal/domain/scoring/scoring.go): Importance formula (base + access + recency + edges + type - age)
+- [Temporal Service](https://github.com/lleontor705/cortex/blob/master/internal/domain/temporal/temporal.go): Temporal graph evolution and contradiction handling
+- [Sync Package](https://github.com/lleontor705/cortex/blob/master/internal/sync/sync.go): Git-friendly chunk-based sync with Transport interface
+- [CLI](https://github.com/lleontor705/cortex/blob/master/internal/cli/cli.go): 15 commands (mcp, search, save, sync, merge-projects, etc.)
+
+## Optional
+
+- [Migrations](https://github.com/lleontor705/cortex/tree/master/migrations): 14 SQL migrations (001-014)
+- [Dockerfile](https://github.com/lleontor705/cortex/blob/master/Dockerfile): Multi-stage Alpine build
+- [CI/CD](https://github.com/lleontor705/cortex/tree/master/.github/workflows): GitHub Actions for test, lint, release
+- [GoReleaser](https://github.com/lleontor705/cortex/blob/master/.goreleaser.yml): Cross-platform binary builds + Homebrew tap
