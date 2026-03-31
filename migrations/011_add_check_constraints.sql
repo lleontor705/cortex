@@ -24,7 +24,21 @@ CREATE TABLE edges_new (
     UNIQUE(from_obs_id, to_obs_id, relation_type)
 );
 
-INSERT INTO edges_new SELECT * FROM edges;
+INSERT INTO edges_new (
+    id, from_obs_id, to_obs_id, relation_type, weight, confidence,
+    source, reasoning, valid_from, invalid_at,
+    evolution_id, evolution_type, fact_state, change_reason, created_at
+)
+SELECT
+    id, from_obs_id, to_obs_id, relation_type,
+    COALESCE(weight, 1.0),
+    COALESCE(confidence, 1.0),
+    source, reasoning, valid_from, invalid_at,
+    evolution_id,
+    COALESCE(evolution_type, 'original'),
+    COALESCE(fact_state, 'current'),
+    change_reason, created_at
+FROM edges;
 DROP TABLE edges;
 ALTER TABLE edges_new RENAME TO edges;
 
