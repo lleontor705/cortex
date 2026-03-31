@@ -152,7 +152,7 @@ func TestComputeCosineSimilarity(t *testing.T) {
 		v2 := []float32{1.0, 1.0, 0.0}
 		norm := normalizeVector(v1)
 		sim := computeCosineSimilarity(norm, v2)
-		// Expected: 1 / sqrt(2) ≈ 0.707
+		// Expected: 1 / sqrt(2) - 0.707
 		expected := 1.0 / math.Sqrt(2)
 		if math.Abs(sim-expected) > 1e-6 {
 			t.Errorf("expected similarity %f, got %f", expected, sim)

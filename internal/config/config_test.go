@@ -46,6 +46,7 @@ database:
 http:
   port: 9090
   host: 0.0.0.0
+  token: secret
 logging:
   level: debug
   format: text
@@ -62,6 +63,9 @@ logging:
 				if cfg.HTTP.Port != 9090 {
 					t.Errorf("expected HTTP port 9090, got %d", cfg.HTTP.Port)
 				}
+				if cfg.HTTP.Token != "secret" {
+					t.Errorf("expected HTTP token 'secret', got '%s'", cfg.HTTP.Token)
+				}
 				if cfg.Logging.Level != "debug" {
 					t.Errorf("expected logging level 'debug', got '%s'", cfg.Logging.Level)
 				}
@@ -73,6 +77,7 @@ logging:
 			envVars: map[string]string{
 				"CORTEX_SERVER_NAME":   "env-server",
 				"CORTEX_HTTP_PORT":     "3000",
+				"CORTEX_HTTP_TOKEN":    "env-token",
 				"CORTEX_LOGGING_LEVEL": "error",
 				"CORTEX_DATABASE_PATH": "/custom/path.db",
 			},
@@ -83,6 +88,9 @@ logging:
 				}
 				if cfg.HTTP.Port != 3000 {
 					t.Errorf("expected HTTP port 3000, got %d", cfg.HTTP.Port)
+				}
+				if cfg.HTTP.Token != "env-token" {
+					t.Errorf("expected HTTP token 'env-token', got '%s'", cfg.HTTP.Token)
 				}
 				if cfg.Logging.Level != "error" {
 					t.Errorf("expected logging level 'error', got '%s'", cfg.Logging.Level)
@@ -326,6 +334,28 @@ func TestValidation(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "max_limit less than default_limit",
+			modify: func(c *Config) {
+				c.Search.DefaultLimit = 50
+				c.Search.MaxLimit = 20
+			},
+			wantErr: true,
+		},
+		{
+			name: "min_archive_score negative",
+			modify: func(c *Config) {
+				c.Memory.MinArchiveScore = -0.5
+			},
+			wantErr: true,
+		},
+		{
+			name: "min_archive_score too high",
+			modify: func(c *Config) {
+				c.Memory.MinArchiveScore = 6.0
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -376,6 +406,7 @@ func clearEnvVars(t *testing.T) {
 		"CORTEX_HTTP_ENABLED",
 		"CORTEX_HTTP_PORT",
 		"CORTEX_HTTP_HOST",
+		"CORTEX_HTTP_TOKEN",
 		"CORTEX_LOGGING_LEVEL",
 		"CORTEX_LOGGING_FORMAT",
 	}

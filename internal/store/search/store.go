@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -58,27 +59,35 @@ func (s *Store) Search(ctx context.Context, query string, opts domain.SearchOpti
 		return s.searchWithTopicKey(ctx, query, opts, limit)
 	}
 
-	// Standard FTS5 keyword search
-	return s.searchKeywords(ctx, query, opts, limit)
+	// Enhanced keyword search with recency, importance, and topic key expansion
+	return s.searchEnhanced(ctx, query, opts, limit)
 }
 
 // searchWithTopicKey handles searches that include topic keys.
 // It uses RRF fusion to combine topic key direct lookup with keyword search.
 func (s *Store) searchWithTopicKey(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
-	// Get direct topic key matches
+	// Get direct topic key matches (highest priority)
 	topicResults, err := s.lookupByTopicKey(ctx, query, opts, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search store: topic key lookup: %w", err)
 	}
 
-	// Get FTS5 keyword matches
-	keywordResults, err := s.searchKeywords(ctx, query, opts, limit)
+	// Get FTS5 keyword matches with recency boost
+	keywordResults, err := s.searchKeywords(ctx, query, opts, limit*3)
 	if err != nil {
 		return nil, fmt.Errorf("search store: keyword search: %w", err)
 	}
+	s.applyRecencyBoost(ctx, keywordResults)
 
-	// Combine results using RRF fusion
-	return s.combineWithRRF(topicResults, keywordResults, limit), nil
+	// Get importance ranking
+	allIDs := collectIDs(topicResults, keywordResults)
+	importanceResults := s.getImportanceRanking(ctx, allIDs)
+
+	fusionK := opts.FusionK
+	if fusionK <= 0 {
+		fusionK = 60.0
+	}
+	return s.combineAllSignals(topicResults, keywordResults, nil, nil, importanceResults, fusionK, limit), nil
 }
 
 // lookupByTopicKey performs a direct lookup by topic key.
@@ -122,6 +131,11 @@ func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.
 		if err != nil {
 			return nil, err
 		}
+		result.ScoreBreakdown = domain.SearchScoreBreakdown{
+			Strategy:      "topic_key",
+			TopicKeyExact: true,
+		}
+		result.Content = previewContent(query, result.Content, 300)
 		results = append(results, result)
 	}
 
@@ -184,6 +198,11 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 			return nil, err
 		}
 		result.Rank = rank
+		result.ScoreBreakdown = domain.SearchScoreBreakdown{
+			Strategy:    "keyword",
+			KeywordBM25: rank,
+		}
+		result.Content = previewContent(query, result.Content, 300)
 		results = append(results, result)
 	}
 
@@ -225,57 +244,6 @@ func (s *Store) GetSnippet(ctx context.Context, query string, content string, ma
 	}
 
 	return snippet, nil
-}
-
-// combineWithRRF combines two result sets using Reciprocal Rank Fusion.
-// RRF formula: score = sum(1 / (k + rank)) for each result list
-// where k is a constant (default 60).
-func (s *Store) combineWithRRF(topicResults, keywordResults []*domain.SearchResult, limit int) []*domain.SearchResult {
-	const k = 60.0 // RRF constant
-
-	// Track scores and observations by ID
-	scores := make(map[int64]float64)
-	observations := make(map[int64]*domain.SearchResult)
-
-	// Score topic key results (higher priority due to exact match)
-	for rank, result := range topicResults {
-		id := result.ID
-		scores[id] += 1.0 / (k + float64(rank+1))
-		observations[id] = result
-	}
-
-	// Score keyword results
-	for rank, result := range keywordResults {
-		id := result.ID
-		scores[id] += 1.0 / (k + float64(rank+1))
-		if _, exists := observations[id]; !exists {
-			observations[id] = result
-		}
-	}
-
-	// Build combined results sorted by RRF score
-	combined := make([]*domain.SearchResult, 0, len(observations))
-	for id, result := range observations {
-		result.Rank = scores[id]
-		combined = append(combined, result)
-	}
-
-	// Sort by RRF score (descending)
-	sortByRRFScore(combined)
-
-	// Limit results
-	if len(combined) > limit {
-		combined = combined[:limit]
-	}
-
-	return combined
-}
-
-// sortByRRFScore sorts search results by RRF score in descending order.
-func sortByRRFScore(results []*domain.SearchResult) {
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Rank > results[j].Rank
-	})
 }
 
 // scanSearchResult scans a row into a SearchResult with a fixed rank.
@@ -408,6 +376,539 @@ func parseSearchTime(s string) time.Time {
 		log.Printf("search: failed to parse time %q", s)
 	}
 	return time.Time{}
+}
+
+func previewContent(query, content string, maxLength int) string {
+	if maxLength <= 0 || len(content) <= maxLength {
+		return content
+	}
+
+	terms := strings.Fields(strings.ToLower(query))
+	lowerContent := strings.ToLower(content)
+	matchIdx := -1
+	for _, term := range terms {
+		term = strings.Trim(term, `"'*/`)
+		if term == "" {
+			continue
+		}
+		if idx := strings.Index(lowerContent, term); idx >= 0 {
+			matchIdx = idx
+			break
+		}
+	}
+
+	if matchIdx < 0 {
+		return content[:maxLength] + "..."
+	}
+
+	start := matchIdx - (maxLength / 3)
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxLength
+	if end > len(content) {
+		end = len(content)
+		if end > maxLength {
+			start = end - maxLength
+		}
+	}
+
+	snippet := content[start:end]
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(content) {
+		snippet += "..."
+	}
+	return snippet
+}
+
+// --- Enhanced Search Pipeline ---
+
+// searchEnhanced combines FTS5 keyword search with recency decay, importance
+// ranking, topic key expansion, graph neighborhood expansion, and pseudo-relevance
+// feedback using multi-signal RRF fusion.
+func (s *Store) searchEnhanced(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
+	// 1. Get FTS5 keyword results (fetch extra candidates for re-ranking)
+	keywordResults, err := s.searchKeywords(ctx, query, opts, limit*3)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Pseudo-Relevance Feedback: extract distinctive terms from top results
+	//    and run a second FTS5 query to improve recall.
+	prfResults := s.pseudoRelevanceFeedback(ctx, query, keywordResults, opts, limit)
+
+	// 3. Get topic key expansion results (LIKE matching)
+	topicExpResults, err := s.searchByTopicKeyExpansion(ctx, query, opts, limit)
+	if err != nil {
+		log.Printf("search: topic key expansion error (non-fatal): %v", err)
+		topicExpResults = nil
+	}
+
+	// 4. Apply recency boost to keyword results
+	s.applyRecencyBoost(ctx, keywordResults)
+
+	// 5. Graph neighborhood expansion: boost observations connected to top results
+	var graphResults []*domain.SearchResult
+	if opts.GraphExpand && len(keywordResults) > 0 {
+		graphResults = s.graphNeighborExpansion(ctx, keywordResults, opts, limit)
+	}
+
+	// 6. Get importance ranking for all candidate IDs
+	allIDs := collectIDs(keywordResults, topicExpResults, prfResults, graphResults)
+	importanceResults := s.getImportanceRanking(ctx, allIDs)
+
+	// 7. Combine all signals via RRF
+	fusionK := opts.FusionK
+	if fusionK <= 0 {
+		fusionK = 60.0
+	}
+	combined := s.combineAllSignals(keywordResults, topicExpResults, prfResults, graphResults, importanceResults, fusionK, limit)
+
+	return combined, nil
+}
+
+// applyRecencyBoost adjusts BM25 rank by recency decay (Stanford Generative Agents).
+// Formula: adjustedRank = bm25Rank * (1 + 0.995^hoursSinceAccess)
+func (s *Store) applyRecencyBoost(ctx context.Context, results []*domain.SearchResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	// Collect IDs for batch query
+	placeholders := make([]string, len(results))
+	args := make([]any, len(results))
+	idIndex := make(map[int64]int)
+	for i, r := range results {
+		placeholders[i] = "?"
+		args[i] = r.ID
+		idIndex[r.ID] = i
+	}
+
+	query := fmt.Sprintf(`
+		SELECT observation_id, last_accessed
+		FROM importance_scores
+		WHERE observation_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return // non-fatal: skip recency boost
+	}
+	defer func() { _ = rows.Close() }()
+
+	now := time.Now()
+	for rows.Next() {
+		var obsID int64
+		var lastAccessed sql.NullString
+		if err := rows.Scan(&obsID, &lastAccessed); err != nil {
+			continue
+		}
+		idx, ok := idIndex[obsID]
+		if !ok {
+			continue
+		}
+
+		var hoursSince float64
+		if lastAccessed.Valid {
+			t := parseSearchTime(lastAccessed.String)
+			if !t.IsZero() {
+				hoursSince = now.Sub(t).Hours()
+			}
+		}
+		if hoursSince < 0 {
+			hoursSince = 0
+		}
+
+		// Decay: 0.995^hours -- recently accessed = ~1.0, 30 days ago = ~0.03
+		recency := math.Pow(0.995, hoursSince)
+		results[idx].Rank *= (1.0 + recency)
+		results[idx].ScoreBreakdown.RecencyBoost = recency
+	}
+
+	// Re-sort by adjusted rank
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Rank < results[j].Rank // BM25 ranks are negative (lower = better)
+	})
+}
+
+// searchByTopicKeyExpansion finds observations whose topic_key contains query terms.
+func (s *Store) searchByTopicKeyExpansion(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
+	terms := extractSearchTerms(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+
+	// Build LIKE conditions for each term
+	conditions := make([]string, 0, len(terms))
+	args := make([]any, 0)
+	for _, term := range terms {
+		if len(term) < 3 {
+			continue // skip very short terms to avoid noise
+		}
+		conditions = append(conditions, "o.topic_key LIKE ?")
+		args = append(args, "%"+term+"%")
+	}
+	if len(conditions) == 0 {
+		return nil, nil
+	}
+
+	baseQuery := fmt.Sprintf(`
+		SELECT o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
+		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		FROM observations o
+		WHERE (%s) AND o.topic_key IS NOT NULL AND o.topic_key != '' AND o.deleted_at IS NULL
+	`, strings.Join(conditions, " OR "))
+
+	if opts.Project != "" {
+		baseQuery += " AND o.project = ?"
+		args = append(args, opts.Project)
+	}
+	if opts.Scope != "" {
+		baseQuery += " AND o.scope = ?"
+		args = append(args, normalizeScope(opts.Scope))
+	}
+
+	baseQuery += " ORDER BY o.updated_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("topic key expansion: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*domain.SearchResult
+	for rows.Next() {
+		result, err := s.scanSearchResult(rows, -500) // Priority between topic exact (-1000) and keyword
+		if err != nil {
+			return nil, err
+		}
+		result.ScoreBreakdown = domain.SearchScoreBreakdown{
+			Strategy:       "topic_key_expansion",
+			TopicKeyExpand: true,
+		}
+		result.Content = previewContent(query, result.Content, 300)
+		results = append(results, result)
+	}
+
+	return results, rows.Err()
+}
+
+// getImportanceRanking returns search results ordered by importance score.
+func (s *Store) getImportanceRanking(ctx context.Context, ids []int64) []*domain.SearchResult {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT s.observation_id, s.score
+		FROM importance_scores s
+		WHERE s.observation_id IN (%s)
+		ORDER BY s.score DESC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil // non-fatal
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*domain.SearchResult
+	for rows.Next() {
+		var obsID int64
+		var score float64
+		if err := rows.Scan(&obsID, &score); err != nil {
+			continue
+		}
+		results = append(results, &domain.SearchResult{
+			Observation: domain.Observation{ID: obsID},
+			Rank:        score,
+			ScoreBreakdown: domain.SearchScoreBreakdown{
+				ImportanceRank: score,
+			},
+		})
+	}
+	return results
+}
+
+// --- Pseudo-Relevance Feedback (PRF) ---
+
+// pseudoRelevanceFeedback extracts distinctive terms from top-3 results and
+// runs a second FTS5 query to improve recall. This finds related observations
+// that share vocabulary with relevant results but not the original query.
+func (s *Store) pseudoRelevanceFeedback(ctx context.Context, originalQuery string, topResults []*domain.SearchResult, opts domain.SearchOptions, limit int) []*domain.SearchResult {
+	if len(topResults) < 2 {
+		return nil
+	}
+
+	// Extract terms from top 3 results (title + first 200 chars of content)
+	topN := topResults
+	if len(topN) > 3 {
+		topN = topN[:3]
+	}
+
+	originalTerms := make(map[string]bool)
+	for _, t := range extractSearchTerms(originalQuery) {
+		originalTerms[t] = true
+	}
+
+	termFreq := make(map[string]int)
+	for _, r := range topN {
+		text := r.Title + " " + r.Content
+		if len(text) > 300 {
+			text = text[:300]
+		}
+		for _, t := range extractSearchTerms(text) {
+			if !originalTerms[t] && len(t) >= 3 {
+				termFreq[t]++
+			}
+		}
+	}
+
+	// Pick top 3 most frequent new terms
+	type termCount struct {
+		term  string
+		count int
+	}
+	var ranked []termCount
+	for t, c := range termFreq {
+		if c >= 2 { // term must appear in at least 2 of top-3 results
+			ranked = append(ranked, termCount{t, c})
+		}
+	}
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].count > ranked[j].count })
+
+	if len(ranked) == 0 {
+		return nil
+	}
+	if len(ranked) > 3 {
+		ranked = ranked[:3]
+	}
+
+	// Build expanded query: original terms + top PRF terms
+	expandedTerms := append([]string{}, extractSearchTerms(originalQuery)...)
+	for _, tc := range ranked {
+		expandedTerms = append(expandedTerms, tc.term)
+	}
+	expandedQuery := strings.Join(expandedTerms, " ")
+
+	// Run second FTS5 query with expanded terms
+	prfResults, err := s.searchKeywords(ctx, expandedQuery, opts, limit)
+	if err != nil {
+		return nil
+	}
+
+	// Remove results already in top results to avoid duplicates
+	existing := make(map[int64]bool)
+	for _, r := range topResults {
+		existing[r.ID] = true
+	}
+	var newResults []*domain.SearchResult
+	for _, r := range prfResults {
+		if !existing[r.ID] {
+			newResults = append(newResults, r)
+		}
+	}
+	return newResults
+}
+
+// --- Graph Neighborhood Expansion ---
+
+// graphNeighborExpansion finds observations connected to top search results
+// via knowledge graph edges (1-hop). Based on Microsoft GraphRAG concept.
+func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain.SearchResult, opts domain.SearchOptions, limit int) []*domain.SearchResult {
+	if len(topResults) == 0 {
+		return nil
+	}
+
+	// Take top 5 results for graph expansion
+	topN := topResults
+	if len(topN) > 5 {
+		topN = topN[:5]
+	}
+
+	// Collect neighbor IDs via 1-hop edges
+	existing := make(map[int64]bool)
+	for _, r := range topResults {
+		existing[r.ID] = true
+	}
+
+	var neighborIDs []int64
+	for _, r := range topN {
+		// Query edges in both directions
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT DISTINCT CASE
+				WHEN from_obs_id = ? THEN to_obs_id
+				ELSE from_obs_id
+			END as neighbor_id
+			FROM edges
+			WHERE (from_obs_id = ? OR to_obs_id = ?)
+			LIMIT 10
+		`, r.ID, r.ID, r.ID)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var nID int64
+			if err := rows.Scan(&nID); err == nil && !existing[nID] {
+				neighborIDs = append(neighborIDs, nID)
+				existing[nID] = true
+			}
+		}
+		_ = rows.Close()
+	}
+
+	if len(neighborIDs) == 0 {
+		return nil
+	}
+
+	// Fetch neighbor observations
+	placeholders := make([]string, len(neighborIDs))
+	args := make([]any, len(neighborIDs))
+	for i, id := range neighborIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	// Apply project filter if set
+	projectFilter := ""
+	if opts.Project != "" {
+		projectFilter = " AND o.project = ?"
+		args = append(args, opts.Project)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
+		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		FROM observations o
+		WHERE o.id IN (%s) AND o.deleted_at IS NULL%s
+		ORDER BY o.updated_at DESC
+		LIMIT ?
+	`, strings.Join(placeholders, ","), projectFilter)
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*domain.SearchResult
+	for rows.Next() {
+		result, err := s.scanSearchResult(rows, -200) // Lower priority than direct matches
+		if err != nil {
+			continue
+		}
+		result.ScoreBreakdown = domain.SearchScoreBreakdown{
+			Strategy: "graph_neighbor",
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+// --- Multi-Signal Fusion ---
+
+// combineAllSignals combines all search signals using configurable RRF.
+func (s *Store) combineAllSignals(keyword, topicExp, prf, graph, importance []*domain.SearchResult, fusionK float64, limit int) []*domain.SearchResult {
+	scores := make(map[int64]float64)
+	observations := make(map[int64]*domain.SearchResult)
+	breakdowns := make(map[int64]domain.SearchScoreBreakdown)
+
+	addSignal := func(results []*domain.SearchResult, signalName string) {
+		for rank, r := range results {
+			id := r.ID
+			scores[id] += 1.0 / (fusionK + float64(rank+1))
+			if _, exists := observations[id]; !exists {
+				observations[id] = r
+			}
+			bd := breakdowns[id]
+			switch signalName {
+			case "keyword":
+				if r.ScoreBreakdown.KeywordBM25 != 0 {
+					bd.KeywordBM25 = r.ScoreBreakdown.KeywordBM25
+				}
+				if r.ScoreBreakdown.RecencyBoost != 0 {
+					bd.RecencyBoost = r.ScoreBreakdown.RecencyBoost
+				}
+				if r.ScoreBreakdown.TopicKeyExact {
+					bd.TopicKeyExact = true
+				}
+			case "topic_expansion":
+				bd.TopicKeyExpand = true
+			case "importance":
+				bd.ImportanceRank = r.ScoreBreakdown.ImportanceRank
+			}
+			breakdowns[id] = bd
+		}
+	}
+
+	addSignal(keyword, "keyword")
+	addSignal(topicExp, "topic_expansion")
+	addSignal(prf, "keyword") // PRF results share keyword characteristics
+	addSignal(graph, "graph")
+	addSignal(importance, "importance")
+
+	// Build combined results
+	combined := make([]*domain.SearchResult, 0, len(observations))
+	for id, obs := range observations {
+		bd := breakdowns[id]
+		bd.Strategy = "enhanced"
+		bd.FusionScore = scores[id]
+		obs.Rank = scores[id]
+		obs.ScoreBreakdown = bd
+		combined = append(combined, obs)
+	}
+
+	sort.Slice(combined, func(i, j int) bool {
+		return combined[i].Rank > combined[j].Rank
+	})
+
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
+	return combined
+}
+
+// collectIDs gathers unique observation IDs from multiple result sets.
+func collectIDs(sets ...[]*domain.SearchResult) []int64 {
+	seen := make(map[int64]bool)
+	var ids []int64
+	for _, set := range sets {
+		for _, r := range set {
+			if !seen[r.ID] {
+				seen[r.ID] = true
+				ids = append(ids, r.ID)
+			}
+		}
+	}
+	return ids
+}
+
+// extractSearchTerms extracts clean search terms from a query string.
+func extractSearchTerms(query string) []string {
+	query = strings.ToLower(strings.TrimSpace(query))
+	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
+	query = replacer.Replace(query)
+	terms := strings.Fields(query)
+	// Filter out very common stop words
+	var filtered []string
+	stopWords := map[string]bool{"the": true, "a": true, "an": true, "is": true, "in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "and": true, "or": true}
+	for _, t := range terms {
+		if !stopWords[t] && len(t) > 1 {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // Ensure Store implements domain.SearchRepository

@@ -75,6 +75,7 @@ type HTTPConfig struct {
 	Enabled bool   `yaml:"enabled" mapstructure:"enabled"`
 	Port    int    `yaml:"port" mapstructure:"port"`
 	Host    string `yaml:"host" mapstructure:"host"`
+	Token   string `yaml:"token" mapstructure:"token"`
 }
 
 // LoggingConfig holds logging configuration
@@ -132,6 +133,7 @@ var defaults = Config{
 		Enabled: true,
 		Port:    7438,
 		Host:    "localhost",
+		Token:   "",
 	},
 	Logging: LoggingConfig{
 		Level:  "info",
@@ -226,6 +228,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http.enabled", defaults.HTTP.Enabled)
 	v.SetDefault("http.port", defaults.HTTP.Port)
 	v.SetDefault("http.host", defaults.HTTP.Host)
+	v.SetDefault("http.token", defaults.HTTP.Token)
 
 	v.SetDefault("logging.level", defaults.Logging.Level)
 	v.SetDefault("logging.format", defaults.Logging.Format)
@@ -325,6 +328,9 @@ func validate(cfg *Config) error {
 	if cfg.Search.FusionK < 1 {
 		return fmt.Errorf("invalid search.fusion_k: %.1f (must be >= 1)", cfg.Search.FusionK)
 	}
+	if cfg.Search.MaxLimit < cfg.Search.DefaultLimit {
+		return fmt.Errorf("invalid search.max_limit: %d (must be >= default_limit %d)", cfg.Search.MaxLimit, cfg.Search.DefaultLimit)
+	}
 
 	// Validate memory config
 	if cfg.Memory.MaxObservationLength < 1 {
@@ -335,6 +341,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Memory.DecayHalfLifeDays <= 0 {
 		return fmt.Errorf("invalid memory.importance_decay_half_life: %.1f (must be > 0)", cfg.Memory.DecayHalfLifeDays)
+	}
+	if cfg.Memory.MinArchiveScore < 0 || cfg.Memory.MinArchiveScore > 5 {
+		return fmt.Errorf("invalid memory.min_archive_score: %.2f (must be between 0.0 and 5.0)", cfg.Memory.MinArchiveScore)
 	}
 
 	return nil

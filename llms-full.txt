@@ -1,0 +1,397 @@
+# Cortex
+
+> Persistent memory server for AI coding assistants. Single Go binary with SQLite + FTS5, knowledge graph, importance scoring, and temporal evolution tracking. 100% Engram API compatible with extended capabilities.
+
+## Overview
+
+Cortex is a memory server that stores observations (decisions, bugfixes, patterns, discoveries, configurations) across AI coding sessions and makes them retrievable via an enhanced multi-signal search pipeline. It runs as a single Go binary with zero external dependencies beyond SQLite.
+
+**Key differentiators from Engram:**
+- Knowledge graph with typed edges and temporal validity
+- Importance scoring (base + access + recency + edges + type - age penalty)
+- 7-signal search pipeline (BM25 + recency + importance + topic expansion + PRF + graph + RRF)
+- Entity extraction (files, URLs, packages, symbols)
+- Git-friendly chunk-based sync
+- Temporal graph evolution with fact states and contradiction handling
+- Observability metrics and quality evaluation
+
+## Installation
+
+```bash
+# Homebrew
+brew install lleontor705/tap/cortex
+
+# Go install
+go install github.com/lleontor705/cortex/cmd/cortex@latest
+
+# Docker
+docker build -t cortex .
+docker run -v ~/.cortex:/home/cortex/.cortex cortex mcp
+```
+
+## CLI Commands
+
+```
+cortex mcp [--tools=PROFILE]      Start MCP server (stdio). Profiles: agent, admin, all
+cortex search <query>             Search memories (FTS5 + enhanced pipeline)
+  --type TYPE                     Filter by type (decision, bugfix, pattern, etc.)
+  --project PROJECT               Filter by project name
+  --scope SCOPE                   Filter by scope (project, personal)
+  --limit N                       Max results (default: 10)
+cortex save <title> <content>     Save a memory observation
+  --type TYPE                     Observation type (default: manual)
+  --project PROJECT               Project name
+  --scope SCOPE                   Scope (default: project)
+  --topic-key KEY                 Topic key for upsert (e.g., architecture/auth)
+cortex timeline <obs_id>          Show chronological context around an observation
+  --before N                      Observations before (default: 5)
+  --after N                       Observations after (default: 5)
+cortex revisions <obs_id>         Show revision history (temporal snapshots)
+  --limit N                       Max revisions to show
+cortex context [project]          Show recent memory context for a project
+cortex stats                      Show memory statistics
+cortex setup [agent]              Install agent integration
+                                  Agents: claude-code, opencode, gemini-cli, codex, cursor, windsurf
+cortex import --from-engram       Import from an Engram database
+  --path PATH                     Path to engram.db
+cortex import --from-json         Import observations from JSON file
+  --path PATH                     Path to JSON file
+cortex export                     Export observations to JSON
+  --project PROJECT               Filter by project
+  --output FILE                   Write to file instead of stdout
+cortex sync                       Export memories as git-friendly chunk
+  --import                        Import chunks from manifest
+  --status                        Show sync status (local/remote/pending)
+  --all                           Export all projects
+  --project PROJECT               Export specific project
+cortex merge-projects             Merge project name variants
+  --from "Name1,Name2"            Comma-separated source project names
+  --to canonical-name             Target canonical name
+  --dry-run                       Preview without executing
+cortex migrate <up|down|status>   Manage database migrations
+cortex tui                        Launch terminal UI browser
+cortex serve                      Start HTTP REST API server
+cortex version                    Print version
+cortex help                       Show help
+```
+
+## MCP Tools
+
+### Engram-Compatible (14 tools)
+
+**mem_save** - Save an observation to persistent memory. Call PROACTIVELY after completing significant work.
+- Parameters: title* (string), content* (string), type (string), session_id (string), project (string), scope (string), topic_key (string), confidence (number 0-1), source (string), tags (string, comma-separated)
+- Topic key enables upsert: same topic_key + project updates existing observation
+
+**mem_search** - Search persistent memory across all sessions using FTS5.
+- Parameters: query* (string), type (string), project (string), scope (string), limit (number), graph_expand (boolean)
+- Returns results with score_breakdown showing which signals contributed
+
+**mem_context** - Get recent session context for a project.
+- Parameters: project (string), limit (number)
+- Returns formatted recent observations and session summaries
+
+**mem_session_summary** - Save a structured session summary. MANDATORY before ending session.
+- Parameters: content* (string), project (string), session_id (string)
+- Format: ## Goal, ## Discoveries, ## Accomplished, ## Next Steps, ## Relevant Files
+
+**mem_get_observation** - Get full content of an observation by ID.
+- Parameters: id* (number)
+- Also records implicit access feedback for importance scoring
+
+**mem_save_prompt** - Save a user prompt to memory.
+- Parameters: content* (string), session_id (string), project (string)
+
+**mem_update** - Update an existing observation by ID.
+- Parameters: id* (number), title (string), content (string), type (string), project (string), scope (string), topic_key (string), confidence (number), source (string), tags (string)
+
+**mem_suggest_topic_key** - Suggest a stable topic key for an observation.
+- Parameters: type (string), title (string), content (string)
+- Returns family/segment format (e.g., architecture/auth-model)
+
+**mem_session_start** - Start a new coding session.
+- Parameters: project* (string), directory (string), session_id (string)
+
+**mem_session_end** - End a coding session.
+- Parameters: session_id* (string), summary (string)
+
+**mem_stats** - Show memory system statistics.
+- Returns total sessions, observations, projects, type distribution
+
+**mem_delete** - Delete an observation (soft delete by default).
+- Parameters: id* (number), hard (boolean)
+
+**mem_timeline** - Show chronological context around an observation.
+- Parameters: observation_id* (number), before (number), after (number)
+- Includes revision history when available
+
+**mem_capture_passive** - Extract and save key learnings from content.
+- Parameters: content* (string), project (string), session_id (string), source (string)
+- Auto-extracts ## Key Learnings section and saves as observation
+
+### Cortex-Exclusive (6 tools)
+
+**mem_relate** - Create a typed relationship between two observations.
+- Parameters: from_id* (number), to_id* (number), relation_type* (string: references, relates_to, follows, contradicts, supersedes), weight (number 0-10), confidence (number 0-1), source (string), reasoning (string)
+
+**mem_graph** - Traverse the knowledge graph from an observation.
+- Parameters: observation_id* (number), depth (number, default 1, max 10)
+- Uses recursive CTE for efficient graph traversal
+
+**mem_score** - Get or recalculate importance score for an observation.
+- Parameters: observation_id* (number), recalculate (boolean)
+- Formula: base(0.5) + accessBonus(max 1.0) + recencyBonus(0.5 if <24h) + edgeBonus(max 1.0) + typeBonus - agePenalty(max 0.5)
+
+**mem_archive** - Soft-delete an observation (archive).
+- Parameters: observation_id* (number)
+
+**mem_search_hybrid** - Hybrid search combining FTS5 + optional vector similarity.
+- Parameters: query* (string), project (string), scope (string), limit (number)
+- Uses Reciprocal Rank Fusion (RRF) with configurable k parameter
+
+**mem_merge_projects** - Merge project name variants into one canonical name.
+- Parameters: from* (string, comma-separated), to* (string)
+- Destructive: updates all observations and sessions atomically
+
+### Temporal Tools (10 tools)
+
+temporal_create_edge, temporal_get_edges, temporal_get_relevant, temporal_create_snapshot, temporal_record_operation, temporal_evaluate_quality, temporal_system_metrics, temporal_health_check, temporal_evolution_path, temporal_fact_state
+
+## HTTP REST API
+
+All endpoints under `/api/` require Bearer token or X-API-Key when `http.token` is configured.
+
+```
+GET    /health                           Health check
+GET    /api/observations                 List observations (query: project, scope, type, limit, offset)
+POST   /api/observations                 Create observation (JSON body)
+GET    /api/observations/{id}            Get observation by ID
+GET    /api/observations/{id}/revisions  Get revision history
+PUT    /api/observations/{id}            Update observation
+DELETE /api/observations/{id}            Delete observation
+POST   /api/observations/{id}/archive    Archive (soft-delete) observation
+GET    /api/sessions                     List sessions (query: project)
+POST   /api/sessions                     Create session
+POST   /api/sessions/{id}/end            End session (JSON: summary)
+GET    /api/search                       FTS5 search (query: q, type, project, scope, limit)
+GET    /api/search/hybrid                Hybrid FTS5 + vector search
+POST   /api/graph/edges                  Create knowledge graph edge
+GET    /api/graph/{id}/related           Get related observations (query: depth)
+DELETE /api/graph/edges/{id}             Delete edge
+GET    /api/scores/{id}                  Get importance score
+POST   /api/scores/{id}/recalculate      Recalculate importance score
+GET    /api/export                       Export all data as JSON
+POST   /api/import                       Import data from JSON
+```
+
+## Configuration
+
+Default config file: `~/.cortex/cortex.yaml`
+Environment override: `CORTEX_<SECTION>_<KEY>` (e.g., CORTEX_HTTP_PORT=9000)
+
+```yaml
+server:
+  name: cortex
+
+database:
+  path: ~/.cortex/cortex.db    # SQLite database path
+  in_memory: false
+  pragma:
+    journal_mode: WAL          # WAL for concurrent reads
+    synchronous: NORMAL
+    cache_size: -64000         # 64MB cache
+    foreign_keys: true
+    temp_store: MEMORY
+    mmap_size: 268435456       # 256MB mmap
+
+mcp:
+  enabled: true
+
+http:
+  enabled: true
+  port: 7438
+  host: localhost
+  token: ""                    # Set for auth (Bearer or X-API-Key)
+
+logging:
+  level: info                  # debug, info, warn, error
+  format: json                 # json, text
+
+search:
+  default_limit: 20
+  max_limit: 100
+  fts5: true
+  vector: false                # Enable with cortex_vectors build tag
+  fusion_k: 60                # RRF constant (lower = favor top ranks)
+
+memory:
+  max_observation_length: 50000
+  dedupe_window: 15m
+  auto_archive_days: 90
+  importance_decay_half_life: 30
+  min_archive_score: 0.1
+
+lifecycle:
+  enable_auto_archive: true
+  archive_check_interval: 1h
+```
+
+## Architecture
+
+```
+cmd/cortex/          Entry point (main.go)
+internal/
+  app/               Dependency wiring (Config, DB, Migrator, Stores)
+  cli/               CLI command dispatch (15 commands)
+  config/            Viper-based YAML + env config (8 sections)
+  database/          SQLite connection manager (WAL, modernc.org/sqlite)
+  domain/
+    models.go        Core types: Observation, Session, Edge, ImportanceScore
+    interfaces.go    12 repository interfaces
+    errors.go        Domain errors (NotFound, Validation, Conflict)
+    memory/          Observation CRUD service
+    scoring/         Importance scoring (formula-based)
+    search/          FTS5 query sanitization
+    graph/           Knowledge graph BFS traversal
+    session/         Session lifecycle
+    lifecycle/       Auto-archival service
+    entity/          Entity extraction + linking
+    temporal/        Temporal graph evolution
+    observability/   Metrics + quality evaluation
+  store/
+    bundle/          Stores struct (dependency bundle)
+    sqlite/          Observation store (topic key upsert, SHA-256 dedup, soft delete)
+    session/         Session store
+    search/          FTS5 search (7-signal enhanced pipeline)
+    graph/           Knowledge graph (edges, CTE traversal)
+    scoring/         Importance scoring store
+    entity/          Entity link store
+    prompt/          Prompt store
+  migration/         Version-tracked migration framework (up/down)
+  mcp/               MCP server + 30 tool handlers
+  http/              REST API (net/http, 17 endpoints)
+  sync/              Git-friendly chunk sync (Transport + FileTransport)
+  project/           Project detection (git), similarity (Levenshtein), normalization
+  tui/               Terminal UI (simplified browser)
+  setup/             Agent integration installer
+migrations/          14 SQL migrations (001-014)
+testutil/            Test helpers (in-memory DB, fixtures, assertions)
+```
+
+## Search Pipeline
+
+Cortex uses a 7-signal enhanced search pipeline based on research from Anthropic (Contextual Retrieval), Stanford (Generative Agents recency decay), Microsoft (GraphRAG), and Cormack (RRF fusion):
+
+```
+Query
+  |-> [1] FTS5 BM25 with contextual indexing (metadata prepended to content)
+  |-> [2] Pseudo-Relevance Feedback (extract terms from top-3, re-query)
+  |-> [3] Topic Key Expansion (LIKE matching on topic hierarchies)
+  |-> [4] Recency Decay (0.995^hours since last access)
+  |-> [5] Graph Neighborhood Expansion (1-hop edge traversal, optional)
+  |-> [6] Importance Ranking (behavioral score from access patterns)
+  |-> [7] Configurable RRF Fusion (combine all signals, k parameter)
+  |
+  v
+  Ranked results with full score breakdown (explainability)
+```
+
+Score breakdown example:
+```json
+{
+  "strategy": "enhanced",
+  "keyword_bm25": -3.45,
+  "recency_boost": 0.92,
+  "importance_rank": 2.8,
+  "topic_key_expand": true,
+  "fusion_score": 0.065
+}
+```
+
+## Knowledge Graph
+
+Observations are connected via typed edges:
+- **references**: one observation cites another
+- **relates_to**: topical relationship
+- **follows**: temporal sequence
+- **contradicts**: conflicting facts (triggers temporal evolution)
+- **supersedes**: newer replaces older
+
+Edges have temporal validity (valid_from, invalid_at), evolution tracking (original, modified, superseded, contradicted), and fact states (current, historical, deprecated).
+
+Graph traversal uses recursive CTE (WITH RECURSIVE) for O(1) query regardless of depth (max 10).
+
+## Importance Scoring
+
+```
+Score = base(0.5)
+      + min(accessCount * 0.1, 1.0)          // access bonus
+      + (0.5 if lastAccessed < 24h else 0)    // recency bonus
+      + min(incomingEdges * 0.2, 1.0)         // edge bonus
+      + typeBonus                              // decision=0.5, bugfix=0.3, pattern=0.2, etc.
+      - min(daysSinceCreation * 0.01, 0.5)    // age penalty
+
+Clamped to [0.0, 5.0]
+```
+
+## Sync System
+
+Git-friendly chunk-based synchronization:
+- Export: DB -> gzipped JSONL chunk with SHA-256 content-addressed ID
+- Chunks stored in `~/.cortex/chunks/{8-char-hash}.jsonl.gz`
+- Manifest (`manifest.json`) is small and merge-friendly
+- Import: manifest -> read new chunks -> import to DB (skip duplicates)
+- Designed for `git add ~/.cortex/ && git commit`
+
+## Data Model
+
+**Observation** (core unit):
+- id, title, content, type (manual|tool_use|decision|bugfix|pattern|config|discovery|learning)
+- project, scope (project|personal), session_id, topic_key
+- confidence (0-1), source (manual|ai|auto|import), tags
+- created_at, updated_at, deleted_at (soft delete)
+
+**Session**: id, project, directory, started_at, ended_at, summary
+
+**Edge**: from_obs_id, to_obs_id, relation_type, weight (0-10), confidence (0-1), valid_from, invalid_at, evolution_type, fact_state
+
+**ImportanceScore**: observation_id, score (0-5), access_count, last_accessed
+
+## Migrations
+
+14 versioned migrations with up/down support:
+001: Init schema (sessions, observations, user_prompts)
+002: FTS5 full-text search with triggers
+003: Knowledge graph edges
+004: Importance scoring
+005: Vector embeddings (optional)
+006: Entity links
+007: Performance indexes
+008: Schema enrichment (confidence, source, tags)
+009: Temporal observability (metrics, quality, snapshots)
+010: Edge indexes
+011: CHECK constraints on edges
+012: Sync chunks table
+013: Contextual FTS5 (metadata-enriched triggers + rebuild)
+014: Search feedback (implicit LTR training data)
+
+## Building
+
+```bash
+make build            # Build binary -> bin/cortex
+make test             # Run all tests (741 passing)
+make lint             # golangci-lint
+make fmt              # gofmt -s -w
+make tidy             # go mod tidy
+make docker-build     # Docker build
+make security         # govulncheck
+
+# Vector search (optional)
+go build -tags cortex_vectors ./cmd/cortex
+
+# Run specific test
+go test -v -run TestFunctionName ./internal/domain/memory/
+
+# Run benchmarks
+go test -bench=. -benchmem ./internal/store/search/
+```

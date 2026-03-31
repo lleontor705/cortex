@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,8 +59,20 @@ func setupTestStore(t *testing.T) (*Store, *sql.DB, func()) {
 			CREATE INDEX IF NOT EXISTS idx_obs_type     ON observations(type);
 			CREATE INDEX IF NOT EXISTS idx_obs_project  ON observations(project);
 			CREATE INDEX IF NOT EXISTS idx_obs_created  ON observations(created_at DESC);
+
+			CREATE TABLE IF NOT EXISTS temporal_snapshots (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				snapshot_key TEXT NOT NULL,
+				timestamp DATETIME NOT NULL,
+				description TEXT,
+				observation_count INTEGER NOT NULL DEFAULT 0,
+				edge_count INTEGER NOT NULL DEFAULT 0,
+				root_observation_id INTEGER,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
 		`,
 		DownSQL: `
+			DROP TABLE IF EXISTS temporal_snapshots;
 			DROP INDEX IF EXISTS idx_obs_created;
 			DROP INDEX IF EXISTS idx_obs_project;
 			DROP INDEX IF EXISTS idx_obs_type;
@@ -89,7 +103,30 @@ func createTestSession(t *testing.T, db *sql.DB, sessionID, project string) {
 	}
 }
 
-// ─── Save Tests ───────────────────────────────────────────────────────────────
+func loadRevisionSnapshot(t *testing.T, db *sql.DB, rootObservationID int64) observationRevisionSnapshot {
+	t.Helper()
+
+	var description string
+	err := db.QueryRow(`
+		SELECT description
+		FROM temporal_snapshots
+		WHERE root_observation_id = ?
+		ORDER BY timestamp DESC
+		LIMIT 1
+	`, rootObservationID).Scan(&description)
+	if err != nil {
+		t.Fatalf("failed to load temporal snapshot: %v", err)
+	}
+
+	var snapshot observationRevisionSnapshot
+	if err := json.Unmarshal([]byte(description), &snapshot); err != nil {
+		t.Fatalf("failed to decode temporal snapshot: %v", err)
+	}
+
+	return snapshot
+}
+
+// --- Save Tests ---------------------------------------------------------------
 
 func TestStore_Save_Basic(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -155,6 +192,41 @@ func TestStore_Save_ValidationErrors(t *testing.T) {
 			},
 			wantErr: "content is required",
 		},
+		{
+			name: "invalid type",
+			obs: &domain.Observation{
+				Title:   "title",
+				Content: "content",
+				Type:    "nonsense",
+			},
+			wantErr: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning",
+		},
+		{
+			name: "invalid source",
+			obs: &domain.Observation{
+				Title:   "title",
+				Content: "content",
+				Source:  "robot",
+			},
+			wantErr: "source must be one of manual, ai, auto, import",
+		},
+		{
+			name: "invalid confidence",
+			obs: &domain.Observation{
+				Title:      "title",
+				Content:    "content",
+				Confidence: 1.5,
+			},
+			wantErr: "confidence must be between 0.0 and 1.0",
+		},
+		{
+			name: "content too large",
+			obs: &domain.Observation{
+				Title:   "title",
+				Content: strings.Repeat("a", 64*1024+1),
+			},
+			wantErr: "content exceeds 65536 characters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -202,6 +274,10 @@ func TestStore_Save_Defaults(t *testing.T) {
 	if obs.Scope != domain.ScopeProject {
 		t.Errorf("Save() Scope = %q, want %q", obs.Scope, domain.ScopeProject)
 	}
+
+	if obs.Source != domain.SourceManual {
+		t.Errorf("Save() Source = %q, want %q", obs.Source, domain.SourceManual)
+	}
 }
 
 func TestStore_Save_ScopeNormalization(t *testing.T) {
@@ -245,7 +321,7 @@ func TestStore_Save_ScopeNormalization(t *testing.T) {
 	}
 }
 
-// ─── Topic Key Upsert Tests ───────────────────────────────────────────────────
+// --- Topic Key Upsert Tests ---------------------------------------------------
 
 func TestStore_Save_TopicKeyUpsert(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -311,6 +387,29 @@ func TestStore_Save_TopicKeyUpsert(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 observation with topic_key, got %d", count)
 	}
+
+	var snapshotCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM temporal_snapshots WHERE root_observation_id = ?", originalID).Scan(&snapshotCount)
+	if err != nil {
+		t.Fatalf("snapshot count query error = %v", err)
+	}
+	if snapshotCount != 1 {
+		t.Fatalf("expected 1 temporal snapshot, got %d", snapshotCount)
+	}
+
+	snapshot := loadRevisionSnapshot(t, db, originalID)
+	if snapshot.Reason != "topic_key_upsert" {
+		t.Errorf("snapshot reason = %q, want %q", snapshot.Reason, "topic_key_upsert")
+	}
+	if snapshot.Previous.Title != "Original Title" {
+		t.Errorf("snapshot previous title = %q, want %q", snapshot.Previous.Title, "Original Title")
+	}
+	if snapshot.Previous.Content != "Original Content" {
+		t.Errorf("snapshot previous content = %q, want %q", snapshot.Previous.Content, "Original Content")
+	}
+	if snapshot.Previous.RevisionCount != 1 {
+		t.Errorf("snapshot previous revision_count = %d, want 1", snapshot.Previous.RevisionCount)
+	}
 }
 
 func TestStore_Save_TopicKeyNormalization(t *testing.T) {
@@ -366,7 +465,7 @@ func TestStore_Save_TopicKeyNormalization(t *testing.T) {
 	}
 }
 
-// ─── Deduplication Tests ──────────────────────────────────────────────────────
+// --- Deduplication Tests ------------------------------------------------------
 
 func TestStore_Save_Deduplication(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -462,7 +561,7 @@ func TestStore_Save_DeduplicationNormalizesContent(t *testing.T) {
 	}
 }
 
-// ─── GetByID Tests ────────────────────────────────────────────────────────────
+// --- GetByID Tests ------------------------------------------------------------
 
 func TestStore_GetByID_Success(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -567,7 +666,7 @@ func TestStore_GetByID_SoftDeleted(t *testing.T) {
 	}
 }
 
-// ─── GetByTopicKey Tests ──────────────────────────────────────────────────────
+// --- GetByTopicKey Tests ------------------------------------------------------
 
 func TestStore_GetByTopicKey_Success(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -631,7 +730,7 @@ func TestStore_GetByTopicKey_EmptyTopicKey(t *testing.T) {
 	}
 }
 
-// ─── Update Tests ─────────────────────────────────────────────────────────────
+// --- Update Tests -------------------------------------------------------------
 
 func TestStore_Update_Success(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -714,6 +813,29 @@ func TestStore_Update_Success(t *testing.T) {
 	if revisionCount != 2 {
 		t.Errorf("revision_count = %d, want 2", revisionCount)
 	}
+
+	var snapshotCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM temporal_snapshots WHERE root_observation_id = ?", obs.ID).Scan(&snapshotCount)
+	if err != nil {
+		t.Fatalf("snapshot count query error = %v", err)
+	}
+	if snapshotCount != 1 {
+		t.Fatalf("expected 1 temporal snapshot, got %d", snapshotCount)
+	}
+
+	snapshot := loadRevisionSnapshot(t, db, obs.ID)
+	if snapshot.Reason != "update" {
+		t.Errorf("snapshot reason = %q, want %q", snapshot.Reason, "update")
+	}
+	if snapshot.Previous.Title != "Original Title" {
+		t.Errorf("snapshot previous title = %q, want %q", snapshot.Previous.Title, "Original Title")
+	}
+	if snapshot.Previous.Content != "Original Content" {
+		t.Errorf("snapshot previous content = %q, want %q", snapshot.Previous.Content, "Original Content")
+	}
+	if snapshot.Previous.RevisionCount != 1 {
+		t.Errorf("snapshot previous revision_count = %d, want 1", snapshot.Previous.RevisionCount)
+	}
 }
 
 func TestStore_Update_NotFound(t *testing.T) {
@@ -779,6 +901,16 @@ func TestStore_Update_ValidationErrors(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "invalid source",
+			obs: &domain.Observation{
+				ID:      obs.ID,
+				Title:   "title",
+				Content: "content",
+				Source:  "robot",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -791,7 +923,7 @@ func TestStore_Update_ValidationErrors(t *testing.T) {
 	}
 }
 
-// ─── Delete Tests ─────────────────────────────────────────────────────────────
+// --- Delete Tests -------------------------------------------------------------
 
 func TestStore_SoftDelete_Success(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -940,7 +1072,7 @@ func TestStore_Delete_DefaultSoftDelete(t *testing.T) {
 	}
 }
 
-// ─── List Tests ───────────────────────────────────────────────────────────────
+// --- List Tests ---------------------------------------------------------------
 
 func TestStore_List_All(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -1192,7 +1324,7 @@ func TestStore_List_ExcludesSoftDeleted(t *testing.T) {
 	}
 }
 
-// ─── Stats Tests ──────────────────────────────────────────────────────────────
+// --- Stats Tests --------------------------------------------------------------
 
 func TestStore_Stats_Basic(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
@@ -1312,7 +1444,7 @@ func TestStore_Stats_Empty(t *testing.T) {
 	}
 }
 
-// ─── Helper Function Tests ────────────────────────────────────────────────────
+// --- Helper Function Tests ----------------------------------------------------
 
 func TestNormalizeScope(t *testing.T) {
 	tests := []struct {

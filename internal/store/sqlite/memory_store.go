@@ -23,11 +23,42 @@ import (
 // sqliteDatetimeFormat is the format used by SQLite's datetime() function.
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"
 
+const (
+	maxObservationTitleLength   = 200
+	maxObservationContentLength = 64 * 1024
+	maxObservationSourceLength  = 64
+)
+
 // Store implements the SQLite observation store.
 // It provides CRUD operations with deduplication, topic key upsert,
 // and soft/hard delete support.
 type Store struct {
 	db *sql.DB
+}
+
+type observationRevisionSnapshot struct {
+	Reason   string                   `json:"reason"`
+	Captured time.Time                `json:"captured_at"`
+	Previous observationRevisionState `json:"previous"`
+}
+
+type observationRevisionState struct {
+	ID             int64      `json:"id"`
+	SessionID      string     `json:"session_id"`
+	Type           string     `json:"type"`
+	Title          string     `json:"title"`
+	Content        string     `json:"content"`
+	Project        string     `json:"project,omitempty"`
+	Scope          string     `json:"scope"`
+	TopicKey       string     `json:"topic_key,omitempty"`
+	Confidence     float64    `json:"confidence"`
+	Source         string     `json:"source,omitempty"`
+	Tags           []string   `json:"tags,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	RevisionCount  int        `json:"revision_count"`
+	DuplicateCount int        `json:"duplicate_count"`
+	LastSeenAt     *time.Time `json:"last_seen_at,omitempty"`
 }
 
 // NewStore creates a new observation store with the given database connection.
@@ -46,25 +77,8 @@ func NewStore(db *sql.DB) *Store {
 //   - Sets created_at and updated_at timestamps.
 //   - Normalizes scope to "project" or "personal".
 func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
-	if obs == nil {
-		return &domain.ValidationError{
-			Field:   "observation",
-			Message: "observation cannot be nil",
-		}
-	}
-
-	if obs.Title == "" {
-		return &domain.ValidationError{
-			Field:   "title",
-			Message: "title is required",
-		}
-	}
-
-	if obs.Content == "" {
-		return &domain.ValidationError{
-			Field:   "content",
-			Message: "content is required",
-		}
+	if err := validateObservation(obs); err != nil {
+		return err
 	}
 
 	// Set defaults
@@ -80,10 +94,9 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 	topicKey := normalizeTopicKey(obs.TopicKey)
 	// Track whether the caller explicitly provided a type (for dedup eligibility)
 	callerType := obs.Type
-	obsType := obs.Type
-	if obsType == "" {
-		obsType = domain.TypeManual
-	}
+	obsType := normalizeObservationType(obs.Type)
+	obsSource := normalizeObservationSource(obs.Source)
+	obsConfidence := normalizeConfidence(obs.Confidence)
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		// 1. Check for topic_key upsert
@@ -93,6 +106,9 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 				return fmt.Errorf("memory store: find by topic key: %w", err)
 			}
 			if existingID > 0 {
+				if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
+					return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
+				}
 				// Update existing observation
 				if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
 					return fmt.Errorf("memory store: update by topic key: %w", err)
@@ -120,7 +136,7 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 			}
 		}
 
-		// 3. Insert new observation — let SQLite set created_at/updated_at via defaults
+		// 3. Insert new observation -" let SQLite set created_at/updated_at via defaults
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO observations (
 				session_id, type, title, content, project, scope, topic_key,
@@ -130,7 +146,7 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 		`,
 			obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
 			nullableString(topicKey), normHash,
-			obs.Confidence, obs.Source, tagsToJSON(obs.Tags),
+			obsConfidence, obsSource, tagsToJSON(obs.Tags),
 		)
 		if err != nil {
 			return fmt.Errorf("memory store: insert observation: %w", err)
@@ -145,6 +161,8 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 		obs.Scope = scope
 		obs.TopicKey = topicKey
 		obs.Type = obsType
+		obs.Source = obsSource
+		obs.Confidence = obsConfidence
 
 		// Reload timestamps from DB so in-memory values match stored values
 		return s.loadObservationTx(tx, obs)
@@ -193,35 +211,17 @@ func (s *Store) GetByTopicKey(ctx context.Context, project, topicKey string) (*d
 // Update modifies an existing observation.
 // Returns ErrNotFound if the observation doesn't exist or is soft-deleted.
 func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
-	if obs == nil {
-		return &domain.ValidationError{
-			Field:   "observation",
-			Message: "observation cannot be nil",
-		}
-	}
-
-	if obs.Title == "" {
-		return &domain.ValidationError{
-			Field:   "title",
-			Message: "title is required",
-		}
-	}
-
-	if obs.Content == "" {
-		return &domain.ValidationError{
-			Field:   "content",
-			Message: "content is required",
-		}
+	if err := validateObservation(obs); err != nil {
+		return err
 	}
 
 	now := time.Now().UTC()
 	scope := normalizeScope(obs.Scope)
 	normHash := hashNormalized(obs.Content)
 	topicKey := normalizeTopicKey(obs.TopicKey)
-	obsType := obs.Type
-	if obsType == "" {
-		obsType = domain.TypeManual
-	}
+	obsType := normalizeObservationType(obs.Type)
+	obsSource := normalizeObservationSource(obs.Source)
+	obsConfidence := normalizeConfidence(obs.Confidence)
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		// Check if observation exists and get created_at
@@ -237,7 +237,7 @@ func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
 			return fmt.Errorf("memory store: get observation: %w", err)
 		}
 
-		// Parse created_at to preserve it — handle both RFC3339 and SQLite formats
+		// Parse created_at to preserve it -" handle both RFC3339 and SQLite formats
 		createdAt := parseTime(createdAtStr)
 		if createdAt.IsZero() {
 			createdAt = now // Fallback to now if parsing fails
@@ -245,7 +245,11 @@ func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
 		obs.CreatedAt = createdAt
 		obs.UpdatedAt = now
 
-		// Update observation — use Go timestamp for updated_at to preserve sub-second precision
+		if err := s.captureObservationSnapshotTx(ctx, tx, obs.ID, "update"); err != nil {
+			return fmt.Errorf("memory store: snapshot before update: %w", err)
+		}
+
+		// Update observation -" use Go timestamp for updated_at to preserve sub-second precision
 		result, err := tx.ExecContext(ctx, `
 			UPDATE observations
 			SET type = ?, title = ?, content = ?, project = ?, scope = ?,
@@ -257,7 +261,7 @@ func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
 			obsType, obs.Title, obs.Content, obs.Project, scope,
 			nullableString(topicKey), normHash,
 			now.Format(time.RFC3339Nano),
-			obs.Confidence, obs.Source, tagsToJSON(obs.Tags),
+			obsConfidence, obsSource, tagsToJSON(obs.Tags),
 			obs.ID,
 		)
 		if err != nil {
@@ -276,6 +280,8 @@ func (s *Store) Update(ctx context.Context, obs *domain.Observation) error {
 		obs.Scope = scope
 		obs.TopicKey = topicKey
 		obs.Type = obsType
+		obs.Source = obsSource
+		obs.Confidence = obsConfidence
 
 		// Reload to get the exact updated_at from the DB
 		return s.loadObservationTx(tx, obs)
@@ -460,6 +466,89 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 	return s.scanObservations(rows)
 }
 
+// CountAll counts all non-deleted observations in the system.
+func (s *Store) CountAll(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM observations
+		WHERE deleted_at IS NULL
+	`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("memory store: count all observations: %w", err)
+	}
+	return count, nil
+}
+
+// CountByRoot counts distinct observations reachable from a root observation.
+func (s *Store) CountByRoot(ctx context.Context, rootObsID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		WITH RECURSIVE related(id) AS (
+			SELECT ?
+			UNION
+			SELECT CASE
+				WHEN e.from_obs_id = related.id THEN e.to_obs_id
+				ELSE e.from_obs_id
+			END
+			FROM edges e
+			JOIN related ON e.from_obs_id = related.id OR e.to_obs_id = related.id
+		)
+		SELECT COUNT(DISTINCT o.id)
+		FROM observations o
+		JOIN related r ON r.id = o.id
+		WHERE o.deleted_at IS NULL
+	`, rootObsID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("memory store: count observations by root: %w", err)
+	}
+	return count, nil
+}
+
+// GetBySource retrieves observations filtered by source type.
+func (s *Store) GetBySource(ctx context.Context, source string, limit int) ([]*domain.Observation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, type, title, content, project, scope, topic_key,
+		       confidence, source, tags, created_at, updated_at
+		FROM observations
+		WHERE deleted_at IS NULL AND source = ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, normalizeObservationSource(source), limit)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: get observations by source: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanObservations(rows)
+}
+
+// GetByType retrieves observations filtered by type.
+func (s *Store) GetByType(ctx context.Context, obsType string, limit int) ([]*domain.Observation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, type, title, content, project, scope, topic_key,
+		       confidence, source, tags, created_at, updated_at
+		FROM observations
+		WHERE deleted_at IS NULL AND type = ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, normalizeObservationType(obsType), limit)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: get observations by type: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanObservations(rows)
+}
+
 // Stats returns aggregated statistics about observations.
 func (s *Store) Stats(ctx context.Context) (*Stats, error) {
 	stats := &Stats{}
@@ -532,10 +621,12 @@ type Stats struct {
 	ByType            map[string]int `json:"by_type"`
 }
 
-// ─── Transaction Helpers ─────────────────────────────────────────────────────
+// "-"-"- Transaction Helpers "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
 
 func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	// Use IMMEDIATE isolation to prevent write conflicts during topic_key upsert
+	// and deduplication checks under concurrent access.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return fmt.Errorf("memory store: begin transaction: %w", err)
 	}
@@ -552,7 +643,7 @@ func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
-// ─── Transaction-Scoped Operations ───────────────────────────────────────────
+// "-"-"- Transaction-Scoped Operations "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
 
 func (s *Store) findObservationByTopicKeyTx(tx *sql.Tx, project, topicKey string) (int64, error) {
 	var id int64
@@ -629,7 +720,104 @@ func (s *Store) loadObservationTx(tx *sql.Tx, obs *domain.Observation) error {
 	return s.scanObservationRow(row, obs)
 }
 
-// ─── Scan Helpers ─────────────────────────────────────────────────────────────
+func (s *Store) captureObservationSnapshotTx(ctx context.Context, tx *sql.Tx, id int64, reason string) error {
+	state, err := s.loadObservationRevisionStateTx(tx, id)
+	if err != nil {
+		if isMissingTableError(err, "temporal_snapshots") {
+			log.Printf("memory store: temporal_snapshots table not found, skipping snapshot for observation %d", id)
+			return nil
+		}
+		return err
+	}
+
+	capturedAt := time.Now().UTC()
+	payload, err := json.Marshal(observationRevisionSnapshot{
+		Reason:   reason,
+		Captured: capturedAt,
+		Previous: *state,
+	})
+	if err != nil {
+		return fmt.Errorf("memory store: marshal revision snapshot: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+        INSERT INTO temporal_snapshots (
+            snapshot_key, timestamp, description, observation_count, edge_count, root_observation_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    `,
+		fmt.Sprintf("observation-history/%d", id),
+		capturedAt.Format(time.RFC3339Nano),
+		string(payload),
+		state.RevisionCount,
+		0,
+		id,
+	)
+	if err != nil && isMissingTableError(err, "temporal_snapshots") {
+		log.Printf("memory store: temporal_snapshots table not found, skipping snapshot insert for observation %d", id)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("memory store: insert revision snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) loadObservationRevisionStateTx(tx *sql.Tx, id int64) (*observationRevisionState, error) {
+	row := tx.QueryRow(`
+        SELECT id, session_id, type, title, content, project, scope, topic_key,
+               confidence, source, tags, created_at, updated_at,
+               revision_count, duplicate_count, last_seen_at
+        FROM observations
+        WHERE id = ? AND deleted_at IS NULL
+    `, id)
+
+	state := &observationRevisionState{}
+	var project, topicKey, source sql.NullString
+	var tagsJSON sql.NullString
+	var createdAtStr, updatedAtStr string
+	var lastSeenAtStr sql.NullString
+	err := row.Scan(
+		&state.ID,
+		&state.SessionID,
+		&state.Type,
+		&state.Title,
+		&state.Content,
+		&project,
+		&state.Scope,
+		&topicKey,
+		&state.Confidence,
+		&source,
+		&tagsJSON,
+		&createdAtStr,
+		&updatedAtStr,
+		&state.RevisionCount,
+		&state.DuplicateCount,
+		&lastSeenAtStr,
+	)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, &domain.NotFoundError{Type: "observation", ID: id}
+		}
+		return nil, fmt.Errorf("memory store: load revision state: %w", err)
+	}
+
+	state.Project = project.String
+	state.TopicKey = topicKey.String
+	state.Source = source.String
+	state.Tags = tagsFromJSON(tagsJSON.String)
+	state.CreatedAt = parseTime(createdAtStr)
+	state.UpdatedAt = parseTime(updatedAtStr)
+	if lastSeenAtStr.Valid {
+		lastSeenAt := parseTime(lastSeenAtStr.String)
+		if !lastSeenAt.IsZero() {
+			state.LastSeenAt = &lastSeenAt
+		}
+	}
+
+	return state, nil
+}
+
+// "-"-"- Scan Helpers "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
 
 func (s *Store) scanObservation(row *sql.Row) (*domain.Observation, error) {
 	var obs domain.Observation
@@ -706,7 +894,7 @@ func (s *Store) scanObservations(rows *sql.Rows) ([]*domain.Observation, error) 
 	return observations, nil
 }
 
-// ─── Tag JSON Helpers ───────────────────────────────────────────────────────
+// "-"-"- Tag JSON Helpers "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
 
 func tagsToJSON(tags []string) interface{} {
 	if len(tags) == 0 {
@@ -727,7 +915,7 @@ func tagsFromJSON(s string) []string {
 	return tags
 }
 
-// ─── Utility Functions ───────────────────────────────────────────────────────
+// "-"-"- Utility Functions "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
 
 func normalizeScope(scope string) string {
 	v := strings.TrimSpace(strings.ToLower(scope))
@@ -735,6 +923,32 @@ func normalizeScope(scope string) string {
 		return "personal"
 	}
 	return "project"
+}
+
+func normalizeObservationType(obsType string) string {
+	v := strings.TrimSpace(strings.ToLower(obsType))
+	if v == "" {
+		return domain.TypeManual
+	}
+	return v
+}
+
+func normalizeObservationSource(source string) string {
+	v := strings.TrimSpace(strings.ToLower(source))
+	if v == "" {
+		return domain.SourceManual
+	}
+	return v
+}
+
+func normalizeConfidence(confidence float64) float64 {
+	if confidence <= 0 {
+		return 1.0
+	}
+	if confidence > 1 {
+		return 1.0
+	}
+	return confidence
 }
 
 func normalizeTopicKey(topicKey string) string {
@@ -773,6 +987,13 @@ func isNoRows(err error) bool {
 	return err == sql.ErrNoRows
 }
 
+func isMissingTableError(err error, table string) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such table: "+strings.ToLower(table))
+}
+
 // parseTime parses a time string in RFC3339, RFC3339Nano, or SQLite datetime format.
 func parseTime(s string) time.Time {
 	// Try RFC3339Nano first (most precise)
@@ -791,6 +1012,351 @@ func parseTime(s string) time.Time {
 		log.Printf("sqlite: failed to parse time %q", s)
 	}
 	return time.Time{}
+}
+
+func validateObservation(obs *domain.Observation) error {
+	if obs == nil {
+		return &domain.ValidationError{
+			Field:   "observation",
+			Message: "observation cannot be nil",
+		}
+	}
+
+	title := strings.TrimSpace(obs.Title)
+	if title == "" {
+		return &domain.ValidationError{
+			Field:   "title",
+			Message: "title is required",
+		}
+	}
+	if len(title) > maxObservationTitleLength {
+		return &domain.ValidationError{
+			Field:   "title",
+			Message: fmt.Sprintf("title exceeds %d characters", maxObservationTitleLength),
+		}
+	}
+
+	content := strings.TrimSpace(obs.Content)
+	if content == "" {
+		return &domain.ValidationError{
+			Field:   "content",
+			Message: "content is required",
+		}
+	}
+	if len(content) > maxObservationContentLength {
+		return &domain.ValidationError{
+			Field:   "content",
+			Message: fmt.Sprintf("content exceeds %d characters", maxObservationContentLength),
+		}
+	}
+
+	if source := strings.TrimSpace(obs.Source); len(source) > maxObservationSourceLength {
+		return &domain.ValidationError{
+			Field:   "source",
+			Message: fmt.Sprintf("source exceeds %d characters", maxObservationSourceLength),
+		}
+	}
+
+	if obs.Type != "" && !isAllowedObservationType(normalizeObservationType(obs.Type)) {
+		return &domain.ValidationError{
+			Field:   "type",
+			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning",
+		}
+	}
+
+	if obs.Source != "" && !isAllowedObservationSource(normalizeObservationSource(obs.Source)) {
+		return &domain.ValidationError{
+			Field:   "source",
+			Message: "source must be one of manual, ai, auto, import",
+		}
+	}
+
+	if obs.Confidence < 0 || obs.Confidence > 1 {
+		return &domain.ValidationError{
+			Field:   "confidence",
+			Message: "confidence must be between 0.0 and 1.0",
+		}
+	}
+
+	if obs.TopicKey != "" && normalizeTopicKey(obs.TopicKey) == "" {
+		return &domain.ValidationError{
+			Field:   "topic_key",
+			Message: "topic_key cannot be blank",
+		}
+	}
+
+	return nil
+}
+
+func isAllowedObservationType(obsType string) bool {
+	switch obsType {
+	case domain.TypeManual, domain.TypeToolUse, domain.TypeDecision, domain.TypeBugfix,
+		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedObservationSource(source string) bool {
+	switch source {
+	case domain.SourceManual, domain.SourceAI, domain.SourceAuto, domain.SourceImport:
+		return true
+	default:
+		return false
+	}
+}
+
+// RecordSearchFeedback logs an implicit signal: the user accessed an observation
+// after performing a search. This data enables Learning-to-Rank model training.
+func (s *Store) RecordSearchFeedback(ctx context.Context, query string, observationID int64, rankPosition int) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO search_feedback(query, observation_id, rank_position) VALUES(?, ?, ?)`,
+		query, observationID, rankPosition)
+	if err != nil && isMissingTableError(err, "search_feedback") {
+		return nil // table doesn't exist yet
+	}
+	return err
+}
+
+// GetSearchFeedbackStats returns basic stats about search feedback data.
+func (s *Store) GetSearchFeedbackStats(ctx context.Context) (totalEntries int, uniqueQueries int, err error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COUNT(DISTINCT query) FROM search_feedback`)
+	err = row.Scan(&totalEntries, &uniqueQueries)
+	if err != nil && isMissingTableError(err, "search_feedback") {
+		return 0, 0, nil
+	}
+	return totalEntries, uniqueQueries, err
+}
+
+// GetSyncedChunks returns a set of chunk IDs that have been imported/exported.
+func (s *Store) GetSyncedChunks(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chunk_id FROM sync_chunks`)
+	if err != nil {
+		// Table may not exist yet (pre-migration 012)
+		if isMissingTableError(err, "sync_chunks") {
+			return map[string]bool{}, nil
+		}
+		return nil, fmt.Errorf("memory store: get synced chunks: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	chunks := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		chunks[id] = true
+	}
+	return chunks, rows.Err()
+}
+
+// RecordSyncedChunk marks a chunk as imported/exported (idempotent).
+func (s *Store) RecordSyncedChunk(ctx context.Context, chunkID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO sync_chunks(chunk_id) VALUES(?)`, chunkID)
+	if err != nil && isMissingTableError(err, "sync_chunks") {
+		return nil // graceful if table doesn't exist yet
+	}
+	return err
+}
+
+// ExportData holds all data for sync export.
+type ExportData struct {
+	Version      string               `json:"version"`
+	ExportedAt   string               `json:"exported_at"`
+	Sessions     []*domain.Session    `json:"sessions"`
+	Observations []*domain.Observation `json:"observations"`
+	Prompts      []*domain.Prompt     `json:"prompts"`
+}
+
+// ExportAll exports all sessions, observations, and prompts for sync.
+func (s *Store) ExportAll(ctx context.Context) (*ExportData, error) {
+	data := &ExportData{
+		Version:    "0.1.0",
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Export sessions
+	sessRows, err := s.db.QueryContext(ctx,
+		`SELECT id, project, directory, started_at, ended_at, summary FROM sessions ORDER BY started_at`)
+	if err != nil {
+		return nil, fmt.Errorf("export sessions: %w", err)
+	}
+	defer func() { _ = sessRows.Close() }()
+	for sessRows.Next() {
+		sess := &domain.Session{}
+		var startedAt string
+		var endedAt, summary sql.NullString
+		if err := sessRows.Scan(&sess.ID, &sess.Project, &sess.Directory, &startedAt, &endedAt, &summary); err != nil {
+			return nil, err
+		}
+		sess.StartedAt = parseTime(startedAt)
+		if endedAt.Valid {
+			t := parseTime(endedAt.String)
+			sess.EndedAt = &t
+		}
+		if summary.Valid {
+			sess.Summary = summary.String
+		}
+		data.Sessions = append(data.Sessions, sess)
+	}
+	if err := sessRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Export observations
+	obs, err := s.List(ctx, domain.ObservationFilter{Limit: 100000})
+	if err != nil {
+		return nil, fmt.Errorf("export observations: %w", err)
+	}
+	data.Observations = obs
+
+	// Export prompts
+	promptRows, err := s.db.QueryContext(ctx,
+		`SELECT id, content, project, session_id, created_at FROM user_prompts ORDER BY id`)
+	if err != nil {
+		if !isMissingTableError(err, "user_prompts") {
+			return nil, fmt.Errorf("export prompts: %w", err)
+		}
+	} else {
+		defer func() { _ = promptRows.Close() }()
+		for promptRows.Next() {
+			p := &domain.Prompt{}
+			var createdAt string
+			if err := promptRows.Scan(&p.ID, &p.Content, &p.Project, &p.SessionID, &createdAt); err != nil {
+				return nil, err
+			}
+			p.CreatedAt = parseTime(createdAt)
+			data.Prompts = append(data.Prompts, p)
+		}
+		if err := promptRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	return data, nil
+}
+
+// SyncImportResult holds the outcome of a sync import.
+type SyncImportResult struct {
+	SessionsImported     int `json:"sessions_imported"`
+	ObservationsImported int `json:"observations_imported"`
+	PromptsImported      int `json:"prompts_imported"`
+}
+
+// ImportData imports sessions, observations and prompts from an export.
+// Sessions are skipped if they already exist (by ID).
+// Observations and prompts get new auto-increment IDs.
+func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportResult, error) {
+	result := &SyncImportResult{}
+
+	return result, s.withTx(ctx, func(tx *sql.Tx) error {
+		// Import sessions (skip duplicates)
+		for _, sess := range data.Sessions {
+			var endedAt interface{}
+			if sess.EndedAt != nil {
+				endedAt = sess.EndedAt.Format(time.RFC3339)
+			}
+			res, err := tx.ExecContext(ctx,
+				`INSERT OR IGNORE INTO sessions(id, project, directory, started_at, ended_at, summary)
+				 VALUES(?, ?, ?, ?, ?, ?)`,
+				sess.ID, sess.Project, sess.Directory,
+				sess.StartedAt.Format(time.RFC3339), endedAt, nullableString(sess.Summary))
+			if err != nil {
+				return fmt.Errorf("import session %s: %w", sess.ID, err)
+			}
+			n, _ := res.RowsAffected()
+			result.SessionsImported += int(n)
+		}
+
+		// Import observations (new IDs)
+		for _, obs := range data.Observations {
+			scope := normalizeScope(obs.Scope)
+			topicKey := normalizeTopicKey(obs.TopicKey)
+			obsType := normalizeObservationType(obs.Type)
+			obsSource := normalizeObservationSource(obs.Source)
+
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO observations(session_id, type, title, content, project, scope, topic_key,
+				  normalized_hash, revision_count, duplicate_count, confidence, source, tags,
+				  created_at, updated_at)
+				 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
+				nullableString(topicKey), hashNormalized(obs.Content),
+				1, 1,
+				normalizeConfidence(obs.Confidence), obsSource, tagsToJSON(obs.Tags),
+				obs.CreatedAt.Format(time.RFC3339), obs.UpdatedAt.Format(time.RFC3339))
+			if err != nil {
+				return fmt.Errorf("import observation %q: %w", obs.Title, err)
+			}
+			result.ObservationsImported++
+		}
+
+		// Import prompts (new IDs)
+		for _, p := range data.Prompts {
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO user_prompts(session_id, content, project, created_at)
+				 VALUES(?, ?, ?, ?)`,
+				p.SessionID, p.Content, p.Project, p.CreatedAt.Format(time.RFC3339))
+			if err != nil {
+				if isMissingTableError(err, "user_prompts") {
+					continue
+				}
+				return fmt.Errorf("import prompt: %w", err)
+			}
+			result.PromptsImported++
+		}
+
+		return nil
+	})
+}
+
+// MergeResult holds the outcome of a project merge operation.
+type MergeResult struct {
+	Canonical           string   `json:"canonical"`
+	SourcesMerged       []string `json:"sources_merged"`
+	ObservationsUpdated int64    `json:"observations_updated"`
+	SessionsUpdated     int64    `json:"sessions_updated"`
+}
+
+// MergeProjects moves all observations and sessions from source projects into a canonical project name.
+// Sources that normalize to the canonical name are silently skipped.
+func (s *Store) MergeProjects(ctx context.Context, sources []string, canonical string) (*MergeResult, error) {
+	canonical = strings.TrimSpace(strings.ToLower(canonical))
+	if canonical == "" {
+		return nil, &domain.ValidationError{Field: "canonical", Message: "canonical project name must not be empty"}
+	}
+
+	result := &MergeResult{Canonical: canonical}
+
+	return result, s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, src := range sources {
+			src = strings.TrimSpace(strings.ToLower(src))
+			if src == "" || src == canonical {
+				continue
+			}
+
+			res, err := tx.ExecContext(ctx, `UPDATE observations SET project = ? WHERE project = ?`, canonical, src)
+			if err != nil {
+				return fmt.Errorf("merge observations %q -> %q: %w", src, canonical, err)
+			}
+			n, _ := res.RowsAffected()
+			result.ObservationsUpdated += n
+
+			res, err = tx.ExecContext(ctx, `UPDATE sessions SET project = ? WHERE project = ?`, canonical, src)
+			if err != nil {
+				return fmt.Errorf("merge sessions %q -> %q: %w", src, canonical, err)
+			}
+			n, _ = res.RowsAffected()
+			result.SessionsUpdated += n
+
+			result.SourcesMerged = append(result.SourcesMerged, src)
+		}
+		return nil
+	})
 }
 
 // Ensure Store implements domain.ObservationRepository

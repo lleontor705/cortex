@@ -50,6 +50,9 @@ http:
   # Host to bind to (use 0.0.0.0 for all interfaces)
   host: localhost
 
+  # Optional API token. Required if you bind the API to a non-local host.
+  token: ""
+
 # Logging configuration
 logging:
   # Log level: debug, info, warn, error

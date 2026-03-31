@@ -219,7 +219,7 @@ func (s *VectorStore) IsAvailable() bool {
 	return true
 }
 
-// ─── Helper Functions ───────────────────────────────────────────────────────
+// --- Helper Functions -------------------------------------------------------
 
 // serializeEmbedding converts a float32 slice to a binary BLOB.
 // Uses little-endian byte order for cross-platform compatibility.

@@ -213,7 +213,7 @@ func isSQLKeyword(s string) bool {
 func isLikelyFile(s string) bool {
 	// Must contain at least one path separator or be a dotfile
 	if !strings.Contains(s, "/") && !strings.HasPrefix(s, ".") {
-		// Single filename — check extension
+		// Single filename -- check extension
 		parts := strings.Split(s, ".")
 		if len(parts) < 2 {
 			return false

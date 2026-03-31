@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -9,14 +10,20 @@ import (
 
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/entity"
+	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// registerMemoryTools registers all 14 Engram-compatible memory tools.
-// Tools 1-6 are eager (always in context). Tools 7-14 are deferred.
+// registerMemoryTools registers all Engram-compatible memory tools.
 func registerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
-	// ─── mem_save (eager) ────────────────────────────────────────────────
+	registerEagerMemoryTools(srv, stores, allowlist)
+	registerDeferredMemoryTools(srv, stores, allowlist)
+}
+
+// registerEagerMemoryTools registers the 6 tools always loaded in agent context.
+func registerEagerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
+	// --- mem_save (eager) ---
 	if shouldRegister("mem_save", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_save",
@@ -25,7 +32,7 @@ func registerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription(`Save an important observation to persistent memory. Call this PROACTIVELY after completing significant work — don't wait to be asked.
+				mcp.WithDescription(`Save an important observation to persistent memory. Call this PROACTIVELY after completing significant work  -- don't wait to be asked.
 
 WHEN to save (call this after each of these):
 - Architectural decisions or tradeoffs
@@ -35,11 +42,11 @@ WHEN to save (call this after each of these):
 - Important discoveries or gotchas
 - File structure changes
 
-FORMAT for content — use this structured format:
+FORMAT for content  -- use this structured format:
   **What**: [concise description of what was done]
   **Why**: [the reasoning, user request, or problem that drove it]
   **Where**: [files/paths affected, e.g. src/auth/middleware.ts, internal/store/store.go]
-  **Learned**: [any gotchas, edge cases, or decisions made — omit if none]
+  **Learned**: [any gotchas, edge cases, or decisions made  -- omit if none]
 
 TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query sanitization", "Fixed N+1 in user list"`),
 				mcp.WithString("title",
@@ -79,7 +86,7 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 		)
 	}
 
-	// ─── mem_search (eager) ──────────────────────────────────────────────
+	// --- mem_search (eager) ---
 	if shouldRegister("mem_search", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search",
@@ -91,7 +98,7 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("query",
 					mcp.Required(),
-					mcp.Description("Search query — natural language or keywords"),
+					mcp.Description("Search query  -- natural language or keywords"),
 				),
 				mcp.WithString("type",
 					mcp.Description("Filter by type: tool_use, file_change, command, file_read, search, manual, decision, architecture, bugfix, pattern"),
@@ -105,12 +112,15 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 				mcp.WithNumber("limit",
 					mcp.Description("Max results (default: 10, max: 20)"),
 				),
+				mcp.WithBoolean("graph_expand",
+					mcp.Description("Include graph-connected observations in results (default: false)"),
+				),
 			),
 			handleSearch(stores),
 		)
 	}
 
-	// ─── mem_context (eager) ─────────────────────────────────────────────
+	// --- mem_context (eager) ---
 	if shouldRegister("mem_context", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_context",
@@ -134,7 +144,7 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 		)
 	}
 
-	// ─── mem_session_summary (eager) ─────────────────────────────────────
+	// --- mem_session_summary (eager) ---
 	if shouldRegister("mem_session_summary", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_summary",
@@ -145,7 +155,7 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription(`Save a comprehensive end-of-session summary. Call this when a session is ending or when significant work is complete. This creates a structured summary that future sessions will use to understand what happened.
 
-FORMAT — use this exact structure in the content field:
+FORMAT  -- use this exact structure in the content field:
 
 ## Goal
 [One sentence: what were we building/working on in this session]
@@ -159,19 +169,19 @@ FORMAT — use this exact structure in the content field:
 - [Important API behavior, config quirk, etc.]
 
 ## Accomplished
-- Completed task 1 — with key implementation details
-- Completed task 2 — mention files changed
-- Identified but not yet done — for next session
+- Completed task 1  -- with key implementation details
+- Completed task 2  -- mention files changed
+- Identified but not yet done  -- for next session
 
 ## Relevant Files
-- path/to/file.ts — [what it does or what changed]
-- path/to/other.go — [role in the architecture]
+- path/to/file.ts  -- [what it does or what changed]
+- path/to/other.go  -- [role in the architecture]
 
 GUIDELINES:
 - Be CONCISE but don't lose important details (file paths, error messages, decisions)
 - Focus on WHAT and WHY, not HOW (the code itself is in the repo)
 - Include things that would save a future agent time
-- The Discoveries section is the most valuable — capture gotchas and non-obvious learnings
+- The Discoveries section is the most valuable  -- capture gotchas and non-obvious learnings
 - Relevant Files should only include files that were significantly changed or are important for context`),
 				mcp.WithString("content",
 					mcp.Required(),
@@ -189,7 +199,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_get_observation (eager) ─────────────────────────────────────
+	// --- mem_get_observation (eager) ---
 	if shouldRegister("mem_get_observation", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_get_observation",
@@ -208,11 +218,11 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_save_prompt (eager) ─────────────────────────────────────────
+	// --- mem_save_prompt (eager) ---
 	if shouldRegister("mem_save_prompt", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_save_prompt",
-				mcp.WithDescription("Save a user prompt to persistent memory. Use this to record what the user asked — their intent, questions, and requests — so future sessions have context about the user's goals."),
+				mcp.WithDescription("Save a user prompt to persistent memory. Use this to record what the user asked  -- their intent, questions, and requests  -- so future sessions have context about the user's goals."),
 				mcp.WithTitleAnnotation("Save User Prompt"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -232,8 +242,11 @@ GUIDELINES:
 			handleSavePrompt(stores),
 		)
 	}
+}
 
-	// ─── mem_update (deferred) ───────────────────────────────────────────
+// registerDeferredMemoryTools registers tools loaded on demand (update, delete, stats, etc.).
+func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
+	// --- mem_update (deferred) ---
 	if shouldRegister("mem_update", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_update",
@@ -271,7 +284,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_suggest_topic_key (deferred) ────────────────────────────────
+	// --- mem_suggest_topic_key (deferred) ---
 	if shouldRegister("mem_suggest_topic_key", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_suggest_topic_key",
@@ -296,7 +309,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_session_start (deferred) ────────────────────────────────────
+	// --- mem_session_start (deferred) ---
 	if shouldRegister("mem_session_start", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_start",
@@ -323,7 +336,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_session_end (deferred) ──────────────────────────────────────
+	// --- mem_session_end (deferred) ---
 	if shouldRegister("mem_session_end", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_end",
@@ -346,11 +359,11 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_stats (deferred) ────────────────────────────────────────────
+	// --- mem_stats (deferred) ---
 	if shouldRegister("mem_stats", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_stats",
-				mcp.WithDescription("Show memory system statistics — total sessions, observations, and projects tracked."),
+				mcp.WithDescription("Show memory system statistics  -- total sessions, observations, and projects tracked."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Stats"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -362,7 +375,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_delete (deferred) ───────────────────────────────────────────
+	// --- mem_delete (deferred) ---
 	if shouldRegister("mem_delete", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_delete",
@@ -385,7 +398,7 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_timeline (deferred) ─────────────────────────────────────────
+	// mem_timeline (deferred)
 	if shouldRegister("mem_timeline", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_timeline",
@@ -411,7 +424,29 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_capture_passive (deferred) ──────────────────────────────────
+	if shouldRegister("mem_revision_history", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_revision_history",
+				mcp.WithDescription("Show structured revision snapshots for a specific observation. Use this when you want machine-readable history for topic_key upserts and updates."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Revision History"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("observation_id",
+					mcp.Required(),
+					mcp.Description("The observation ID to inspect"),
+				),
+				mcp.WithNumber("limit",
+					mcp.Description("Maximum number of revision snapshots to return (default: 20)"),
+				),
+			),
+			handleRevisionHistory(stores),
+		)
+	}
+
+	// mem_capture_passive (deferred)
 	if shouldRegister("mem_capture_passive", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_capture_passive",
@@ -425,7 +460,7 @@ GUIDELINES:
 
 The tool looks for sections like "## Key Learnings:" or "## Aprendizajes Clave:" and extracts numbered or bulleted items. Each item is saved as a separate observation.
 
-Duplicates are automatically detected and skipped — safe to call multiple times with the same content.`),
+Duplicates are automatically detected and skipped  -- safe to call multiple times with the same content.`),
 				mcp.WithString("content",
 					mcp.Required(),
 					mcp.Description("The text output containing a '## Key Learnings:' section with numbered or bulleted items"),
@@ -445,7 +480,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 	}
 }
 
-// ─── Tool Handlers ───────────────────────────────────────────────────────────
+// -- Tool Handlers --
 
 func handleSave(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -516,6 +551,26 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		if topicKey == "" && suggested != "" {
 			msg += fmt.Sprintf("\nSuggested topic_key: %s", suggested)
 		}
+
+		// Project normalization warning
+		if project != "" {
+			if normalized, warn := projectpkg.NormalizeProject(project); warn != "" {
+				msg += fmt.Sprintf("\n%s", warn)
+				_ = normalized // normalization applied by store layer
+			}
+		}
+
+		// Similarity warning for new projects
+		if project != "" {
+			stats, statsErr := stores.Observations.Stats(ctx)
+			if statsErr == nil && len(stats.Projects) > 0 {
+				matches := projectpkg.FindSimilar(project, stats.Projects, 3)
+				if len(matches) > 0 {
+					msg += fmt.Sprintf("\nSimilar project found: %q. Consider using that name instead.", matches[0].Name)
+				}
+			}
+		}
+
 		return textResult("%s", msg)
 	}
 }
@@ -527,16 +582,21 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 		project := stringArg(req, "project")
 		scope := stringArg(req, "scope")
 		limit := intArg(req, "limit", 10)
+		graphExpand := boolArg(req, "graph_expand", false)
 
 		results, err := stores.Search.Search(ctx, query, domain.SearchOptions{
-			Type:    typ,
-			Project: project,
-			Scope:   scope,
-			Limit:   limit,
+			Type:        typ,
+			Project:     project,
+			Scope:       scope,
+			Limit:       limit,
+			GraphExpand: graphExpand,
 		})
 		if err != nil {
 			return errorResult("Search error: %s. Try simpler keywords.", err)
 		}
+
+		// Track last search query for implicit feedback logging
+		stores.LastSearchQuery = query
 
 		if len(results) == 0 {
 			return textResult("No memories found for: %q", query)
@@ -555,10 +615,14 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 				anyTruncated = true
 				preview += " [preview]"
 			}
-			fmt.Fprintf(&b, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
+			fmt.Fprintf(&b, "[%d] #%d (%s)  -- %s\n    %s\n    %s%s | scope: %s\n",
 				i+1, r.ID, r.Type, r.Title,
 				preview,
 				r.CreatedAt.Format(time.RFC3339), projectInfo, r.Scope)
+			if explanation := formatSearchBreakdown(r.ScoreBreakdown); explanation != "" {
+				fmt.Fprintf(&b, "    explain: %s\n", explanation)
+			}
+			b.WriteString("\n")
 		}
 		if anyTruncated {
 			fmt.Fprintf(&b, "---\nResults above are previews (300 chars). To read the full content of a specific memory, call mem_get_observation(id: <ID>).\n")
@@ -613,7 +677,7 @@ func handleContext(stores *Stores) server.ToolHandlerFunc {
 				}
 				summary := ""
 				if s.Summary != "" {
-					summary = fmt.Sprintf(" — %s", truncate(s.Summary, 100))
+					summary = fmt.Sprintf("  -- %s", truncate(s.Summary, 100))
 				}
 				fmt.Fprintf(&b, "- **%s** (%s, %s)%s\n", s.ID, s.Project, status, summary)
 			}
@@ -711,6 +775,18 @@ func handleGetObservation(stores *Stores) server.ToolHandlerFunc {
 		obs, err := stores.Observations.GetByID(ctx, id)
 		if err != nil {
 			return errorResult("Observation #%d not found", id)
+		}
+
+		// Record implicit feedback: accessing an observation signals relevance.
+		// This builds data for recency-boosted search ranking.
+		if stores.Scoring != nil {
+			_ = stores.Scoring.RecordAccess(ctx, id) // best-effort
+		}
+
+		// Log search-to-observation feedback for Learning-to-Rank training.
+		if stores.LastSearchQuery != "" {
+			_ = stores.Observations.RecordSearchFeedback(ctx, stores.LastSearchQuery, id, 0)
+			stores.LastSearchQuery = "" // consume once
 		}
 
 		projectInfo := ""
@@ -922,7 +998,6 @@ func handleDelete(stores *Stores) server.ToolHandlerFunc {
 		return textResult("Memory #%d %s", id, mode)
 	}
 }
-
 func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		observationID := int64(intArg(req, "observation_id", 0))
@@ -932,24 +1007,20 @@ func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 		before := intArg(req, "before", 5)
 		after := intArg(req, "after", 5)
 
-		// Get the focus observation
 		focus, err := stores.Observations.GetByID(ctx, observationID)
 		if err != nil {
 			return errorResult("Observation #%d not found", observationID)
 		}
 
-		// Get observations in the same session for context
 		filter := domain.ObservationFilter{
-			Limit: before + after + 20, // Get enough to find surrounding ones
+			Limit: before + after + 20,
 		}
 		if focus.SessionID != "" {
-			// List observations from same session
 			allObs, err := stores.Observations.List(ctx, filter)
 			if err != nil {
 				return errorResult("Timeline error: %s", err)
 			}
 
-			// Find focus position and extract before/after
 			var beforeObs, afterObs []*domain.Observation
 			foundFocus := false
 			for _, o := range allObs {
@@ -958,12 +1029,10 @@ func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 					continue
 				}
 				if !foundFocus {
-					// Observations are newest-first, so these are "after" in chronological order
 					if len(afterObs) < after {
 						afterObs = append(afterObs, o)
 					}
 				} else {
-					// These are "before" in chronological order
 					if len(beforeObs) < before {
 						beforeObs = append(beforeObs, o)
 					}
@@ -971,53 +1040,147 @@ func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 			}
 
 			var b strings.Builder
-
-			// Session header
-			if focus.SessionID != "" {
-				sess, serr := stores.Sessions.GetByID(ctx, focus.SessionID)
-				if serr == nil {
-					summary := ""
-					if sess.Summary != "" {
-						summary = fmt.Sprintf(" — %s", truncate(sess.Summary, 100))
-					}
-					fmt.Fprintf(&b, "Session: %s (%s)%s\n\n", sess.Project, sess.StartedAt.Format(time.RFC3339), summary)
+			sess, serr := stores.Sessions.GetByID(ctx, focus.SessionID)
+			if serr == nil {
+				summary := ""
+				if sess.Summary != "" {
+					summary = fmt.Sprintf(" - %s", truncate(sess.Summary, 100))
 				}
+				fmt.Fprintf(&b, "Session: %s (%s)%s\n\n", sess.Project, sess.StartedAt.Format(time.RFC3339), summary)
 			}
 
-			// Before entries (reverse because list is newest-first)
 			if len(beforeObs) > 0 {
 				b.WriteString("--- Before ---\n")
 				for i := len(beforeObs) - 1; i >= 0; i-- {
 					e := beforeObs[i]
-					fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
+					fmt.Fprintf(&b, "  #%d [%s] %s - %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
 				}
 				b.WriteString("\n")
 			}
 
-			// Focus observation
 			fmt.Fprintf(&b, ">>> #%d [%s] %s <<<\n", focus.ID, focus.Type, focus.Title)
 			fmt.Fprintf(&b, "    %s\n", truncate(focus.Content, 500))
 			fmt.Fprintf(&b, "    %s\n\n", focus.CreatedAt.Format(time.RFC3339))
+			appendRevisionHistory(ctx, &b, stores, focus.ID)
 
-			// After entries (reverse because list is newest-first)
 			if len(afterObs) > 0 {
 				b.WriteString("--- After ---\n")
 				for i := len(afterObs) - 1; i >= 0; i-- {
 					e := afterObs[i]
-					fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
+					fmt.Fprintf(&b, "  #%d [%s] %s - %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
 				}
 			}
 
 			return textResult("%s", b.String())
 		}
 
-		// No session — just show the focus observation
 		var b strings.Builder
 		fmt.Fprintf(&b, ">>> #%d [%s] %s <<<\n", focus.ID, focus.Type, focus.Title)
 		fmt.Fprintf(&b, "    %s\n", truncate(focus.Content, 500))
 		fmt.Fprintf(&b, "    %s\n", focus.CreatedAt.Format(time.RFC3339))
+		appendRevisionHistory(ctx, &b, stores, focus.ID)
 		return textResult("%s", b.String())
 	}
+}
+
+type timelineRevisionSnapshot struct {
+	Reason   string `json:"reason"`
+	Previous struct {
+		Title         string `json:"title"`
+		Content       string `json:"content"`
+		RevisionCount int    `json:"revision_count"`
+	} `json:"previous"`
+}
+
+type revisionHistoryEntry struct {
+	Timestamp      time.Time `json:"timestamp"`
+	Reason         string    `json:"reason"`
+	RevisionCount  int       `json:"revision_count"`
+	Title          string    `json:"title"`
+	ContentPreview string    `json:"content_preview,omitempty"`
+}
+
+func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		observationID := int64(intArg(req, "observation_id", 0))
+		if observationID == 0 {
+			return errorResult("observation_id is required")
+		}
+		limit := intArg(req, "limit", 20)
+		if limit <= 0 {
+			limit = 20
+		}
+
+		history, err := loadRevisionHistory(ctx, stores, observationID, limit)
+		if err != nil {
+			return errorResult("Revision history error: %s", err)
+		}
+		if len(history) == 0 {
+			return textResult("[]")
+		}
+
+		payload, err := json.Marshal(history)
+		if err != nil {
+			return errorResult("Failed to serialize revision history: %s", err)
+		}
+		return textResult("%s", payload)
+	}
+}
+
+func appendRevisionHistory(ctx context.Context, b *strings.Builder, stores *Stores, observationID int64) {
+	history, err := loadRevisionHistory(ctx, stores, observationID, 20)
+	if b == nil || err != nil || len(history) == 0 {
+		return
+	}
+
+	b.WriteString("--- Revision History ---\n")
+	for _, entry := range history {
+		label := entry.Reason
+		if label == "" {
+			label = "revision"
+		}
+		fmt.Fprintf(b, "  - %s [%s] rev=%d %s\n",
+			entry.Timestamp.Format(time.RFC3339),
+			label,
+			entry.RevisionCount,
+			entry.Title,
+		)
+		if entry.ContentPreview != "" {
+			fmt.Fprintf(b, "    %s\n", entry.ContentPreview)
+		}
+	}
+	b.WriteString("\n")
+}
+
+func loadRevisionHistory(ctx context.Context, stores *Stores, observationID int64, limit int) ([]revisionHistoryEntry, error) {
+	if stores == nil || stores.TemporalSnapshots == nil {
+		return nil, nil
+	}
+
+	snapshots, err := stores.TemporalSnapshots.GetByRootObservation(ctx, observationID)
+	if err != nil || len(snapshots) == 0 {
+		return nil, err
+	}
+
+	history := make([]revisionHistoryEntry, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		entry := timelineRevisionSnapshot{}
+		if err := json.Unmarshal([]byte(snapshot.Description), &entry); err != nil {
+			continue
+		}
+		history = append(history, revisionHistoryEntry{
+			Timestamp:      snapshot.Timestamp,
+			Reason:         entry.Reason,
+			RevisionCount:  entry.Previous.RevisionCount,
+			Title:          entry.Previous.Title,
+			ContentPreview: truncate(entry.Previous.Content, 150),
+		})
+		if len(history) >= limit {
+			break
+		}
+	}
+
+	return history, nil
 }
 
 func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
@@ -1028,7 +1191,7 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 		source := stringArg(req, "source")
 
 		if content == "" {
-			return errorResult("content is required — include text with a '## Key Learnings:' section")
+			return errorResult("content is required  -- include text with a '## Key Learnings:' section")
 		}
 
 		if sessionID == "" {
@@ -1081,7 +1244,7 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 	}
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// -- Helpers --
 
 // defaultSessionID returns a project-scoped default session ID.
 func defaultSessionID(project string) string {
@@ -1100,7 +1263,24 @@ func truncate(s string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-// ─── Topic Key Suggestion ────────────────────────────────────────────────────
+func formatSearchBreakdown(b domain.SearchScoreBreakdown) string {
+	parts := make([]string, 0, 4)
+	if b.Strategy != "" {
+		parts = append(parts, "strategy="+b.Strategy)
+	}
+	if b.TopicKeyExact {
+		parts = append(parts, "topic_key_exact=true")
+	}
+	if b.KeywordBM25 != 0 {
+		parts = append(parts, fmt.Sprintf("bm25=%.4f", b.KeywordBM25))
+	}
+	if b.FusionScore != 0 {
+		parts = append(parts, fmt.Sprintf("fusion=%.4f", b.FusionScore))
+	}
+	return strings.Join(parts, " | ")
+}
+
+// -- Topic Key Suggestion --
 
 // suggestTopicKey generates a family/slug topic key from type, title, and content.
 func suggestTopicKey(typ, title, content string) string {
@@ -1201,7 +1381,7 @@ func normalizeTopicSegment(s string) string {
 	return v
 }
 
-// ─── Passive Capture: Learning Extraction ────────────────────────────────────
+// -- Passive Capture: Learning Extraction --
 
 var learningHeaderPattern = regexp.MustCompile(
 	`(?im)^#{2,3}\s+(?:Aprendizajes(?:\s+Clave)?|Key\s+Learnings?|Learnings?):?\s*$`,
@@ -1219,7 +1399,7 @@ func extractLearnings(text string) []string {
 		return nil
 	}
 
-	// Process sections in reverse — use first valid one
+	// Process sections in reverse  -- use first valid one
 	for i := len(matches) - 1; i >= 0; i-- {
 		sectionStart := matches[i][1]
 		sectionText := text[sectionStart:]
