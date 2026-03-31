@@ -3,27 +3,38 @@ name: cortex-memory
 description: "ALWAYS ACTIVE — Persistent memory protocol. You MUST save decisions, conventions, bugs, and discoveries to cortex proactively. Do NOT wait for the user to ask."
 ---
 
-# Cortex Persistent Memory — Protocol
+# Cortex Persistent Memory — Protocol (v0.2.1)
 
 You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
-and full-text search that survives across sessions and compactions.
+full-text search, revision history, and temporal tracking that survives across sessions and compactions.
 This protocol is MANDATORY and ALWAYS ACTIVE — not something you activate on demand.
 
-## AVAILABLE TOOLS
+## AVAILABLE TOOLS (31 total)
 
 Core tools are loaded automatically at session start by the UserPromptSubmit hook.
 They are available immediately — no manual ToolSearch needed.
 
+**Core memory:**
 - `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`
 - `mem_get_observation`, `mem_suggest_topic_key`, `mem_update`
 - `mem_session_start`, `mem_session_end`, `mem_save_prompt`
+- `mem_stats`, `mem_delete`, `mem_timeline`, `mem_capture_passive`
 
-**Cortex-exclusive tools** (knowledge graph, scoring, archival):
+**Knowledge graph (Cortex-exclusive):**
 - `mem_relate` — create typed relationships between observations
 - `mem_graph` — traverse the knowledge graph from an observation
 - `mem_score` — get/recalculate importance score
 - `mem_archive` — archive low-importance observations
 - `mem_search_hybrid` — FTS5 + vector search with RRF fusion
+
+**Cortex v0.2.1 additions:**
+- `mem_revision_history` — structured revision snapshots for observations (track upsert evolution)
+- `mem_merge_projects` — consolidate fragmented project name variants into one canonical name
+
+**Temporal tools (experimental):**
+- `temporal_create_edge`, `temporal_get_edges`, `temporal_get_relevant`, `temporal_create_snapshot`
+- `temporal_record_operation`, `temporal_evaluate_quality`, `temporal_system_metrics`
+- `temporal_health_check`, `temporal_evolution_path`, `temporal_fact_state`
 
 **Fallback**: If tools are unexpectedly unavailable, trigger ToolSearch manually:
 ```
@@ -92,17 +103,31 @@ After saving related observations, use `mem_relate` to connect them:
 
 Use `mem_graph` to explore connections: `mem_graph(observation_id, depth=2)`
 
-## WHEN TO SEARCH MEMORY
+## SEARCH & RETRIEVAL
 
 When the user asks to recall something — any variation of "remember", "recall", "what did we do":
 1. First call `mem_context` — checks recent session history (fast, cheap)
 2. If not found, call `mem_search` with relevant keywords (FTS5 full-text search)
-3. If you find a match, use `mem_get_observation` for full untruncated content
+3. If still not found, try `mem_search_hybrid` for FTS5 + vector combined search
+4. If you find a match, use `mem_get_observation` for full untruncated content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
 - The user mentions a topic you have no context on
 - The user's FIRST message references the project — call `mem_search` with keywords
+
+## REVISION HISTORY & TIMELINE
+
+- `mem_revision_history(observation_id)` — see how an observation evolved across topic_key upserts
+- `mem_timeline(observation_id, before, after)` — chronological context around an observation
+- Use when: artifact seems stale, auditing changes, investigating what happened around a specific event
+
+## PROJECT HYGIENE
+
+- If project name is fragmented (e.g., "my-project" vs "my_project"): `mem_merge_projects(from: "my_project,myproject", to: "my-project")`
+- To archive obsolete observations: `mem_archive(observation_id)` (soft-delete, still findable with include_archived)
+- To permanently delete: `mem_delete(id, hard_delete: true)` (admin only, irreversible)
+- To check system stats: `mem_stats()` (total observations, sessions, top projects)
 
 ## SESSION CLOSE PROTOCOL (mandatory)
 

@@ -29,6 +29,7 @@ const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
 
 // Cortex's own MCP tools — don't count these as "tool calls" for session stats
 const CORTEX_TOOLS = new Set([
+  // Core memory
   "mem_search",
   "mem_save",
   "mem_update",
@@ -42,20 +43,35 @@ const CORTEX_TOOLS = new Set([
   "mem_get_observation",
   "mem_session_start",
   "mem_session_end",
+  "mem_capture_passive",
+  // Knowledge graph
   "mem_relate",
   "mem_graph",
   "mem_score",
   "mem_archive",
   "mem_search_hybrid",
-  "mem_capture_passive",
+  // Cortex v0.2.1 additions
+  "mem_revision_history",
+  "mem_merge_projects",
+  // Temporal (experimental)
+  "temporal_create_edge",
+  "temporal_get_edges",
+  "temporal_get_relevant",
+  "temporal_create_snapshot",
+  "temporal_record_operation",
+  "temporal_evaluate_quality",
+  "temporal_system_metrics",
+  "temporal_health_check",
+  "temporal_evolution_path",
+  "temporal_fact_state",
 ])
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
 
-const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol
+const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol (v0.2.1)
 
 You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
-and full-text search that survives across sessions and compactions.
+full-text search, revision history, and temporal tracking that survives across sessions and compactions.
 
 ### WHEN TO SAVE (mandatory — not optional)
 
@@ -88,18 +104,30 @@ Topic rules:
 After saving related observations, use \`mem_relate\` to connect them:
 - references, relates_to, follows, supersedes, contradicts
 Use \`mem_graph\` to explore connections from any observation.
+Use \`mem_score\` to check/recalculate observation importance.
 
-### WHEN TO SEARCH MEMORY
+### SEARCH & RETRIEVAL
 
 When the user asks to recall something — "remember", "recall", "what did we do":
 1. First call \`mem_context\` — checks recent session history (fast)
 2. If not found, call \`mem_search\` with relevant keywords (FTS5)
-3. If you find a match, use \`mem_get_observation\` for full content
+3. If still not found, try \`mem_search_hybrid\` for FTS5 + vector combined search
+4. If you find a match, use \`mem_get_observation\` for full content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
 - The user mentions a topic you have no context on
 - The user's FIRST message references the project
+
+### REVISION HISTORY & TIMELINE
+- \`mem_revision_history(observation_id)\` — see how an observation evolved across upserts
+- \`mem_timeline(observation_id, before, after)\` — chronological context around an observation
+- Use these when an artifact seems stale or when auditing changes
+
+### PROJECT HYGIENE
+- If project name fragmented: \`mem_merge_projects(from: "variant1,variant2", to: "canonical")\`
+- To archive obsolete observations: \`mem_archive(observation_id)\`
+- To permanently delete: \`mem_delete(id, hard_delete: true)\`
 
 ### SESSION CLOSE PROTOCOL (mandatory)
 
@@ -112,7 +140,8 @@ This is NOT optional. If you skip this, the next session starts blind.
 If you see a message about compaction or context reset:
 1. IMMEDIATELY call \`mem_session_summary\` with the compacted summary content
 2. Then call \`mem_context\` to recover context from previous sessions
-3. Only THEN continue working
+3. Use \`mem_search_hybrid\` if more detail needed
+4. Only THEN continue working
 `
 
 // ─── HTTP Client ─────────────────────────────────────────────────────────────
