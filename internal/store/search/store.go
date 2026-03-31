@@ -19,6 +19,25 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
+var (
+	// ftsReplacer removes special characters that cause FTS5 syntax errors
+	ftsReplacer = strings.NewReplacer(
+		"*", "",
+		"^", "",
+		"~", "",
+		"+", "",
+		"-", " ",
+		"(", "",
+		")", "",
+	)
+
+	// extractReplacer removes special characters for search term extraction
+	extractReplacer = strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
+
+	// stopWords is a set of common words to ignore during search term extraction
+	stopWords = map[string]bool{"the": true, "a": true, "an": true, "is": true, "in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "and": true, "or": true}
+)
+
 // Store implements the SQLite search store.
 // It provides FTS5-based full-text search with advanced features.
 type Store struct {
@@ -317,16 +336,7 @@ func sanitizeFTS(query string) string {
 
 	// Remove FTS5 special operators that could cause syntax errors
 	// These characters have special meaning in FTS5: * ^ ~ + - ( )
-	replacer := strings.NewReplacer(
-		"*", "",
-		"^", "",
-		"~", "",
-		"+", "",
-		"-", " ",
-		"(", "",
-		")", "",
-	)
-	query = replacer.Replace(query)
+	query = ftsReplacer.Replace(query)
 
 	// Escape double quotes by replacing them with single quotes
 	query = strings.ReplaceAll(query, `"`, `'`)
@@ -897,12 +907,10 @@ func collectIDs(sets ...[]*domain.SearchResult) []int64 {
 // extractSearchTerms extracts clean search terms from a query string.
 func extractSearchTerms(query string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
-	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
-	query = replacer.Replace(query)
+	query = extractReplacer.Replace(query)
 	terms := strings.Fields(query)
 	// Filter out very common stop words
 	var filtered []string
-	stopWords := map[string]bool{"the": true, "a": true, "an": true, "is": true, "in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "and": true, "or": true}
 	for _, t := range terms {
 		if !stopWords[t] && len(t) > 1 {
 			filtered = append(filtered, t)
