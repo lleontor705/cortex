@@ -34,7 +34,7 @@ if [ ! -f "$STATE_FILE" ]; then
   # First message — inject ToolSearch + mem_context instruction
   touch "$STATE_FILE" 2>/dev/null || true
 
-  TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__mem_save,mcp__plugin_cortex_cortex__mem_search,mcp__plugin_cortex_cortex__mem_context,mcp__plugin_cortex_cortex__mem_session_summary,mcp__plugin_cortex_cortex__mem_get_observation,mcp__plugin_cortex_cortex__mem_save_prompt"$'\n\n'"After loading tools, call mem_context to check for prior session history before responding."
+  TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__mem_save,mcp__plugin_cortex_cortex__mem_search,mcp__plugin_cortex_cortex__mem_context,mcp__plugin_cortex_cortex__mem_session_summary,mcp__plugin_cortex_cortex__mem_get_observation,mcp__plugin_cortex_cortex__mem_save_prompt,mcp__plugin_cortex_cortex__mem_relate,mcp__plugin_cortex_cortex__mem_graph,mcp__plugin_cortex_cortex__mem_search_hybrid,mcp__plugin_cortex_cortex__mem_revision_history"$'\n\n'"After loading tools, call mem_context to check for prior session history before responding."
   OUTPUT=$(jq -n --arg msg "$TOOL_MSG" '{"systemMessage": $msg}')
 
   printf '%s\n' "$OUTPUT"
