@@ -108,6 +108,8 @@ type LifecycleConfig struct {
 	ArchiveCheckInterval string `yaml:"archive_check_interval" mapstructure:"archive_check_interval"`
 }
 
+var envKeyReplacer = strings.NewReplacer(".", "_")
+
 // Default configuration values
 var defaults = Config{
 	Server: ServerConfig{
@@ -183,7 +185,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Enable environment variable override
 	v.SetEnvPrefix("CORTEX")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetEnvKeyReplacer(envKeyReplacer)
 	v.AutomaticEnv()
 
 	// Read config file (optional - may not exist)
@@ -357,7 +359,7 @@ func LoadFromEnv() (*Config, error) {
 
 	// Enable environment variable override
 	v.SetEnvPrefix("CORTEX")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.SetEnvKeyReplacer(envKeyReplacer)
 	v.AutomaticEnv()
 
 	// Unmarshal into config struct

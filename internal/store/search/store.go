@@ -305,6 +305,16 @@ func (s *Store) scanSearchResultWithRank(rows *sql.Rows, rank *float64) (*domain
 	return &result, nil
 }
 
+var ftsSanitizeReplacer = strings.NewReplacer(
+	"*", "",
+	"^", "",
+	"~", "",
+	"+", "",
+	"-", " ",
+	"(", "",
+	")", "",
+)
+
 // sanitizeFTS sanitizes a query string for FTS5 full-text search.
 // It wraps each term in double quotes to prevent FTS5 syntax errors
 // from special characters, and adds prefix matching for the last term.
@@ -317,16 +327,8 @@ func sanitizeFTS(query string) string {
 
 	// Remove FTS5 special operators that could cause syntax errors
 	// These characters have special meaning in FTS5: * ^ ~ + - ( )
-	replacer := strings.NewReplacer(
-		"*", "",
-		"^", "",
-		"~", "",
-		"+", "",
-		"-", " ",
-		"(", "",
-		")", "",
-	)
-	query = replacer.Replace(query)
+	// Performance: Use package-level replacer to avoid allocation on every call
+	query = ftsSanitizeReplacer.Replace(query)
 
 	// Escape double quotes by replacing them with single quotes
 	query = strings.ReplaceAll(query, `"`, `'`)
@@ -894,11 +896,13 @@ func collectIDs(sets ...[]*domain.SearchResult) []int64 {
 	return ids
 }
 
+var searchTermsReplacer = strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
+
 // extractSearchTerms extracts clean search terms from a query string.
 func extractSearchTerms(query string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
-	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
-	query = replacer.Replace(query)
+	// Performance: Use package-level replacer to avoid allocation on every call
+	query = searchTermsReplacer.Replace(query)
 	terms := strings.Fields(query)
 	// Filter out very common stop words
 	var filtered []string
