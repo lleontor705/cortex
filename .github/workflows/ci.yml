@@ -56,3 +56,6 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
+
+  security:
+    uses: lleontor705/ats-deploy/.github/workflows/security-scan.yml@main
