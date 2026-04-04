@@ -317,16 +317,7 @@ func sanitizeFTS(query string) string {
 
 	// Remove FTS5 special operators that could cause syntax errors
 	// These characters have special meaning in FTS5: * ^ ~ + - ( )
-	replacer := strings.NewReplacer(
-		"*", "",
-		"^", "",
-		"~", "",
-		"+", "",
-		"-", " ",
-		"(", "",
-		")", "",
-	)
-	query = replacer.Replace(query)
+	query = ftsSanitizeReplacer.Replace(query)
 
 	// Escape double quotes by replacing them with single quotes
 	query = strings.ReplaceAll(query, `"`, `'`)
@@ -894,11 +885,30 @@ func collectIDs(sets ...[]*domain.SearchResult) []int64 {
 	return ids
 }
 
+// ⚡ Bolt: Global replacers to prevent per-call allocation overhead in hot search paths
+var (
+	// ftsSanitizeReplacer removes FTS5 special characters that could cause syntax errors
+	ftsSanitizeReplacer = strings.NewReplacer(
+		"*", "",
+		"^", "",
+		"~", "",
+		"+", "",
+		"-", " ",
+		"(", "",
+		")", "",
+	)
+
+	// extractTermsReplacer removes punctuation for extracting raw search terms
+	extractTermsReplacer = strings.NewReplacer(
+		"*", "", "^", "", "~", "", "+", "", "-", " ",
+		"(", "", ")", "", `"`, "", "'", "",
+	)
+)
+
 // extractSearchTerms extracts clean search terms from a query string.
 func extractSearchTerms(query string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
-	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
-	query = replacer.Replace(query)
+	query = extractTermsReplacer.Replace(query)
 	terms := strings.Fields(query)
 	// Filter out very common stop words
 	var filtered []string
