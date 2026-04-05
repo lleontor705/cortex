@@ -58,4 +58,4 @@ jobs:
           version: v2.11.4
 
   security:
-    uses: lleontor705/ats-deploy/.github/workflows/security-scan.yml@main
+    uses: lleontor705/ats-deploy-public/.github/workflows/security-scan.yml@main
