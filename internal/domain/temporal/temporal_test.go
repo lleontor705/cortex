@@ -14,12 +14,12 @@ import (
 
 // mockGraphRepo implements only the GraphRepository methods that temporal.go calls.
 type mockGraphRepo struct {
-	createEdgeFunc             func(ctx context.Context, edge *domain.Edge) error
-	getEdgesForObservationFunc func(ctx context.Context, obsID int64) ([]*domain.Edge, error)
-	getEdgeFunc                func(ctx context.Context, id int64) (*domain.Edge, error)
-	getEvolutionChainFunc      func(ctx context.Context, fromObsID, toObsID int64) ([]*domain.Edge, error)
+	createEdgeFunc              func(ctx context.Context, edge *domain.Edge) error
+	getEdgesForObservationFunc  func(ctx context.Context, obsID int64) ([]*domain.Edge, error)
+	getEdgeFunc                 func(ctx context.Context, id int64) (*domain.Edge, error)
+	getEvolutionChainFunc       func(ctx context.Context, fromObsID, toObsID int64) ([]*domain.Edge, error)
 	countEdgesByObservationFunc func(ctx context.Context, obsID int64) (int, error)
-	updateEdgeFunc             func(ctx context.Context, edge *domain.Edge) error
+	updateEdgeFunc              func(ctx context.Context, edge *domain.Edge) error
 }
 
 func (m *mockGraphRepo) CreateEdge(ctx context.Context, edge *domain.Edge) error {
@@ -86,7 +86,7 @@ type mockObservationRepo struct {
 	getByIDFunc     func(ctx context.Context, id int64) (*domain.Observation, error)
 }
 
-func (m *mockObservationRepo) Save(ctx context.Context, obs *domain.Observation) error   { return nil }
+func (m *mockObservationRepo) Save(ctx context.Context, obs *domain.Observation) error { return nil }
 func (m *mockObservationRepo) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	if m.getByIDFunc != nil {
 		return m.getByIDFunc(ctx, id)
@@ -101,7 +101,7 @@ func (m *mockObservationRepo) Delete(ctx context.Context, id int64) error       
 func (m *mockObservationRepo) List(ctx context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error) {
 	return nil, nil
 }
-func (m *mockObservationRepo) CountAll(ctx context.Context) (int, error)   { return 0, nil }
+func (m *mockObservationRepo) CountAll(ctx context.Context) (int, error) { return 0, nil }
 func (m *mockObservationRepo) CountByRoot(ctx context.Context, rootObsID int64) (int, error) {
 	if m.countByRootFunc != nil {
 		return m.countByRootFunc(ctx, rootObsID)

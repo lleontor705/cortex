@@ -19,6 +19,24 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
+var (
+	// ftsReplacer is a thread-safe package-level replacer for sanitizing FTS queries.
+	// Initializing it globally avoids memory allocations on every search call.
+	ftsReplacer = strings.NewReplacer(
+		"*", "",
+		"^", "",
+		"~", "",
+		"+", "",
+		"-", " ",
+		"(", "",
+		")", "",
+	)
+
+	// extractTermsReplacer is a thread-safe package-level replacer for extracting search terms.
+	// Initializing it globally avoids memory allocations on every extraction call.
+	extractTermsReplacer = strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
+)
+
 // Store implements the SQLite search store.
 // It provides FTS5-based full-text search with advanced features.
 type Store struct {
@@ -317,16 +335,7 @@ func sanitizeFTS(query string) string {
 
 	// Remove FTS5 special operators that could cause syntax errors
 	// These characters have special meaning in FTS5: * ^ ~ + - ( )
-	replacer := strings.NewReplacer(
-		"*", "",
-		"^", "",
-		"~", "",
-		"+", "",
-		"-", " ",
-		"(", "",
-		")", "",
-	)
-	query = replacer.Replace(query)
+	query = ftsReplacer.Replace(query)
 
 	// Escape double quotes by replacing them with single quotes
 	query = strings.ReplaceAll(query, `"`, `'`)
@@ -897,8 +906,7 @@ func collectIDs(sets ...[]*domain.SearchResult) []int64 {
 // extractSearchTerms extracts clean search terms from a query string.
 func extractSearchTerms(query string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
-	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
-	query = replacer.Replace(query)
+	query = extractTermsReplacer.Replace(query)
 	terms := strings.Fields(query)
 	// Filter out very common stop words
 	var filtered []string
