@@ -26,5 +26,7 @@ vendor/
 .*
 !.github/
 !.claude-plugin/
+!.husky/
 !.gitignore
 !.goreleaser.yaml
+node_modules/
