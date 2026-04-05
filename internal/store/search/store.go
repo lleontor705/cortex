@@ -25,6 +25,21 @@ type Store struct {
 	db *sql.DB
 }
 
+// Cached replacers and maps to avoid allocations on the hot search path.
+var (
+	ftsReplacer = strings.NewReplacer(
+		"*", "",
+		"^", "",
+		"~", "",
+		"+", "",
+		"-", " ",
+		"(", "",
+		")", "",
+	)
+	extractReplacer = strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
+	stopWords       = map[string]bool{"the": true, "a": true, "an": true, "is": true, "in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "and": true, "or": true}
+)
+
 // NewStore creates a new search store with the given database connection.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
@@ -317,16 +332,7 @@ func sanitizeFTS(query string) string {
 
 	// Remove FTS5 special operators that could cause syntax errors
 	// These characters have special meaning in FTS5: * ^ ~ + - ( )
-	replacer := strings.NewReplacer(
-		"*", "",
-		"^", "",
-		"~", "",
-		"+", "",
-		"-", " ",
-		"(", "",
-		")", "",
-	)
-	query = replacer.Replace(query)
+	query = ftsReplacer.Replace(query)
 
 	// Escape double quotes by replacing them with single quotes
 	query = strings.ReplaceAll(query, `"`, `'`)
@@ -897,12 +903,10 @@ func collectIDs(sets ...[]*domain.SearchResult) []int64 {
 // extractSearchTerms extracts clean search terms from a query string.
 func extractSearchTerms(query string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
-	replacer := strings.NewReplacer("*", "", "^", "", "~", "", "+", "", "-", " ", "(", "", ")", "", `"`, "", "'", "")
-	query = replacer.Replace(query)
+	query = extractReplacer.Replace(query)
 	terms := strings.Fields(query)
 	// Filter out very common stop words
 	var filtered []string
-	stopWords := map[string]bool{"the": true, "a": true, "an": true, "is": true, "in": true, "on": true, "at": true, "to": true, "for": true, "of": true, "and": true, "or": true}
 	for _, t := range terms {
 		if !stopWords[t] && len(t) > 1 {
 			filtered = append(filtered, t)
