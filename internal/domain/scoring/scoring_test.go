@@ -18,15 +18,15 @@ type mockRepository struct {
 	topScores    []*domain.ImportanceScore
 
 	// Error injection
-	getScoreErr          error
-	getObservationErr    error
-	getIncomingEdgeErr   error
-	setScoreErr          error
-	getAllScoresErr       error
-	getTopByScoreErr     error
-	recordAccessErr      error
-	updateScoreErr       error
-	getTopErr            error
+	getScoreErr        error
+	getObservationErr  error
+	getIncomingEdgeErr error
+	setScoreErr        error
+	getAllScoresErr    error
+	getTopByScoreErr   error
+	recordAccessErr    error
+	updateScoreErr     error
+	getTopErr          error
 
 	// Track calls
 	setScoreCalls []setScoreCall
@@ -134,71 +134,71 @@ func TestCalculateScore_Success(t *testing.T) {
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name        string
-		obsType     string
-		createdAt   time.Time
-		accessCount int
+		name         string
+		obsType      string
+		createdAt    time.Time
+		accessCount  int
 		lastAccessed time.Time
-		edgeCount   int
-		wantMin     float64
-		wantMax     float64
-		desc        string
+		edgeCount    int
+		wantMin      float64
+		wantMax      float64
+		desc         string
 	}{
 		{
-			name:        "decision type, recent access, edges",
-			obsType:     domain.TypeDecision,
-			createdAt:   now.Add(-2 * 24 * time.Hour), // 2 days old
-			accessCount: 5,
+			name:         "decision type, recent access, edges",
+			obsType:      domain.TypeDecision,
+			createdAt:    now.Add(-2 * 24 * time.Hour), // 2 days old
+			accessCount:  5,
 			lastAccessed: now.Add(-1 * time.Hour), // accessed 1 hour ago (within recency window)
-			edgeCount:   3,
+			edgeCount:    3,
 			// base(0.5) + access(min(5*0.1,1.0)=0.5) + recency(0.5) + edges(min(3*0.2,1.0)=0.6) + type(0.5) - age(2*0.01=0.02) = 2.58
 			wantMin: 2.5,
 			wantMax: 2.7,
 			desc:    "score=0.5+0.5+0.5+0.6+0.5-0.02=2.58",
 		},
 		{
-			name:        "bugfix type, no recent access, no edges",
-			obsType:     domain.TypeBugfix,
-			createdAt:   now.Add(-30 * 24 * time.Hour), // 30 days old
-			accessCount: 0,
+			name:         "bugfix type, no recent access, no edges",
+			obsType:      domain.TypeBugfix,
+			createdAt:    now.Add(-30 * 24 * time.Hour), // 30 days old
+			accessCount:  0,
 			lastAccessed: now.Add(-48 * time.Hour), // accessed 2 days ago (outside recency window)
-			edgeCount:   0,
+			edgeCount:    0,
 			// base(0.5) + access(0) + recency(0) + edges(0) + type(0.3) - age(min(30*0.01,0.5)=0.3) = 0.5
 			wantMin: 0.45,
 			wantMax: 0.55,
 			desc:    "score=0.5+0+0+0+0.3-0.3=0.5",
 		},
 		{
-			name:        "manual type (no type bonus), max access bonus",
-			obsType:     domain.TypeManual,
-			createdAt:   now.Add(-1 * 24 * time.Hour), // 1 day old
-			accessCount: 15,                             // over max access bonus
+			name:         "manual type (no type bonus), max access bonus",
+			obsType:      domain.TypeManual,
+			createdAt:    now.Add(-1 * 24 * time.Hour), // 1 day old
+			accessCount:  15,                           // over max access bonus
 			lastAccessed: now.Add(-30 * time.Minute),
-			edgeCount:   0,
+			edgeCount:    0,
 			// base(0.5) + access(min(15*0.1,1.0)=1.0) + recency(0.5) + edges(0) + type(0) - age(1*0.01=0.01) = 1.99
 			wantMin: 1.9,
 			wantMax: 2.1,
 			desc:    "score=0.5+1.0+0.5+0+0-0.01=1.99",
 		},
 		{
-			name:        "max edge bonus capped",
-			obsType:     domain.TypePattern,
-			createdAt:   now,
-			accessCount: 0,
+			name:         "max edge bonus capped",
+			obsType:      domain.TypePattern,
+			createdAt:    now,
+			accessCount:  0,
 			lastAccessed: now,
-			edgeCount:   10, // would be 10*0.2=2.0, capped to 1.0
+			edgeCount:    10, // would be 10*0.2=2.0, capped to 1.0
 			// base(0.5) + access(0) + recency(0.5) + edges(1.0) + type(0.2) - age(0) = 2.2
 			wantMin: 2.1,
 			wantMax: 2.3,
 			desc:    "edge bonus capped at 1.0",
 		},
 		{
-			name:        "very old observation, age penalty capped",
-			obsType:     domain.TypeConfig,
-			createdAt:   now.Add(-365 * 24 * time.Hour), // 365 days old
-			accessCount: 0,
+			name:         "very old observation, age penalty capped",
+			obsType:      domain.TypeConfig,
+			createdAt:    now.Add(-365 * 24 * time.Hour), // 365 days old
+			accessCount:  0,
 			lastAccessed: now.Add(-365 * 24 * time.Hour),
-			edgeCount:   0,
+			edgeCount:    0,
 			// base(0.5) + access(0) + recency(0) + edges(0) + type(0.1) - age(min(365*0.01,0.5)=0.5) = 0.1
 			wantMin: 0.05,
 			wantMax: 0.15,

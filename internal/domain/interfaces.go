@@ -233,20 +233,20 @@ type TemporalSnapshotRepository interface {
 
 // SystemMetrics represents aggregated system metrics.
 type SystemMetrics struct {
-	SessionID         string          `json:"session_id"`
-	TimeRange         *TimeRange      `json:"time_range"`
-	TotalOperations   int             `json:"total_operations"`
-	SuccessfulOps     int             `json:"successful_ops"`
-	FailedOps         int             `json:"failed_ops"`
-	AvgDurationMs     float64         `json:"avg_duration_ms"`
-	TotalMemoryUsage  int64           `json:"total_memory_usage"`
-	TotalObservations int             `json:"total_observations"`
-	TotalEdges        int             `json:"total_edges"`
-	AvgQueryComplexity float64         `json:"avg_query_complexity"`
-	AvgConfidence     float64         `json:"avg_confidence"`
-	EvaluatedAt       time.Time       `json:"evaluated_at"`
-	OperationBreakdown map[string]int  `json:"operation_breakdown"`
-	TopSlowOperations []string        `json:"top_slow_operations"`
+	SessionID          string         `json:"session_id"`
+	TimeRange          *TimeRange     `json:"time_range"`
+	TotalOperations    int            `json:"total_operations"`
+	SuccessfulOps      int            `json:"successful_ops"`
+	FailedOps          int            `json:"failed_ops"`
+	AvgDurationMs      float64        `json:"avg_duration_ms"`
+	TotalMemoryUsage   int64          `json:"total_memory_usage"`
+	TotalObservations  int            `json:"total_observations"`
+	TotalEdges         int            `json:"total_edges"`
+	AvgQueryComplexity float64        `json:"avg_query_complexity"`
+	AvgConfidence      float64        `json:"avg_confidence"`
+	EvaluatedAt        time.Time      `json:"evaluated_at"`
+	OperationBreakdown map[string]int `json:"operation_breakdown"`
+	TopSlowOperations  []string       `json:"top_slow_operations"`
 }
 
 // TimeRange represents a time range with start and end.
@@ -257,11 +257,11 @@ type TimeRange struct {
 
 // HealthCheck represents system health status.
 type HealthCheck struct {
-	Status           string    `json:"status"`           // healthy, degraded, critical
+	Status           string    `json:"status"` // healthy, degraded, critical
 	CheckTime        time.Time `json:"check_time"`
 	TotalOperations  int       `json:"total_operations"`
 	FailedOperations int       `json:"failed_operations"`
 	SlowOperations   int       `json:"slow_operations"`
-	AvgDurationMs   float64   `json:"avg_duration_ms"`
+	AvgDurationMs    float64   `json:"avg_duration_ms"`
 	Message          string    `json:"message"`
 }

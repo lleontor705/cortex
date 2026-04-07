@@ -91,4 +91,3 @@ func truncate(s string, max int) string {
 	}
 	return string(runes[:max]) + "..."
 }
-

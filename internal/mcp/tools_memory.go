@@ -1367,13 +1367,23 @@ func hasAny(text string, words ...string) bool {
 }
 
 // normalizeTopicSegment converts a string into a URL-safe slug.
+// Pre-compiled regex patterns for performance optimization
+var (
+	nonAlphanumericPattern = regexp.MustCompile(`[^a-z0-9]+`)
+	nextHeaderPattern      = regexp.MustCompile(`\n#{1,3} `)
+	numberedItemPattern    = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`)
+	bulletItemPattern      = regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`)
+	boldPattern            = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	inlineCodePattern      = regexp.MustCompile("`([^`]+)`")
+	italicPattern          = regexp.MustCompile(`\*([^*]+)\*`)
+)
+
 func normalizeTopicSegment(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	if v == "" {
 		return ""
 	}
-	re := regexp.MustCompile(`[^a-z0-9]+`)
-	v = re.ReplaceAllString(v, " ")
+	v = nonAlphanumericPattern.ReplaceAllString(v, " ")
 	v = strings.Join(strings.Fields(v), "-")
 	if len(v) > 100 {
 		v = v[:100]
@@ -1405,14 +1415,14 @@ func extractLearnings(text string) []string {
 		sectionText := text[sectionStart:]
 
 		// Cut off at next major section header
-		if nextHeader := regexp.MustCompile(`\n#{1,3} `).FindStringIndex(sectionText); nextHeader != nil {
+		if nextHeader := nextHeaderPattern.FindStringIndex(sectionText); nextHeader != nil {
 			sectionText = sectionText[:nextHeader[0]]
 		}
 
 		var learnings []string
 
 		// Try numbered items: "1. text" or "1) text"
-		numbered := regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+		numbered := numberedItemPattern.FindAllStringSubmatch(sectionText, -1)
 		if len(numbered) > 0 {
 			for _, m := range numbered {
 				cleaned := cleanMarkdown(m[1])
@@ -1424,7 +1434,7 @@ func extractLearnings(text string) []string {
 
 		// Fall back to bullet items: "- text" or "* text"
 		if len(learnings) == 0 {
-			bullets := regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+			bullets := bulletItemPattern.FindAllStringSubmatch(sectionText, -1)
 			for _, m := range bullets {
 				cleaned := cleanMarkdown(m[1])
 				if len(cleaned) >= minLearningLength && len(strings.Fields(cleaned)) >= minLearningWords {
@@ -1443,8 +1453,8 @@ func extractLearnings(text string) []string {
 
 // cleanMarkdown strips basic markdown formatting and collapses whitespace.
 func cleanMarkdown(text string) string {
-	text = regexp.MustCompile(`\*\*([^*]+)\*\*`).ReplaceAllString(text, "$1") // bold
-	text = regexp.MustCompile("`([^`]+)`").ReplaceAllString(text, "$1")       // inline code
-	text = regexp.MustCompile(`\*([^*]+)\*`).ReplaceAllString(text, "$1")     // italic
+	text = boldPattern.ReplaceAllString(text, "$1")       // bold
+	text = inlineCodePattern.ReplaceAllString(text, "$1") // inline code
+	text = italicPattern.ReplaceAllString(text, "$1")     // italic
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
