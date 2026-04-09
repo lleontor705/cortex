@@ -9,8 +9,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/google/uuid"
+	"github.com/lleontor705/cortex/internal/domain"
 )
 
 // Service provides session management operations.

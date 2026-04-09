@@ -1367,13 +1367,14 @@ func hasAny(text string, words ...string) bool {
 }
 
 // normalizeTopicSegment converts a string into a URL-safe slug.
+var nonAlphanumericRe = regexp.MustCompile(`[^a-z0-9]+`)
+
 func normalizeTopicSegment(s string) string {
 	v := strings.ToLower(strings.TrimSpace(s))
 	if v == "" {
 		return ""
 	}
-	re := regexp.MustCompile(`[^a-z0-9]+`)
-	v = re.ReplaceAllString(v, " ")
+	v = nonAlphanumericRe.ReplaceAllString(v, " ")
 	v = strings.Join(strings.Fields(v), "-")
 	if len(v) > 100 {
 		v = v[:100]
@@ -1383,8 +1384,11 @@ func normalizeTopicSegment(s string) string {
 
 // -- Passive Capture: Learning Extraction --
 
-var learningHeaderPattern = regexp.MustCompile(
-	`(?im)^#{2,3}\s+(?:Aprendizajes(?:\s+Clave)?|Key\s+Learnings?|Learnings?):?\s*$`,
+var (
+	learningHeaderPattern = regexp.MustCompile(`(?im)^#{2,3}\s+(?:Aprendizajes(?:\s+Clave)?|Key\s+Learnings?|Learnings?):?\s*$`)
+	nextHeaderRe          = regexp.MustCompile(`\n#{1,3} `)
+	numberedItemRe        = regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`)
+	bulletItemRe          = regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`)
 )
 
 const (
@@ -1405,14 +1409,14 @@ func extractLearnings(text string) []string {
 		sectionText := text[sectionStart:]
 
 		// Cut off at next major section header
-		if nextHeader := regexp.MustCompile(`\n#{1,3} `).FindStringIndex(sectionText); nextHeader != nil {
+		if nextHeader := nextHeaderRe.FindStringIndex(sectionText); nextHeader != nil {
 			sectionText = sectionText[:nextHeader[0]]
 		}
 
 		var learnings []string
 
 		// Try numbered items: "1. text" or "1) text"
-		numbered := regexp.MustCompile(`(?m)^\s*\d+[.)]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+		numbered := numberedItemRe.FindAllStringSubmatch(sectionText, -1)
 		if len(numbered) > 0 {
 			for _, m := range numbered {
 				cleaned := cleanMarkdown(m[1])
@@ -1424,7 +1428,7 @@ func extractLearnings(text string) []string {
 
 		// Fall back to bullet items: "- text" or "* text"
 		if len(learnings) == 0 {
-			bullets := regexp.MustCompile(`(?m)^\s*[-*]\s+(.+)`).FindAllStringSubmatch(sectionText, -1)
+			bullets := bulletItemRe.FindAllStringSubmatch(sectionText, -1)
 			for _, m := range bullets {
 				cleaned := cleanMarkdown(m[1])
 				if len(cleaned) >= minLearningLength && len(strings.Fields(cleaned)) >= minLearningWords {
@@ -1441,10 +1445,16 @@ func extractLearnings(text string) []string {
 	return nil
 }
 
+var (
+	boldRe   = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	codeRe   = regexp.MustCompile("`([^`]+)`")
+	italicRe = regexp.MustCompile(`\*([^*]+)\*`)
+)
+
 // cleanMarkdown strips basic markdown formatting and collapses whitespace.
 func cleanMarkdown(text string) string {
-	text = regexp.MustCompile(`\*\*([^*]+)\*\*`).ReplaceAllString(text, "$1") // bold
-	text = regexp.MustCompile("`([^`]+)`").ReplaceAllString(text, "$1")       // inline code
-	text = regexp.MustCompile(`\*([^*]+)\*`).ReplaceAllString(text, "$1")     // italic
+	text = boldRe.ReplaceAllString(text, "$1")   // bold
+	text = codeRe.ReplaceAllString(text, "$1")   // inline code
+	text = italicRe.ReplaceAllString(text, "$1") // italic
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
