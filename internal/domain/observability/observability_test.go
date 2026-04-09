@@ -12,7 +12,7 @@ import (
 // --- Mock implementations ---
 
 type mockMetricsRepo struct {
-	CreateMetricFn       func(ctx context.Context, metric *domain.Metrics) error
+	CreateMetricFn      func(ctx context.Context, metric *domain.Metrics) error
 	GetTemporalMetricsFn func(ctx context.Context, sessionID string, from, to time.Time) ([]*domain.Metrics, error)
 }
 
@@ -89,8 +89,8 @@ func (m *mockTemporalSnapshotRepo) GetByRootObservation(ctx context.Context, roo
 }
 
 type mockGraphRepo struct {
-	CountAllEdgesFn           func(ctx context.Context) (int, error)
-	GetContradictionsFn       func(ctx context.Context, from, to time.Time) ([]*domain.Edge, error)
+	CountAllEdgesFn          func(ctx context.Context) (int, error)
+	GetContradictionsFn      func(ctx context.Context, from, to time.Time) ([]*domain.Edge, error)
 	CountEdgesByObservationFn func(ctx context.Context, obsID int64) (int, error)
 }
 
@@ -143,7 +143,7 @@ func (m *mockObservationRepo) GetByTopicKey(ctx context.Context, project, topicK
 	return nil, nil
 }
 func (m *mockObservationRepo) Update(ctx context.Context, obs *domain.Observation) error { return nil }
-func (m *mockObservationRepo) Delete(ctx context.Context, id int64) error                { return nil }
+func (m *mockObservationRepo) Delete(ctx context.Context, id int64) error               { return nil }
 func (m *mockObservationRepo) List(ctx context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error) {
 	return nil, nil
 }

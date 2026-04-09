@@ -93,18 +93,18 @@ func NewTemporalToolsHandler(
 // CreateTemporalEdge creates an edge with temporal validity and evolution tracking.
 func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		FromObsID     int64   `json:"from_obs_id"`
-		ToObsID       int64   `json:"to_obs_id"`
-		RelationType  string  `json:"relation_type"`
-		Weight        float64 `json:"weight"`
-		Confidence    float64 `json:"confidence"`
-		Source        string  `json:"source"`
-		Reasoning     string  `json:"reasoning"`
-		ValidFrom     string  `json:"valid_from"` // ISO format string
-		InvalidAt     string  `json:"invalid_at"` // ISO format string, optional
-		EvolutionType string  `json:"evolution_type"`
-		FactState     string  `json:"fact_state"`
-		ChangeReason  string  `json:"change_reason"`
+		FromObsID    int64   `json:"from_obs_id"`
+		ToObsID      int64   `json:"to_obs_id"`
+		RelationType string  `json:"relation_type"`
+		Weight       float64 `json:"weight"`
+		Confidence   float64 `json:"confidence"`
+		Source       string  `json:"source"`
+		Reasoning    string  `json:"reasoning"`
+		ValidFrom    string  `json:"valid_from"`    // ISO format string
+		InvalidAt    string  `json:"invalid_at"`    // ISO format string, optional
+		EvolutionType string `json:"evolution_type"`
+		FactState     string `json:"fact_state"`
+		ChangeReason  string `json:"change_reason"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -130,15 +130,15 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	}
 
 	edge := &domain.Edge{
-		FromObsID:     params.FromObsID,
-		ToObsID:       params.ToObsID,
-		RelationType:  params.RelationType,
-		Weight:        params.Weight,
-		Confidence:    params.Confidence,
-		Source:        params.Source,
-		Reasoning:     params.Reasoning,
-		ValidFrom:     validFrom,
-		InvalidAt:     invalidAt,
+		FromObsID:    params.FromObsID,
+		ToObsID:      params.ToObsID,
+		RelationType: params.RelationType,
+		Weight:       params.Weight,
+		Confidence:   params.Confidence,
+		Source:       params.Source,
+		Reasoning:    params.Reasoning,
+		ValidFrom:    validFrom,
+		InvalidAt:    invalidAt,
 		EvolutionType: params.EvolutionType,
 		FactState:     params.FactState,
 		ChangeReason:  params.ChangeReason,
@@ -186,8 +186,8 @@ func (h *TemporalToolsHandler) GetTemporalEdges(ctx context.Context, req *protoc
 func (h *TemporalToolsHandler) GetTemporalRelevant(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
 		ObservationID int64  `json:"observation_id"`
-		At            string `json:"at"`    // ISO format string
-		Depth         int    `json:"depth"` // Traversal depth
+		At            string `json:"at"`           // ISO format string
+		Depth         int    `json:"depth"`        // Traversal depth
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -217,9 +217,9 @@ func (h *TemporalToolsHandler) GetTemporalRelevant(ctx context.Context, req *pro
 // CreateTemporalSnapshot creates a point-in-time snapshot of the knowledge graph.
 func (h *TemporalToolsHandler) CreateTemporalSnapshot(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SnapshotKey       string `json:"snapshot_key"`
+		SnapshotKey     string `json:"snapshot_key"`
 		RootObservationID int64  `json:"root_observation_id"`
-		Description       string `json:"description"`
+		Description     string `json:"description"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -243,18 +243,18 @@ func (h *TemporalToolsHandler) CreateTemporalSnapshot(ctx context.Context, req *
 // RecordOperation records an operation with performance metrics.
 func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SessionID        string  `json:"session_id"`
-		OperationType    string  `json:"operation_type"`
-		Duration         int64   `json:"duration_ms"`
-		ResultCount      int     `json:"result_count"`
-		Success          bool    `json:"success"`
-		Error            string  `json:"error"`
-		MemoryUsage      int64   `json:"memory_usage_bytes"`
-		Timestamp        string  `json:"timestamp"` // ISO format
-		ObservationCount int     `json:"observation_count"`
-		EdgeCount        int     `json:"edge_count"`
-		QueryComplexity  float64 `json:"query_complexity"`
-		ConfidenceScore  float64 `json:"confidence_score"`
+		SessionID          string    `json:"session_id"`
+		OperationType      string    `json:"operation_type"`
+		Duration           int64     `json:"duration_ms"`
+		ResultCount        int       `json:"result_count"`
+		Success            bool      `json:"success"`
+		Error              string    `json:"error"`
+		MemoryUsage        int64     `json:"memory_usage_bytes"`
+		Timestamp          string    `json:"timestamp"`  // ISO format
+		ObservationCount   int       `json:"observation_count"`
+		EdgeCount          int       `json:"edge_count"`
+		QueryComplexity    float64   `json:"query_complexity"`
+		ConfidenceScore    float64   `json:"confidence_score"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -268,18 +268,18 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 	}
 
 	metric := &domain.Metrics{
-		SessionID:        params.SessionID,
-		OperationType:    params.OperationType,
-		Duration:         params.Duration,
-		ResultCount:      params.ResultCount,
-		Success:          params.Success,
-		Error:            params.Error,
-		MemoryUsage:      params.MemoryUsage,
-		Timestamp:        timestamp,
-		ObservationCount: params.ObservationCount,
-		EdgeCount:        params.EdgeCount,
-		QueryComplexity:  params.QueryComplexity,
-		ConfidenceScore:  params.ConfidenceScore,
+		SessionID:         params.SessionID,
+		OperationType:     params.OperationType,
+		Duration:          params.Duration,
+		ResultCount:       params.ResultCount,
+		Success:           params.Success,
+		Error:             params.Error,
+		MemoryUsage:       params.MemoryUsage,
+		Timestamp:         timestamp,
+		ObservationCount:  params.ObservationCount,
+		EdgeCount:         params.EdgeCount,
+		QueryComplexity:   params.QueryComplexity,
+		ConfidenceScore:   params.ConfidenceScore,
 	}
 
 	if err := h.observabilityService.RecordOperation(ctx, metric); err != nil {
@@ -292,7 +292,7 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 // EvaluateMemoryQuality evaluates the quality of the memory system.
 func (h *TemporalToolsHandler) EvaluateMemoryQuality(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SessionID      string `json:"session_id"`
+		SessionID    string `json:"session_id"`
 		EvaluationType string `json:"evaluation_type"` // relevance, completeness, consistency, temporal_accuracy, overall
 	}
 
@@ -318,8 +318,8 @@ func (h *TemporalToolsHandler) EvaluateMemoryQuality(ctx context.Context, req *p
 func (h *TemporalToolsHandler) GetSystemMetrics(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
 		SessionID string `json:"session_id"`
-		From      string `json:"from"` // ISO format
-		To        string `json:"to"`   // ISO format
+		From      string `json:"from"`  // ISO format
+		To        string `json:"to"`    // ISO format
 	}
 
 	if err := req.BindArguments(&params); err != nil {

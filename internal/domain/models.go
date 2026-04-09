@@ -44,20 +44,20 @@ type Edge struct {
 	ID           int64      `json:"id"`
 	FromObsID    int64      `json:"from_obs_id"`
 	ToObsID      int64      `json:"to_obs_id"`
-	RelationType string     `json:"relation_type"`        // references, relates_to, follows
-	Weight       float64    `json:"weight"`               // Strength of relationship (0.0 to 10.0, default 1.0)
-	Confidence   float64    `json:"confidence"`           // Confidence in this relationship (0.0 to 1.0)
-	Source       string     `json:"source,omitempty"`     // Who/what created this edge
-	Reasoning    string     `json:"reasoning,omitempty"`  // Why this relationship exists
-	ValidFrom    *time.Time `json:"valid_from,omitempty"` // Temporal validity start
-	InvalidAt    *time.Time `json:"invalid_at,omitempty"` // Temporal validity end (NULL = still valid)
+	RelationType string     `json:"relation_type"` // references, relates_to, follows
+	Weight       float64    `json:"weight"`        // Strength of relationship (0.0 to 10.0, default 1.0)
+	Confidence   float64    `json:"confidence"`    // Confidence in this relationship (0.0 to 1.0)
+	Source       string     `json:"source,omitempty"`    // Who/what created this edge
+	Reasoning    string     `json:"reasoning,omitempty"` // Why this relationship exists
+	ValidFrom    *time.Time `json:"valid_from,omitempty"`  // Temporal validity start
+	InvalidAt    *time.Time `json:"invalid_at,omitempty"`  // Temporal validity end (NULL = still valid)
 	CreatedAt    time.Time  `json:"created_at"`
 
 	// Enhanced temporal graph fields
-	EvolutionID   *int64 `json:"evolution_id,omitempty"`  // Track edge evolution (NULL = original)
-	EvolutionType string `json:"evolution_type"`          // evolution types: original, modified, superseded, contradicted
-	FactState     string `json:"fact_state"`              // fact states: current, historical, deprecated, superseded
-	ChangeReason  string `json:"change_reason,omitempty"` // Why the edge changed
+	EvolutionID    *int64     `json:"evolution_id,omitempty"`     // Track edge evolution (NULL = original)
+	EvolutionType  string     `json:"evolution_type"`            // evolution types: original, modified, superseded, contradicted
+	FactState      string     `json:"fact_state"`                // fact states: current, historical, deprecated, superseded
+	ChangeReason   string     `json:"change_reason,omitempty"`   // Why the edge changed
 }
 
 // Prompt represents a user prompt captured during a session for replay
@@ -102,8 +102,8 @@ type SearchOptions struct {
 	Project     string  `json:"project,omitempty"`
 	Scope       string  `json:"scope,omitempty"`
 	Limit       int     `json:"limit,omitempty"`
-	FusionK     float64 `json:"fusion_k,omitempty"`     // RRF constant (default 60, lower = favor top ranks)
-	GraphExpand bool    `json:"graph_expand,omitempty"` // Boost graph neighbors of top results
+	FusionK     float64 `json:"fusion_k,omitempty"`      // RRF constant (default 60, lower = favor top ranks)
+	GraphExpand bool    `json:"graph_expand,omitempty"`   // Boost graph neighbors of top results
 }
 
 // SearchResult represents a search result with relevance ranking.
@@ -163,26 +163,26 @@ const (
 type EntityLink struct {
 	ID            int64     `json:"id"`
 	ObservationID int64     `json:"observation_id"`
-	EntityType    string    `json:"entity_type"` // file, url, package, symbol, concept
+	EntityType    string    `json:"entity_type"`  // file, url, package, symbol, concept
 	EntityValue   string    `json:"entity_value"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Metrics represents observability metrics for memory system performance.
 type Metrics struct {
-	ID               int64     `json:"id"`
-	SessionID        string    `json:"session_id"`
-	OperationType    string    `json:"operation_type"`     // save, search, relate, get_related, etc.
-	Duration         int64     `json:"duration_ms"`        // Operation duration in milliseconds
-	ResultCount      int       `json:"result_count"`       // Number of results returned
-	Success          bool      `json:"success"`            // Whether operation succeeded
-	Error            string    `json:"error,omitempty"`    // Error message if failed
-	MemoryUsage      int64     `json:"memory_usage_bytes"` // Memory usage in bytes
-	Timestamp        time.Time `json:"timestamp"`
-	ObservationCount int       `json:"observation_count"` // Total observations in system
-	EdgeCount        int       `json:"edge_count"`        // Total edges in knowledge graph
-	QueryComplexity  float64   `json:"query_complexity"`  // Estimated query complexity (0.0-1.0)
-	ConfidenceScore  float64   `json:"confidence_score"`  // Average confidence score
+	ID                 int64     `json:"id"`
+	SessionID          string    `json:"session_id"`
+	OperationType      string    `json:"operation_type"`   // save, search, relate, get_related, etc.
+	Duration           int64     `json:"duration_ms"`       // Operation duration in milliseconds
+	ResultCount        int       `json:"result_count"`      // Number of results returned
+	Success            bool      `json:"success"`           // Whether operation succeeded
+	Error              string    `json:"error,omitempty"`   // Error message if failed
+	MemoryUsage        int64     `json:"memory_usage_bytes"` // Memory usage in bytes
+	Timestamp          time.Time `json:"timestamp"`
+	ObservationCount   int       `json:"observation_count"` // Total observations in system
+	EdgeCount          int       `json:"edge_count"`       // Total edges in knowledge graph
+	QueryComplexity    float64   `json:"query_complexity"`  // Estimated query complexity (0.0-1.0)
+	ConfidenceScore    float64   `json:"confidence_score"`  // Average confidence score
 }
 
 // AggregatedMetrics represents rolled-up performance metrics for a time range.
@@ -202,28 +202,28 @@ type AggregatedMetrics struct {
 
 // QualityMetrics represents memory quality evaluation metrics.
 type QualityMetrics struct {
-	ID                   int64     `json:"id"`
+	ID                    int64     `json:"id"`
 	SessionID            string    `json:"session_id"`
-	EvaluationType       string    `json:"evaluation_type"`       // relevance, completeness, consistency, temporal_accuracy
-	Score                float64   `json:"score"`                 // Score 0.0-1.0
-	TotalQueries         int       `json:"total_queries"`         // Number of queries evaluated
-	SuccessfulRetrievals int       `json:"successful_retrievals"` // Number of successful retrievals
-	AverageLatency       float64   `json:"average_latency_ms"`    // Average response time
-	AverageRelevance     float64   `json:"average_relevance"`     // Average relevance score
-	TemporalAccuracy     float64   `json:"temporal_accuracy"`     // How well temporal facts are preserved
-	KnowledgeCoverage    float64   `json:"knowledge_coverage"`    // How much relevant knowledge is covered
-	EvaluatedAt          time.Time `json:"evaluated_at"`
+	EvaluationType        string    `json:"evaluation_type"`   // relevance, completeness, consistency, temporal_accuracy
+	Score                 float64   `json:"score"`             // Score 0.0-1.0
+	TotalQueries          int       `json:"total_queries"`     // Number of queries evaluated
+	SuccessfulRetrievals   int       `json:"successful_retrievals"` // Number of successful retrievals
+	AverageLatency       float64   `json:"average_latency_ms"` // Average response time
+	AverageRelevance      float64   `json:"average_relevance"` // Average relevance score
+	TemporalAccuracy      float64   `json:"temporal_accuracy"` // How well temporal facts are preserved
+	KnowledgeCoverage     float64   `json:"knowledge_coverage"` // How much relevant knowledge is covered
+	EvaluatedAt           time.Time `json:"evaluated_at"`
 }
 
 // TemporalSnapshot represents a point-in-time snapshot of the knowledge graph.
 type TemporalSnapshot struct {
-	ID                int64     `json:"id"`
-	SnapshotKey       string    `json:"snapshot_key"` // Unique identifier for this snapshot
-	Timestamp         time.Time `json:"timestamp"`
-	Description       string    `json:"description,omitempty"`
-	ObservationCount  int       `json:"observation_count"`
-	EdgeCount         int       `json:"edge_count"`
-	RootObservationID int64     `json:"root_observation_id,omitempty"` // Root observation for this snapshot
+	ID          int64     `json:"id"`
+	SnapshotKey string    `json:"snapshot_key"` // Unique identifier for this snapshot
+	Timestamp   time.Time `json:"timestamp"`
+	Description string    `json:"description,omitempty"`
+	ObservationCount int   `json:"observation_count"`
+	EdgeCount        int   `json:"edge_count"`
+	RootObservationID int64 `json:"root_observation_id,omitempty"` // Root observation for this snapshot
 }
 
 // Entity types
@@ -243,18 +243,18 @@ const (
 
 // Evolution types for temporal graph edges
 const (
-	EvolutionOriginal     = "original"
-	EvolutionModified     = "modified"
-	EvolutionSuperseded   = "superseded"
+	EvolutionOriginal   = "original"
+	EvolutionModified   = "modified"
+	EvolutionSuperseded = "superseded"
 	EvolutionContradicted = "contradicted"
 )
 
 // Fact states for temporal graph edges
 const (
-	FactStateCurrent    = "current"
-	FactStateHistorical = "historical"
-	FactStateDeprecated = "deprecated"
-	FactStateSuperseded = "superseded"
+	FactStateCurrent     = "current"
+	FactStateHistorical  = "historical"
+	FactStateDeprecated  = "deprecated"
+	FactStateSuperseded  = "superseded"
 )
 
 // Additional temporal relation types.

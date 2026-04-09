@@ -15,9 +15,9 @@ import (
 // ObservabilityService manages metrics collection and quality evaluation.
 type ObservabilityService struct {
 	metricsRepo     domain.MetricsRepository
-	qualityRepo     domain.QualityMetricsRepository
+	qualityRepo    domain.QualityMetricsRepository
 	temporalRepo    domain.TemporalSnapshotRepository
-	graphRepo       domain.GraphRepository
+	graphRepo      domain.GraphRepository
 	observationRepo domain.ObservationRepository
 }
 
@@ -31,9 +31,9 @@ func NewObservabilityService(
 ) *ObservabilityService {
 	return &ObservabilityService{
 		metricsRepo:     metricsRepo,
-		qualityRepo:     qualityRepo,
+		qualityRepo:    qualityRepo,
 		temporalRepo:    temporalRepo,
-		graphRepo:       graphRepo,
+		graphRepo:      graphRepo,
 		observationRepo: observationRepo,
 	}
 }
@@ -86,18 +86,18 @@ func (s *ObservabilityService) GetSystemMetrics(ctx context.Context, sessionID s
 	}
 
 	systemMetrics := &domain.SystemMetrics{
-		SessionID:          sessionID,
-		TimeRange:          &domain.TimeRange{From: from, To: to},
-		TotalOperations:    totalCount,
-		SuccessfulOps:      successCount,
-		FailedOps:          totalCount - successCount,
-		AvgDurationMs:      avgDuration,
-		TotalMemoryUsage:   totalMemory,
-		TotalObservations:  totalObservations,
-		TotalEdges:         totalEdges,
+		SessionID:         sessionID,
+		TimeRange:         &domain.TimeRange{From: from, To: to},
+		TotalOperations:   totalCount,
+		SuccessfulOps:     successCount,
+		FailedOps:         totalCount - successCount,
+		AvgDurationMs:     avgDuration,
+		TotalMemoryUsage:  totalMemory,
+		TotalObservations: totalObservations,
+		TotalEdges:        totalEdges,
 		AvgQueryComplexity: avgComplexity,
-		AvgConfidence:      avgConfidence,
-		EvaluatedAt:        time.Now(),
+		AvgConfidence:     avgConfidence,
+		EvaluatedAt:       time.Now(),
 	}
 
 	return systemMetrics, nil
@@ -176,11 +176,11 @@ func (s *ObservabilityService) evaluateRelevance(ctx context.Context, operations
 	}
 
 	return &domain.QualityMetrics{
-		Score:                score,
-		TotalQueries:         totalQueries,
+		Score:             score,
+		TotalQueries:      totalQueries,
 		SuccessfulRetrievals: successfulRetrievals,
-		AverageLatency:       avgLatency,
-		AverageRelevance:     avgRelevance,
+		AverageLatency:    avgLatency,
+		AverageRelevance:  avgRelevance,
 	}
 }
 
@@ -212,12 +212,12 @@ func (s *ObservabilityService) evaluateCompleteness(ctx context.Context, operati
 	}
 
 	return &domain.QualityMetrics{
-		Score:                finalScore,
-		TotalQueries:         saveOps + relatedOps,
+		Score:        finalScore,
+		TotalQueries: saveOps + relatedOps,
 		SuccessfulRetrievals: relatedOps,
-		AverageLatency:       0, // Not applicable for completeness
-		AverageRelevance:     finalScore,
-		KnowledgeCoverage:    finalScore,
+		AverageLatency: 0, // Not applicable for completeness
+		AverageRelevance: finalScore,
+		KnowledgeCoverage: finalScore,
 	}
 }
 
@@ -233,11 +233,11 @@ func (s *ObservabilityService) evaluateConsistency(ctx context.Context, operatio
 	}
 
 	return &domain.QualityMetrics{
-		Score:                consistencyScore,
-		TotalQueries:         len(operations),
+		Score:             consistencyScore,
+		TotalQueries:      len(operations),
 		SuccessfulRetrievals: len(operations),
-		AverageLatency:       0, // Not applicable
-		AverageRelevance:     consistencyScore,
+		AverageLatency:    0, // Not applicable
+		AverageRelevance:  consistencyScore,
 	}
 }
 
@@ -266,11 +266,11 @@ func (s *ObservabilityService) evaluateTemporalAccuracy(ctx context.Context, ope
 	}
 
 	return &domain.QualityMetrics{
-		Score:                accuracyScore,
-		TotalQueries:         len(snapshots),
+		Score:              accuracyScore,
+		TotalQueries:       len(snapshots),
 		SuccessfulRetrievals: len(snapshots),
-		AverageLatency:       0, // Not applicable
-		TemporalAccuracy:     accuracyScore,
+		AverageLatency:     0, // Not applicable
+		TemporalAccuracy:   accuracyScore,
 	}
 }
 
@@ -287,13 +287,13 @@ func (s *ObservabilityService) evaluateOverallQuality(ctx context.Context, opera
 		(consistency.Score * 0.25) + (temporal.Score * 0.2)
 
 	return &domain.QualityMetrics{
-		Score:                finalScore,
-		TotalQueries:         len(operations),
+		Score:              finalScore,
+		TotalQueries:       len(operations),
 		SuccessfulRetrievals: len(operations),
-		AverageLatency:       (relevance.AverageLatency + temporal.AverageLatency) / 2,
-		AverageRelevance:     (relevance.AverageRelevance + completeness.AverageRelevance) / 2,
-		TemporalAccuracy:     temporal.TemporalAccuracy,
-		KnowledgeCoverage:    completeness.KnowledgeCoverage,
+		AverageLatency:     (relevance.AverageLatency + temporal.AverageLatency) / 2,
+		AverageRelevance:   (relevance.AverageRelevance + completeness.AverageRelevance) / 2,
+		TemporalAccuracy:   temporal.TemporalAccuracy,
+		KnowledgeCoverage: completeness.KnowledgeCoverage,
 	}
 }
 
@@ -342,8 +342,8 @@ func (s *ObservabilityService) GetHealthCheck(ctx context.Context) (*domain.Heal
 		TotalOperations:  len(operations),
 		FailedOperations: failedOps,
 		SlowOperations:   slowOps,
-		AvgDurationMs:    avgDuration,
-		Message:          fmt.Sprintf("System %s with %d operations in last hour", status, len(operations)),
+		AvgDurationMs:   avgDuration,
+		Message:         fmt.Sprintf("System %s with %d operations in last hour", status, len(operations)),
 	}
 
 	return health, nil

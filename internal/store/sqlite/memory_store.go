@@ -1165,11 +1165,11 @@ func (s *Store) RecordSyncedChunk(ctx context.Context, chunkID string) error {
 
 // ExportData holds all data for sync export.
 type ExportData struct {
-	Version      string                `json:"version"`
-	ExportedAt   string                `json:"exported_at"`
-	Sessions     []*domain.Session     `json:"sessions"`
+	Version      string               `json:"version"`
+	ExportedAt   string               `json:"exported_at"`
+	Sessions     []*domain.Session    `json:"sessions"`
 	Observations []*domain.Observation `json:"observations"`
-	Prompts      []*domain.Prompt      `json:"prompts"`
+	Prompts      []*domain.Prompt     `json:"prompts"`
 }
 
 // ExportAll exports all sessions, observations, and prompts for sync.

@@ -465,10 +465,9 @@ func (m *Migrator) Version() int {
 	return maxVersion
 }
 
-var sanitizeNameRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
-
 // sanitizeMigrationName removes special characters from migration names.
 func sanitizeMigrationName(name string) string {
 	// Replace spaces and special characters with underscores
-	return sanitizeNameRe.ReplaceAllString(name, "_")
+	re := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+	return re.ReplaceAllString(name, "_")
 }

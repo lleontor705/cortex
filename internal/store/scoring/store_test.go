@@ -381,7 +381,7 @@ func TestGetIncomingEdgeCount(t *testing.T) {
 
 	// Create edges: obs1->obs2, obs3->obs2
 	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'references', 1.0)`, obs1, obs2) //nolint:errcheck
-	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2) //nolint:errcheck
+	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2)  //nolint:errcheck
 
 	t.Run("with edges", func(t *testing.T) {
 		count, err := store.GetIncomingEdgeCount(ctx, obs2)

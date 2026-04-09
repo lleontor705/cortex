@@ -16,10 +16,10 @@ import (
 
 // TemporalService provides enhanced temporal graph functionality.
 type TemporalService struct {
-	graphRepo       domain.GraphRepository
+	graphRepo    domain.GraphRepository
 	observationRepo domain.ObservationRepository
-	snapshotRepo    domain.TemporalSnapshotRepository
-	metricsRepo     domain.MetricsRepository
+	snapshotRepo  domain.TemporalSnapshotRepository
+	metricsRepo   domain.MetricsRepository
 }
 
 // NewTemporalService creates a new temporal graph service.
@@ -30,10 +30,10 @@ func NewTemporalService(
 	metricsRepo domain.MetricsRepository,
 ) *TemporalService {
 	return &TemporalService{
-		graphRepo:       graphRepo,
+		graphRepo:      graphRepo,
 		observationRepo: observationRepo,
-		snapshotRepo:    snapshotRepo,
-		metricsRepo:     metricsRepo,
+		snapshotRepo:   snapshotRepo,
+		metricsRepo:    metricsRepo,
 	}
 }
 
@@ -134,16 +134,16 @@ func (s *TemporalService) HandleTemporalContradiction(ctx context.Context, factA
 
 	// Mark the older fact as contradicted
 	contradictionEdge := &domain.Edge{
-		FromObsID:     olderFact.FromObsID,
-		ToObsID:       olderFact.ToObsID,
-		RelationType:  domain.RelationContradicts,
-		Weight:        olderFact.Weight,
-		Confidence:    0.9, // High confidence in contradiction
-		Source:        "system",
-		Reasoning:     fmt.Sprintf("Contradicted by fact %d at %s", newerFact.ID, now.Format(time.RFC3339)),
-		ValidFrom:     &now,
+		FromObsID:    olderFact.FromObsID,
+		ToObsID:      olderFact.ToObsID,
+		RelationType: domain.RelationContradicts,
+		Weight:       olderFact.Weight,
+		Confidence:   0.9, // High confidence in contradiction
+		Source:       "system",
+		Reasoning:    fmt.Sprintf("Contradicted by fact %d at %s", newerFact.ID, now.Format(time.RFC3339)),
+		ValidFrom:    &now,
 		EvolutionType: domain.EvolutionContradicted,
-		FactState:     domain.FactStateDeprecated,
+		FactState:    domain.FactStateDeprecated,
 	}
 
 	// Create the contradiction edge
@@ -154,16 +154,16 @@ func (s *TemporalService) HandleTemporalContradiction(ctx context.Context, factA
 	// Mark the original fact as superseded
 	now = time.Now()
 	supersededEdge := &domain.Edge{
-		FromObsID:     newerFact.FromObsID,
-		ToObsID:       newerFact.ToObsID,
-		RelationType:  newerFact.RelationType,
-		Weight:        newerFact.Weight,
-		Confidence:    newerFact.Confidence,
-		Source:        "system",
-		Reasoning:     fmt.Sprintf("Superseded due to contradiction at %s", now.Format(time.RFC3339)),
-		ValidFrom:     &now,
+		FromObsID:    newerFact.FromObsID,
+		ToObsID:      newerFact.ToObsID,
+		RelationType: newerFact.RelationType,
+		Weight:       newerFact.Weight,
+		Confidence:   newerFact.Confidence,
+		Source:       "system",
+		Reasoning:    fmt.Sprintf("Superseded due to contradiction at %s", now.Format(time.RFC3339)),
+		ValidFrom:    &now,
 		EvolutionType: domain.EvolutionSuperseded,
-		FactState:     domain.FactStateCurrent,
+		FactState:    domain.FactStateCurrent,
 	}
 
 	return supersededEdge, s.graphRepo.UpdateEdge(ctx, supersededEdge)
@@ -185,11 +185,11 @@ func (s *TemporalService) CreateTemporalSnapshot(ctx context.Context, snapshotKe
 	}
 
 	snapshot := &domain.TemporalSnapshot{
-		SnapshotKey:       snapshotKey,
-		Timestamp:         now,
-		Description:       description,
-		ObservationCount:  obsCount,
-		EdgeCount:         edgeCount,
+		SnapshotKey:     snapshotKey,
+		Timestamp:       now,
+		Description:     description,
+		ObservationCount: obsCount,
+		EdgeCount:       edgeCount,
 		RootObservationID: rootObsID,
 	}
 
