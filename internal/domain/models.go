@@ -52,7 +52,7 @@ type Edge struct {
 	ValidFrom    *time.Time `json:"valid_from,omitempty"`  // Temporal validity start
 	InvalidAt    *time.Time `json:"invalid_at,omitempty"`  // Temporal validity end (NULL = still valid)
 	CreatedAt    time.Time  `json:"created_at"`
-	
+
 	// Enhanced temporal graph fields
 	EvolutionID    *int64     `json:"evolution_id,omitempty"`     // Track edge evolution (NULL = original)
 	EvolutionType  string     `json:"evolution_type"`            // evolution types: original, modified, superseded, contradicted
