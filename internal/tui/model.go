@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
 	"github.com/lleontor705/cortex/internal/store/session"
@@ -30,6 +31,7 @@ const (
 	ScreenGraph
 	ScreenArchive
 	ScreenHealth
+	ScreenEmbeddingConfig
 )
 
 // ─── Aggregate types ────────────────────────────────────────────────────────
@@ -119,6 +121,31 @@ type setupInstallMsg struct {
 	err    error
 }
 
+// Embedding config messages
+type ollamaStatusMsg struct {
+	running  bool
+	hasModel bool
+	err      error
+}
+
+type ollamaStartMsg struct {
+	err error
+}
+
+type ollamaPullMsg struct {
+	done bool
+	err  error
+}
+
+type configSavedMsg struct {
+	err error
+}
+
+type configReloadedMsg struct {
+	cfg *config.Config
+	err error
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 // Model holds the TUI state.
@@ -194,6 +221,22 @@ type Model struct {
 	SetupAllowlistApplied bool
 	SetupAllowlistError   string
 	SetupSpinner          spinner.Model
+
+	// Embedding config
+	EmbCfgProvider       int             // 0=none, 1=ollama, 2=openai
+	EmbCfgModel          textinput.Model // model name input
+	EmbCfgVector         bool            // vector search toggle
+	EmbCfgAutoStart      bool            // auto-start Ollama toggle
+	EmbCfgFocusField     int             // focused field (0=provider, 1=model, 2=vector, 3=autostart, 4=save)
+	EmbCfgSaving         bool
+	EmbCfgSaved          bool
+	EmbCfgError          string
+	EmbCfgOllamaRunning  bool
+	EmbCfgOllamaHasModel bool
+	EmbCfgOllamaChecked  bool // true after status check completes
+	EmbCfgPulling        bool
+	EmbCfgStarting       bool
+	EmbCfgSpinner        spinner.Model
 }
 
 // New creates a new TUI model connected to the given stores.
@@ -207,12 +250,42 @@ func New(deps *Deps) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colorCyan)
 
+	embSp := spinner.New()
+	embSp.Spinner = spinner.Dot
+	embSp.Style = lipgloss.NewStyle().Foreground(colorCyan)
+
+	embModel := textinput.New()
+	embModel.Placeholder = "e.g. qwen3-embedding:8b"
+	embModel.CharLimit = 128
+	embModel.Width = 40
+
+	// Initialize embedding config from current config if available
+	embProvider := 0
+	embVector := false
+	embAutoStart := false
+	if deps.Config != nil {
+		switch deps.Config.Search.EmbeddingProvider {
+		case "ollama":
+			embProvider = 1
+		case "openai":
+			embProvider = 2
+		}
+		embModel.SetValue(deps.Config.Search.EmbeddingModel)
+		embVector = deps.Config.Search.Vector
+		embAutoStart = deps.Config.Search.OllamaAutoStart
+	}
+
 	return Model{
-		deps:         deps,
-		Version:      deps.Version,
-		Screen:       ScreenDashboard,
-		SearchInput:  ti,
-		SetupSpinner: sp,
+		deps:            deps,
+		Version:         deps.Version,
+		Screen:          ScreenDashboard,
+		SearchInput:     ti,
+		SetupSpinner:    sp,
+		EmbCfgSpinner:   embSp,
+		EmbCfgModel:     embModel,
+		EmbCfgProvider:   embProvider,
+		EmbCfgVector:     embVector,
+		EmbCfgAutoStart:  embAutoStart,
 	}
 }
 

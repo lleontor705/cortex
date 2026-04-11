@@ -14,6 +14,7 @@ import (
 
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/ollama"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -568,6 +569,8 @@ func runTUI(stdout, stderr io.Writer) int {
 		Graph:        a.Stores.Graph,
 		Scoring:      a.Stores.Scoring,
 		Entities:     a.Stores.Entities,
+		App:          a,
+		Config:       a.Config,
 		Version:      Version,
 	}
 
@@ -1091,6 +1094,36 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 	if a.Stores.Vectors == nil || !a.Stores.Vectors.IsAvailable() {
 		writef(stderr, "cortex: vector store not available.\nBuild with: go build -tags cortex_vectors ./cmd/cortex\n")
 		return 1
+	}
+
+	// Auto-start Ollama if configured
+	if a.Config.Search.EmbeddingProvider == "ollama" {
+		ctx := context.Background()
+		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
+		if !mgr.IsRunning(ctx) {
+			writeln(stdout, "Starting Ollama...")
+			if err := mgr.EnsureRunning(ctx); err != nil {
+				writef(stderr, "cortex: failed to start ollama: %v\n", err)
+				return 1
+			}
+			writeln(stdout, "Ollama is ready.")
+		}
+		// Check if model exists, pull if needed
+		model := a.Config.Search.EmbeddingModel
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		has, _ := mgr.HasModel(ctx, model)
+		if !has {
+			writef(stdout, "Pulling model %s...\n", model)
+			if err := mgr.PullModel(ctx, model, func(p string) {
+				writef(stdout, "  %s\n", p)
+			}); err != nil {
+				writef(stderr, "cortex: failed to pull model: %v\n", err)
+				return 1
+			}
+			writef(stdout, "Model %s pulled successfully.\n", model)
+		}
 	}
 
 	project := ""

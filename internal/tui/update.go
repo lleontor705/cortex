@@ -30,6 +30,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Screen == ScreenSearch && m.SearchInput.Focused() {
 			return m.handleSearchInputKeys(msg)
 		}
+		if m.Screen == ScreenEmbeddingConfig && m.EmbCfgModel.Focused() {
+			return m.handleEmbeddingModelInput(msg)
+		}
 		return m.handleKeyPress(msg.String())
 
 	// ─── Data loaded messages ────────────────────────────────────────
@@ -158,10 +161,88 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SetupDone = true
 		return m, nil
 
+	case configSavedMsg:
+		m.EmbCfgSaving = false
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		m.EmbCfgSaved = true
+		m.EmbCfgError = ""
+		// If ollama is configured, check its status
+		if m.EmbCfgProvider == 1 {
+			m.EmbCfgOllamaChecked = false
+			return m, checkOllamaStatus(m.deps)
+		}
+		return m, nil
+
+	case ollamaStatusMsg:
+		m.EmbCfgOllamaChecked = true
+		m.EmbCfgOllamaRunning = msg.running
+		m.EmbCfgOllamaHasModel = msg.hasModel
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+		}
+		return m, nil
+
+	case ollamaStartMsg:
+		m.EmbCfgStarting = false
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		m.EmbCfgOllamaRunning = true
+		// After starting, check if model exists
+		return m, checkOllamaStatus(m.deps)
+
+	case ollamaPullMsg:
+		m.EmbCfgPulling = false
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		m.EmbCfgOllamaHasModel = true
+		return m, nil
+
+	case configReloadedMsg:
+		m.EmbCfgSaving = false
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		// Sync TUI state with reloaded config
+		if msg.cfg != nil {
+			switch msg.cfg.Search.EmbeddingProvider {
+			case "ollama":
+				m.EmbCfgProvider = 1
+			case "openai":
+				m.EmbCfgProvider = 2
+			default:
+				m.EmbCfgProvider = 0
+			}
+			m.EmbCfgModel.SetValue(msg.cfg.Search.EmbeddingModel)
+			m.EmbCfgVector = msg.cfg.Search.Vector
+			m.EmbCfgAutoStart = msg.cfg.Search.OllamaAutoStart
+		}
+		m.EmbCfgSaved = false
+		m.EmbCfgError = ""
+		m.EmbCfgOllamaChecked = false
+		m.ErrorMsg = ""
+		// Check Ollama status if ollama is configured
+		if m.EmbCfgProvider == 1 {
+			return m, checkOllamaStatus(m.deps)
+		}
+		return m, nil
+
 	case spinner.TickMsg:
 		if m.SetupInstalling {
 			var cmd tea.Cmd
 			m.SetupSpinner, cmd = m.SetupSpinner.Update(msg)
+			return m, cmd
+		}
+		if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+			var cmd tea.Cmd
+			m.EmbCfgSpinner, cmd = m.EmbCfgSpinner.Update(msg)
 			return m, cmd
 		}
 		return m, nil
@@ -200,6 +281,8 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m.handleArchiveKeys(key)
 	case ScreenHealth:
 		return m.handleHealthKeys(key)
+	case ScreenEmbeddingConfig:
+		return m.handleEmbeddingConfigKeys(key)
 	}
 	return m, nil
 }
@@ -213,6 +296,7 @@ var dashboardMenuItems = []string{
 	"Knowledge graph",
 	"Memory health",
 	"Archived observations",
+	"Embedding settings",
 	"Setup agent plugin",
 	"Quit",
 }
@@ -290,7 +374,33 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.Cursor = 0
 		m.Scroll = 0
 		return m, loadArchivedObservations(m.deps)
-	case 6: // Setup
+	case 6: // Embedding settings
+		m.PrevScreen = ScreenDashboard
+		m.Screen = ScreenEmbeddingConfig
+		m.Cursor = 0
+		m.EmbCfgFocusField = 0
+		m.EmbCfgSaved = false
+		m.EmbCfgSaving = false
+		m.EmbCfgError = ""
+		m.EmbCfgOllamaChecked = false
+		m.EmbCfgPulling = false
+		m.EmbCfgStarting = false
+		// Reload current config values
+		if m.deps.Config != nil {
+			switch m.deps.Config.Search.EmbeddingProvider {
+			case "ollama":
+				m.EmbCfgProvider = 1
+			case "openai":
+				m.EmbCfgProvider = 2
+			default:
+				m.EmbCfgProvider = 0
+			}
+			m.EmbCfgModel.SetValue(m.deps.Config.Search.EmbeddingModel)
+			m.EmbCfgVector = m.deps.Config.Search.Vector
+			m.EmbCfgAutoStart = m.deps.Config.Search.OllamaAutoStart
+		}
+		return m, nil
+	case 7: // Setup
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSetup
 		m.Cursor = 0
@@ -304,7 +414,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.SetupAllowlistApplied = false
 		m.SetupAllowlistError = ""
 		return m, nil
-	case 7: // Quit
+	case 8: // Quit
 		return m, tea.Quit
 	}
 	return m, nil
@@ -760,6 +870,123 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 			m.SetupInstalling = true
 			m.SetupInstallingName = agent.Name
 			return m, tea.Batch(m.SetupSpinner.Tick, installAgent(agent.Name))
+		}
+	case "esc", "q":
+		m.Screen = ScreenDashboard
+		m.Cursor = 0
+		return m, loadStats(m.deps)
+	}
+	return m, nil
+}
+
+// ──�� Embedding Config ───────────────────────────────────────────────────────
+
+func (m Model) handleEmbeddingModelInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "esc":
+		m.EmbCfgModel.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.EmbCfgModel, cmd = m.EmbCfgModel.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
+	// If async operation running, only allow esc
+	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+		return m, nil
+	}
+
+	// Post-save Ollama actions
+	if m.EmbCfgSaved && m.EmbCfgProvider == 1 && m.EmbCfgOllamaChecked {
+		switch key {
+		case "s", "S":
+			if !m.EmbCfgOllamaRunning {
+				m.EmbCfgStarting = true
+				m.EmbCfgError = ""
+				baseURL := ""
+				if m.deps.Config != nil {
+					baseURL = m.deps.Config.Search.EmbeddingBaseURL
+				}
+				return m, tea.Batch(m.EmbCfgSpinner.Tick, startOllamaCmd(baseURL))
+			}
+		case "p", "P":
+			if m.EmbCfgOllamaRunning && !m.EmbCfgOllamaHasModel {
+				m.EmbCfgPulling = true
+				m.EmbCfgError = ""
+				baseURL := ""
+				model := m.EmbCfgModel.Value()
+				if m.deps.Config != nil {
+					baseURL = m.deps.Config.Search.EmbeddingBaseURL
+				}
+				return m, tea.Batch(m.EmbCfgSpinner.Tick, pullOllamaModelCmd(baseURL, model))
+			}
+		case "esc", "q", "enter":
+			m.Screen = ScreenDashboard
+			m.Cursor = 0
+			return m, loadStats(m.deps)
+		}
+		return m, nil
+	}
+
+	// Post-save (non-ollama or not yet checked)
+	if m.EmbCfgSaved {
+		switch key {
+		case "esc", "q", "enter":
+			m.Screen = ScreenDashboard
+			m.Cursor = 0
+			return m, loadStats(m.deps)
+		}
+		return m, nil
+	}
+
+	// Reload config from disk (r key works in any non-editing state)
+	if key == "r" || key == "R" {
+		m.EmbCfgSaving = true
+		m.EmbCfgError = ""
+		return m, tea.Batch(m.EmbCfgSpinner.Tick, reloadConfigCmd(m.deps))
+	}
+
+	maxField := 4 // provider(0), model(1), vector(2), autostart(3), save(4)
+
+	switch key {
+	case "up", "k":
+		if m.EmbCfgFocusField > 0 {
+			m.EmbCfgFocusField--
+		}
+	case "down", "j":
+		if m.EmbCfgFocusField < maxField {
+			m.EmbCfgFocusField++
+		}
+	case "left", "h":
+		if m.EmbCfgFocusField == 0 {
+			m.EmbCfgProvider = (m.EmbCfgProvider + 2) % 3 // cycle left
+		}
+	case "right", "l":
+		if m.EmbCfgFocusField == 0 {
+			m.EmbCfgProvider = (m.EmbCfgProvider + 1) % 3 // cycle right
+		}
+	case " ":
+		switch m.EmbCfgFocusField {
+		case 2:
+			m.EmbCfgVector = !m.EmbCfgVector
+		case 3:
+			m.EmbCfgAutoStart = !m.EmbCfgAutoStart
+		}
+	case "enter":
+		switch m.EmbCfgFocusField {
+		case 1: // Focus model text input
+			m.EmbCfgModel.Focus()
+			return m, nil
+		case 4: // Save
+			m.EmbCfgSaving = true
+			m.EmbCfgSaved = false
+			m.EmbCfgError = ""
+			return m, tea.Batch(
+				m.EmbCfgSpinner.Tick,
+				saveEmbeddingConfig(m.deps, m.EmbCfgProvider, m.EmbCfgModel.Value(), m.EmbCfgVector, m.EmbCfgAutoStart),
+			)
 		}
 	case "esc", "q":
 		m.Screen = ScreenDashboard

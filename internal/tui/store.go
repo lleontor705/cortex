@@ -14,7 +14,10 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/lleontor705/cortex/internal/app"
+	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/ollama"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/internal/store/graph"
 	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
@@ -34,6 +37,8 @@ type Deps struct {
 	Graph        *graphstore.Store
 	Scoring      *scoringstore.Store
 	Entities     *entitystore.Store
+	App          *app.App
+	Config       *config.Config
 	Version      string
 }
 
@@ -319,5 +324,74 @@ func loadHealthData(d *Deps, project string) tea.Cmd {
 			obsCount:   obsCount,
 			candidates: candidates,
 		}
+	}
+}
+
+// ─── Embedding Config Commands ─────────────────────────────────────────────
+
+var embeddingProviders = []string{"none", "ollama", "openai"}
+
+func saveEmbeddingConfig(d *Deps, provider int, model string, vector, autoStart bool) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Config == nil {
+			return configSavedMsg{err: fmt.Errorf("config not available")}
+		}
+		d.Config.Search.EmbeddingProvider = embeddingProviders[provider]
+		d.Config.Search.EmbeddingModel = model
+		d.Config.Search.Vector = vector
+		d.Config.Search.OllamaAutoStart = autoStart
+		err := config.Save(d.Config, "")
+		return configSavedMsg{err: err}
+	}
+}
+
+func checkOllamaStatus(d *Deps) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		baseURL := ""
+		model := ""
+		if d != nil && d.Config != nil {
+			baseURL = d.Config.Search.EmbeddingBaseURL
+			model = d.Config.Search.EmbeddingModel
+		}
+		mgr := ollama.NewManager(baseURL)
+		running := mgr.IsRunning(ctx)
+		hasModel := false
+		if running && model != "" {
+			hasModel, _ = mgr.HasModel(ctx, model)
+		}
+		return ollamaStatusMsg{running: running, hasModel: hasModel}
+	}
+}
+
+func startOllamaCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		mgr := ollama.NewManager(baseURL)
+		err := mgr.EnsureRunning(ctx)
+		return ollamaStartMsg{err: err}
+	}
+}
+
+func pullOllamaModelCmd(baseURL, model string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		mgr := ollama.NewManager(baseURL)
+		err := mgr.PullModel(ctx, model, nil)
+		return ollamaPullMsg{done: true, err: err}
+	}
+}
+
+func reloadConfigCmd(d *Deps) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.App == nil {
+			return configReloadedMsg{err: fmt.Errorf("app not available")}
+		}
+		if err := d.App.ReloadConfig(); err != nil {
+			return configReloadedMsg{err: err}
+		}
+		// Update the Deps config pointer to the reloaded config
+		d.Config = d.App.Config
+		return configReloadedMsg{cfg: d.App.Config}
 	}
 }
