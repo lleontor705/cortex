@@ -12,6 +12,8 @@ builds:
     goarch:
       - amd64
       - arm64
+    tags:
+      - cortex_vectors
     ldflags:
       - -s -w -X main.version={{.Version}}
 
