@@ -5,9 +5,9 @@ import "github.com/charmbracelet/lipgloss"
 // ─── Colors (Cortex Neural palette) ─────────────────────────────────────────
 
 var (
-	colorBase     = lipgloss.Color("#16161e") // Deep navy base
-	colorSurface  = lipgloss.Color("#1a1b2e") // Slightly lighter panel bg
-	colorOverlay  = lipgloss.Color("#565f89") // Muted blue-gray borders
+	_            = lipgloss.Color("#16161e") // Deep navy base (reserved for future use)
+	_            = lipgloss.Color("#1a1b2e") // Slightly lighter panel bg (reserved for future use)
+	colorOverlay = lipgloss.Color("#565f89") // Muted blue-gray borders
 	colorText     = lipgloss.Color("#c0caf5") // Soft blue-white text
 	colorSubtext  = lipgloss.Color("#565f89") // Dim blue-gray
 	colorCyan     = lipgloss.Color("#2ac3de") // Electric cyan — primary accent

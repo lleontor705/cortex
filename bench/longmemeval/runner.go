@@ -109,7 +109,7 @@ func ingestHistory(ctx context.Context, stores *common.BenchStores, q Question) 
 
 		var content strings.Builder
 		for _, turn := range turns {
-			content.WriteString(fmt.Sprintf("%s: %s\n", turn.Role, turn.Content))
+			fmt.Fprintf(&content, "%s: %s\n", turn.Role, turn.Content)
 		}
 
 		observations := []domain.Observation{

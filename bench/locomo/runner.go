@@ -80,16 +80,16 @@ func (cd *ConversationData) UnmarshalJSON(data []byte) error {
 	cd.Dates = make(map[string]string)
 
 	if v, ok := raw["speaker_a"]; ok {
-		json.Unmarshal(v, &cd.SpeakerA)
+		_ = json.Unmarshal(v, &cd.SpeakerA)
 	}
 	if v, ok := raw["speaker_b"]; ok {
-		json.Unmarshal(v, &cd.SpeakerB)
+		_ = json.Unmarshal(v, &cd.SpeakerB)
 	}
 
 	for key, val := range raw {
 		if strings.HasPrefix(key, "session_") && strings.HasSuffix(key, "_date_time") {
 			var dt string
-			json.Unmarshal(val, &dt)
+			_ = json.Unmarshal(val, &dt)
 			sessKey := strings.TrimSuffix(key, "_date_time")
 			cd.Dates[sessKey] = dt
 		} else if strings.HasPrefix(key, "session_") {
