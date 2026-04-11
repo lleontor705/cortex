@@ -547,6 +547,18 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			_ = entitySvc.ExtractAndSave(ctx, obs) // best-effort
 		}
 
+		// Auto-embed for vector search (best-effort, non-blocking)
+		if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
+			go func() {
+				bgCtx := context.Background()
+				text := obs.Title + "\n" + obs.Content
+				vec, err := stores.Embeddings.Embed(bgCtx, text)
+				if err == nil && len(vec) > 0 {
+					_ = stores.Vectors.StoreEmbedding(bgCtx, obs.ID, vec, stores.Embeddings.Model())
+				}
+			}()
+		}
+
 		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
 		if topicKey == "" && suggested != "" {
 			msg += fmt.Sprintf("\nSuggested topic_key: %s", suggested)

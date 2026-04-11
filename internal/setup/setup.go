@@ -66,27 +66,52 @@ const compactPrompt = `FIRST ACTION REQUIRED -- context was compacted. Follow th
 All steps are MANDATORY. Without them, you lose context and start blind.
 `
 
-// Result contains the paths of files created/modified during setup.
+// Result contains information about a completed setup.
 type Result struct {
-	Paths   []string
-	Message string
+	Agent       string
+	Destination string
+	Files       int
 }
 
-// SupportedAgents returns descriptions of supported agents.
-func SupportedAgents() map[string]string {
-	return map[string]string{
-		"claude-code": "Claude Code -- Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
-		"opencode":    "OpenCode -- MCP registration with Memory Protocol",
-		"gemini-cli":  "Gemini CLI -- MCP registration plus system prompt compaction recovery",
-		"codex":       "Codex -- MCP registration plus model/compaction instruction files",
+// Agent describes a supported agent for setup.
+type Agent struct {
+	Name        string
+	Description string
+	InstallDir  string
+}
+
+// SupportedAgents returns the list of agents that can be set up.
+func SupportedAgents() []Agent {
+	home, _ := resolveHome()
+	return []Agent{
+		{
+			Name:        "claude-code",
+			Description: "Claude Code -- Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
+			InstallDir:  filepath.Join(home, ".claude", "mcp"),
+		},
+		{
+			Name:        "opencode",
+			Description: "OpenCode -- MCP registration with Memory Protocol",
+			InstallDir:  filepath.Join(home, ".config", "opencode"),
+		},
+		{
+			Name:        "gemini-cli",
+			Description: "Gemini CLI -- MCP registration plus system prompt compaction recovery",
+			InstallDir:  filepath.Join(home, ".gemini"),
+		},
+		{
+			Name:        "codex",
+			Description: "Codex -- MCP registration plus model/compaction instruction files",
+			InstallDir:  filepath.Join(home, ".codex"),
+		},
 	}
 }
 
 // Install sets up Cortex integration for the given agent.
-func Install(agent string) (string, error) {
+func Install(agent string) (*Result, error) {
 	home, err := resolveHome()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	bin := resolveBinaryPath()
@@ -101,14 +126,25 @@ func Install(agent string) (string, error) {
 	case "codex":
 		return installCodex(home, bin)
 	default:
-		return "", fmt.Errorf("unsupported agent: %s\nSupported: claude-code, opencode, gemini-cli, codex", agent)
+		return nil, fmt.Errorf("unsupported agent: %s\nSupported: claude-code, opencode, gemini-cli, codex", agent)
 	}
+}
+
+// AddClaudeCodeAllowlist adds cortex MCP tool permissions to Claude Code settings.
+// It resolves the settings path automatically.
+func AddClaudeCodeAllowlist() error {
+	home, err := resolveHome()
+	if err != nil {
+		return err
+	}
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	addClaudeCodeAllowlist(settingsPath)
+	return nil
 }
 
 // --- Claude Code ------------------------------------------------------------
 
-func installClaudeCode(home, bin string) (string, error) {
-	// Write durable MCP config at user level (survives plugin updates)
+func installClaudeCode(home, bin string) (*Result, error) {
 	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
 	mcpContent := fmt.Sprintf(`{
   "name": "cortex",
@@ -119,14 +155,14 @@ func installClaudeCode(home, bin string) (string, error) {
 `, jsonString(bin))
 
 	if err := writeFile(mcpPath, mcpContent); err != nil {
-		return "", fmt.Errorf("write MCP config: %w", err)
+		return nil, fmt.Errorf("write MCP config: %w", err)
 	}
 
 	// Add tool allowlist to settings.json
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
 	addClaudeCodeAllowlist(settingsPath)
 
-	return mcpPath, nil
+	return &Result{Agent: "claude-code", Destination: mcpPath, Files: 1}, nil
 }
 
 // addClaudeCodeAllowlist adds cortex MCP tool permissions to Claude Code settings.
@@ -178,10 +214,9 @@ func addClaudeCodeAllowlist(settingsPath string) {
 
 // --- OpenCode ---------------------------------------------------------------
 
-func installOpenCode(home, bin string) (string, error) {
+func installOpenCode(home, bin string) (*Result, error) {
 	configDir := filepath.Join(home, ".config", "opencode")
 
-	// Write MCP config
 	mcpPath := filepath.Join(configDir, "cortex-mcp.json")
 	mcpContent := fmt.Sprintf(`{
   "mcp": {
@@ -195,9 +230,10 @@ func installOpenCode(home, bin string) (string, error) {
 `, jsonString(bin))
 
 	if err := writeFile(mcpPath, mcpContent); err != nil {
-		return "", err
+		return nil, err
 	}
 
+	files := 1
 	// Copy plugin file if available (from plugin/opencode/cortex.ts relative to binary)
 	pluginDir := filepath.Join(configDir, "plugins")
 	pluginDst := filepath.Join(pluginDir, "cortex.ts")
@@ -221,17 +257,19 @@ func installOpenCode(home, bin string) (string, error) {
 			)
 			if wErr := writeFile(pluginDst, patched); wErr != nil {
 				log.Printf("setup: failed to write plugin %s: %v", pluginDst, wErr)
+			} else {
+				files++
 			}
 			break
 		}
 	}
 
-	return mcpPath, nil
+	return &Result{Agent: "opencode", Destination: mcpPath, Files: files}, nil
 }
 
 // --- Gemini CLI -------------------------------------------------------------
 
-func installGeminiCLI(home, bin string) (string, error) {
+func installGeminiCLI(home, bin string) (*Result, error) {
 	configPath := filepath.Join(home, ".gemini", "settings.json")
 	content := fmt.Sprintf(`{
   "mcpServers": {
@@ -244,21 +282,23 @@ func installGeminiCLI(home, bin string) (string, error) {
 `, jsonString(bin))
 
 	if err := writeFile(configPath, content); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Write system prompt with Memory Protocol
+	files := 1
 	systemPath := filepath.Join(home, ".gemini", "system.md")
 	if err := writeFile(systemPath, memoryProtocol); err != nil {
 		log.Printf("setup: failed to write system prompt %s: %v", systemPath, err)
+	} else {
+		files++
 	}
 
-	return configPath, nil
+	return &Result{Agent: "gemini-cli", Destination: configPath, Files: files}, nil
 }
 
 // --- Codex ------------------------------------------------------------------
 
-func installCodex(home, bin string) (string, error) {
+func installCodex(home, bin string) (*Result, error) {
 	configDir := filepath.Join(home, ".codex")
 	configPath := filepath.Join(configDir, "config.toml")
 
@@ -273,18 +313,22 @@ experimental_compact_prompt_file = "%s"
 		filepath.Join(configDir, "cortex-compact-prompt.md"))
 
 	if err := writeFile(configPath, content); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Write instruction files
+	files := 1
 	if err := writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol); err != nil {
 		log.Printf("setup: failed to write instructions: %v", err)
+	} else {
+		files++
 	}
 	if err := writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt); err != nil {
 		log.Printf("setup: failed to write compact prompt: %v", err)
+	} else {
+		files++
 	}
 
-	return configPath, nil
+	return &Result{Agent: "codex", Destination: configPath, Files: files}, nil
 }
 
 // --- Helpers ----------------------------------------------------------------

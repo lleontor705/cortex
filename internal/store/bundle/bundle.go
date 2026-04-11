@@ -3,6 +3,7 @@
 package bundle
 
 import (
+	"github.com/lleontor705/cortex/internal/embedding"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/internal/store/graph"
 	"github.com/lleontor705/cortex/internal/store/prompt"
@@ -25,6 +26,9 @@ type Stores struct {
 	Entities          *entitystore.Store
 	Metrics           *sqlitestore.MetricsRepository
 	QualityMetrics    *sqlitestore.QualityMetricsRepository
+
+	// Embeddings is the optional embedding service for vector search.
+	Embeddings embedding.Service
 
 	// LastSearchQuery tracks the most recent search query for implicit feedback.
 	// When mem_get_observation is called after mem_search, we log the
