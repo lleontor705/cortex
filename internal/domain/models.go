@@ -52,7 +52,7 @@ type Edge struct {
 	ValidFrom    *time.Time `json:"valid_from,omitempty"`  // Temporal validity start
 	InvalidAt    *time.Time `json:"invalid_at,omitempty"`  // Temporal validity end (NULL = still valid)
 	CreatedAt    time.Time  `json:"created_at"`
-
+	
 	// Enhanced temporal graph fields
 	EvolutionID    *int64     `json:"evolution_id,omitempty"`     // Track edge evolution (NULL = original)
 	EvolutionType  string     `json:"evolution_type"`            // evolution types: original, modified, superseded, contradicted
@@ -82,28 +82,31 @@ type ImportanceScore struct {
 
 // ObservationFilter provides filtering options for listing observations.
 type ObservationFilter struct {
-	Project       string     `json:"project,omitempty"`
-	Scope         string     `json:"scope,omitempty"`
-	Type          string     `json:"type,omitempty"`
-	Source        string     `json:"source,omitempty"`
-	Tags          []string   `json:"tags,omitempty"`
-	MinConfidence float64    `json:"min_confidence,omitempty"`
-	Limit         int        `json:"limit,omitempty"`
-	Offset        int        `json:"offset,omitempty"`
-	CreatedBefore *time.Time `json:"created_before,omitempty"`
-	CreatedAfter  *time.Time `json:"created_after,omitempty"`
-	OrderAsc      bool       `json:"order_asc,omitempty"`
+	Project         string     `json:"project,omitempty"`
+	Scope           string     `json:"scope,omitempty"`
+	Type            string     `json:"type,omitempty"`
+	Source          string     `json:"source,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
+	Tags            []string   `json:"tags,omitempty"`
+	MinConfidence   float64    `json:"min_confidence,omitempty"`
+	Limit           int        `json:"limit,omitempty"`
+	Offset          int        `json:"offset,omitempty"`
+	CreatedBefore   *time.Time `json:"created_before,omitempty"`
+	CreatedAfter    *time.Time `json:"created_after,omitempty"`
+	OrderAsc        bool       `json:"order_asc,omitempty"`
+	IncludeArchived bool       `json:"include_archived,omitempty"`
 }
 
 // SearchOptions provides options for full-text search queries.
 type SearchOptions struct {
-	Query       string  `json:"query"`
-	Type        string  `json:"type,omitempty"`
-	Project     string  `json:"project,omitempty"`
-	Scope       string  `json:"scope,omitempty"`
-	Limit       int     `json:"limit,omitempty"`
-	FusionK     float64 `json:"fusion_k,omitempty"`      // RRF constant (default 60, lower = favor top ranks)
-	GraphExpand bool    `json:"graph_expand,omitempty"`   // Boost graph neighbors of top results
+	Query       string     `json:"query"`
+	Type        string     `json:"type,omitempty"`
+	Project     string     `json:"project,omitempty"`
+	Scope       string     `json:"scope,omitempty"`
+	Limit       int        `json:"limit,omitempty"`
+	FusionK     float64    `json:"fusion_k,omitempty"`      // RRF constant (default 60, lower = favor top ranks)
+	GraphExpand bool       `json:"graph_expand,omitempty"`   // Boost graph neighbors of top results
+	AsOf        *time.Time `json:"as_of,omitempty"`          // Temporal point-in-time filter for graph expansion
 }
 
 // SearchResult represents a search result with relevance ranking.

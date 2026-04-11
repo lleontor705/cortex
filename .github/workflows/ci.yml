@@ -1,19 +1,58 @@
 name: CI
 
 on:
-  push:
-    branches: [develop, main]
   pull_request:
-    branches: [develop, main]
+    branches:
+      - develop
+      - master
 
 permissions:
   contents: read
 
 jobs:
-  quality:
-    uses: lleontor705/ats-deploy-public/.github/workflows/quality-go.yml@main
-    with:
-      go-version: "1.26"
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  security:
-    uses: lleontor705/ats-deploy-public/.github/workflows/security-scan.yml@main
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run unit tests
+        run: go test -v -count=1 ./...
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run e2e tests
+        run: go test -v -count=1 -tags integration ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4

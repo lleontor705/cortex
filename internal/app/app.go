@@ -11,6 +11,7 @@ import (
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/database"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
+	"github.com/lleontor705/cortex/internal/embedding"
 	"github.com/lleontor705/cortex/internal/migration"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
@@ -88,6 +89,15 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
 		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
 	}
+
+	// Wire graph store into search for temporal-aware graph expansion
+	stores.Search.Graph = stores.Graph
+
+	// Initialize embedding service if configured
+	embCfg := embedding.Config{
+		Provider: cfg.Search.EmbeddingProvider,
+	}
+	stores.Embeddings = embedding.New(embCfg)
 
 	a := &App{
 		Config:   cfg,

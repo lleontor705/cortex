@@ -86,11 +86,12 @@ type LoggingConfig struct {
 
 // SearchConfig holds search-related configuration
 type SearchConfig struct {
-	DefaultLimit int     `yaml:"default_limit" mapstructure:"default_limit"`
-	MaxLimit     int     `yaml:"max_limit" mapstructure:"max_limit"`
-	FTS5         bool    `yaml:"fts5" mapstructure:"fts5"`
-	Vector       bool    `yaml:"vector" mapstructure:"vector"`
-	FusionK      float64 `yaml:"fusion_k" mapstructure:"fusion_k"`
+	DefaultLimit      int     `yaml:"default_limit" mapstructure:"default_limit"`
+	MaxLimit          int     `yaml:"max_limit" mapstructure:"max_limit"`
+	FTS5              bool    `yaml:"fts5" mapstructure:"fts5"`
+	Vector            bool    `yaml:"vector" mapstructure:"vector"`
+	FusionK           float64 `yaml:"fusion_k" mapstructure:"fusion_k"`
+	EmbeddingProvider string  `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "openai", "none" (default)
 }
 
 // MemoryConfig holds memory management configuration

@@ -1,0 +1,990 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// ─── Logo ───────────────────────────────────────────────────────────────────
+
+func renderLogo(version string) string {
+	logoText := []string{
+		` ██████  ██████  ██████  ████████ ███████ ██   ██ `,
+		`██      ██    ██ ██   ██    ██    ██       ██ ██  `,
+		`██      ██    ██ ██████     ██    █████     ███   `,
+		`██      ██    ██ ██   ██    ██    ██       ██ ██  `,
+		` ██████  ██████  ██   ██    ██    ███████ ██   ██ `,
+	}
+
+	frameStyle := lipgloss.NewStyle().
+		Border(lipgloss.DoubleBorder()).
+		BorderForeground(colorOverlay).
+		Padding(0, 1).
+		MarginBottom(1)
+
+	colors := []lipgloss.Color{
+		colorPurple, // Top
+		colorBlue,   // Middle-top
+		colorCyan,   // Middle
+		colorTeal,   // Middle-bottom
+		colorGreen,  // Bottom
+	}
+
+	accentStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	taglineStyle := lipgloss.NewStyle().Foreground(colorSubtext).Italic(true)
+
+	var b strings.Builder
+
+	b.WriteString(accentStyle.Render(" NEURAL LINK ACTIVE ") + strings.Repeat(" ", 28) + accentStyle.Render(" MEM: OK ") + "\n\n")
+
+	for i, line := range logoText {
+		b.WriteString(" " + lipgloss.NewStyle().Foreground(colors[i]).Bold(true).Render(line) + "\n")
+	}
+	b.WriteString("\n")
+
+	b.WriteString(taglineStyle.Render(" > cortex " + version + " — your brain never forgets"))
+
+	return frameStyle.Render(b.String()) + "\n"
+}
+
+// ─── View (main router) ────────────────────────────────────────────────────
+
+func (m Model) View() string {
+	var content string
+
+	switch m.Screen {
+	case ScreenDashboard:
+		content = m.viewDashboard()
+	case ScreenSearch:
+		content = m.viewSearch()
+	case ScreenSearchResults:
+		content = m.viewSearchResults()
+	case ScreenRecent:
+		content = m.viewRecent()
+	case ScreenObservationDetail:
+		content = m.viewObservationDetail()
+	case ScreenTimeline:
+		content = m.viewTimeline()
+	case ScreenSessions:
+		content = m.viewSessions()
+	case ScreenSessionDetail:
+		content = m.viewSessionDetail()
+	case ScreenSetup:
+		content = m.viewSetup()
+	case ScreenGraph:
+		content = m.viewGraph()
+	case ScreenArchive:
+		content = m.viewArchive()
+	case ScreenHealth:
+		content = m.viewHealth()
+	default:
+		content = "Unknown screen"
+	}
+
+	if m.ErrorMsg != "" {
+		content += "\n" + errorStyle.Render("Error: "+m.ErrorMsg)
+	}
+
+	return appStyle.Render(content)
+}
+
+// ─── Dashboard ──────────────────────────────────────────────────────────────
+
+func (m Model) viewDashboard() string {
+	var b strings.Builder
+
+	b.WriteString(renderLogo(m.Version))
+	b.WriteString("\n")
+
+	// Update notification
+	if m.UpdateResult != nil {
+		msg := fmt.Sprintf("Update available: %s — %s", m.UpdateResult.Latest, m.UpdateResult.UpdateURL)
+		b.WriteString(updateBannerStyle.Render(msg))
+		b.WriteString("\n\n")
+	}
+
+	// Stats card
+	if m.Stats != nil {
+		statsContent := fmt.Sprintf(
+			"%s %s\n%s %s\n%s %s\n%s %s",
+			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalSessions)),
+			statLabelStyle.Render("sessions"),
+			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalObservations)),
+			statLabelStyle.Render("observations"),
+			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalEdges)),
+			statLabelStyle.Render("knowledge links"),
+			statNumberStyle.Render(fmt.Sprintf("%d", len(m.Stats.Projects))),
+			statLabelStyle.Render("projects"),
+		)
+		b.WriteString(statCardStyle.Render(statsContent))
+		b.WriteString("\n")
+
+		if len(m.Stats.Projects) > 0 {
+			b.WriteString(titleStyle.Render("  Projects"))
+			b.WriteString("\n")
+
+			limit := 5
+			for i, p := range m.Stats.Projects {
+				if i >= limit {
+					break
+				}
+				b.WriteString(listItemStyle.Render("• " + p))
+				b.WriteString("\n")
+			}
+
+			if len(m.Stats.Projects) > limit {
+				remaining := len(m.Stats.Projects) - limit
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more projects", remaining)))
+			}
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString(statCardStyle.Render("Loading stats..."))
+		b.WriteString("\n")
+	}
+
+	// Menu
+	b.WriteString(titleStyle.Render("  Actions"))
+	b.WriteString("\n")
+
+	for i, item := range dashboardMenuItems {
+		if i == m.Cursor {
+			b.WriteString(menuSelectedStyle.Render("▸ " + item))
+		} else {
+			b.WriteString(menuItemStyle.Render("  " + item))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter select • s search • q quit"))
+
+	return b.String()
+}
+
+// ─── Search ─────────────────────────────────────────────────────────────────
+
+func (m Model) viewSearch() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("  Search Memories"))
+	b.WriteString("\n\n")
+
+	b.WriteString(searchInputStyle.Render(m.SearchInput.View()))
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render("  Type a query and press enter • esc go back"))
+
+	return b.String()
+}
+
+// ─── Search Results ─────────────────────────────────────────────────────────
+
+func (m Model) viewSearchResults() string {
+	var b strings.Builder
+
+	resultCount := len(m.SearchResults)
+	header := fmt.Sprintf("  Search: %q — %d result", m.SearchQuery, resultCount)
+	if resultCount != 1 {
+		header += "s"
+	}
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	if resultCount == 0 {
+		b.WriteString(noResultsStyle.Render("No memories found. Try a different query."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  / new search • esc back"))
+		return b.String()
+	}
+
+	visibleItems := (m.Height - 10) / 2
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.Scroll + visibleItems
+	if end > resultCount {
+		end = resultCount
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		r := m.SearchResults[i]
+		b.WriteString(m.renderObservationListItem(i, r.ID, r.Type, r.Title, r.Content, r.CreatedAt, r.Project, nil))
+	}
+
+	if resultCount > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • / search • esc back"))
+
+	return b.String()
+}
+
+// ─── Recent Observations ────────────────────────────────────────────────────
+
+func (m Model) viewRecent() string {
+	var b strings.Builder
+
+	count := len(m.RecentObservations)
+	header := fmt.Sprintf("  Recent Observations — %d total", count)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No observations yet."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc back"))
+		return b.String()
+	}
+
+	visibleItems := (m.Height - 8) / 2
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.Scroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		o := m.RecentObservations[i]
+		b.WriteString(m.renderObservationListItem(i, o.ID, o.Type, o.Title, o.Content, o.CreatedAt, o.Project, nil))
+	}
+
+	if count > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
+
+	return b.String()
+}
+
+// ─── Observation Detail ─────────────────────────────────────────────────────
+
+func (m Model) viewObservationDetail() string {
+	var b strings.Builder
+
+	if m.SelectedObservation == nil {
+		b.WriteString(headerStyle.Render("  Observation Detail"))
+		b.WriteString("\n")
+		b.WriteString(noResultsStyle.Render("Loading..."))
+		return b.String()
+	}
+
+	obs := m.SelectedObservation
+
+	header := fmt.Sprintf("  Observation #%d", obs.ID)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	// Metadata rows
+	fmt.Fprintf(&b, "%s %s\n",
+		detailLabelStyle.Render("Type:"),
+		typeBadgeStyle.Render(obs.Type))
+
+	fmt.Fprintf(&b, "%s %s\n",
+		detailLabelStyle.Render("Title:"),
+		detailValueStyle.Bold(true).Render(obs.Title))
+
+	fmt.Fprintf(&b, "%s %s\n",
+		detailLabelStyle.Render("Session:"),
+		idStyle.Render(obs.SessionID))
+
+	fmt.Fprintf(&b, "%s %s\n",
+		detailLabelStyle.Render("Created:"),
+		timestampStyle.Render(formatTime(obs.CreatedAt)))
+
+	if obs.Project != "" {
+		fmt.Fprintf(&b, "%s %s\n",
+			detailLabelStyle.Render("Project:"),
+			projectStyle.Render(obs.Project))
+	}
+
+	// Cortex-exclusive: Importance Score
+	if m.DetailScore != nil {
+		scoreStr := fmt.Sprintf("%.1f/5.0", m.DetailScore.Score)
+		fmt.Fprintf(&b, "%s %s  (accessed %d times)\n",
+			detailLabelStyle.Render("Score:"),
+			scoreStyle(m.DetailScore.Score).Render(scoreStr),
+			m.DetailScore.AccessCount)
+	}
+
+	// Cortex-exclusive: Entity Links
+	if len(m.DetailEntities) > 0 {
+		b.WriteString("\n")
+		b.WriteString(sectionHeadingStyle.Render("  Entities"))
+		b.WriteString("\n")
+		for _, e := range m.DetailEntities {
+			icon := entityIcon(e.EntityType)
+			fmt.Fprintf(&b, "  %s %s\n",
+				entityStyle(e.EntityType).Render(icon+" "+e.EntityType),
+				detailValueStyle.Render(e.EntityValue))
+		}
+	}
+
+	// Cortex-exclusive: Knowledge Graph edges
+	if len(m.DetailEdges) > 0 {
+		b.WriteString("\n")
+		b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Related (%d links)", len(m.DetailEdges))))
+		b.WriteString("\n")
+		for _, e := range m.DetailEdges {
+			targetID := e.ToObsID
+			if targetID == obs.ID {
+				targetID = e.FromObsID
+			}
+			fmt.Fprintf(&b, "  %s #%d  %s\n",
+				graphEdgeStyle.Render("["+e.RelationType+"]"),
+				targetID,
+				timestampStyle.Render(fmt.Sprintf("weight: %.1f", e.Weight)))
+		}
+	}
+
+	// Content section
+	b.WriteString("\n")
+	b.WriteString(sectionHeadingStyle.Render("  Content"))
+	b.WriteString("\n")
+
+	wrapWidth := m.Width - 6
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedContent := detailContentStyle.Width(wrapWidth).Render(obs.Content)
+
+	contentLines := strings.Split(wrappedContent, "\n")
+	maxLines := m.Height - 22 // More room needed for enriched detail
+	if maxLines < 5 {
+		maxLines = 5
+	}
+
+	maxScroll := len(contentLines) - maxLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.DetailScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+
+	end := scroll + maxLines
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+
+	for i := scroll; i < end; i++ {
+		b.WriteString(contentLines[i])
+		b.WriteString("\n")
+	}
+
+	if len(contentLines) > maxLines {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("line %d-%d of %d", scroll+1, end, len(contentLines))))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • esc back"))
+
+	return b.String()
+}
+
+// ─── Timeline ───────────────────────────────────────────────────────────────
+
+func (m Model) viewTimeline() string {
+	var b strings.Builder
+
+	if m.TimelineFocus == nil {
+		b.WriteString(headerStyle.Render("  Timeline"))
+		b.WriteString("\n")
+		b.WriteString(noResultsStyle.Render("Loading..."))
+		return b.String()
+	}
+
+	focus := m.TimelineFocus
+	total := len(m.TimelineBefore) + 1 + len(m.TimelineAfter)
+	header := fmt.Sprintf("  Timeline — Observation #%d (%d in session)", focus.ID, total)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	// Session info
+	fmt.Fprintf(&b, "  %s %s  %s %s\n\n",
+		detailLabelStyle.Render("Session:"),
+		idStyle.Render(focus.SessionID),
+		detailLabelStyle.Render("Project:"),
+		projectStyle.Render(focus.Project))
+
+	// Before entries
+	if len(m.TimelineBefore) > 0 {
+		b.WriteString(sectionHeadingStyle.Render("  Before"))
+		b.WriteString("\n")
+		for _, e := range m.TimelineBefore {
+			fmt.Fprintf(&b, "  %s %s %s  %s\n",
+				timelineConnectorStyle.Render("|"),
+				idStyle.Render(fmt.Sprintf("#%-4d", e.ID)),
+				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", e.Type)),
+				timelineItemStyle.Render(truncateStr(e.Title, 60)))
+		}
+		fmt.Fprintf(&b, "  %s\n", timelineConnectorStyle.Render("|"))
+	}
+
+	// Focus (highlighted)
+	focusContent := fmt.Sprintf("  %s %s  %s\n  %s",
+		idStyle.Render(fmt.Sprintf("#%d", focus.ID)),
+		typeBadgeStyle.Render("["+focus.Type+"]"),
+		lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(focus.Title),
+		detailContentStyle.Render(truncateStr(focus.Content, 120)))
+	b.WriteString(timelineFocusStyle.Render(focusContent))
+	b.WriteString("\n")
+
+	// After entries
+	if len(m.TimelineAfter) > 0 {
+		fmt.Fprintf(&b, "  %s\n", timelineConnectorStyle.Render("|"))
+		b.WriteString(sectionHeadingStyle.Render("  After"))
+		b.WriteString("\n")
+		for _, e := range m.TimelineAfter {
+			fmt.Fprintf(&b, "  %s %s %s  %s\n",
+				timelineConnectorStyle.Render("|"),
+				idStyle.Render(fmt.Sprintf("#%-4d", e.ID)),
+				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", e.Type)),
+				timelineItemStyle.Render(truncateStr(e.Title, 60)))
+		}
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k scroll • esc back"))
+
+	return b.String()
+}
+
+// ─── Sessions ───────────────────────────────────────────────────────────────
+
+func (m Model) viewSessions() string {
+	var b strings.Builder
+
+	count := len(m.Sessions)
+	header := fmt.Sprintf("  Sessions — %d total", count)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No sessions yet."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc back"))
+		return b.String()
+	}
+
+	visibleItems := m.Height - 8
+	if visibleItems < 5 {
+		visibleItems = 5
+	}
+
+	end := m.Scroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		s := m.Sessions[i]
+		cursor := "  "
+		style := listItemStyle
+		if i == m.Cursor {
+			cursor = "▸ "
+			style = listSelectedStyle
+		}
+
+		summary := ""
+		if s.Session.Summary != "" {
+			summary = truncateStr(s.Session.Summary, 50)
+		}
+
+		line := fmt.Sprintf("%s%s  %s  %s obs  %s",
+			cursor,
+			projectStyle.Render(fmt.Sprintf("%-20s", s.Session.Project)),
+			timestampStyle.Render(formatTime(s.Session.StartedAt)),
+			statNumberStyle.Render(fmt.Sprintf("%d", s.ObservationCount)),
+			style.Render(summary))
+
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	if count > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter view session • esc back"))
+
+	return b.String()
+}
+
+// ─── Session Detail ─────────────────────────────────────────────────────────
+
+func (m Model) viewSessionDetail() string {
+	var b strings.Builder
+
+	if m.SelectedSessionIdx >= len(m.Sessions) {
+		b.WriteString(headerStyle.Render("  Session Detail"))
+		b.WriteString("\n")
+		b.WriteString(noResultsStyle.Render("Session not found."))
+		return b.String()
+	}
+
+	sess := m.Sessions[m.SelectedSessionIdx]
+	header := fmt.Sprintf("  Session: %s — %s", sess.Session.Project, formatTime(sess.Session.StartedAt))
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	if sess.Session.Summary != "" {
+		fmt.Fprintf(&b, "  %s %s\n\n",
+			detailLabelStyle.Render("Summary:"),
+			detailValueStyle.Render(sess.Session.Summary))
+	}
+
+	count := len(m.SessionObservations)
+	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Observations (%d)", count)))
+	b.WriteString("\n")
+
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No observations in this session."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc back"))
+		return b.String()
+	}
+
+	visibleItems := (m.Height - 12) / 2
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.SessionDetailScroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.SessionDetailScroll; i < end; i++ {
+		o := m.SessionObservations[i]
+		b.WriteString(m.renderObservationListItem(i, o.ID, o.Type, o.Title, o.Content, o.CreatedAt, o.Project, nil))
+	}
+
+	if count > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.SessionDetailScroll+1, end, count)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
+
+	return b.String()
+}
+
+// ─── Setup ──────────────────────────────────────────────────────────────────
+
+func (m Model) viewSetup() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("  Setup — Install Agent Plugin"))
+	b.WriteString("\n")
+
+	// Show spinner while installing
+	if m.SetupInstalling {
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "  %s Installing %s plugin...\n",
+			m.SetupSpinner.View(),
+			lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(m.SetupInstallingName))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Allowlist prompt (after successful claude-code install)
+	if m.SetupAllowlistPrompt && m.SetupResult != nil {
+		successMsg := fmt.Sprintf("Installed %s plugin", m.SetupResult.Agent)
+		fmt.Fprintf(&b, "\n  %s %s\n\n",
+			lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
+			lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg))
+
+		b.WriteString(sectionHeadingStyle.Render("  Permissions Allowlist"))
+		b.WriteString("\n\n")
+		b.WriteString(detailContentStyle.Render("  Add cortex tools to ~/.claude/settings.json allowlist?"))
+		b.WriteString("\n")
+		b.WriteString(timestampStyle.Render("  This prevents Claude Code from asking permission on every tool call."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  [y] Yes  [n] No"))
+		return b.String()
+	}
+
+	// Post-install result
+	if m.SetupDone {
+		if m.SetupError != "" {
+			b.WriteString(errorStyle.Render("  ✗ Installation failed: " + m.SetupError))
+			b.WriteString("\n\n")
+		} else if m.SetupResult != nil {
+			successMsg := fmt.Sprintf("Installed %s plugin", m.SetupResult.Agent)
+			if m.SetupResult.Files > 0 {
+				successMsg += fmt.Sprintf(" (%d files)", m.SetupResult.Files)
+			}
+			fmt.Fprintf(&b, "  %s %s\n",
+				lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
+				lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg))
+			fmt.Fprintf(&b, "  %s %s\n\n",
+				detailLabelStyle.Render("Location:"),
+				projectStyle.Render(m.SetupResult.Destination))
+
+			// Agent-specific post-install instructions
+			b.WriteString(sectionHeadingStyle.Render("  Next Steps"))
+			b.WriteString("\n")
+
+			switch m.SetupResult.Agent {
+			case "claude-code":
+				if m.SetupAllowlistApplied {
+					fmt.Fprintf(&b, "  %s %s\n",
+						lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
+						detailContentStyle.Render("Cortex tools added to allowlist"))
+				} else if m.SetupAllowlistError != "" {
+					fmt.Fprintf(&b, "  %s %s\n",
+						lipgloss.NewStyle().Bold(true).Foreground(colorRed).Render("✗"),
+						detailContentStyle.Render("Allowlist update failed: "+m.SetupAllowlistError))
+					b.WriteString(detailContentStyle.Render("  Add manually to permissions.allow in ~/.claude/settings.json"))
+					b.WriteString("\n")
+				}
+				b.WriteString(detailContentStyle.Render("1. Restart Claude Code — the plugin is active immediately"))
+				b.WriteString("\n")
+				b.WriteString(detailContentStyle.Render("2. Verify with: claude plugin list"))
+				b.WriteString("\n")
+			case "opencode":
+				b.WriteString(detailContentStyle.Render("1. Restart OpenCode"))
+				b.WriteString("\n")
+				b.WriteString(detailContentStyle.Render("2. Plugin is auto-loaded from ~/.config/opencode/plugins/"))
+				b.WriteString("\n")
+				b.WriteString(detailContentStyle.Render("3. Make sure 'cortex' is in your MCP config"))
+				b.WriteString("\n")
+			default:
+				b.WriteString(detailContentStyle.Render("1. Restart your agent to activate the plugin"))
+				b.WriteString("\n")
+				b.WriteString(detailContentStyle.Render("2. Verify with: cortex mcp --tools=agent"))
+				b.WriteString("\n")
+			}
+		}
+
+		b.WriteString(helpStyle.Render("\n  enter/esc back to dashboard"))
+		return b.String()
+	}
+
+	// Agent selection
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("  Select an agent to set up"))
+	b.WriteString("\n\n")
+
+	for i, agent := range m.SetupAgents {
+		if i == m.Cursor {
+			b.WriteString(menuSelectedStyle.Render("▸ " + agent.Description))
+		} else {
+			b.WriteString(menuItemStyle.Render("  " + agent.Description))
+		}
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "      %s %s\n\n",
+			detailLabelStyle.Render("Install to:"),
+			timestampStyle.Render(agent.InstallDir))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter install • esc back"))
+
+	return b.String()
+}
+
+// ─── Graph (Cortex-exclusive) ───────────────────────────────────────────────
+
+func (m Model) viewGraph() string {
+	var b strings.Builder
+
+	header := fmt.Sprintf("  Knowledge Graph — Root #%d", m.GraphRootID)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	// Show edges summary
+	if len(m.GraphEdges) > 0 {
+		edgeCounts := make(map[string]int)
+		for _, e := range m.GraphEdges {
+			edgeCounts[e.RelationType]++
+		}
+		var parts []string
+		for rel, count := range edgeCounts {
+			parts = append(parts, fmt.Sprintf("%s: %d", rel, count))
+		}
+		fmt.Fprintf(&b, "  %s\n\n", timestampStyle.Render(strings.Join(parts, " • ")))
+	}
+
+	count := len(m.GraphObservations)
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No related observations found."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc back"))
+		return b.String()
+	}
+
+	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Related Observations (%d)", count)))
+	b.WriteString("\n")
+
+	visibleItems := (m.Height - 12) / 2
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.Scroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		o := m.GraphObservations[i]
+
+		// Find the edge connecting this observation to root
+		edgeLabel := ""
+		for _, e := range m.GraphEdges {
+			if e.FromObsID == o.ID || e.ToObsID == o.ID {
+				edgeLabel = e.RelationType
+				break
+			}
+		}
+
+		cursor := "  "
+		style := listItemStyle
+		if i == m.Cursor {
+			cursor = "▸ "
+			style = listSelectedStyle
+		}
+
+		line := fmt.Sprintf("%s%s %s %s",
+			cursor,
+			idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
+			typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
+			style.Render(truncateStr(o.Title, 45)))
+
+		if edgeLabel != "" {
+			line += "  " + graphEdgeStyle.Render("["+edgeLabel+"]")
+		}
+
+		b.WriteString(line + "\n")
+
+		preview := truncateStr(o.Content, 70)
+		if preview != "" {
+			b.WriteString(contentPreviewStyle.Render(preview) + "\n")
+		}
+	}
+
+	if count > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • r re-root • esc back"))
+
+	return b.String()
+}
+
+// ─── Archive (Cortex-exclusive) ─────────────────────────────────────────────
+
+func (m Model) viewArchive() string {
+	var b strings.Builder
+
+	count := len(m.ArchivedObservations)
+	header := fmt.Sprintf("  Archived Observations — %d total", count)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No archived observations."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc back"))
+		return b.String()
+	}
+
+	visibleItems := (m.Height - 8) / 2
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.Scroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		o := m.ArchivedObservations[i]
+		b.WriteString(m.renderObservationListItem(i, o.ID, o.Type, o.Title, o.Content, o.CreatedAt, o.Project, &archivedStyle))
+	}
+
+	if count > visibleItems {
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • esc back"))
+
+	return b.String()
+}
+
+// ─── Health (Cortex-exclusive) ──────────────────────────────────────────
+
+func (m Model) viewHealth() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("  Memory Health Dashboard"))
+	b.WriteString("\n")
+
+	// Density
+	density := 0.0
+	if m.HealthObsCount > 0 {
+		density = float64(m.HealthEdgeCount) / float64(m.HealthObsCount)
+	}
+	densityLabel := "low"
+	if density >= 1.0 {
+		densityLabel = "healthy"
+	} else if density >= 0.5 {
+		densityLabel = "moderate"
+	}
+
+	statsContent := fmt.Sprintf(
+		"%s %s\n%s %s\n%s %s",
+		statNumberStyle.Render(fmt.Sprintf("%d", m.HealthObsCount)),
+		statLabelStyle.Render("observations"),
+		statNumberStyle.Render(fmt.Sprintf("%d", m.HealthEdgeCount)),
+		statLabelStyle.Render("knowledge links"),
+		statNumberStyle.Render(fmt.Sprintf("%.1f", density)),
+		statLabelStyle.Render("links/observation ("+densityLabel+")"),
+	)
+	b.WriteString(statCardStyle.Render(statsContent))
+	b.WriteString("\n")
+
+	// Stale observations
+	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Stale Observations (%d)", len(m.HealthStale))))
+	b.WriteString("\n")
+	if len(m.HealthStale) == 0 {
+		b.WriteString(listItemStyle.Render("  None — all high-score observations accessed recently"))
+		b.WriteString("\n")
+	} else {
+		for i, o := range m.HealthStale {
+			if i >= 5 {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthStale)-5)))
+				break
+			}
+			fmt.Fprintf(&b, "  %s %s  %s\n",
+				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
+				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
+				listItemStyle.Render(truncateStr(o.Title, 50)))
+		}
+	}
+	b.WriteString("\n")
+
+	// Orphan observations
+	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Orphan Observations (%d)", len(m.HealthOrphans))))
+	b.WriteString("\n")
+	if len(m.HealthOrphans) == 0 {
+		b.WriteString(listItemStyle.Render("  None — all observations are connected via graph"))
+		b.WriteString("\n")
+	} else {
+		for i, o := range m.HealthOrphans {
+			if i >= 5 {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthOrphans)-5)))
+				break
+			}
+			fmt.Fprintf(&b, "  %s %s  %s\n",
+				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
+				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
+				listItemStyle.Render(truncateStr(o.Title, 50)))
+		}
+	}
+	b.WriteString("\n")
+
+	// Consolidation candidates
+	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Consolidation Candidates (%d)", len(m.HealthCandidates))))
+	b.WriteString("\n")
+	if len(m.HealthCandidates) == 0 {
+		b.WriteString(listItemStyle.Render("  None — no duplicate topic keys found"))
+		b.WriteString("\n")
+	} else {
+		for i, c := range m.HealthCandidates {
+			if i >= 8 {
+				break
+			}
+			fmt.Fprintf(&b, "  %-40s  %s\n",
+				projectStyle.Render(c.topicKey),
+				statNumberStyle.Render(fmt.Sprintf("%d obs", c.count)))
+		}
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k scroll • esc back"))
+
+	return b.String()
+}
+
+// ─── Shared Renderers ───────────────────────────────────────────────────────
+
+func (m Model) renderObservationListItem(index int, id int64, obsType, title, content string, createdAt time.Time, project string, overrideStyle *lipgloss.Style) string {
+	cursor := "  "
+	style := listItemStyle
+	if index == m.Cursor {
+		cursor = "▸ "
+		style = listSelectedStyle
+	}
+	if overrideStyle != nil {
+		style = *overrideStyle
+	}
+
+	proj := ""
+	if project != "" {
+		proj = "  " + projectStyle.Render(project)
+	}
+
+	line := fmt.Sprintf("%s%s %s %s%s  %s\n",
+		cursor,
+		idStyle.Render(fmt.Sprintf("#%-5d", id)),
+		typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", obsType)),
+		style.Render(truncateStr(title, 50)),
+		proj,
+		timestampStyle.Render(formatTime(createdAt)))
+
+	preview := truncateStr(content, 80)
+	if preview != "" {
+		line += contentPreviewStyle.Render(preview) + "\n"
+	}
+
+	return line
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+// formatTime formats a time.Time for display.
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
+func truncateStr(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
+}
+
+func entityIcon(entityType string) string {
+	switch entityType {
+	case "file":
+		return "F"
+	case "url":
+		return "U"
+	case "package":
+		return "P"
+	case "symbol":
+		return "S"
+	default:
+		return "*"
+	}
+}

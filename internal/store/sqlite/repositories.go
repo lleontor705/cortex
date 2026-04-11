@@ -32,7 +32,7 @@ func (r *MetricsRepository) CreateMetric(ctx context.Context, metric *domain.Met
 		 timestamp, observation_count, edge_count, query_complexity, confidence_score)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-
+	
 	_, err := r.db.ExecContext(ctx, query,
 		metric.SessionID,
 		metric.OperationType,
@@ -47,7 +47,7 @@ func (r *MetricsRepository) CreateMetric(ctx context.Context, metric *domain.Met
 		metric.QueryComplexity,
 		metric.ConfidenceScore,
 	)
-
+	
 	return err
 }
 
@@ -61,7 +61,7 @@ func (r *MetricsRepository) GetTemporalMetrics(ctx context.Context, sessionID st
 		WHERE session_id = ? AND timestamp >= ? AND timestamp <= ?
 		ORDER BY timestamp DESC
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, sessionID, from, to)
 	if err != nil {
 		return nil, err
@@ -118,12 +118,12 @@ func (r *MetricsRepository) GetByOperationType(ctx context.Context, operationTyp
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var metrics []*domain.Metrics
 	for rows.Next() {
 		metric := &domain.Metrics{}
 		var errorPtr sql.NullString
-
+		
 		err := rows.Scan(
 			&metric.ID,
 			&metric.SessionID,
@@ -142,14 +142,14 @@ func (r *MetricsRepository) GetByOperationType(ctx context.Context, operationTyp
 		if err != nil {
 			return nil, err
 		}
-
+		
 		if errorPtr.Valid {
 			metric.Error = errorPtr.String
 		}
-
+		
 		metrics = append(metrics, metric)
 	}
-
+	
 	return metrics, nil
 }
 
@@ -169,12 +169,12 @@ func (r *MetricsRepository) GetAggregatedMetrics(ctx context.Context, from, to t
 		FROM metrics 
 		WHERE timestamp >= ? AND timestamp <= ?
 	`
-
+	
 	row := r.db.QueryRowContext(ctx, query, from, to)
-
+	
 	agg := &domain.AggregatedMetrics{}
 	var avgDuration, avgObsCount, avgEdgeCount, avgComplexity, avgConfidence sql.NullFloat64
-
+	
 	err := row.Scan(
 		&agg.TotalOperations,
 		&agg.SuccessfulOps,
@@ -189,7 +189,7 @@ func (r *MetricsRepository) GetAggregatedMetrics(ctx context.Context, from, to t
 	if err != nil {
 		return nil, err
 	}
-
+	
 	if avgDuration.Valid {
 		agg.AvgDurationMs = avgDuration.Float64
 	}
@@ -205,10 +205,10 @@ func (r *MetricsRepository) GetAggregatedMetrics(ctx context.Context, from, to t
 	if avgConfidence.Valid {
 		agg.AvgConfidenceScore = avgConfidence.Float64
 	}
-
+	
 	agg.TimeRange = &domain.TimeRange{From: from, To: to}
 	agg.EvaluatedAt = time.Now()
-
+	
 	return agg, nil
 }
 
@@ -230,7 +230,7 @@ func (r *QualityMetricsRepository) CreateQualityMetric(ctx context.Context, qual
 		 average_latency_ms, average_relevance, temporal_accuracy, knowledge_coverage, evaluated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-
+	
 	_, err := r.db.ExecContext(ctx, query,
 		quality.SessionID,
 		quality.EvaluationType,
@@ -243,7 +243,7 @@ func (r *QualityMetricsRepository) CreateQualityMetric(ctx context.Context, qual
 		quality.KnowledgeCoverage,
 		quality.EvaluatedAt,
 	)
-
+	
 	return err
 }
 
@@ -257,17 +257,17 @@ func (r *QualityMetricsRepository) GetBySession(ctx context.Context, sessionID s
 		ORDER BY evaluated_at DESC
 		LIMIT ?
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
 		metric := &domain.QualityMetrics{}
-
+		
 		err := rows.Scan(
 			&metric.ID,
 			&metric.SessionID,
@@ -284,10 +284,10 @@ func (r *QualityMetricsRepository) GetBySession(ctx context.Context, sessionID s
 		if err != nil {
 			return nil, err
 		}
-
+		
 		metrics = append(metrics, metric)
 	}
-
+	
 	return metrics, nil
 }
 
@@ -300,17 +300,17 @@ func (r *QualityMetricsRepository) GetByType(ctx context.Context, evaluationType
 		WHERE evaluation_type = ? AND evaluated_at >= ? AND evaluated_at <= ?
 		ORDER BY evaluated_at DESC
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, evaluationType, from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
 		metric := &domain.QualityMetrics{}
-
+		
 		err := rows.Scan(
 			&metric.ID,
 			&metric.SessionID,
@@ -327,10 +327,10 @@ func (r *QualityMetricsRepository) GetByType(ctx context.Context, evaluationType
 		if err != nil {
 			return nil, err
 		}
-
+		
 		metrics = append(metrics, metric)
 	}
-
+	
 	return metrics, nil
 }
 
@@ -343,17 +343,17 @@ func (r *QualityMetricsRepository) GetLatest(ctx context.Context, limit int) ([]
 		ORDER BY evaluated_at DESC
 		LIMIT ?
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var metrics []*domain.QualityMetrics
 	for rows.Next() {
 		metric := &domain.QualityMetrics{}
-
+		
 		err := rows.Scan(
 			&metric.ID,
 			&metric.SessionID,
@@ -370,10 +370,10 @@ func (r *QualityMetricsRepository) GetLatest(ctx context.Context, limit int) ([]
 		if err != nil {
 			return nil, err
 		}
-
+		
 		metrics = append(metrics, metric)
 	}
-
+	
 	return metrics, nil
 }
 
@@ -394,7 +394,7 @@ func (r *TemporalSnapshotRepository) CreateSnapshot(ctx context.Context, snapsho
 		(snapshot_key, timestamp, description, observation_count, edge_count, root_observation_id)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`
-
+	
 	result, err := r.db.ExecContext(ctx, query,
 		snapshot.SnapshotKey,
 		snapshot.Timestamp,
@@ -406,10 +406,10 @@ func (r *TemporalSnapshotRepository) CreateSnapshot(ctx context.Context, snapsho
 	if err != nil {
 		return err
 	}
-
+	
 	id, _ := result.LastInsertId()
 	snapshot.ID = id
-
+	
 	return nil
 }
 
@@ -420,12 +420,12 @@ func (r *TemporalSnapshotRepository) GetByID(ctx context.Context, id int64) (*do
 		FROM temporal_snapshots 
 		WHERE id = ?
 	`
-
+	
 	row := r.db.QueryRowContext(ctx, query, id)
-
+	
 	snapshot := &domain.TemporalSnapshot{}
 	var rootObsID sql.NullInt64
-
+	
 	err := row.Scan(
 		&snapshot.ID,
 		&snapshot.SnapshotKey,
@@ -438,11 +438,11 @@ func (r *TemporalSnapshotRepository) GetByID(ctx context.Context, id int64) (*do
 	if err != nil {
 		return nil, err
 	}
-
+	
 	if rootObsID.Valid {
 		snapshot.RootObservationID = rootObsID.Int64
 	}
-
+	
 	return snapshot, nil
 }
 
@@ -454,18 +454,18 @@ func (r *TemporalSnapshotRepository) GetBySnapshotKey(ctx context.Context, snaps
 		WHERE snapshot_key = ?
 		ORDER BY timestamp DESC
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, snapshotKey)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {
 		snapshot := &domain.TemporalSnapshot{}
 		var rootObsID sql.NullInt64
-
+		
 		err := rows.Scan(
 			&snapshot.ID,
 			&snapshot.SnapshotKey,
@@ -478,14 +478,14 @@ func (r *TemporalSnapshotRepository) GetBySnapshotKey(ctx context.Context, snaps
 		if err != nil {
 			return nil, err
 		}
-
+		
 		if rootObsID.Valid {
 			snapshot.RootObservationID = rootObsID.Int64
 		}
-
+		
 		snapshots = append(snapshots, snapshot)
 	}
-
+	
 	return snapshots, nil
 }
 
@@ -497,18 +497,18 @@ func (r *TemporalSnapshotRepository) GetSnapshotsInRange(ctx context.Context, fr
 		WHERE timestamp >= ? AND timestamp <= ?
 		ORDER BY timestamp DESC
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {
 		snapshot := &domain.TemporalSnapshot{}
 		var rootObsID sql.NullInt64
-
+		
 		err := rows.Scan(
 			&snapshot.ID,
 			&snapshot.SnapshotKey,
@@ -521,14 +521,14 @@ func (r *TemporalSnapshotRepository) GetSnapshotsInRange(ctx context.Context, fr
 		if err != nil {
 			return nil, err
 		}
-
+		
 		if rootObsID.Valid {
 			snapshot.RootObservationID = rootObsID.Int64
 		}
-
+		
 		snapshots = append(snapshots, snapshot)
 	}
-
+	
 	return snapshots, nil
 }
 
@@ -540,18 +540,18 @@ func (r *TemporalSnapshotRepository) GetByRootObservation(ctx context.Context, r
 		WHERE root_observation_id = ?
 		ORDER BY timestamp DESC
 	`
-
+	
 	rows, err := r.db.QueryContext(ctx, query, rootObsID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-
+	
 	var snapshots []*domain.TemporalSnapshot
 	for rows.Next() {
 		snapshot := &domain.TemporalSnapshot{}
 		var rootObsID sql.NullInt64
-
+		
 		err := rows.Scan(
 			&snapshot.ID,
 			&snapshot.SnapshotKey,
@@ -564,13 +564,13 @@ func (r *TemporalSnapshotRepository) GetByRootObservation(ctx context.Context, r
 		if err != nil {
 			return nil, err
 		}
-
+		
 		if rootObsID.Valid {
 			snapshot.RootObservationID = rootObsID.Int64
 		}
-
+		
 		snapshots = append(snapshots, snapshot)
 	}
-
+	
 	return snapshots, nil
 }

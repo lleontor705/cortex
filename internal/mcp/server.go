@@ -175,3 +175,4 @@ func textResult(format string, args ...any) (*mcp.CallToolResult, error) {
 func errorResult(format string, args ...any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(fmt.Sprintf(format, args...)), nil
 }
+
