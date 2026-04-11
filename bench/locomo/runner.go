@@ -174,10 +174,10 @@ func ingestConversation(ctx context.Context, stores *common.BenchStores, conv Co
 		var content strings.Builder
 		date := conv.Conversation.Dates[sessKey]
 		if date != "" {
-			content.WriteString(fmt.Sprintf("Date: %s\n", date))
+			fmt.Fprintf(&content, "Date: %s\n", date)
 		}
 		for _, turn := range turns {
-			content.WriteString(fmt.Sprintf("%s: %s\n", turn.Speaker, turn.Text))
+			fmt.Fprintf(&content, "%s: %s\n", turn.Speaker, turn.Text)
 		}
 
 		observations := []domain.Observation{{

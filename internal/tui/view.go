@@ -137,7 +137,7 @@ func (m Model) viewDashboard() string {
 
 			if len(m.Stats.Projects) > limit {
 				remaining := len(m.Stats.Projects) - limit
-				b.WriteString(fmt.Sprintf("    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more projects", remaining))))
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more projects", remaining)))
 			}
 			b.WriteString("\n")
 		}
