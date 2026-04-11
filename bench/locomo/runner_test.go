@@ -96,7 +96,7 @@ func TestMinimalDataset(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")
 	data, _ := json.Marshal(conversations)
-	os.WriteFile(path, data, 0644)
+	_ = os.WriteFile(path, data, 0644)
 
 	result, err := Run(Config{DataPath: path})
 	if err != nil {

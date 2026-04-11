@@ -137,7 +137,7 @@ func (m Model) viewDashboard() string {
 
 			if len(m.Stats.Projects) > limit {
 				remaining := len(m.Stats.Projects) - limit
-				b.WriteString(fmt.Sprintf("    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more projects", remaining))))
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more projects", remaining)))
 			}
 			b.WriteString("\n")
 		}
@@ -216,8 +216,8 @@ func (m Model) viewSearchResults() string {
 	}
 
 	if resultCount > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • / search • esc back"))
@@ -258,8 +258,8 @@ func (m Model) viewRecent() string {
 	}
 
 	if count > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
@@ -286,35 +286,35 @@ func (m Model) viewObservationDetail() string {
 	b.WriteString("\n")
 
 	// Metadata rows
-	b.WriteString(fmt.Sprintf("%s %s\n",
+	fmt.Fprintf(&b, "%s %s\n",
 		detailLabelStyle.Render("Type:"),
-		typeBadgeStyle.Render(obs.Type)))
+		typeBadgeStyle.Render(obs.Type))
 
-	b.WriteString(fmt.Sprintf("%s %s\n",
+	fmt.Fprintf(&b, "%s %s\n",
 		detailLabelStyle.Render("Title:"),
-		detailValueStyle.Bold(true).Render(obs.Title)))
+		detailValueStyle.Bold(true).Render(obs.Title))
 
-	b.WriteString(fmt.Sprintf("%s %s\n",
+	fmt.Fprintf(&b, "%s %s\n",
 		detailLabelStyle.Render("Session:"),
-		idStyle.Render(obs.SessionID)))
+		idStyle.Render(obs.SessionID))
 
-	b.WriteString(fmt.Sprintf("%s %s\n",
+	fmt.Fprintf(&b, "%s %s\n",
 		detailLabelStyle.Render("Created:"),
-		timestampStyle.Render(formatTime(obs.CreatedAt))))
+		timestampStyle.Render(formatTime(obs.CreatedAt)))
 
 	if obs.Project != "" {
-		b.WriteString(fmt.Sprintf("%s %s\n",
+		fmt.Fprintf(&b, "%s %s\n",
 			detailLabelStyle.Render("Project:"),
-			projectStyle.Render(obs.Project)))
+			projectStyle.Render(obs.Project))
 	}
 
 	// Cortex-exclusive: Importance Score
 	if m.DetailScore != nil {
 		scoreStr := fmt.Sprintf("%.1f/5.0", m.DetailScore.Score)
-		b.WriteString(fmt.Sprintf("%s %s  (accessed %d times)\n",
+		fmt.Fprintf(&b, "%s %s  (accessed %d times)\n",
 			detailLabelStyle.Render("Score:"),
 			scoreStyle(m.DetailScore.Score).Render(scoreStr),
-			m.DetailScore.AccessCount))
+			m.DetailScore.AccessCount)
 	}
 
 	// Cortex-exclusive: Entity Links
@@ -324,9 +324,9 @@ func (m Model) viewObservationDetail() string {
 		b.WriteString("\n")
 		for _, e := range m.DetailEntities {
 			icon := entityIcon(e.EntityType)
-			b.WriteString(fmt.Sprintf("  %s %s\n",
+			fmt.Fprintf(&b, "  %s %s\n",
 				entityStyle(e.EntityType).Render(icon+" "+e.EntityType),
-				detailValueStyle.Render(e.EntityValue)))
+				detailValueStyle.Render(e.EntityValue))
 		}
 	}
 
@@ -340,10 +340,10 @@ func (m Model) viewObservationDetail() string {
 			if targetID == obs.ID {
 				targetID = e.FromObsID
 			}
-			b.WriteString(fmt.Sprintf("  %s #%d  %s\n",
+			fmt.Fprintf(&b, "  %s #%d  %s\n",
 				graphEdgeStyle.Render("["+e.RelationType+"]"),
 				targetID,
-				timestampStyle.Render(fmt.Sprintf("weight: %.1f", e.Weight))))
+				timestampStyle.Render(fmt.Sprintf("weight: %.1f", e.Weight)))
 		}
 	}
 
@@ -384,8 +384,8 @@ func (m Model) viewObservationDetail() string {
 	}
 
 	if len(contentLines) > maxLines {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("line %d-%d of %d", scroll+1, end, len(contentLines)))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("line %d-%d of %d", scroll+1, end, len(contentLines))))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • esc back"))
@@ -412,24 +412,24 @@ func (m Model) viewTimeline() string {
 	b.WriteString("\n")
 
 	// Session info
-	b.WriteString(fmt.Sprintf("  %s %s  %s %s\n\n",
+	fmt.Fprintf(&b, "  %s %s  %s %s\n\n",
 		detailLabelStyle.Render("Session:"),
 		idStyle.Render(focus.SessionID),
 		detailLabelStyle.Render("Project:"),
-		projectStyle.Render(focus.Project)))
+		projectStyle.Render(focus.Project))
 
 	// Before entries
 	if len(m.TimelineBefore) > 0 {
 		b.WriteString(sectionHeadingStyle.Render("  Before"))
 		b.WriteString("\n")
 		for _, e := range m.TimelineBefore {
-			b.WriteString(fmt.Sprintf("  %s %s %s  %s\n",
+			fmt.Fprintf(&b, "  %s %s %s  %s\n",
 				timelineConnectorStyle.Render("|"),
 				idStyle.Render(fmt.Sprintf("#%-4d", e.ID)),
 				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", e.Type)),
-				timelineItemStyle.Render(truncateStr(e.Title, 60))))
+				timelineItemStyle.Render(truncateStr(e.Title, 60)))
 		}
-		b.WriteString(fmt.Sprintf("  %s\n", timelineConnectorStyle.Render("|")))
+		fmt.Fprintf(&b, "  %s\n", timelineConnectorStyle.Render("|"))
 	}
 
 	// Focus (highlighted)
@@ -443,15 +443,15 @@ func (m Model) viewTimeline() string {
 
 	// After entries
 	if len(m.TimelineAfter) > 0 {
-		b.WriteString(fmt.Sprintf("  %s\n", timelineConnectorStyle.Render("|")))
+		fmt.Fprintf(&b, "  %s\n", timelineConnectorStyle.Render("|"))
 		b.WriteString(sectionHeadingStyle.Render("  After"))
 		b.WriteString("\n")
 		for _, e := range m.TimelineAfter {
-			b.WriteString(fmt.Sprintf("  %s %s %s  %s\n",
+			fmt.Fprintf(&b, "  %s %s %s  %s\n",
 				timelineConnectorStyle.Render("|"),
 				idStyle.Render(fmt.Sprintf("#%-4d", e.ID)),
 				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", e.Type)),
-				timelineItemStyle.Render(truncateStr(e.Title, 60))))
+				timelineItemStyle.Render(truncateStr(e.Title, 60)))
 		}
 	}
 
@@ -513,8 +513,8 @@ func (m Model) viewSessions() string {
 	}
 
 	if count > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter view session • esc back"))
@@ -540,9 +540,9 @@ func (m Model) viewSessionDetail() string {
 	b.WriteString("\n")
 
 	if sess.Session.Summary != "" {
-		b.WriteString(fmt.Sprintf("  %s %s\n\n",
+		fmt.Fprintf(&b, "  %s %s\n\n",
 			detailLabelStyle.Render("Summary:"),
-			detailValueStyle.Render(sess.Session.Summary)))
+			detailValueStyle.Render(sess.Session.Summary))
 	}
 
 	count := len(m.SessionObservations)
@@ -572,8 +572,8 @@ func (m Model) viewSessionDetail() string {
 	}
 
 	if count > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.SessionDetailScroll+1, end, count))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.SessionDetailScroll+1, end, count)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
@@ -592,9 +592,9 @@ func (m Model) viewSetup() string {
 	// Show spinner while installing
 	if m.SetupInstalling {
 		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("  %s Installing %s plugin...\n",
+		fmt.Fprintf(&b, "  %s Installing %s plugin...\n",
 			m.SetupSpinner.View(),
-			lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(m.SetupInstallingName)))
+			lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(m.SetupInstallingName))
 		b.WriteString("\n")
 		return b.String()
 	}
@@ -602,9 +602,9 @@ func (m Model) viewSetup() string {
 	// Allowlist prompt (after successful claude-code install)
 	if m.SetupAllowlistPrompt && m.SetupResult != nil {
 		successMsg := fmt.Sprintf("Installed %s plugin", m.SetupResult.Agent)
-		b.WriteString(fmt.Sprintf("\n  %s %s\n\n",
+		fmt.Fprintf(&b, "\n  %s %s\n\n",
 			lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
-			lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg)))
+			lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg))
 
 		b.WriteString(sectionHeadingStyle.Render("  Permissions Allowlist"))
 		b.WriteString("\n\n")
@@ -626,12 +626,12 @@ func (m Model) viewSetup() string {
 			if m.SetupResult.Files > 0 {
 				successMsg += fmt.Sprintf(" (%d files)", m.SetupResult.Files)
 			}
-			b.WriteString(fmt.Sprintf("  %s %s\n",
+			fmt.Fprintf(&b, "  %s %s\n",
 				lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
-				lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg)))
-			b.WriteString(fmt.Sprintf("  %s %s\n\n",
+				lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render(successMsg))
+			fmt.Fprintf(&b, "  %s %s\n\n",
 				detailLabelStyle.Render("Location:"),
-				projectStyle.Render(m.SetupResult.Destination)))
+				projectStyle.Render(m.SetupResult.Destination))
 
 			// Agent-specific post-install instructions
 			b.WriteString(sectionHeadingStyle.Render("  Next Steps"))
@@ -640,13 +640,13 @@ func (m Model) viewSetup() string {
 			switch m.SetupResult.Agent {
 			case "claude-code":
 				if m.SetupAllowlistApplied {
-					b.WriteString(fmt.Sprintf("  %s %s\n",
+					fmt.Fprintf(&b, "  %s %s\n",
 						lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("✓"),
-						detailContentStyle.Render("Cortex tools added to allowlist")))
+						detailContentStyle.Render("Cortex tools added to allowlist"))
 				} else if m.SetupAllowlistError != "" {
-					b.WriteString(fmt.Sprintf("  %s %s\n",
+					fmt.Fprintf(&b, "  %s %s\n",
 						lipgloss.NewStyle().Bold(true).Foreground(colorRed).Render("✗"),
-						detailContentStyle.Render("Allowlist update failed: "+m.SetupAllowlistError)))
+						detailContentStyle.Render("Allowlist update failed: "+m.SetupAllowlistError))
 					b.WriteString(detailContentStyle.Render("  Add manually to permissions.allow in ~/.claude/settings.json"))
 					b.WriteString("\n")
 				}
@@ -685,9 +685,9 @@ func (m Model) viewSetup() string {
 			b.WriteString(menuItemStyle.Render("  " + agent.Description))
 		}
 		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("      %s %s\n\n",
+		fmt.Fprintf(&b, "      %s %s\n\n",
 			detailLabelStyle.Render("Install to:"),
-			timestampStyle.Render(agent.InstallDir)))
+			timestampStyle.Render(agent.InstallDir))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter install • esc back"))
@@ -714,7 +714,7 @@ func (m Model) viewGraph() string {
 		for rel, count := range edgeCounts {
 			parts = append(parts, fmt.Sprintf("%s: %d", rel, count))
 		}
-		b.WriteString(fmt.Sprintf("  %s\n\n", timestampStyle.Render(strings.Join(parts, " • "))))
+		fmt.Fprintf(&b, "  %s\n\n", timestampStyle.Render(strings.Join(parts, " • ")))
 	}
 
 	count := len(m.GraphObservations)
@@ -776,8 +776,8 @@ func (m Model) viewGraph() string {
 	}
 
 	if count > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • r re-root • esc back"))
@@ -818,8 +818,8 @@ func (m Model) viewArchive() string {
 	}
 
 	if count > visibleItems {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count))))
+		fmt.Fprintf(&b, "\n  %s",
+			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • esc back"))
@@ -868,13 +868,13 @@ func (m Model) viewHealth() string {
 	} else {
 		for i, o := range m.HealthStale {
 			if i >= 5 {
-				b.WriteString(fmt.Sprintf("    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthStale)-5))))
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthStale)-5)))
 				break
 			}
-			b.WriteString(fmt.Sprintf("  %s %s  %s\n",
+			fmt.Fprintf(&b, "  %s %s  %s\n",
 				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
 				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
-				listItemStyle.Render(truncateStr(o.Title, 50))))
+				listItemStyle.Render(truncateStr(o.Title, 50)))
 		}
 	}
 	b.WriteString("\n")
@@ -888,13 +888,13 @@ func (m Model) viewHealth() string {
 	} else {
 		for i, o := range m.HealthOrphans {
 			if i >= 5 {
-				b.WriteString(fmt.Sprintf("    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthOrphans)-5))))
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthOrphans)-5)))
 				break
 			}
-			b.WriteString(fmt.Sprintf("  %s %s  %s\n",
+			fmt.Fprintf(&b, "  %s %s  %s\n",
 				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
 				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
-				listItemStyle.Render(truncateStr(o.Title, 50))))
+				listItemStyle.Render(truncateStr(o.Title, 50)))
 		}
 	}
 	b.WriteString("\n")
@@ -910,9 +910,9 @@ func (m Model) viewHealth() string {
 			if i >= 8 {
 				break
 			}
-			b.WriteString(fmt.Sprintf("  %-40s  %s\n",
+			fmt.Fprintf(&b, "  %-40s  %s\n",
 				projectStyle.Render(c.topicKey),
-				statNumberStyle.Render(fmt.Sprintf("%d obs", c.count))))
+				statNumberStyle.Render(fmt.Sprintf("%d obs", c.count)))
 		}
 	}
 

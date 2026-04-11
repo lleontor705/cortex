@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Cortex is a memory server for AI coding assistants, built as a single Go binary with SQLite + FTS5. It aims for 100% API compatibility with Engram while adding knowledge graph, importance scoring, auto-archival, and optional vector search. Interfaces: MCP server, HTTP API, CLI, TUI.
+Cortex is the local-first memory brain for AI coding agents. Single Go binary with SQLite + FTS5 + knowledge graph + vector search (Ollama/OpenAI) + temporal reasoning + importance scoring. 100% API-compatible with Engram, adds 8 exclusive MCP tools (22 total). Interfaces: MCP server, HTTP API, CLI (16 commands), TUI (12 screens).
 
 ## Branching Model (Gitflow)
 
@@ -86,24 +86,24 @@ internal/
     scoring/         -> Importance scoring store (scores, access tracking, edge counts)
     entity/          -> Entity link store (save, query by observation or entity)
   migration/         -> Version-tracked migration framework (up/down with transactions)
-  mcp/               -> MCP server + tool handlers (tools_memory.go: 14 Engram tools, tools_cortex.go: 5 exclusive tools)
+  embedding/         -> Ollama + OpenAI embedding service (local-first vector generation)
+  mcp/               -> MCP server + 22 tool handlers (tools_memory.go: 14 Engram, tools_cortex.go: 8 exclusive)
   http/              -> REST API server (net/http stdlib, JSON endpoints for all stores)
-  tui/               -> Terminal UI (simplified browser, full BubbleTea TUI pending dependency)
-migrations/          -> SQL migration files (001-006)
+  tui/               -> BubbleTea terminal UI (12 screens: dashboard, search, graph, health, archive, setup)
+migrations/          -> SQL migration files (001-009)
+bench/               -> Benchmark harness (LOCOMO, DMR, LongMemEval)
 testutil/            -> Test helpers: in-memory DB setup, fixtures, custom assertions
 ```
 
-**Pending full implementation**: TUI uses a simplified browser; full BubbleTea-based TUI requires adding the `charmbracelet/bubbletea` dependency.
-
 **Data flow**: `main.go` -> `cli.Run()` -> `app.Open()` wires dependencies -> domain services depend on repository interfaces -> store implementations satisfy those interfaces using SQLite.
 
-**Dependency wiring**: `app.Open()` creates Config, database Manager, Migrator, all seven stores (sqlite, session, search, prompt, graph, scoring, entity), vector store, and starts auto-archival if enabled. The `App` struct bundles these for use by CLI commands, MCP server, and HTTP API.
+**Dependency wiring**: `app.Open()` creates Config, database Manager, Migrator, all stores (sqlite, session, search, prompt, graph, scoring, entity, vectors), embedding service (Ollama/OpenAI), and starts auto-archival if enabled. The `App` struct bundles these for use by CLI commands, MCP server, and HTTP API.
 
-## MCP Tools
+## MCP Tools (22 total)
 
 **14 Engram-compatible** (tools_memory.go): mem_save, mem_search, mem_context, mem_session_summary, mem_get_observation, mem_save_prompt, mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end, mem_stats, mem_delete, mem_timeline, mem_capture_passive.
 
-**5 Cortex-exclusive** (tools_cortex.go): mem_relate (create graph edge), mem_graph (traverse graph), mem_score (importance scoring), mem_archive (soft-delete), mem_search_hybrid (FTS5 + optional vector RRF fusion).
+**8 Cortex-exclusive** (tools_cortex.go): mem_relate (graph edges), mem_graph (BFS traversal), mem_score (importance), mem_archive (soft-delete), mem_search_hybrid (FTS5 + vector RRF), mem_search_temporal (as-of date), mem_consolidate (duplicate finder), mem_project_dna (project summary).
 
 ## Key Design Decisions
 
@@ -113,9 +113,12 @@ testutil/            -> Test helpers: in-memory DB setup, fixtures, custom asser
 - **Topic key upsert**: Observations with a `topic_key` update-or-create within the same project scope
 - **Content deduplication**: Normalized SHA-256 hash prevents duplicate observations within a time window
 - **Soft delete by default**: `deleted_at` field; hard delete requires explicit flag
-- **Optional vector search**: Gated by `cortex_vectors` build tag; disabled build returns `ErrVectorSearchDisabled`
+- **Vector search**: Ollama (local, default) or OpenAI embeddings. Gated by `cortex_vectors` build tag. Auto-embeds on `mem_save`. RRF fusion (k=60) combines FTS5 + cosine similarity.
+- **Temporal reasoning**: Edges have `valid_from`/`invalid_at` fields. `mem_search_temporal` filters graph expansion by time. `graphNeighborExpansion` skips deprecated/superseded edges.
 - **Importance score formula**: `base(0.5) + typeBonus + accessBonus + recencyBonus + edgeBonus - agePenalty`, clamped to [0.0, 5.0]
 - **Auto-archival**: `lifecycle.ArchivalService` periodically soft-deletes observations older than `auto_archive_days` with score below `min_archive_score`
+- **Project DNA**: `mem_project_dna` generates markdown summary from high-importance observations grouped by type
+- **Memory consolidation**: `mem_consolidate` finds topic keys with 2+ observations; agent-driven merge via `mem_save` + `mem_relate(supersedes)`
 
 ## Testing
 
@@ -139,7 +142,7 @@ Loaded from `cortex.yaml` / env vars (`CORTEX_<SECTION>_<KEY>`). Eight sections:
 
 ## CLI Commands
 
-`mcp`, `search`, `save`, `timeline` (with --before/--after), `context`, `stats`, `setup`, `import` (--from-engram, --from-json), `export` (--project, --output), `migrate` (up/down/status), `serve` (HTTP REST API), `tui`, `version`, `help`.
+`mcp`, `search`, `save`, `timeline` (with --before/--after), `revisions`, `context`, `stats`, `setup`, `import` (--from-engram, --from-json), `export` (--project, --output), `sync`, `merge-projects`, `reindex` (--project, generates vector embeddings), `doctor` (health check), `gc` (--days, garbage collect archived), `migrate` (up/down/status), `serve` (HTTP REST API), `tui` (12-screen BubbleTea UI), `version`, `help`.
 
 ## Agent Skills
 

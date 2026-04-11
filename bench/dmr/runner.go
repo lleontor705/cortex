@@ -122,7 +122,7 @@ func ingestConversation(ctx context.Context, stores *common.BenchStores, project
 		sessionID := fmt.Sprintf("%s-prev-%d", project, i)
 		var content strings.Builder
 		for _, turn := range pd.Dialog {
-			content.WriteString(fmt.Sprintf("%s: %s\n", turn.ID, turn.Text))
+			fmt.Fprintf(&content, "%s: %s\n", turn.ID, turn.Text)
 		}
 
 		observations := []domain.Observation{{
@@ -140,7 +140,7 @@ func ingestConversation(ctx context.Context, stores *common.BenchStores, project
 	currentSessionID := fmt.Sprintf("%s-current", project)
 	var content strings.Builder
 	for _, turn := range conv.Dialog {
-		content.WriteString(fmt.Sprintf("%s: %s\n", turn.ID, turn.Text))
+		fmt.Fprintf(&content, "%s: %s\n", turn.ID, turn.Text)
 	}
 
 	observations := []domain.Observation{{
