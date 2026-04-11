@@ -1,0 +1,4 @@
+datasets/
+results/*.json
+!results/.gitkeep
+!datasets/.gitkeep

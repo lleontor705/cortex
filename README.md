@@ -105,14 +105,14 @@ Full migration script (uninstalls Engram, migrates data, reconfigures agents) �
 - **Vector Search** — Optional hybrid search combining FTS5 with embedding similarity via RRF fusion (requires `cortex_vectors` build tag).
 - **HTTP REST API** — 17 JSON endpoints for observations, sessions, search, graph, and scoring.
 
-## MCP Tools (19 total)
+## MCP Tools (22 total)
 
-### Core Tools (Engram-Compatible)
+### Core Tools (Engram-Compatible — 14)
 
 | Tool | Purpose |
 |------|---------|
 | `mem_save` | Save observation with What/Why/Where/Learned format |
-| `mem_search` | Full-text search with filters |
+| `mem_search` | Full-text search with filters + optional graph expansion |
 | `mem_context` | Recent session context aggregation |
 | `mem_session_summary` | End-of-session comprehensive save (**mandatory**) |
 | `mem_get_observation` | Full content by ID |
@@ -126,7 +126,7 @@ Full migration script (uninstalls Engram, migrates data, reconfigures agents) �
 | `mem_stats` | Memory system statistics |
 | `mem_timeline` | Chronological drill-in around observation |
 
-### Cortex-Exclusive Tools
+### Cortex-Exclusive Tools (8)
 
 | Tool | Purpose |
 |------|---------|
@@ -135,6 +135,9 @@ Full migration script (uninstalls Engram, migrates data, reconfigures agents) �
 | `mem_score` | Get/recalculate importance score |
 | `mem_archive` | Archive an observation (soft-delete) |
 | `mem_search_hybrid` | Hybrid FTS5 + vector search with RRF fusion |
+| `mem_search_temporal` | Search as-of a specific date (temporal reasoning) |
+| `mem_consolidate` | Find duplicate topic keys for consolidation |
+| `mem_project_dna` | Generate structured project summary from observations |
 
 Full tool reference → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
@@ -151,10 +154,37 @@ Full tool reference → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | Importance Scoring | :x: | :white_check_mark: |
 | Auto-Archival | :x: | :white_check_mark: |
 | Entity Linking | :x: | :white_check_mark: |
-| Vector Search | :x: | :white_check_mark: (optional) |
+| Vector Search (Ollama/OpenAI) | :x: | :white_check_mark: |
+| Temporal Search (as-of date) | :x: | :white_check_mark: |
+| Memory Consolidation | :x: | :white_check_mark: |
+| Project DNA Generation | :x: | :white_check_mark: |
+| Memory Health Dashboard | :x: | :white_check_mark: (TUI) |
 | HTTP REST API | :white_check_mark: | :white_check_mark: |
 
 Full comparison (including vs claude-mem) → [docs/COMPARISON.md](docs/COMPARISON.md)
+
+## Benchmarks
+
+Evaluated on [LOCOMO](https://github.com/snap-research/locomo) (ACL 2024) — 1,986 questions across 10 long-term conversations:
+
+| Search Mode | single-hop | multi-hop | temporal | Improvement |
+|-------------|-----------|-----------|----------|-------------|
+| FTS5 only | 0.002 | 0.001 | 0.000 | baseline |
+| **FTS5 + Ollama** (local) | **0.025** | **0.016** | **0.026** | **12-16x** |
+| **FTS5 + OpenAI** (cloud) | **0.026** | **0.016** | **0.037** | **13-37x** |
+
+> Scores are F1 token overlap on retrieval. Cortex finds relevant memories — the agent's LLM generates answers on top.
+
+**Embedding providers:**
+
+| Provider | Cost | Privacy | Speed | Quality |
+|----------|------|---------|-------|---------|
+| **Ollama** (recommended) | Free | 100% local | Fast | Excellent |
+| OpenAI | ~$0.02/1M tokens | Cloud | Moderate | Best temporal |
+| None (FTS5) | Free | Local | Instant | Keyword only |
+
+Full methodology, results, and reproducibility → [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+Configuration guide → [docs/RECOMMENDATIONS.md](docs/RECOMMENDATIONS.md)
 
 ## CLI Reference
 
@@ -172,6 +202,9 @@ Full comparison (including vs claude-mem) → [docs/COMPARISON.md](docs/COMPARIS
 | `cortex export [--project P]` | Export to JSON |
 | `cortex import --from-engram` | Import from Engram database |
 | `cortex import --from-json` | Import from JSON file |
+| `cortex reindex [--project P]` | Generate vector embeddings for all observations |
+| `cortex doctor` | Run health checks on the database |
+| `cortex gc [--days N]` | Garbage collect archived observations (default: 90 days) |
 | `cortex migrate <up\|down\|status>` | Manage database migrations |
 | `cortex version` | Show version |
 
@@ -187,7 +220,8 @@ database:
 
 search:
   default_limit: 20
-  vector: false       # Enable with cortex_vectors build tag
+  vector: false              # Enable with cortex_vectors build tag
+  embedding_provider: ollama # ollama (local), openai (cloud), or none
 
 memory:
   auto_archive_days: 90
@@ -207,6 +241,8 @@ Full config reference → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | [Agent Setup](docs/AGENT-SETUP.md) | Per-agent configuration + Memory Protocol |
 | [Architecture](docs/ARCHITECTURE.md) | Design, scoring formula, graph, API, schema |
 | [Plugins](docs/PLUGINS.md) | Claude Code hooks + OpenCode TypeScript plugin |
+| [Benchmarks](docs/BENCHMARKS.md) | LOCOMO/DMR results, methodology, reproducibility |
+| [Recommendations](docs/RECOMMENDATIONS.md) | Embedding provider guide, tuning, agent setup |
 | [Comparison](docs/COMPARISON.md) | Why Cortex vs Engram vs claude-mem |
 | [Contributing](CONTRIBUTING.md) | Contribution workflow + standards |
 

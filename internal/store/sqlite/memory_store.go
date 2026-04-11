@@ -400,6 +400,14 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 		FROM observations
 		WHERE deleted_at IS NULL
 	`
+	if filter.IncludeArchived {
+		query = `
+		SELECT id, session_id, type, title, content, project, scope, topic_key,
+		       confidence, source, tags, created_at, updated_at
+		FROM observations
+		WHERE 1=1
+	`
+	}
 	args := []any{}
 
 	if filter.Project != "" {
@@ -420,6 +428,11 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 	if filter.Source != "" {
 		query += " AND source = ?"
 		args = append(args, filter.Source)
+	}
+
+	if filter.SessionID != "" {
+		query += " AND session_id = ?"
+		args = append(args, filter.SessionID)
 	}
 
 	if filter.MinConfidence > 0 {
@@ -463,6 +476,109 @@ func (s *Store) List(ctx context.Context, filter domain.ObservationFilter) ([]*d
 	}
 	defer func() { _ = rows.Close() }()
 
+	return s.scanObservations(rows)
+}
+
+// ListByTopicKey retrieves all observations for a project with the given topic key.
+func (s *Store) ListByTopicKey(ctx context.Context, project, topicKey string) ([]*domain.Observation, error) {
+	query := `
+		SELECT id, session_id, type, title, content, project, scope, topic_key,
+		       confidence, source, tags, created_at, updated_at
+		FROM observations
+		WHERE deleted_at IS NULL AND project = ? AND topic_key = ?
+		ORDER BY created_at DESC
+	`
+	rows, err := s.db.QueryContext(ctx, query, project, topicKey)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: list by topic key: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return s.scanObservations(rows)
+}
+
+// ConsolidationGroup represents a topic key with multiple observations.
+type ConsolidationGroup struct {
+	TopicKey string
+	Count    int
+	Latest   string
+}
+
+// FindConsolidationCandidates finds topic keys with multiple observations in a project.
+func (s *Store) FindConsolidationCandidates(ctx context.Context, project string, minCount int) ([]ConsolidationGroup, error) {
+	if minCount <= 0 {
+		minCount = 2
+	}
+	query := `
+		SELECT topic_key, COUNT(*) as cnt, MAX(created_at) as latest
+		FROM observations
+		WHERE project = ? AND topic_key != '' AND deleted_at IS NULL
+		GROUP BY topic_key
+		HAVING cnt >= ?
+		ORDER BY cnt DESC
+	`
+	rows, err := s.db.QueryContext(ctx, query, project, minCount)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: find consolidation candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var groups []ConsolidationGroup
+	for rows.Next() {
+		var g ConsolidationGroup
+		if err := rows.Scan(&g.TopicKey, &g.Count, &g.Latest); err != nil {
+			return nil, fmt.Errorf("memory store: scan consolidation group: %w", err)
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
+
+// StaleObservations returns observations with high importance score but no recent access.
+func (s *Store) StaleObservations(ctx context.Context, project string, minScore float64, daysSinceAccess int) ([]*domain.Observation, error) {
+	cutoff := fmt.Sprintf("-%d days", daysSinceAccess)
+	query := `
+		SELECT o.id, o.session_id, o.type, o.title, o.content, o.project, o.scope, o.topic_key,
+		       o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		FROM observations o
+		JOIN importance_scores s ON s.observation_id = o.id
+		WHERE o.deleted_at IS NULL
+		  AND o.project = ?
+		  AND s.score >= ?
+		  AND s.last_accessed < datetime('now', ?)
+		ORDER BY s.score DESC
+		LIMIT 20
+	`
+	rows, err := s.db.QueryContext(ctx, query, project, minScore, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: stale observations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return s.scanObservations(rows)
+}
+
+// OrphanObservations returns observations with no graph edges.
+func (s *Store) OrphanObservations(ctx context.Context, project string, limit int) ([]*domain.Observation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `
+		SELECT o.id, o.session_id, o.type, o.title, o.content, o.project, o.scope, o.topic_key,
+		       o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		FROM observations o
+		LEFT JOIN edges e1 ON e1.from_obs_id = o.id
+		LEFT JOIN edges e2 ON e2.to_obs_id = o.id
+		WHERE o.deleted_at IS NULL
+		  AND o.project = ?
+		  AND e1.id IS NULL
+		  AND e2.id IS NULL
+		ORDER BY o.created_at DESC
+		LIMIT ?
+	`
+	rows, err := s.db.QueryContext(ctx, query, project, limit)
+	if err != nil {
+		return nil, fmt.Errorf("memory store: orphan observations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
 	return s.scanObservations(rows)
 }
 

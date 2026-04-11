@@ -253,6 +253,30 @@ func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*dom
 	return s.scanEdgeRows(rows)
 }
 
+// GetEdgesValidAt retrieves edges for an observation that were valid at the given time.
+// An edge is valid at time `at` if: (valid_from IS NULL OR valid_from <= at) AND (invalid_at IS NULL OR invalid_at > at).
+func (s *Store) GetEdgesValidAt(ctx context.Context, obsID int64, at time.Time) ([]*domain.Edge, error) {
+	atStr := at.UTC().Format(time.RFC3339)
+	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+	                 valid_from, invalid_at, created_at,
+	                 evolution_id, COALESCE(evolution_type, 'original'),
+	                 COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+	          FROM edges
+	          WHERE (from_obs_id = ? OR to_obs_id = ?)
+	            AND (valid_from IS NULL OR valid_from <= ?)
+	            AND (invalid_at IS NULL OR invalid_at > ?)
+	          ORDER BY created_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, obsID, obsID, atStr, atStr)
+	if err != nil {
+		return nil, fmt.Errorf("graph: get edges valid at %s for observation %d: %w", atStr, obsID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanEdgeRows(rows)
+}
+
 // GetEdge retrieves a specific edge by its ID.
 func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 	row := s.db.QueryRowContext(ctx, `

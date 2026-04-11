@@ -20,10 +20,15 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
-// EmbeddingDimension is the expected dimension for embeddings.
-// This is set to 384 to match common sentence-transformers models
-// like all-MiniLM-L6-v2.
-const EmbeddingDimension = 384
+// DefaultEmbeddingDimension is the default dimension for embeddings.
+// Common dimensions: 384 (MiniLM), 768 (nomic-embed-text), 1536 (OpenAI).
+const DefaultEmbeddingDimension = 768
+
+// MinEmbeddingDimension and MaxEmbeddingDimension set valid bounds.
+const (
+	MinEmbeddingDimension = 64
+	MaxEmbeddingDimension = 4096
+)
 
 // VectorStore implements the vector similarity search store.
 // This is the full implementation used when cortex_vectors build tag is enabled.
@@ -41,11 +46,12 @@ func NewVectorStore(db *sql.DB) *VectorStore {
 // The embedding must have exactly EmbeddingDimension (384) dimensions.
 // The model parameter identifies the embedding model used (e.g., "all-MiniLM-L6-v2").
 func (s *VectorStore) StoreEmbedding(ctx context.Context, observationID int64, embedding []float32, model string) error {
-	// Validate embedding dimension
-	if len(embedding) != EmbeddingDimension {
+	// Validate embedding dimension (flexible — accept any reasonable size)
+	dims := len(embedding)
+	if dims < MinEmbeddingDimension || dims > MaxEmbeddingDimension {
 		return &domain.ValidationError{
 			Field:   "embedding",
-			Message: fmt.Sprintf("embedding must have %d dimensions, got %d", EmbeddingDimension, len(embedding)),
+			Message: fmt.Sprintf("embedding must have %d-%d dimensions, got %d", MinEmbeddingDimension, MaxEmbeddingDimension, dims),
 		}
 	}
 
@@ -64,7 +70,7 @@ func (s *VectorStore) StoreEmbedding(ctx context.Context, observationID int64, e
 			embedding_model = excluded.embedding_model,
 			dimensions = excluded.dimensions,
 			updated_at = datetime('now')
-	`, observationID, embeddingBlob, model, EmbeddingDimension)
+	`, observationID, embeddingBlob, model, dims)
 	if err != nil {
 		return fmt.Errorf("vector store: store embedding: %w", err)
 	}
@@ -85,10 +91,11 @@ func (s *VectorStore) StoreEmbedding(ctx context.Context, observationID int64, e
 // Results are sorted by similarity score (descending) and filtered by threshold.
 func (s *VectorStore) SearchByVector(ctx context.Context, opts domain.VectorSearchOptions) ([]*domain.VectorSearchResult, error) {
 	// Validate options
-	if len(opts.Embedding) != EmbeddingDimension {
+	dims := len(opts.Embedding)
+	if dims < MinEmbeddingDimension || dims > MaxEmbeddingDimension {
 		return nil, &domain.ValidationError{
 			Field:   "embedding",
-			Message: fmt.Sprintf("query embedding must have %d dimensions, got %d", EmbeddingDimension, len(opts.Embedding)),
+			Message: fmt.Sprintf("query embedding must have %d-%d dimensions, got %d", MinEmbeddingDimension, MaxEmbeddingDimension, dims),
 		}
 	}
 
@@ -291,11 +298,29 @@ func cosineSimilarity(a []float64, b []float32) float64 {
 // computeCosineSimilarity computes cosine similarity between a normalized query
 // and a raw embedding (which will be normalized during computation).
 func computeCosineSimilarity(queryNorm []float64, embedding []float32) float64 {
-	// Normalize the embedding
-	embNorm := normalizeVector(embedding)
+	// Normalize the embedding to float64
+	norm := 0.0
+	embF64 := make([]float64, len(embedding))
+	for i, v := range embedding {
+		embF64[i] = float64(v)
+		norm += embF64[i] * embF64[i]
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for i := range embF64 {
+			embF64[i] /= norm
+		}
+	}
 
-	// Compute dot product of normalized vectors
-	return cosineSimilarity(queryNorm, embNorm)
+	// Dot product of normalized vectors
+	if len(queryNorm) != len(embF64) {
+		return 0
+	}
+	var dot float64
+	for i := range queryNorm {
+		dot += queryNorm[i] * embF64[i]
+	}
+	return dot
 }
 
 // sortBySimilarity sorts results by similarity score in descending order.
@@ -339,10 +364,8 @@ func (s *VectorStore) scanVectorResultWithSimilarity(rows *sql.Rows, queryNorm [
 
 	similarity := computeCosineSimilarity(queryNorm, embedding)
 
-	return &domain.VectorSearchResult{
-		Observation: result,
-		Similarity:  similarity,
-	}, similarity, nil
+	result.Similarity = similarity
+	return &result, similarity, nil
 }
 
 // Ensure VectorStore implements domain.VectorRepository

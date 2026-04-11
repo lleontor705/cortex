@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -142,6 +144,67 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleSearchHybrid(stores),
+		)
+	}
+
+	// --- mem_search_temporal -----------------------------------------------
+	if shouldRegister("mem_search_temporal", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_search_temporal",
+				mcp.WithTitleAnnotation("Temporal Search"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Search memories as-of a specific date. Graph expansion only follows edges that were valid at that time. Observations created after that date are excluded from graph neighbors."),
+				mcp.WithString("query",
+					mcp.Required(),
+					mcp.Description("Search query"),
+				),
+				mcp.WithString("as_of",
+					mcp.Required(),
+					mcp.Description("ISO 8601 timestamp — search as if it were this date (e.g. 2025-06-15T00:00:00Z)"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Filter by project name"),
+				),
+				mcp.WithNumber("limit",
+					mcp.Description("Max results (default: 10)"),
+				),
+			),
+			handleSearchTemporal(stores),
+		)
+	}
+
+	// --- mem_consolidate ---------------------------------------------------
+	if shouldRegister("mem_consolidate", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_consolidate",
+				mcp.WithTitleAnnotation("Consolidate Memories"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Find observations that share the same topic_key and could be consolidated. Returns candidates grouped by topic key. Use mem_save with the same topic_key to create a merged observation, then mem_relate with 'supersedes' to link old ones."),
+				mcp.WithString("project",
+					mcp.Required(),
+					mcp.Description("Project to search for consolidation candidates"),
+				),
+				mcp.WithString("topic_key",
+					mcp.Description("Specific topic key to consolidate. If empty, returns all groups with 2+ observations."),
+				),
+			),
+			handleConsolidate(stores),
+		)
+	}
+
+	// --- mem_project_dna ---------------------------------------------------
+	if shouldRegister("mem_project_dna", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_project_dna",
+				mcp.WithTitleAnnotation("Project DNA"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Generate a structured summary of a project's key decisions, patterns, tech stack, and gotchas from stored observations. Useful for onboarding or context recovery."),
+				mcp.WithString("project",
+					mcp.Required(),
+					mcp.Description("Project name to generate DNA for"),
+				),
+			),
+			handleProjectDNA(stores),
 		)
 	}
 
@@ -316,27 +379,32 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		searchMode := "FTS5"
 
-		// Vector search (when available and embeddings exist)
+		// Vector search (when available)
 		if stores.Vectors != nil && stores.Vectors.IsAvailable() {
-			searchMode = "hybrid (FTS5 + vector)"
+			var queryVec []float32
 
-			// Try to find a matching observation's embedding to use as query vector.
-			// In a full implementation, an embedding service would generate the query
-			// vector. For now, vector results boost FTS5 results when embeddings exist.
-			if len(ftsResults) > 0 {
-				embedding, _, embErr := stores.Vectors.GetEmbedding(ctx, ftsResults[0].ID)
-				if embErr == nil && len(embedding) > 0 {
-					vecOpts := domain.VectorSearchOptions{
-						Embedding: embedding,
-						Limit:     limit,
-						Threshold: 0.3,
-						Project:   project,
-						Scope:     scope,
-					}
-					vecResults, vecErr := stores.Vectors.SearchByVector(ctx, vecOpts)
-					if vecErr == nil && len(vecResults) > 0 {
-						ftsResults = fuseResults(ftsResults, vecResults, limit)
-					}
+			// Prefer generating a real query embedding via the embedding service
+			if stores.Embeddings != nil {
+				queryVec, _ = stores.Embeddings.Embed(ctx, query)
+			}
+
+			// Fallback: use first FTS5 result's stored embedding as proxy
+			if len(queryVec) == 0 && len(ftsResults) > 0 {
+				queryVec, _, _ = stores.Vectors.GetEmbedding(ctx, ftsResults[0].ID)
+			}
+
+			if len(queryVec) > 0 {
+				searchMode = "hybrid (FTS5 + vector)"
+				vecOpts := domain.VectorSearchOptions{
+					Embedding: queryVec,
+					Limit:     limit,
+					Threshold: 0.3,
+					Project:   project,
+					Scope:     scope,
+				}
+				vecResults, vecErr := stores.Vectors.SearchByVector(ctx, vecOpts)
+				if vecErr == nil && len(vecResults) > 0 {
+					ftsResults = fuseResults(ftsResults, vecResults, limit)
 				}
 			}
 		}
@@ -442,6 +510,117 @@ func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
 
 		return textResult("Merged into %q: %d observations, %d sessions updated. Sources merged: %v",
 			result.Canonical, result.ObservationsUpdated, result.SessionsUpdated, result.SourcesMerged)
+	}
+}
+
+func handleSearchTemporal(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query := stringArg(req, "query")
+		asOfStr := stringArg(req, "as_of")
+		project := stringArg(req, "project")
+		limit := intArg(req, "limit", 10)
+
+		if query == "" {
+			return errorResult("query is required")
+		}
+		if asOfStr == "" {
+			return errorResult("as_of is required (ISO 8601 timestamp, e.g. 2025-06-15T00:00:00Z)")
+		}
+
+		asOf, err := time.Parse(time.RFC3339, asOfStr)
+		if err != nil {
+			return errorResult("invalid as_of timestamp: %s (use ISO 8601 format)", err)
+		}
+
+		results, err := stores.Search.Search(ctx, query, domain.SearchOptions{
+			Limit:       limit,
+			Project:     project,
+			GraphExpand: true, // Always expand graph for temporal search
+			AsOf:        &asOf,
+		})
+		if err != nil {
+			return errorResult("temporal search failed: %s", err)
+		}
+
+		if len(results) == 0 {
+			return textResult("No results found for %q as of %s", query, asOfStr)
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Temporal search for %q as of %s (%d found):\n\n", query, asOfStr, len(results))
+		for i, r := range results {
+			fmt.Fprintf(&sb, "%d. [%d] %s (%s)\n   %s\n\n",
+				i+1, r.ID, r.Title, r.Type, truncate(r.Content, 120))
+		}
+		return textResult("%s", sb.String())
+	}
+}
+
+func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := stringArg(req, "project")
+		topicKey := stringArg(req, "topic_key")
+
+		if project == "" {
+			return errorResult("project is required")
+		}
+
+		if topicKey != "" {
+			// Return all observations with this topic key
+			obs, err := stores.Observations.ListByTopicKey(ctx, project, topicKey)
+			if err != nil {
+				return errorResult("failed to list observations: %s", err)
+			}
+			if len(obs) < 2 {
+				return textResult("Topic key %q has %d observation(s) — nothing to consolidate.", topicKey, len(obs))
+			}
+
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "Consolidation candidates for topic_key=%q (%d observations):\n\n", topicKey, len(obs))
+			for i, o := range obs {
+				fmt.Fprintf(&sb, "%d. [%d] %s (%s, %s)\n   %s\n\n",
+					i+1, o.ID, o.Title, o.Type, o.CreatedAt.Format("2006-01-02"), truncate(o.Content, 200))
+			}
+			sb.WriteString("To consolidate: save a merged observation with mem_save using the same topic_key, ")
+			sb.WriteString("then use mem_relate with relation_type='supersedes' from the new observation to each old one.")
+			return textResult("%s", sb.String())
+		}
+
+		// Find all consolidation candidate groups
+		groups, err := stores.Observations.FindConsolidationCandidates(ctx, project, 2)
+		if err != nil {
+			return errorResult("failed to find candidates: %s", err)
+		}
+
+		if len(groups) == 0 {
+			return textResult("No consolidation candidates found in project %q.", project)
+		}
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Consolidation candidates in project %q:\n\n", project)
+		for _, g := range groups {
+			fmt.Fprintf(&sb, "  %-40s  %d observations  (latest: %s)\n", g.TopicKey, g.Count, g.Latest)
+		}
+		fmt.Fprintf(&sb, "\nTotal: %d topic keys with 2+ observations.\n", len(groups))
+		sb.WriteString("Use mem_consolidate with topic_key=<key> to see full content.")
+		return textResult("%s", sb.String())
+	}
+}
+
+func handleProjectDNA(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := stringArg(req, "project")
+		if project == "" {
+			return errorResult("project is required")
+		}
+
+		svc := dna.NewService(stores.Observations, stores.Scoring, stores.Graph)
+		result, err := svc.Generate(ctx, project)
+		if err != nil {
+			return errorResult("failed to generate DNA: %s", err)
+		}
+
+		return textResult("%s", result)
 	}
 }
 
