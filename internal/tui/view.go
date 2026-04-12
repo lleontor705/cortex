@@ -80,6 +80,8 @@ func (m Model) View() string {
 		content = m.viewArchive()
 	case ScreenHealth:
 		content = m.viewHealth()
+	case ScreenEmbeddingConfig:
+		content = m.viewEmbeddingConfig()
 	default:
 		content = "Unknown screen"
 	}
@@ -987,4 +989,132 @@ func entityIcon(entityType string) string {
 	default:
 		return "*"
 	}
+}
+
+// ─── Embedding Config ──────────────────────────────────────────────────────
+
+func (m Model) viewEmbeddingConfig() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("  Embedding Settings"))
+	b.WriteString("\n\n")
+
+	providers := []string{"none", "ollama", "openai"}
+	focusMarker := func(field int) string {
+		if m.EmbCfgFocusField == field {
+			return listSelectedStyle.Render("▸ ")
+		}
+		return "  "
+	}
+
+	labelStyle := lipgloss.NewStyle().Width(14).Foreground(colorText)
+	valueStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(colorSubtext)
+
+	// Provider selector (field 0)
+	providerDisplay := fmt.Sprintf("◂ %s ▸", providers[m.EmbCfgProvider])
+	b.WriteString(focusMarker(0) + labelStyle.Render("Provider:") + " " + valueStyle.Render(providerDisplay))
+	b.WriteString("\n")
+
+	// Model input (field 1)
+	if m.EmbCfgModel.Focused() {
+		b.WriteString(focusMarker(1) + labelStyle.Render("Model:") + " " + m.EmbCfgModel.View())
+	} else {
+		modelVal := m.EmbCfgModel.Value()
+		if modelVal == "" {
+			modelVal = dimStyle.Render("(default)")
+		} else {
+			modelVal = valueStyle.Render(modelVal)
+		}
+		b.WriteString(focusMarker(1) + labelStyle.Render("Model:") + " " + modelVal)
+	}
+	b.WriteString("\n")
+
+	// Vector toggle (field 2)
+	vectorCheck := dimStyle.Render("[ ] Disabled")
+	if m.EmbCfgVector {
+		vectorCheck = lipgloss.NewStyle().Foreground(colorGreen).Render("[x] Enabled")
+	}
+	b.WriteString(focusMarker(2) + labelStyle.Render("Vector:") + " " + vectorCheck)
+	b.WriteString("\n")
+
+	// Auto-start toggle (field 3)
+	autoCheck := dimStyle.Render("[ ] Disabled")
+	if m.EmbCfgAutoStart {
+		autoCheck = lipgloss.NewStyle().Foreground(colorGreen).Render("[x] Enabled")
+	}
+	b.WriteString(focusMarker(3) + labelStyle.Render("Auto-start:") + " " + autoCheck)
+	b.WriteString("\n\n")
+
+	// Save button (field 4)
+	if m.EmbCfgFocusField == 4 {
+		b.WriteString("  " + lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("Save"))
+	} else {
+		b.WriteString("  " + lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay).Padding(0, 2).Render("Save"))
+	}
+	b.WriteString("\n")
+
+	// Status messages
+	if m.EmbCfgSaving {
+		b.WriteString("\n  " + m.EmbCfgSpinner.View() + " Saving configuration...")
+	}
+
+	if m.EmbCfgError != "" {
+		b.WriteString("\n  " + errorStyle.Render("Error: "+m.EmbCfgError))
+	}
+
+	if m.EmbCfgSaved {
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("Configuration saved."))
+
+		// Ollama status section
+		if m.EmbCfgProvider == 1 {
+			b.WriteString("\n")
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorPurple).Bold(true).Render("── Ollama Status ──"))
+			b.WriteString("\n")
+
+			if !m.EmbCfgOllamaChecked {
+				b.WriteString("  " + m.EmbCfgSpinner.View() + " Checking Ollama status...")
+			} else {
+				// Running status
+				if m.EmbCfgOllamaRunning {
+					b.WriteString("  " + lipgloss.NewStyle().Foreground(colorGreen).Render("● Running"))
+				} else {
+					b.WriteString("  " + lipgloss.NewStyle().Foreground(colorRed).Render("● Stopped"))
+					b.WriteString("  " + dimStyle.Render("Press [s] to start Ollama"))
+				}
+
+				// Model status
+				if m.EmbCfgOllamaRunning {
+					if m.EmbCfgOllamaHasModel {
+						b.WriteString("    " + lipgloss.NewStyle().Foreground(colorGreen).Render("Model: found"))
+					} else {
+						modelName := m.EmbCfgModel.Value()
+						if modelName == "" {
+							modelName = "default model"
+						}
+						b.WriteString("    " + lipgloss.NewStyle().Foreground(colorAmber).Render("Model: not found"))
+						b.WriteString("\n  " + dimStyle.Render(fmt.Sprintf("Press [p] to pull %s", modelName)))
+					}
+				}
+			}
+
+			if m.EmbCfgStarting {
+				b.WriteString("\n  " + m.EmbCfgSpinner.View() + " Starting Ollama...")
+			}
+			if m.EmbCfgPulling {
+				b.WriteString("\n  " + m.EmbCfgSpinner.View() + " Pulling model...")
+			}
+		}
+	}
+
+	// Help
+	if m.EmbCfgSaved {
+		b.WriteString(helpStyle.Render("\n\n  esc back to dashboard"))
+	} else if m.EmbCfgModel.Focused() {
+		b.WriteString(helpStyle.Render("\n\n  Type model name • enter confirm • esc cancel"))
+	} else {
+		b.WriteString(helpStyle.Render("\n\n  j/k navigate • h/l cycle provider • space toggle • enter edit/save • r reload config • esc back"))
+	}
+
+	return b.String()
 }
