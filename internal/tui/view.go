@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
+	"github.com/lleontor705/cortex/internal/domain"
 )
 
 // ─── Logo ───────────────────────────────────────────────────────────────────
@@ -319,34 +321,37 @@ func (m Model) viewSearchResults() string {
 		return b.String()
 	}
 
-	visibleItems := (m.Height - 10) / 2
-	if visibleItems < 3 {
-		visibleItems = 3
+	if m.PreviewVisible && m.Width >= 100 {
+		listWidth := m.Width * 2 / 5
+		previewWidth := m.Width - listWidth - 5
+
+		listContent := m.SearchListModel.View()
+		listPane := lipgloss.NewStyle().
+			Width(listWidth).
+			Height(m.Height - 8).
+			Render(listContent)
+
+		previewContent := m.PreviewViewport.View()
+		scrollPct := fmt.Sprintf(" %3.f%% ", m.PreviewViewport.ScrollPercent()*100)
+		previewPane := lipgloss.NewStyle().
+			Width(previewWidth).
+			Height(m.Height - 8).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(colorOverlay).
+			PaddingLeft(1).
+			Render(previewContent + "\n" + timestampStyle.Render(scrollPct))
+
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane))
+	} else {
+		b.WriteString(m.SearchListModel.View())
 	}
 
-	end := m.Scroll + visibleItems
-	if end > resultCount {
-		end = resultCount
+	helpText := "  j/k navigate • enter detail • t timeline • d delete • f filter"
+	if m.Width >= 100 {
+		helpText += " • p preview"
 	}
-
-	scoreStyle := lipgloss.NewStyle().Foreground(colorSubtext)
-	for i := m.Scroll; i < end; i++ {
-		r := m.SearchResults[i]
-		b.WriteString(m.renderObservationListItem(i, r.ID, r.Type, r.Title, r.Content, r.CreatedAt, r.Project, nil))
-		scoreInfo := fmt.Sprintf("     score: %.0f%%", r.Rank*100)
-		if r.ScoreBreakdown.Strategy != "" {
-			scoreInfo += fmt.Sprintf("  strategy: %s", r.ScoreBreakdown.Strategy)
-		}
-		b.WriteString(scoreStyle.Render(scoreInfo))
-		b.WriteString("\n")
-	}
-
-	if resultCount > visibleItems {
-		fmt.Fprintf(&b, "\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount)))
-	}
-
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • / search • esc back"))
+	helpText += " • / search • esc back"
+	b.WriteString(helpStyle.Render("\n" + helpText))
 
 	return b.String()
 }
@@ -371,27 +376,37 @@ func (m Model) viewRecent() string {
 		return b.String()
 	}
 
-	visibleItems := (m.Height - 8) / 2
-	if visibleItems < 3 {
-		visibleItems = 3
+	if m.PreviewVisible && m.Width >= 100 {
+		listWidth := m.Width * 2 / 5
+		previewWidth := m.Width - listWidth - 5
+
+		listContent := m.RecentList.View()
+		listPane := lipgloss.NewStyle().
+			Width(listWidth).
+			Height(m.Height - 8).
+			Render(listContent)
+
+		previewContent := m.PreviewViewport.View()
+		scrollPct := fmt.Sprintf(" %3.f%% ", m.PreviewViewport.ScrollPercent()*100)
+		previewPane := lipgloss.NewStyle().
+			Width(previewWidth).
+			Height(m.Height - 8).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(colorOverlay).
+			PaddingLeft(1).
+			Render(previewContent + "\n" + timestampStyle.Render(scrollPct))
+
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, listPane, previewPane))
+	} else {
+		b.WriteString(m.RecentList.View())
 	}
 
-	end := m.Scroll + visibleItems
-	if end > count {
-		end = count
+	helpText := "  j/k navigate • enter detail • t timeline • d delete • f filter"
+	if m.Width >= 100 {
+		helpText += " • p preview"
 	}
-
-	for i := m.Scroll; i < end; i++ {
-		o := m.RecentObservations[i]
-		b.WriteString(m.renderObservationListItem(i, o.ID, o.Type, o.Title, o.Content, o.CreatedAt, o.Project, nil))
-	}
-
-	if count > visibleItems {
-		fmt.Fprintf(&b, "\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
-	}
-
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • esc back"))
+	helpText += " • esc back"
+	b.WriteString(helpStyle.Render("\n" + helpText))
 
 	return b.String()
 }
@@ -515,45 +530,7 @@ func (m Model) viewSessions() string {
 		return b.String()
 	}
 
-	visibleItems := m.Height - 8
-	if visibleItems < 5 {
-		visibleItems = 5
-	}
-
-	end := m.Scroll + visibleItems
-	if end > count {
-		end = count
-	}
-
-	for i := m.Scroll; i < end; i++ {
-		s := m.Sessions[i]
-		cursor := "  "
-		style := listItemStyle
-		if i == m.Cursor {
-			cursor = "▸ "
-			style = listSelectedStyle
-		}
-
-		summary := ""
-		if s.Session.Summary != "" {
-			summary = truncateStr(s.Session.Summary, 50)
-		}
-
-		line := fmt.Sprintf("%s%s  %s  %s obs  %s",
-			cursor,
-			projectStyle.Render(fmt.Sprintf("%-20s", s.Session.Project)),
-			timestampStyle.Render(formatTime(s.Session.StartedAt)),
-			statNumberStyle.Render(fmt.Sprintf("%d", s.ObservationCount)),
-			style.Render(summary))
-
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-
-	if count > visibleItems {
-		fmt.Fprintf(&b, "\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
-	}
+	b.WriteString(m.SessionListModel.View())
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter view session • esc back"))
 
@@ -577,11 +554,30 @@ func (m Model) viewSessionDetail() string {
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
+	// Session info table
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorOverlay)).
+		Headers("Field", "Value").
+		Row("Project", sess.Session.Project).
+		Row("Started", formatTime(sess.Session.StartedAt)).
+		Row("Observations", fmt.Sprintf("%d", sess.ObservationCount)).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Padding(0, 1)
+			}
+			if col == 0 {
+				return lipgloss.NewStyle().Foreground(colorPurple).Padding(0, 1)
+			}
+			return lipgloss.NewStyle().Foreground(colorText).Padding(0, 1)
+		})
+
 	if sess.Session.Summary != "" {
-		fmt.Fprintf(&b, "  %s %s\n\n",
-			detailLabelStyle.Render("Summary:"),
-			detailValueStyle.Render(sess.Session.Summary))
+		t = t.Row("Summary", truncateStr(sess.Session.Summary, 60))
 	}
+
+	b.WriteString(t.Render())
+	b.WriteString("\n\n")
 
 	count := len(m.SessionObservations)
 	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Observations (%d)", count)))
@@ -742,8 +738,34 @@ func (m Model) viewGraph() string {
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
-	// Show edges summary
-	if len(m.GraphEdges) > 0 {
+	// Show edges as a table (up to 20) or summary counts if more
+	if len(m.GraphEdges) > 0 && len(m.GraphEdges) <= 20 {
+		et := table.New().
+			Border(lipgloss.NormalBorder()).
+			BorderStyle(lipgloss.NewStyle().Foreground(colorOverlay)).
+			Headers("From", "Relation", "To", "Weight").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == table.HeaderRow {
+					return lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Padding(0, 1)
+				}
+				if col == 1 {
+					return lipgloss.NewStyle().Foreground(colorMauve).Bold(true).Padding(0, 1)
+				}
+				return lipgloss.NewStyle().Foreground(colorText).Padding(0, 1)
+			})
+
+		for _, e := range m.GraphEdges {
+			et = et.Row(
+				fmt.Sprintf("#%d", e.FromObsID),
+				e.RelationType,
+				fmt.Sprintf("#%d", e.ToObsID),
+				fmt.Sprintf("%.1f", e.Weight),
+			)
+		}
+
+		b.WriteString(et.Render())
+		b.WriteString("\n\n")
+	} else if len(m.GraphEdges) > 20 {
 		edgeCounts := make(map[string]int)
 		for _, e := range m.GraphEdges {
 			edgeCounts[e.RelationType]++
@@ -752,7 +774,7 @@ func (m Model) viewGraph() string {
 		for rel, count := range edgeCounts {
 			parts = append(parts, fmt.Sprintf("%s: %d", rel, count))
 		}
-		fmt.Fprintf(&b, "  %s\n\n", timestampStyle.Render(strings.Join(parts, " • ")))
+		fmt.Fprintf(&b, "  %s\n\n", timestampStyle.Render(strings.Join(parts, " | ")))
 	}
 
 	count := len(m.GraphObservations)
@@ -763,60 +785,7 @@ func (m Model) viewGraph() string {
 		return b.String()
 	}
 
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Related Observations (%d)", count)))
-	b.WriteString("\n")
-
-	visibleItems := (m.Height - 12) / 2
-	if visibleItems < 3 {
-		visibleItems = 3
-	}
-
-	end := m.Scroll + visibleItems
-	if end > count {
-		end = count
-	}
-
-	for i := m.Scroll; i < end; i++ {
-		o := m.GraphObservations[i]
-
-		// Find the edge connecting this observation to root
-		edgeLabel := ""
-		for _, e := range m.GraphEdges {
-			if e.FromObsID == o.ID || e.ToObsID == o.ID {
-				edgeLabel = e.RelationType
-				break
-			}
-		}
-
-		cursor := "  "
-		style := listItemStyle
-		if i == m.Cursor {
-			cursor = "▸ "
-			style = listSelectedStyle
-		}
-
-		line := fmt.Sprintf("%s%s %s %s",
-			cursor,
-			idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
-			typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
-			style.Render(truncateStr(o.Title, 45)))
-
-		if edgeLabel != "" {
-			line += "  " + graphEdgeStyle.Render("["+edgeLabel+"]")
-		}
-
-		b.WriteString(line + "\n")
-
-		preview := truncateStr(o.Content, 70)
-		if preview != "" {
-			b.WriteString(contentPreviewStyle.Render(preview) + "\n")
-		}
-	}
-
-	if count > visibleItems {
-		fmt.Fprintf(&b, "\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
-	}
+	b.WriteString(m.GraphListModel.View())
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • r re-root • esc back"))
 
@@ -843,25 +812,7 @@ func (m Model) viewArchive() string {
 		return b.String()
 	}
 
-	visibleItems := (m.Height - 8) / 2
-	if visibleItems < 3 {
-		visibleItems = 3
-	}
-
-	end := m.Scroll + visibleItems
-	if end > count {
-		end = count
-	}
-
-	for i := m.Scroll; i < end; i++ {
-		o := m.ArchivedObservations[i]
-		b.WriteString(m.renderObservationListItem(i, o.ID, o.Type, o.Title, o.Content, o.CreatedAt, o.Project, &archivedStyle))
-	}
-
-	if count > visibleItems {
-		fmt.Fprintf(&b, "\n  %s",
-			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
-	}
+	b.WriteString(m.ArchiveList.View())
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • u unarchive • d delete • f filter • esc back"))
 
@@ -912,16 +863,7 @@ func (m Model) viewHealth() string {
 		b.WriteString(listItemStyle.Render("  None — all high-score observations accessed recently"))
 		b.WriteString("\n")
 	} else {
-		for i, o := range m.HealthStale {
-			if i >= 5 {
-				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthStale)-5)))
-				break
-			}
-			fmt.Fprintf(&b, "  %s %s  %s\n",
-				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
-				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
-				listItemStyle.Render(truncateStr(o.Title, 50)))
-		}
+		b.WriteString(renderHealthTable(m.HealthStale))
 	}
 	b.WriteString("\n")
 
@@ -932,16 +874,7 @@ func (m Model) viewHealth() string {
 		b.WriteString(listItemStyle.Render("  None — all observations are connected via graph"))
 		b.WriteString("\n")
 	} else {
-		for i, o := range m.HealthOrphans {
-			if i >= 5 {
-				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthOrphans)-5)))
-				break
-			}
-			fmt.Fprintf(&b, "  %s %s  %s\n",
-				idStyle.Render(fmt.Sprintf("#%-5d", o.ID)),
-				typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", o.Type)),
-				listItemStyle.Render(truncateStr(o.Title, 50)))
-		}
+		b.WriteString(renderHealthTable(m.HealthOrphans))
 	}
 	b.WriteString("\n")
 
@@ -965,6 +898,44 @@ func (m Model) viewHealth() string {
 	b.WriteString(helpStyle.Render("\n  j/k scroll • tab section • enter expand/collapse • esc back"))
 
 	return b.String()
+}
+
+// renderHealthTable renders a table of observations for the health screen.
+func renderHealthTable(observations []*domain.Observation) string {
+	if len(observations) == 0 {
+		return "  No items\n"
+	}
+
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorOverlay)).
+		Headers("ID", "Type", "Title", "Project", "Created").
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Padding(0, 1)
+			}
+			return lipgloss.NewStyle().Foreground(colorText).Padding(0, 1)
+		})
+
+	limit := 10
+	for i, o := range observations {
+		if i >= limit {
+			break
+		}
+		t = t.Row(
+			fmt.Sprintf("#%d", o.ID),
+			o.Type,
+			truncateStr(o.Title, 35),
+			o.Project,
+			formatTime(o.CreatedAt),
+		)
+	}
+
+	result := t.Render()
+	if len(observations) > limit {
+		result += fmt.Sprintf("\n  %s", timestampStyle.Render(fmt.Sprintf("...and %d more", len(observations)-limit)))
+	}
+	return result + "\n"
 }
 
 // ─── Status Bar ─────────────────────────────────────────────────────────────
@@ -1013,27 +984,27 @@ func (m Model) renderStatusBar() string {
 	nameStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Background(lipgloss.Color("#1a1b2e"))
 	parts = append(parts, nameStyle.Render(m.screenName()))
 
-	// List position
+	// List position (from bubbles/list components)
 	switch m.Screen {
 	case ScreenRecent:
-		if len(m.RecentObservations) > 0 {
-			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.RecentObservations)))
+		if len(m.RecentList.Items()) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.RecentList.Index()+1, len(m.RecentList.Items())))
 		}
 	case ScreenSearchResults:
-		if len(m.SearchResults) > 0 {
-			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.SearchResults)))
+		if len(m.SearchListModel.Items()) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.SearchListModel.Index()+1, len(m.SearchListModel.Items())))
 		}
 	case ScreenSessions:
-		if len(m.Sessions) > 0 {
-			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.Sessions)))
+		if len(m.SessionListModel.Items()) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.SessionListModel.Index()+1, len(m.SessionListModel.Items())))
 		}
 	case ScreenGraph:
-		if len(m.GraphObservations) > 0 {
-			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.GraphObservations)))
+		if len(m.GraphListModel.Items()) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.GraphListModel.Index()+1, len(m.GraphListModel.Items())))
 		}
 	case ScreenArchive:
-		if len(m.ArchivedObservations) > 0 {
-			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.ArchivedObservations)))
+		if len(m.ArchiveList.Items()) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.ArchiveList.Index()+1, len(m.ArchiveList.Items())))
 		}
 	}
 

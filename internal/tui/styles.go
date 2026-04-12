@@ -138,8 +138,6 @@ var (
 				Align(lipgloss.Right).
 				PaddingRight(1)
 
-	detailValueStyle = lipgloss.NewStyle().
-				Foreground(colorText)
 )
 
 // ─── Timeline Styles ─────────────────────────────────────────────────────────
@@ -183,10 +181,6 @@ var (
 			Foreground(colorMauve).
 			Bold(true)
 
-	// Archived observation dimmed style
-	archivedStyle = lipgloss.NewStyle().
-			Foreground(colorSubtext).
-			Italic(true)
 )
 
 // ─── Status Bar & Toast Styles ──────────────────────────────────────────────

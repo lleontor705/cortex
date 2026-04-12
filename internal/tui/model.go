@@ -7,6 +7,7 @@ import (
 	"github.com/lleontor705/cortex/internal/store/session"
 	"github.com/lleontor705/cortex/internal/update"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -290,8 +291,10 @@ type Model struct {
 	// Activity sparkline (7-day observation counts)
 	ActivityData []int
 
-	// Focus management (for future split pane)
-	FocusedPane int // 0=main, 1=preview (for future split pane)
+	// Split pane preview
+	PreviewVisible  bool
+	PreviewViewport viewport.Model
+	FocusedPane     int // 0=main, 1=preview
 
 	// Toast messages
 	ToastMessage string
@@ -306,6 +309,13 @@ type Model struct {
 	CmdPaletteOpen   bool
 	CmdPaletteInput  textinput.Model
 	CmdPaletteCursor int
+
+	// List components (bubbles/list)
+	SearchListModel  list.Model
+	RecentList       list.Model
+	SessionListModel list.Model
+	GraphListModel   list.Model
+	ArchiveList      list.Model
 }
 
 // New creates a new TUI model connected to the given stores.
@@ -349,6 +359,17 @@ func New(deps *Deps) Model {
 		embAutoStart = deps.Config.Search.OllamaAutoStart
 	}
 
+	// Create empty list models with default delegate
+	newEmptyList := func() list.Model {
+		l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+		l.SetShowHelp(false)
+		l.SetShowStatusBar(false)
+		l.SetShowTitle(false)
+		l.DisableQuitKeybindings()
+		l.SetFilteringEnabled(true)
+		return l
+	}
+
 	return Model{
 		deps:               deps,
 		Version:            deps.Version,
@@ -362,6 +383,11 @@ func New(deps *Deps) Model {
 		EmbCfgAutoStart:    embAutoStart,
 		ReindexProgressBar: progress.New(progress.WithDefaultGradient()),
 		CmdPaletteInput:    cmdInput,
+		SearchListModel:    newEmptyList(),
+		RecentList:         newEmptyList(),
+		SessionListModel:   newEmptyList(),
+		GraphListModel:     newEmptyList(),
+		ArchiveList:        newEmptyList(),
 	}
 }
 

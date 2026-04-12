@@ -8,6 +8,7 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/store/session"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -65,17 +66,24 @@ func TestHandleSearchResultsKeysScrollAndDetail(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenSearchResults
 	m.Width, m.Height = 120, 40
-	m.SearchResults = []*domain.SearchResult{
+	results := []*domain.SearchResult{
 		{Observation: domain.Observation{ID: 1, Title: "First"}},
 		{Observation: domain.Observation{ID: 2, Title: "Second"}},
 		{Observation: domain.Observation{ID: 3, Title: "Third"}},
 	}
+	m.SearchResults = results
+	items := make([]list.Item, len(results))
+	for i, r := range results {
+		items[i] = searchResultItem{result: r}
+	}
+	m.SearchListModel.SetItems(items)
+	m.SearchListModel.SetSize(116, 30)
 
-	// Move down
-	updated, _ := m.handleSearchResultsKeys("j")
+	// Move down via Update (list handles navigation)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.SearchListModel.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.SearchListModel.Index())
 	}
 
 	// Press enter to load detail
@@ -91,22 +99,30 @@ func TestHandleRecentKeysNavigation(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenRecent
 	m.Width, m.Height = 120, 40
-	m.RecentObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Title: "First"},
 		{ID: 2, Title: "Second"},
 	}
+	m.RecentObservations = obs
+	items := make([]list.Item, len(obs))
+	for i, o := range obs {
+		items[i] = observationItem{obs: o}
+	}
+	m.RecentList.SetItems(items)
+	m.RecentList.SetSize(116, 32)
 
-	updated, _ := m.handleRecentKeys("j")
+	// Move down via Update
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.RecentList.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.RecentList.Index())
 	}
 
 	// Can't go past end
-	updated, _ = result.handleRecentKeys("j")
+	updated, _ = result.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result = updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.RecentList.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.RecentList.Index())
 	}
 }
 
@@ -164,15 +180,23 @@ func TestHandleSessionsKeysNavigation(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenSessions
 	m.Width, m.Height = 120, 40
-	m.Sessions = []*session.SessionStats{
+	sessions := []*session.SessionStats{
 		{Session: &domain.Session{ID: "s1", Project: "p1"}, ObservationCount: 5},
 		{Session: &domain.Session{ID: "s2", Project: "p2"}, ObservationCount: 3},
 	}
+	m.Sessions = sessions
+	items := make([]list.Item, len(sessions))
+	for i, s := range sessions {
+		items[i] = sessionItem{session: s}
+	}
+	m.SessionListModel.SetItems(items)
+	m.SessionListModel.SetSize(116, 32)
 
-	updated, _ := m.handleSessionsKeys("j")
+	// Move down via Update
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.SessionListModel.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.SessionListModel.Index())
 	}
 
 	// Enter loads session observations
@@ -188,15 +212,23 @@ func TestHandleGraphKeysNavigation(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenGraph
 	m.Width, m.Height = 120, 40
-	m.GraphObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Title: "First"},
 		{ID: 2, Title: "Second"},
 	}
+	m.GraphObservations = obs
+	items := make([]list.Item, len(obs))
+	for i, o := range obs {
+		items[i] = graphItem{obs: o}
+	}
+	m.GraphListModel.SetItems(items)
+	m.GraphListModel.SetSize(116, 28)
 
-	updated, _ := m.handleGraphKeys("j")
+	// Move down via Update
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.GraphListModel.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.GraphListModel.Index())
 	}
 }
 
@@ -204,9 +236,13 @@ func TestHandleGraphKeysReroot(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenGraph
 	m.Width, m.Height = 120, 40
-	m.GraphObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 5, Title: "Related"},
 	}
+	m.GraphObservations = obs
+	items := []list.Item{graphItem{obs: obs[0]}}
+	m.GraphListModel.SetItems(items)
+	m.GraphListModel.SetSize(116, 28)
 
 	updated, cmd := m.handleGraphKeys("r")
 	if cmd == nil {
@@ -224,15 +260,23 @@ func TestHandleArchiveKeysNavigation(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenArchive
 	m.Width, m.Height = 120, 40
-	m.ArchivedObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Title: "Archived 1"},
 		{ID: 2, Title: "Archived 2"},
 	}
+	m.ArchivedObservations = obs
+	items := make([]list.Item, len(obs))
+	for i, o := range obs {
+		items[i] = observationItem{obs: o}
+	}
+	m.ArchiveList.SetItems(items)
+	m.ArchiveList.SetSize(116, 32)
 
-	updated, _ := m.handleArchiveKeys("j")
+	// Move down via Update
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", result.Cursor)
+	if result.ArchiveList.Index() != 1 {
+		t.Fatalf("list index = %d, want 1", result.ArchiveList.Index())
 	}
 }
 
@@ -271,11 +315,11 @@ func TestHandleRecentKeysEmptyList(t *testing.T) {
 	m.Width, m.Height = 120, 40
 	m.RecentObservations = nil
 
-	// j/k should not panic
-	updated, _ := m.handleRecentKeys("j")
+	// j should not panic on empty list
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 0 {
-		t.Fatalf("cursor = %d, want 0", result.Cursor)
+	if result.RecentList.Index() != 0 {
+		t.Fatalf("list index = %d, want 0", result.RecentList.Index())
 	}
 
 	// enter should not panic
@@ -291,10 +335,11 @@ func TestHandleSearchResultsKeysEmptyList(t *testing.T) {
 	m.Width, m.Height = 120, 40
 	m.SearchResults = nil
 
-	updated, _ := m.handleSearchResultsKeys("j")
+	// j should not panic on empty list
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 0 {
-		t.Fatalf("cursor = %d", result.Cursor)
+	if result.SearchListModel.Index() != 0 {
+		t.Fatalf("list index = %d", result.SearchListModel.Index())
 	}
 
 	_, cmd := result.handleSearchResultsKeys("enter")
@@ -309,10 +354,11 @@ func TestHandleGraphKeysEmptyList(t *testing.T) {
 	m.Width, m.Height = 120, 40
 	m.GraphObservations = nil
 
-	updated, _ := m.handleGraphKeys("j")
+	// j should not panic on empty list
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 0 {
-		t.Fatalf("cursor = %d", result.Cursor)
+	if result.GraphListModel.Index() != 0 {
+		t.Fatalf("list index = %d", result.GraphListModel.Index())
 	}
 
 	_, cmd := result.handleGraphKeys("r")
@@ -327,10 +373,11 @@ func TestHandleArchiveKeysEmptyList(t *testing.T) {
 	m.Width, m.Height = 120, 40
 	m.ArchivedObservations = nil
 
-	updated, _ := m.handleArchiveKeys("j")
+	// j should not panic on empty list
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 0 {
-		t.Fatalf("cursor = %d", result.Cursor)
+	if result.ArchiveList.Index() != 0 {
+		t.Fatalf("list index = %d", result.ArchiveList.Index())
 	}
 
 	_, cmd := result.handleArchiveKeys("enter")
@@ -345,10 +392,11 @@ func TestHandleSessionsKeysEmptyList(t *testing.T) {
 	m.Width, m.Height = 120, 40
 	m.Sessions = nil
 
-	updated, _ := m.handleSessionsKeys("j")
+	// j should not panic on empty list
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	result := updated.(Model)
-	if result.Cursor != 0 {
-		t.Fatalf("cursor = %d", result.Cursor)
+	if result.SessionListModel.Index() != 0 {
+		t.Fatalf("list index = %d", result.SessionListModel.Index())
 	}
 
 	_, cmd := result.handleSessionsKeys("enter")
