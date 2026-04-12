@@ -76,7 +76,8 @@ var (
 			PaddingLeft(2)
 
 	menuSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorCyan).
+				Background(colorCyan).
+				Foreground(lipgloss.Color("#16161e")).
 				Bold(true).
 				PaddingLeft(1)
 
@@ -94,7 +95,8 @@ var (
 			PaddingLeft(2)
 
 	listSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorCyan).
+				Background(colorCyan).
+				Foreground(lipgloss.Color("#16161e")).
 				Bold(true).
 				PaddingLeft(1)
 
@@ -223,6 +225,43 @@ func scoreStyle(score float64) lipgloss.Style {
 		return scoreBadgeMidStyle
 	default:
 		return scoreBadgeLowStyle
+	}
+}
+
+// ─── Status Bar & Toast Styles ──────────────────────────────────────────────
+
+var (
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(colorText).
+			Background(lipgloss.Color("#1a1b2e")).
+			Padding(0, 1)
+
+	modalStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorRed).
+			Padding(1, 2).
+			MarginTop(1)
+)
+
+// typeColor returns a lipgloss.Color for observation types.
+func typeColor(obsType string) lipgloss.Color {
+	switch obsType {
+	case "bugfix":
+		return colorRed
+	case "decision":
+		return colorCyan
+	case "architecture":
+		return colorPurple
+	case "discovery":
+		return colorTeal
+	case "pattern":
+		return colorBlue
+	case "config":
+		return colorAmber
+	case "preference":
+		return colorGold
+	default:
+		return colorSubtext
 	}
 }
 

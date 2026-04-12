@@ -94,24 +94,24 @@ func loadStats(d *Deps) tea.Cmd {
 	}
 }
 
-func searchMemories(d *Deps, query string) tea.Cmd {
+func searchMemories(d *Deps, query string, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Search == nil {
 			return searchResultsMsg{err: fmt.Errorf("search store not available")}
 		}
 		ctx := context.Background()
-		results, err := d.Search.Search(ctx, query, domain.SearchOptions{Limit: 50})
+		results, err := d.Search.Search(ctx, query, domain.SearchOptions{Limit: 50, Project: project})
 		return searchResultsMsg{results: results, query: query, err: err}
 	}
 }
 
-func loadRecentObservations(d *Deps) tea.Cmd {
+func loadRecentObservations(d *Deps, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Observations == nil {
 			return recentObservationsMsg{err: fmt.Errorf("observations store not available")}
 		}
 		ctx := context.Background()
-		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 50})
+		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 50, Project: project})
 		return recentObservationsMsg{observations: obs, err: err}
 	}
 }
@@ -249,7 +249,7 @@ func loadGraphRelated(d *Deps, obsID int64) tea.Cmd {
 	}
 }
 
-func loadArchivedObservations(d *Deps) tea.Cmd {
+func loadArchivedObservations(d *Deps, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Observations == nil {
 			return archiveLoadedMsg{err: fmt.Errorf("observations store not available")}
@@ -258,6 +258,7 @@ func loadArchivedObservations(d *Deps) tea.Cmd {
 		obs, err := d.Observations.List(ctx, domain.ObservationFilter{
 			Limit:           50,
 			IncludeArchived: true,
+			Project:         project,
 		})
 		return archiveLoadedMsg{observations: obs, err: err}
 	}
@@ -379,6 +380,73 @@ func pullOllamaModelCmd(baseURL, model string) tea.Cmd {
 		mgr := ollama.NewManager(baseURL)
 		err := mgr.PullModel(ctx, model, nil)
 		return ollamaPullMsg{done: true, err: err}
+	}
+}
+
+func deleteObservationCmd(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return deleteObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.SoftDelete(ctx, id)
+		return deleteObservationMsg{id: id, err: err}
+	}
+}
+
+func unarchiveObservationCmd(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return unarchiveObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.Unarchive(ctx, id)
+		return unarchiveObservationMsg{id: id, err: err}
+	}
+}
+
+func startReindexCmd(d *Deps) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.App == nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("app not available")}
+		}
+
+		// Reload config to pick up new provider/model
+		if err := d.App.ReloadConfig(); err != nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("reload config: %w", err)}
+		}
+		d.Config = d.App.Config
+
+		if d.App.Stores.Embeddings == nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("no embedding provider configured")}
+		}
+		if d.App.Stores.Vectors == nil || !d.App.Stores.Vectors.IsAvailable() {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("vector store not available (build with -tags cortex_vectors)")}
+		}
+
+		ctx := context.Background()
+		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 5000})
+		if err != nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("list observations: %w", err)}
+		}
+
+		indexed, errCount := 0, 0
+		for _, o := range obs {
+			text := o.Title + "\n" + o.Content
+			vec, embErr := d.App.Stores.Embeddings.Embed(ctx, text)
+			if embErr != nil {
+				errCount++
+				continue
+			}
+			if storeErr := d.App.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, d.App.Stores.Embeddings.Model()); storeErr != nil {
+				errCount++
+				continue
+			}
+			indexed++
+		}
+
+		progress := fmt.Sprintf("Reindexed %d/%d observations (%d errors)", indexed, len(obs), errCount)
+		return reindexProgressMsg{progress: progress, done: true}
 	}
 }
 

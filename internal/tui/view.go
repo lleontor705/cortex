@@ -10,7 +10,19 @@ import (
 
 // ─── Logo ───────────────────────────────────────────────────────────────────
 
-func renderLogo(version string) string {
+func (m Model) renderLogo() string {
+	// Compact logo for small terminals (width < 60 or height < 25)
+	if m.Width > 0 && (m.Width < 60 || m.Height < 25) {
+		compactStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorOverlay).
+			Padding(0, 1).
+			MarginBottom(1)
+		title := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("CORTEX")
+		tagline := lipgloss.NewStyle().Foreground(colorSubtext).Italic(true).Render(" " + m.Version + " — your brain never forgets")
+		return compactStyle.Render(title + tagline) + "\n"
+	}
+
 	logoText := []string{
 		` ██████  ██████  ██████  ████████ ███████ ██   ██ `,
 		`██      ██    ██ ██   ██    ██    ██       ██ ██  `,
@@ -45,7 +57,7 @@ func renderLogo(version string) string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(taglineStyle.Render(" > cortex " + version + " — your brain never forgets"))
+	b.WriteString(taglineStyle.Render(" > cortex " + m.Version + " — your brain never forgets"))
 
 	return frameStyle.Render(b.String()) + "\n"
 }
@@ -82,6 +94,8 @@ func (m Model) View() string {
 		content = m.viewHealth()
 	case ScreenEmbeddingConfig:
 		content = m.viewEmbeddingConfig()
+	case ScreenHelp:
+		content = m.viewHelp()
 	default:
 		content = "Unknown screen"
 	}
@@ -90,7 +104,36 @@ func (m Model) View() string {
 		content += "\n" + errorStyle.Render("Error: "+m.ErrorMsg)
 	}
 
-	return appStyle.Render(content)
+	// Toast message
+	if m.ToastMessage != "" {
+		var prefix string
+		switch m.ToastType {
+		case "warning":
+			prefix = lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("  ! ")
+		case "error":
+			prefix = lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render("  x ")
+		default:
+			prefix = lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("  v ")
+		}
+		content += "\n" + prefix + lipgloss.NewStyle().Foreground(colorText).Render(m.ToastMessage)
+	}
+
+	// Delete confirmation modal
+	if m.ConfirmDelete {
+		title := m.DeleteTargetTitle
+		if len(title) > 40 {
+			title = title[:40] + "..."
+		}
+		modal := fmt.Sprintf("  Delete observation #%d %q?\n\n  Press [y] to confirm, any other key to cancel", m.ConfirmDeleteID, title)
+		content += "\n" + modalStyle.Render(modal)
+	}
+
+	rendered := appStyle.Render(content)
+
+	// Status bar at the bottom
+	rendered += "\n" + m.renderStatusBar()
+
+	return rendered
 }
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
@@ -98,7 +141,7 @@ func (m Model) View() string {
 func (m Model) viewDashboard() string {
 	var b strings.Builder
 
-	b.WriteString(renderLogo(m.Version))
+	b.WriteString(m.renderLogo())
 	b.WriteString("\n")
 
 	// Update notification
@@ -161,7 +204,7 @@ func (m Model) viewDashboard() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter select • s search • q quit"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter select • s search • ? help • q quit"))
 
 	return b.String()
 }
@@ -192,6 +235,9 @@ func (m Model) viewSearchResults() string {
 	if resultCount != 1 {
 		header += "s"
 	}
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -212,9 +258,16 @@ func (m Model) viewSearchResults() string {
 		end = resultCount
 	}
 
+	scoreStyle := lipgloss.NewStyle().Foreground(colorSubtext)
 	for i := m.Scroll; i < end; i++ {
 		r := m.SearchResults[i]
 		b.WriteString(m.renderObservationListItem(i, r.ID, r.Type, r.Title, r.Content, r.CreatedAt, r.Project, nil))
+		scoreInfo := fmt.Sprintf("     score: %.0f%%", r.Rank*100)
+		if r.ScoreBreakdown.Strategy != "" {
+			scoreInfo += fmt.Sprintf("  strategy: %s", r.ScoreBreakdown.Strategy)
+		}
+		b.WriteString(scoreStyle.Render(scoreInfo))
+		b.WriteString("\n")
 	}
 
 	if resultCount > visibleItems {
@@ -222,7 +275,7 @@ func (m Model) viewSearchResults() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • / search • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • / search • esc back"))
 
 	return b.String()
 }
@@ -234,6 +287,9 @@ func (m Model) viewRecent() string {
 
 	count := len(m.RecentObservations)
 	header := fmt.Sprintf("  Recent Observations — %d total", count)
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -264,7 +320,7 @@ func (m Model) viewRecent() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • esc back"))
 
 	return b.String()
 }
@@ -277,7 +333,11 @@ func (m Model) viewObservationDetail() string {
 	if m.SelectedObservation == nil {
 		b.WriteString(headerStyle.Render("  Observation Detail"))
 		b.WriteString("\n")
-		b.WriteString(noResultsStyle.Render("Loading..."))
+		if m.DetailLoading {
+			b.WriteString(noResultsStyle.Render(m.SetupSpinner.View() + " Loading observation..."))
+		} else {
+			b.WriteString(noResultsStyle.Render("Loading..."))
+		}
 		return b.String()
 	}
 
@@ -390,7 +450,7 @@ func (m Model) viewObservationDetail() string {
 			timestampStyle.Render(fmt.Sprintf("line %d-%d of %d", scroll+1, end, len(contentLines))))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • s session • d delete • esc back"))
 
 	return b.String()
 }
@@ -794,6 +854,9 @@ func (m Model) viewArchive() string {
 
 	count := len(m.ArchivedObservations)
 	header := fmt.Sprintf("  Archived Observations — %d total", count)
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -824,7 +887,7 @@ func (m Model) viewArchive() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • u unarchive • d delete • f filter • esc back"))
 
 	return b.String()
 }
@@ -861,8 +924,13 @@ func (m Model) viewHealth() string {
 	b.WriteString(statCardStyle.Render(statsContent))
 	b.WriteString("\n")
 
-	// Stale observations
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Stale Observations (%d)", len(m.HealthStale))))
+	// Stale observations — tab-style header
+	tabStyle := lipgloss.NewStyle().Background(colorAmber).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1)
+	tabActiveStyle := lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1)
+	tabRedStyle := lipgloss.NewStyle().Background(colorRed).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1)
+
+	_ = tabActiveStyle // used below
+	b.WriteString("  " + tabStyle.Render(fmt.Sprintf("Stale (%d)", len(m.HealthStale))))
 	b.WriteString("\n")
 	if len(m.HealthStale) == 0 {
 		b.WriteString(listItemStyle.Render("  None — all high-score observations accessed recently"))
@@ -881,8 +949,8 @@ func (m Model) viewHealth() string {
 	}
 	b.WriteString("\n")
 
-	// Orphan observations
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Orphan Observations (%d)", len(m.HealthOrphans))))
+	// Orphan observations — tab-style header
+	b.WriteString("  " + tabRedStyle.Render(fmt.Sprintf("Orphans (%d)", len(m.HealthOrphans))))
 	b.WriteString("\n")
 	if len(m.HealthOrphans) == 0 {
 		b.WriteString(listItemStyle.Render("  None — all observations are connected via graph"))
@@ -901,8 +969,8 @@ func (m Model) viewHealth() string {
 	}
 	b.WriteString("\n")
 
-	// Consolidation candidates
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Consolidation Candidates (%d)", len(m.HealthCandidates))))
+	// Consolidation candidates — tab-style header
+	b.WriteString("  " + tabActiveStyle.Render(fmt.Sprintf("Consolidation (%d)", len(m.HealthCandidates))))
 	b.WriteString("\n")
 	if len(m.HealthCandidates) == 0 {
 		b.WriteString(listItemStyle.Render("  None — no duplicate topic keys found"))
@@ -918,7 +986,177 @@ func (m Model) viewHealth() string {
 		}
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k scroll • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k scroll • tab section • enter expand/collapse • esc back"))
+
+	return b.String()
+}
+
+// ─── Status Bar ─────────────────────────────────────────────────────────────
+
+func (m Model) screenName() string {
+	switch m.Screen {
+	case ScreenDashboard:
+		return "Dashboard"
+	case ScreenSearch:
+		return "Search"
+	case ScreenSearchResults:
+		return "Search Results"
+	case ScreenRecent:
+		return "Recent"
+	case ScreenObservationDetail:
+		return "Detail"
+	case ScreenTimeline:
+		return "Timeline"
+	case ScreenSessions:
+		return "Sessions"
+	case ScreenSessionDetail:
+		return "Session Detail"
+	case ScreenSetup:
+		return "Setup"
+	case ScreenGraph:
+		return "Graph"
+	case ScreenArchive:
+		return "Archive"
+	case ScreenHealth:
+		return "Health"
+	case ScreenEmbeddingConfig:
+		return "Embedding Settings"
+	case ScreenHelp:
+		return "Help"
+	default:
+		return "Cortex"
+	}
+}
+
+func (m Model) renderStatusBar() string {
+	var parts []string
+
+	// Screen name
+	nameStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Background(lipgloss.Color("#1a1b2e"))
+	parts = append(parts, nameStyle.Render(m.screenName()))
+
+	// List position
+	switch m.Screen {
+	case ScreenRecent:
+		if len(m.RecentObservations) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.RecentObservations)))
+		}
+	case ScreenSearchResults:
+		if len(m.SearchResults) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.SearchResults)))
+		}
+	case ScreenSessions:
+		if len(m.Sessions) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.Sessions)))
+		}
+	case ScreenGraph:
+		if len(m.GraphObservations) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.GraphObservations)))
+		}
+	case ScreenArchive:
+		if len(m.ArchivedObservations) > 0 {
+			parts = append(parts, fmt.Sprintf("[%d/%d]", m.Cursor+1, len(m.ArchivedObservations)))
+		}
+	}
+
+	// Observation count
+	if m.Stats != nil {
+		parts = append(parts, fmt.Sprintf("%d obs", m.Stats.TotalObservations))
+	}
+
+	// Version
+	if m.Version != "" {
+		parts = append(parts, m.Version)
+	}
+
+	// Help hint
+	parts = append(parts, "? help")
+
+	barContent := strings.Join(parts, "  |  ")
+	width := m.Width
+	if width < 20 {
+		width = 80
+	}
+	return statusBarStyle.Width(width).Render(barContent)
+}
+
+// ─── Help Screen ────────────────────────────────────────────────────────────
+
+func (m Model) viewHelp() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("  Cortex TUI — Keyboard Reference"))
+	b.WriteString("\n\n")
+
+	section := func(title string, bindings [][2]string) {
+		b.WriteString(sectionHeadingStyle.Render("  "+title))
+		b.WriteString("\n")
+		keyStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Width(16)
+		descStyle := lipgloss.NewStyle().Foreground(colorText)
+		for _, bind := range bindings {
+			fmt.Fprintf(&b, "  %s %s\n", keyStyle.Render(bind[0]), descStyle.Render(bind[1]))
+		}
+		b.WriteString("\n")
+	}
+
+	section("Global", [][2]string{
+		{"?", "Toggle this help screen"},
+		{"q / esc", "Go back / quit"},
+		{"ctrl+c", "Force quit"},
+	})
+
+	section("Navigation", [][2]string{
+		{"j / down", "Move cursor down"},
+		{"k / up", "Move cursor up"},
+		{"G", "Jump to last item"},
+		{"gg", "Jump to first item"},
+		{"enter", "Select / open"},
+		{"s / /", "Open search"},
+		{"f", "Cycle project filter"},
+	})
+
+	section("List Screens (Recent, Search Results)", [][2]string{
+		{"enter", "View observation detail"},
+		{"t", "View timeline"},
+		{"d", "Delete observation (with confirm)"},
+		{"f", "Cycle project filter"},
+	})
+
+	section("Detail View", [][2]string{
+		{"j / k", "Scroll content"},
+		{"t", "View timeline"},
+		{"g", "View graph connections"},
+		{"s", "Jump to session"},
+		{"d", "Delete observation (with confirm)"},
+	})
+
+	section("Graph", [][2]string{
+		{"enter", "View observation detail"},
+		{"r", "Re-root graph on selection"},
+	})
+
+	section("Health", [][2]string{
+		{"j / k", "Scroll dashboard"},
+		{"tab", "Cycle section"},
+		{"enter", "Expand/collapse section"},
+	})
+
+	section("Archive", [][2]string{
+		{"enter", "View observation detail"},
+		{"u", "Unarchive (restore) observation"},
+		{"d", "Delete observation (with confirm)"},
+		{"f", "Cycle project filter"},
+	})
+
+	section("Embedding Settings", [][2]string{
+		{"h / l", "Cycle provider"},
+		{"space", "Toggle checkbox"},
+		{"enter", "Edit model name / save"},
+		{"r", "Reload config from disk"},
+		{"x", "Reindex all embeddings (after save)"},
+	})
+
+	b.WriteString(helpStyle.Render("  Press esc / q / ? to close"))
 
 	return b.String()
 }
@@ -941,10 +1179,14 @@ func (m Model) renderObservationListItem(index int, id int64, obsType, title, co
 		proj = "  " + projectStyle.Render(project)
 	}
 
+	// Use type-specific color for the badge
+	tColor := typeColor(obsType)
+	typeBadge := lipgloss.NewStyle().Foreground(tColor).Bold(true).Render(fmt.Sprintf("[%-12s]", obsType))
+
 	line := fmt.Sprintf("%s%s %s %s%s  %s\n",
 		cursor,
 		idStyle.Render(fmt.Sprintf("#%-5d", id)),
-		typeBadgeStyle.Render(fmt.Sprintf("[%-12s]", obsType)),
+		typeBadge,
 		style.Render(truncateStr(title, 50)),
 		proj,
 		timestampStyle.Render(formatTime(createdAt)))
@@ -997,7 +1239,13 @@ func (m Model) viewEmbeddingConfig() string {
 	var b strings.Builder
 
 	b.WriteString(headerStyle.Render("  Embedding Settings"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if m.EmbCfgDirty {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorAmber).Render("* Unsaved changes"))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	providers := []string{"none", "ollama", "openai"}
 	focusMarker := func(field int) string {
@@ -1065,6 +1313,22 @@ func (m Model) viewEmbeddingConfig() string {
 
 	if m.EmbCfgSaved {
 		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("Configuration saved."))
+
+		// Reindex warning (amber)
+		if m.EmbCfgReindexWarning {
+			b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("! Provider/model changed — existing embeddings may be stale."))
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorSubtext).Render("Press [x] to reindex all observations with the new model."))
+		}
+
+		// Reindexing spinner
+		if m.EmbCfgReindexing {
+			b.WriteString("\n\n  " + m.EmbCfgSpinner.View() + " Reindexing all observations...")
+		}
+
+		// Reindex complete (green)
+		if m.EmbCfgReindexProgress != "" {
+			b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render(m.EmbCfgReindexProgress))
+		}
 
 		// Ollama status section
 		if m.EmbCfgProvider == 1 {

@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"time"
@@ -43,7 +44,7 @@ func NewVectorStore(db *sql.DB) *VectorStore {
 }
 
 // StoreEmbedding stores an embedding vector for an observation.
-// The embedding must have exactly EmbeddingDimension (384) dimensions.
+// The embedding must have between MinEmbeddingDimension and MaxEmbeddingDimension dimensions.
 // The model parameter identifies the embedding model used (e.g., "all-MiniLM-L6-v2").
 func (s *VectorStore) StoreEmbedding(ctx context.Context, observationID int64, embedding []float32, model string) error {
 	// Validate embedding dimension (flexible — accept any reasonable size)
@@ -283,6 +284,7 @@ func normalizeVector(v []float32) []float64 {
 // Both vectors should be pre-normalized for efficiency.
 func cosineSimilarity(a []float64, b []float32) float64 {
 	if len(a) != len(b) {
+		log.Printf("warning: cosine similarity dimension mismatch: query=%d stored=%d", len(a), len(b))
 		return 0
 	}
 
@@ -314,6 +316,7 @@ func computeCosineSimilarity(queryNorm []float64, embedding []float32) float64 {
 
 	// Dot product of normalized vectors
 	if len(queryNorm) != len(embF64) {
+		log.Printf("warning: cosine similarity dimension mismatch: query=%d stored=%d", len(queryNorm), len(embF64))
 		return 0
 	}
 	var dot float64

@@ -32,6 +32,7 @@ const (
 	ScreenArchive
 	ScreenHealth
 	ScreenEmbeddingConfig
+	ScreenHelp
 )
 
 // ─── Aggregate types ────────────────────────────────────────────────────────
@@ -146,6 +147,22 @@ type configReloadedMsg struct {
 	err error
 }
 
+type reindexProgressMsg struct {
+	progress string
+	done     bool
+	err      error
+}
+
+type deleteObservationMsg struct {
+	id  int64
+	err error
+}
+
+type unarchiveObservationMsg struct {
+	id  int64
+	err error
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 // Model holds the TUI state.
@@ -170,9 +187,11 @@ type Model struct {
 	Stats *combinedStats
 
 	// Search
-	SearchInput   textinput.Model
-	SearchQuery   string
-	SearchResults []*domain.SearchResult
+	SearchInput      textinput.Model
+	SearchQuery      string
+	SearchResults    []*domain.SearchResult
+	SearchHistory    []string
+	SearchHistoryIdx int
 
 	// Recent observations
 	RecentObservations []*domain.Observation
@@ -183,6 +202,7 @@ type Model struct {
 	DetailEntities      []*domain.EntityLink
 	DetailEdges         []*domain.Edge
 	DetailScroll        int
+	DetailLoading       bool
 
 	// Timeline
 	TimelineFocus  *domain.Observation
@@ -200,6 +220,13 @@ type Model struct {
 	GraphEdges        []*domain.Edge
 	GraphRootID       int64
 
+	// List filtering
+	FilterProject string // active project filter ("" = all)
+	FilterActive  bool   // whether filter is shown
+
+	// Vim multi-key sequences
+	PendingKey string // for multi-key sequences like "gg"
+
 	// Archive (Cortex-exclusive)
 	ArchivedObservations []*domain.Observation
 
@@ -209,6 +236,8 @@ type Model struct {
 	HealthEdgeCount  int
 	HealthObsCount   int
 	HealthCandidates []healthCandidate
+	HealthSection    int  // 0=stale, 1=orphans, 2=candidates
+	HealthExpanded   bool
 
 	// Setup
 	SetupAgents           []setup.Agent
@@ -223,6 +252,7 @@ type Model struct {
 	SetupSpinner          spinner.Model
 
 	// Embedding config
+	EmbCfgDirty          bool
 	EmbCfgProvider       int             // 0=none, 1=ollama, 2=openai
 	EmbCfgModel          textinput.Model // model name input
 	EmbCfgVector         bool            // vector search toggle
@@ -237,6 +267,22 @@ type Model struct {
 	EmbCfgPulling        bool
 	EmbCfgStarting       bool
 	EmbCfgSpinner        spinner.Model
+
+	// Embedding config — provider/model change detection
+	EmbCfgOriginalProvider int
+	EmbCfgOriginalModel    string
+	EmbCfgReindexWarning   bool
+	EmbCfgReindexing       bool
+	EmbCfgReindexProgress  string
+
+	// Toast messages
+	ToastMessage string
+	ToastType    string // "success", "warning", "error"
+
+	// Delete confirmation
+	ConfirmDelete     bool
+	ConfirmDeleteID   int64
+	DeleteTargetTitle string
 }
 
 // New creates a new TUI model connected to the given stores.
