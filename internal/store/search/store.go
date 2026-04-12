@@ -21,8 +21,17 @@ import (
 
 // Store implements the SQLite search store.
 // It provides FTS5-based full-text search with advanced features.
+// GraphEdgeProvider is an optional interface for temporal edge filtering.
+// When set, graph neighbor expansion respects temporal validity.
+type GraphEdgeProvider interface {
+	GetEdgesValidAt(ctx context.Context, obsID int64, at time.Time) ([]*domain.Edge, error)
+	GetEdgesForObservation(ctx context.Context, obsID int64) ([]*domain.Edge, error)
+}
+
+// Store implements FTS5-based search for Cortex.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	Graph GraphEdgeProvider // Optional; enables temporal-aware graph expansion
 }
 
 // NewStore creates a new search store with the given database connection.
@@ -725,46 +734,85 @@ func (s *Store) pseudoRelevanceFeedback(ctx context.Context, originalQuery strin
 
 // graphNeighborExpansion finds observations connected to top search results
 // via knowledge graph edges (1-hop). Based on Microsoft GraphRAG concept.
+// When opts.AsOf is set, only edges valid at that time are considered.
+// When Graph provider is available, uses it for temporal filtering; otherwise falls back to SQL.
 func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain.SearchResult, opts domain.SearchOptions, limit int) []*domain.SearchResult {
 	if len(topResults) == 0 {
 		return nil
 	}
 
-	// Take top 5 results for graph expansion
 	topN := topResults
 	if len(topN) > 5 {
 		topN = topN[:5]
 	}
 
-	// Collect neighbor IDs via 1-hop edges
 	existing := make(map[int64]bool)
 	for _, r := range topResults {
 		existing[r.ID] = true
 	}
 
 	var neighborIDs []int64
+
 	for _, r := range topN {
-		// Query edges in both directions
-		rows, err := s.db.QueryContext(ctx, `
-			SELECT DISTINCT CASE
-				WHEN from_obs_id = ? THEN to_obs_id
-				ELSE from_obs_id
-			END as neighbor_id
-			FROM edges
-			WHERE (from_obs_id = ? OR to_obs_id = ?)
-			LIMIT 10
-		`, r.ID, r.ID, r.ID)
-		if err != nil {
-			continue
-		}
-		for rows.Next() {
-			var nID int64
-			if err := rows.Scan(&nID); err == nil && !existing[nID] {
-				neighborIDs = append(neighborIDs, nID)
-				existing[nID] = true
+		if s.Graph != nil && opts.AsOf != nil {
+			// Temporal-aware: only edges valid at the given time
+			edges, err := s.Graph.GetEdgesValidAt(ctx, r.ID, *opts.AsOf)
+			if err != nil {
+				continue
 			}
+			for _, e := range edges {
+				nID := e.ToObsID
+				if nID == r.ID {
+					nID = e.FromObsID
+				}
+				if !existing[nID] {
+					neighborIDs = append(neighborIDs, nID)
+					existing[nID] = true
+				}
+			}
+		} else if s.Graph != nil {
+			// Non-temporal but filter out deprecated/superseded edges
+			edges, err := s.Graph.GetEdgesForObservation(ctx, r.ID)
+			if err != nil {
+				continue
+			}
+			for _, e := range edges {
+				if e.FactState == domain.FactStateDeprecated || e.FactState == domain.FactStateSuperseded {
+					continue
+				}
+				nID := e.ToObsID
+				if nID == r.ID {
+					nID = e.FromObsID
+				}
+				if !existing[nID] {
+					neighborIDs = append(neighborIDs, nID)
+					existing[nID] = true
+				}
+			}
+		} else {
+			// Fallback: raw SQL without temporal filtering
+			rows, err := s.db.QueryContext(ctx, `
+				SELECT DISTINCT CASE
+					WHEN from_obs_id = ? THEN to_obs_id
+					ELSE from_obs_id
+				END as neighbor_id
+				FROM edges
+				WHERE (from_obs_id = ? OR to_obs_id = ?)
+				  AND COALESCE(fact_state, 'current') NOT IN ('deprecated', 'superseded')
+				LIMIT 10
+			`, r.ID, r.ID, r.ID)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var nID int64
+				if err := rows.Scan(&nID); err == nil && !existing[nID] {
+					neighborIDs = append(neighborIDs, nID)
+					existing[nID] = true
+				}
+			}
+			_ = rows.Close()
 		}
-		_ = rows.Close()
 	}
 
 	if len(neighborIDs) == 0 {
@@ -779,21 +827,27 @@ func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain
 		args[i] = id
 	}
 
-	// Apply project filter if set
 	projectFilter := ""
 	if opts.Project != "" {
 		projectFilter = " AND o.project = ?"
 		args = append(args, opts.Project)
 	}
 
+	// When searching as-of a date, exclude observations created after that date
+	temporalFilter := ""
+	if opts.AsOf != nil {
+		temporalFilter = " AND o.created_at <= ?"
+		args = append(args, opts.AsOf.UTC().Format(time.RFC3339))
+	}
+
 	query := fmt.Sprintf(`
 		SELECT o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
 		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
 		FROM observations o
-		WHERE o.id IN (%s) AND o.deleted_at IS NULL%s
+		WHERE o.id IN (%s) AND o.deleted_at IS NULL%s%s
 		ORDER BY o.updated_at DESC
 		LIMIT ?
-	`, strings.Join(placeholders, ","), projectFilter)
+	`, strings.Join(placeholders, ","), projectFilter, temporalFilter)
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -804,7 +858,7 @@ func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain
 
 	var results []*domain.SearchResult
 	for rows.Next() {
-		result, err := s.scanSearchResult(rows, -200) // Lower priority than direct matches
+		result, err := s.scanSearchResult(rows, -200)
 		if err != nil {
 			continue
 		}

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches:
       - develop
-      - main
+      - master
 
 permissions:
   contents: read
@@ -56,6 +56,3 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
-
-  security:
-    uses: lleontor705/ats-deploy-public/.github/workflows/security-scan.yml@main

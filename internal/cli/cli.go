@@ -14,6 +14,7 @@ import (
 
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/ollama"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -22,6 +23,7 @@ import (
 	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/tui"
 	"github.com/lleontor705/cortex/internal/update"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -89,6 +91,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runSync(args[2:], stdout, stderr)
 	case "merge-projects":
 		exitCode = runMergeProjects(args[2:], stdout, stderr)
+	case "reindex":
+		exitCode = runReindex(args[2:], stdout, stderr)
+	case "doctor":
+		exitCode = runDoctor(stdout, stderr)
+	case "gc":
+		exitCode = runGC(args[2:], stdout, stderr)
 	default:
 		writef(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
@@ -119,6 +127,9 @@ Commands:
   export [--project P]   Export observations to JSON
   sync                   Sync memories via git-friendly chunks
   merge-projects         Merge project name variants into one canonical name
+  reindex [--project P]  Generate vector embeddings for all observations
+  doctor                 Run health checks on the database
+  gc [--days N]          Garbage collect archived observations (default: 90 days)
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
@@ -553,10 +564,19 @@ func runTUI(stdout, stderr io.Writer) int {
 
 	deps := &tui.Deps{
 		Observations: a.Stores.Observations,
+		Sessions:     a.Stores.Sessions,
 		Search:       a.Stores.Search,
+		Graph:        a.Stores.Graph,
+		Scoring:      a.Stores.Scoring,
+		Entities:     a.Stores.Entities,
+		App:          a,
+		Config:       a.Config,
+		Version:      Version,
 	}
 
-	if err := tui.Run(deps); err != nil {
+	model := tui.New(deps)
+	p := tea.NewProgram(model)
+	if _, err := p.Run(); err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
@@ -609,12 +629,12 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		writeln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex")
 		return 0
 	}
-	path, err := setup.Install(agent)
+	result, err := setup.Install(agent)
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	writef(stdout, "Installed Cortex integration for %s\n  -> %s\n", agent, path)
+	writef(stdout, "Installed Cortex integration for %s (%d files)\n  -> %s\n", result.Agent, result.Files, result.Destination)
 	return 0
 }
 
@@ -1054,4 +1074,226 @@ func writef(w io.Writer, format string, args ...interface{}) {
 // writeln writes a line, discarding any write error.
 func writeln(w io.Writer, s string) {
 	_, _ = fmt.Fprintln(w, s)
+}
+
+// --- reindex ----------------------------------------------------------------
+
+func runReindex(args []string, stdout, stderr io.Writer) int {
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	if a.Stores.Embeddings == nil {
+		writef(stderr, "cortex: no embedding provider configured.\nSet search.embedding_provider in cortex.yaml (e.g., 'ollama' or 'openai').\n")
+		return 1
+	}
+
+	if a.Stores.Vectors == nil || !a.Stores.Vectors.IsAvailable() {
+		writef(stderr, "cortex: vector store not available.\nBuild with: go build -tags cortex_vectors ./cmd/cortex\n")
+		return 1
+	}
+
+	// Auto-start Ollama if configured
+	if a.Config.Search.EmbeddingProvider == "ollama" {
+		ctx := context.Background()
+		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
+		if !mgr.IsRunning(ctx) {
+			writeln(stdout, "Starting Ollama...")
+			if err := mgr.EnsureRunning(ctx); err != nil {
+				writef(stderr, "cortex: failed to start ollama: %v\n", err)
+				return 1
+			}
+			writeln(stdout, "Ollama is ready.")
+		}
+		// Check if model exists, pull if needed
+		model := a.Config.Search.EmbeddingModel
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		has, _ := mgr.HasModel(ctx, model)
+		if !has {
+			writef(stdout, "Pulling model %s...\n", model)
+			if err := mgr.PullModel(ctx, model, func(p string) {
+				writef(stdout, "  %s\n", p)
+			}); err != nil {
+				writef(stderr, "cortex: failed to pull model: %v\n", err)
+				return 1
+			}
+			writef(stdout, "Model %s pulled successfully.\n", model)
+		}
+	}
+
+	project := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--project" && i+1 < len(args) {
+			project = args[i+1]
+			i++
+		}
+	}
+
+	ctx := context.Background()
+	filter := domain.ObservationFilter{Limit: 5000}
+	if project != "" {
+		filter.Project = project
+	}
+
+	obs, err := a.Stores.Observations.List(ctx, filter)
+	if err != nil {
+		writef(stderr, "cortex: list observations: %v\n", err)
+		return 1
+	}
+
+	writef(stdout, "Reindexing %d observations with %s...\n", len(obs), a.Stores.Embeddings.Model())
+
+	indexed, skipped, errors := 0, 0, 0
+	for i, o := range obs {
+		text := o.Title + "\n" + o.Content
+		vec, embErr := a.Stores.Embeddings.Embed(ctx, text)
+		if embErr != nil {
+			errors++
+			continue
+		}
+		if storeErr := a.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, a.Stores.Embeddings.Model()); storeErr != nil {
+			errors++
+			continue
+		}
+		indexed++
+
+		if (i+1)%50 == 0 {
+			writef(stdout, "  %d/%d indexed...\n", i+1, len(obs))
+		}
+	}
+
+	writef(stdout, "Done. Indexed: %d, Skipped: %d, Errors: %d\n", indexed, skipped, errors)
+	return 0
+}
+
+// --- doctor -----------------------------------------------------------------
+
+func runDoctor(stdout, stderr io.Writer) int {
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	ctx := context.Background()
+	issues := 0
+
+	writeln(stdout, "Cortex Doctor — Health Check\n")
+
+	// 1. Database
+	stats, err := a.Stores.Observations.Stats(ctx)
+	if err != nil {
+		writef(stdout, "  [FAIL] Database: %v\n", err)
+		issues++
+	} else {
+		writef(stdout, "  [OK]   Database: %d observations, %d projects\n", stats.TotalObservations, len(stats.Projects))
+	}
+
+	// 2. FTS5 sync
+	results, searchErr := a.Stores.Search.Search(ctx, "test", domain.SearchOptions{Limit: 1})
+	if searchErr != nil {
+		writef(stdout, "  [FAIL] FTS5 search: %v\n", searchErr)
+		issues++
+	} else {
+		writef(stdout, "  [OK]   FTS5 search: operational (%d results for test query)\n", len(results))
+	}
+
+	// 3. Graph
+	edgeCount, graphErr := a.Stores.Graph.CountAllEdges(ctx)
+	if graphErr != nil {
+		writef(stdout, "  [FAIL] Knowledge graph: %v\n", graphErr)
+		issues++
+	} else {
+		writef(stdout, "  [OK]   Knowledge graph: %d edges\n", edgeCount)
+	}
+
+	// 4. Vector store
+	if a.Stores.Vectors != nil && a.Stores.Vectors.IsAvailable() {
+		writef(stdout, "  [OK]   Vector store: enabled\n")
+	} else {
+		writef(stdout, "  [WARN] Vector store: disabled (build with -tags cortex_vectors)\n")
+	}
+
+	// 5. Embedding service
+	if a.Stores.Embeddings != nil {
+		writef(stdout, "  [OK]   Embeddings: %s (%d dims)\n", a.Stores.Embeddings.Model(), a.Stores.Embeddings.Dimensions())
+	} else {
+		writef(stdout, "  [WARN] Embeddings: not configured (set search.embedding_provider)\n")
+	}
+
+	// 6. Orphan count
+	if stats != nil && len(stats.Projects) > 0 {
+		orphans, orphErr := a.Stores.Observations.OrphanObservations(ctx, stats.Projects[0], 1000)
+		if orphErr == nil {
+			pct := 0.0
+			if stats.TotalObservations > 0 {
+				pct = float64(len(orphans)) / float64(stats.TotalObservations) * 100
+			}
+			if pct > 50 {
+				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use mem_relate to connect observations\n", len(orphans), pct)
+			} else {
+				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", len(orphans), pct)
+			}
+		}
+	}
+
+	writeln(stdout, "")
+	if issues > 0 {
+		writef(stdout, "%d issue(s) found.\n", issues)
+		return 1
+	}
+	writeln(stdout, "All checks passed.")
+	return 0
+}
+
+// --- gc (garbage collect) ---------------------------------------------------
+
+func runGC(args []string, stdout, stderr io.Writer) int {
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	days := 90
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--days" && i+1 < len(args) {
+			if d, dErr := strconv.Atoi(args[i+1]); dErr == nil && d > 0 {
+				days = d
+			}
+			i++
+		}
+	}
+
+	ctx := context.Background()
+	cutoff := time.Now().AddDate(0, 0, -days)
+
+	// Find soft-deleted observations older than cutoff
+	archived, err := a.Stores.Observations.ListArchivable(ctx, cutoff, 0, 1000)
+	if err != nil {
+		writef(stderr, "cortex: list archivable: %v\n", err)
+		return 1
+	}
+
+	if len(archived) == 0 {
+		writeln(stdout, "Nothing to collect.")
+		return 0
+	}
+
+	deleted := 0
+	for _, obs := range archived {
+		if hardErr := a.Stores.Observations.HardDelete(ctx, obs.ID); hardErr == nil {
+			deleted++
+		}
+	}
+
+	writef(stdout, "Garbage collected %d observations older than %d days.\n", deleted, days)
+	return 0
 }
