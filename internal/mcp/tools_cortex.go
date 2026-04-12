@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -385,12 +386,11 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 			// Prefer generating a real query embedding via the embedding service
 			if stores.Embeddings != nil {
-				queryVec, _ = stores.Embeddings.Embed(ctx, query)
-			}
-
-			// Fallback: use first FTS5 result's stored embedding as proxy
-			if len(queryVec) == 0 && len(ftsResults) > 0 {
-				queryVec, _, _ = stores.Vectors.GetEmbedding(ctx, ftsResults[0].ID)
+				var embedErr error
+				queryVec, embedErr = stores.Embeddings.Embed(ctx, query)
+				if embedErr != nil {
+					log.Printf("warning: hybrid search embed failed, falling back to FTS5: %v", embedErr)
+				}
 			}
 
 			if len(queryVec) > 0 {

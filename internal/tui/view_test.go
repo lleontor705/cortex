@@ -9,6 +9,9 @@ import (
 	"github.com/lleontor705/cortex/internal/setup"
 	"github.com/lleontor705/cortex/internal/store/session"
 	"github.com/lleontor705/cortex/internal/update"
+
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
 )
 
 // Type alias for cleaner test literals.
@@ -72,9 +75,13 @@ func TestViewSearchResults(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
 	m.SearchQuery = "test"
-	m.SearchResults = []*domain.SearchResult{
+	results := []*domain.SearchResult{
 		{Observation: domain.Observation{ID: 1, Type: "bugfix", Title: "Fix bug", Content: "content", CreatedAt: time.Now()}},
 	}
+	m.SearchResults = results
+	items := []list.Item{searchResultItem{result: results[0]}}
+	m.SearchListModel.SetItems(items)
+	m.SearchListModel.SetSize(116, 30)
 
 	output := m.viewSearchResults()
 	if !strings.Contains(output, "test") {
@@ -103,9 +110,13 @@ func TestViewSearchResultsEmpty(t *testing.T) {
 func TestViewRecent(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
-	m.RecentObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Type: "decision", Title: "Use BubbleTea", Content: "TUI framework", CreatedAt: time.Now(), Project: "cortex"},
 	}
+	m.RecentObservations = obs
+	items := []list.Item{observationItem{obs: obs[0]}}
+	m.RecentList.SetItems(items)
+	m.RecentList.SetSize(116, 32)
 
 	output := m.viewRecent()
 	if !strings.Contains(output, "Recent Observations") {
@@ -119,7 +130,7 @@ func TestViewRecent(t *testing.T) {
 func TestViewObservationDetailWithEnrichment(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
-	m.SelectedObservation = &domain.Observation{
+	obs := &domain.Observation{
 		ID:        42,
 		Type:      "bugfix",
 		Title:     "Fix N+1 query",
@@ -128,18 +139,27 @@ func TestViewObservationDetailWithEnrichment(t *testing.T) {
 		Project:   "cortex",
 		CreatedAt: time.Now(),
 	}
-	m.DetailScore = &domain.ImportanceScore{
+	score := &domain.ImportanceScore{
 		ObservationID: 42,
 		Score:         3.7,
 		AccessCount:   15,
 	}
-	m.DetailEntities = []*domain.EntityLink{
+	entities := []*domain.EntityLink{
 		{EntityType: "file", EntityValue: "store.go"},
 		{EntityType: "package", EntityValue: "sqlitestore"},
 	}
-	m.DetailEdges = []*domain.Edge{
+	edges := []*domain.Edge{
 		{FromObsID: 42, ToObsID: 43, RelationType: "references", Weight: 1.0},
 	}
+	m.SelectedObservation = obs
+	m.DetailScore = score
+	m.DetailEntities = entities
+	m.DetailEdges = edges
+
+	// Build viewport content as the update handler would
+	contentStr := buildDetailContent(obs, score, entities, edges)
+	m.DetailViewport = viewport.New(m.Width-4, m.Height-8)
+	m.DetailViewport.SetContent(contentStr)
 
 	output := m.viewObservationDetail()
 	if !strings.Contains(output, "3.7/5.0") {
@@ -185,12 +205,16 @@ func TestViewTimeline(t *testing.T) {
 func TestViewSessions(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
-	m.Sessions = []*session.SessionStats{
+	sessions := []*session.SessionStats{
 		{
 			Session:          &domain.Session{ID: "s1", Project: "cortex", StartedAt: time.Now(), Summary: "Test session"},
 			ObservationCount: 5,
 		},
 	}
+	m.Sessions = sessions
+	items := []list.Item{sessionItem{session: sessions[0]}}
+	m.SessionListModel.SetItems(items)
+	m.SessionListModel.SetSize(116, 32)
 
 	output := m.viewSessions()
 	if !strings.Contains(output, "Sessions") {
@@ -205,12 +229,17 @@ func TestViewGraph(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
 	m.GraphRootID = 1
-	m.GraphObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 2, Type: "decision", Title: "Related obs", Content: "related"},
 	}
-	m.GraphEdges = []*domain.Edge{
+	edges := []*domain.Edge{
 		{FromObsID: 1, ToObsID: 2, RelationType: "references", Weight: 1.0},
 	}
+	m.GraphObservations = obs
+	m.GraphEdges = edges
+	items := []list.Item{graphItem{obs: obs[0], edgeLabel: "references"}}
+	m.GraphListModel.SetItems(items)
+	m.GraphListModel.SetSize(116, 28)
 
 	output := m.viewGraph()
 	if !strings.Contains(output, "Knowledge Graph") {
@@ -230,9 +259,13 @@ func TestViewGraph(t *testing.T) {
 func TestViewArchive(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
-	m.ArchivedObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Type: "old", Title: "Archived item", Content: "old content", CreatedAt: time.Now()},
 	}
+	m.ArchivedObservations = obs
+	items := []list.Item{observationItem{obs: obs[0]}}
+	m.ArchiveList.SetItems(items)
+	m.ArchiveList.SetSize(116, 32)
 
 	output := m.viewArchive()
 	if !strings.Contains(output, "Archived Observations") {
@@ -397,9 +430,13 @@ func TestViewDashboardSmallTerminal(t *testing.T) {
 func TestViewRecentSmallTerminal(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 20, 10
-	m.RecentObservations = []*domain.Observation{
+	obs := []*domain.Observation{
 		{ID: 1, Type: "test", Title: "T", Content: "C", CreatedAt: time.Now()},
 	}
+	m.RecentObservations = obs
+	items := []list.Item{observationItem{obs: obs[0]}}
+	m.RecentList.SetItems(items)
+	m.RecentList.SetSize(16, 2)
 
 	output := m.viewRecent()
 	if output == "" {
@@ -410,10 +447,24 @@ func TestViewRecentSmallTerminal(t *testing.T) {
 func TestViewObservationDetailSmallTerminal(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 20, 10
-	m.SelectedObservation = &domain.Observation{
+	obs := &domain.Observation{
 		ID: 1, Type: "test", Title: "Title", Content: "Content content content",
 		CreatedAt: time.Now(),
 	}
+	m.SelectedObservation = obs
+
+	// Build viewport content as the update handler would
+	contentStr := buildDetailContent(obs, nil, nil, nil)
+	w := m.Width - 4
+	if w < 20 {
+		w = 20
+	}
+	h := m.Height - 8
+	if h < 5 {
+		h = 5
+	}
+	m.DetailViewport = viewport.New(w, h)
+	m.DetailViewport.SetContent(contentStr)
 
 	output := m.viewObservationDetail()
 	if output == "" {

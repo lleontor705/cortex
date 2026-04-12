@@ -137,7 +137,7 @@ type ScoringRepository interface {
 
 // VectorSearchOptions provides options for vector similarity search.
 type VectorSearchOptions struct {
-	// Embedding is the query embedding vector (384 dimensions).
+	// Embedding is the query embedding vector (64-4096 dimensions depending on model).
 	Embedding []float32
 	// Limit is the maximum number of results to return.
 	Limit int
@@ -163,7 +163,7 @@ type VectorSearchResult struct {
 // When not enabled, all methods return ErrVectorSearchDisabled.
 type VectorRepository interface {
 	// StoreEmbedding stores an embedding vector for an observation.
-	// The embedding must have exactly 384 dimensions.
+	// The embedding dimensions must be between 64 and 4096.
 	// Returns an error if the observation doesn't exist or embedding dimension is wrong.
 	StoreEmbedding(ctx context.Context, observationID int64, embedding []float32, model string) error
 

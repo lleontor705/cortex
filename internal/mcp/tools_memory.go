@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -550,11 +551,18 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		// Auto-embed for vector search (best-effort, non-blocking)
 		if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
 			go func() {
-				bgCtx := context.Background()
+				bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 				text := obs.Title + "\n" + obs.Content
 				vec, err := stores.Embeddings.Embed(bgCtx, text)
-				if err == nil && len(vec) > 0 {
-					_ = stores.Vectors.StoreEmbedding(bgCtx, obs.ID, vec, stores.Embeddings.Model())
+				if err != nil {
+					log.Printf("warning: auto-embed failed for obs %d: %v", obs.ID, err)
+					return
+				}
+				if len(vec) > 0 {
+					if storeErr := stores.Vectors.StoreEmbedding(bgCtx, obs.ID, vec, stores.Embeddings.Model()); storeErr != nil {
+						log.Printf("warning: store embedding failed for obs %d: %v", obs.ID, storeErr)
+					}
 				}
 			}()
 		}
