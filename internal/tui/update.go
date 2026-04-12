@@ -2,10 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -23,11 +26,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.Screen == ScreenObservationDetail {
+			w := m.Width - 4
+			if w < 20 {
+				w = 20
+			}
+			h := m.Height - 8
+			if h < 5 {
+				h = 5
+			}
+			m.DetailViewport.Width = w
+			m.DetailViewport.Height = h
+		}
 		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		// Command palette intercept
+		if m.CmdPaletteOpen {
+			return m.handleCmdPaletteKeys(msg)
 		}
 		if m.Screen == ScreenSearch && m.SearchInput.Focused() {
 			return m.handleSearchInputKeys(msg)
@@ -48,6 +67,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Stats = msg.stats
+		return m, nil
+
+	case activityDataMsg:
+		if msg.err == nil {
+			m.ActivityData = msg.daily
+		}
 		return m, nil
 
 	case searchResultsMsg:
@@ -81,7 +106,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.DetailEntities = msg.entities
 		m.DetailEdges = msg.edges
 		m.Screen = ScreenObservationDetail
-		m.DetailScroll = 0
+
+		// Build viewport content
+		contentStr := buildDetailContent(msg.observation, msg.score, msg.entities, msg.edges)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 8
+		if h < 5 {
+			h = 5
+		}
+		m.DetailViewport = viewport.New(w, h)
+		m.DetailViewport.SetContent(contentStr)
 		return m, nil
 
 	case timelineMsg:
@@ -190,6 +227,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reindexProgressMsg:
 		m.EmbCfgReindexing = false
+		m.ReindexTotal = msg.total
+		m.ReindexDone = msg.indexed
 		if msg.err != nil {
 			m.EmbCfgError = msg.err.Error()
 			return m, nil
@@ -296,6 +335,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case tea.MouseMsg:
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			// Scroll delegated to active component
+			switch m.Screen {
+			case ScreenObservationDetail:
+				var cmd tea.Cmd
+				m.DetailViewport, cmd = m.DetailViewport.Update(msg)
+				return m, cmd
+			}
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -323,6 +374,15 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenHelp {
 		m.PrevScreen = m.Screen
 		m.Screen = ScreenHelp
+		return m, nil
+	}
+
+	// Command palette
+	if key == "ctrl+k" {
+		m.CmdPaletteOpen = true
+		m.CmdPaletteCursor = 0
+		m.CmdPaletteInput.SetValue("")
+		m.CmdPaletteInput.Focus()
 		return m, nil
 	}
 
@@ -783,16 +843,13 @@ func (m Model) handleObservationDetailKeys(key string) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "up", "k":
-		if m.DetailScroll > 0 {
-			m.DetailScroll--
-		}
+		m.DetailViewport.ScrollUp(1)
 	case "down", "j":
-		// Bounded scroll — view.go clamps to maxScroll during rendering,
-		// but we cap here to avoid ever-growing scroll values.
-		m.DetailScroll++
-		if m.DetailScroll > maxScrollOffset {
-			m.DetailScroll = maxScrollOffset
-		}
+		m.DetailViewport.ScrollDown(1)
+	case "pgup":
+		m.DetailViewport.HalfPageUp()
+	case "pgdown":
+		m.DetailViewport.HalfPageDown()
 	case "t":
 		if m.SelectedObservation != nil {
 			m.PrevScreen = ScreenObservationDetail
@@ -823,7 +880,7 @@ func (m Model) handleObservationDetailKeys(key string) (tea.Model, tea.Cmd) {
 	case "esc", "q":
 		m.Screen = m.PrevScreen
 		m.Cursor = m.PrevCursor
-		m.DetailScroll = 0
+		m.DetailViewport.GotoTop()
 		return m, m.refreshScreen(m.PrevScreen)
 	}
 	return m, nil
@@ -1364,6 +1421,154 @@ func (m Model) handleHelpKeys(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// ─── Command Palette ──────────────────────────────────────────────────────
+
+type paletteCommand struct {
+	name     string
+	shortcut string
+	execute  func(m Model) (Model, tea.Cmd)
+}
+
+func allCommands() []paletteCommand {
+	return []paletteCommand{
+		{"Search memories", "/", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSearch
+			m.SearchInput.Focus()
+			return m, nil
+		}},
+		{"Recent observations", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenRecent
+			return m, loadRecentObservations(m.deps, m.FilterProject)
+		}},
+		{"Browse sessions", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSessions
+			return m, loadRecentSessions(m.deps)
+		}},
+		{"Knowledge graph", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenGraph
+			return m, nil
+		}},
+		{"Memory health", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenHealth
+			return m, loadHealthData(m.deps, "")
+		}},
+		{"Archived observations", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenArchive
+			return m, loadArchivedObservations(m.deps, m.FilterProject)
+		}},
+		{"Embedding settings", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenEmbeddingConfig
+			return m, nil
+		}},
+		{"Setup agent plugin", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSetup
+			return m, nil
+		}},
+		{"Help / Keyboard shortcuts", "?", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenHelp
+			return m, nil
+		}},
+		{"Go to Dashboard", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenDashboard
+			return m, loadStats(m.deps)
+		}},
+	}
+}
+
+func (m Model) filteredCommands() []paletteCommand {
+	query := strings.ToLower(m.CmdPaletteInput.Value())
+	if query == "" {
+		return allCommands()
+	}
+	var filtered []paletteCommand
+	for _, cmd := range allCommands() {
+		if strings.Contains(strings.ToLower(cmd.name), query) {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
+
+func (m Model) handleCmdPaletteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	switch key {
+	case "esc":
+		m.CmdPaletteOpen = false
+		m.CmdPaletteInput.Blur()
+		return m, nil
+	case "up", "ctrl+p":
+		if m.CmdPaletteCursor > 0 {
+			m.CmdPaletteCursor--
+		}
+		return m, nil
+	case "down", "ctrl+n":
+		filtered := m.filteredCommands()
+		if m.CmdPaletteCursor < len(filtered)-1 {
+			m.CmdPaletteCursor++
+		}
+		return m, nil
+	case "enter":
+		filtered := m.filteredCommands()
+		if len(filtered) > 0 && m.CmdPaletteCursor < len(filtered) {
+			cmd := filtered[m.CmdPaletteCursor]
+			m.CmdPaletteOpen = false
+			m.CmdPaletteInput.Blur()
+			return cmd.execute(m)
+		}
+		return m, nil
+	}
+	// Pass to text input for filtering
+	var cmd tea.Cmd
+	m.CmdPaletteInput, cmd = m.CmdPaletteInput.Update(msg)
+	m.CmdPaletteCursor = 0 // reset cursor on filter change
+	return m, cmd
+}
+
+
+// ─── Detail Content Builder ────────────────────────────────────────────────
+
+// buildDetailContent constructs the full text content for the observation
+// detail viewport. This is called once when the observation loads, and
+// the viewport handles scrolling from there.
+func buildDetailContent(obs *domain.Observation, score *domain.ImportanceScore, entities []*domain.EntityLink, edges []*domain.Edge) string {
+	var content strings.Builder
+
+	fmt.Fprintf(&content, "Type:       %s\n", obs.Type)
+	fmt.Fprintf(&content, "Title:      %s\n", obs.Title)
+	fmt.Fprintf(&content, "Session:    %s\n", obs.SessionID)
+	fmt.Fprintf(&content, "Created:    %s\n", obs.CreatedAt.Format("2006-01-02 15:04"))
+	if obs.Project != "" {
+		fmt.Fprintf(&content, "Project:    %s\n", obs.Project)
+	}
+
+	if score != nil {
+		fmt.Fprintf(&content, "Score:      %.1f/5.0  (accessed %d times)\n", score.Score, score.AccessCount)
+	}
+
+	if len(entities) > 0 {
+		content.WriteString("\n── Entities ──\n")
+		for _, e := range entities {
+			fmt.Fprintf(&content, "  [%s] %s\n", e.EntityType, e.EntityValue)
+		}
+	}
+
+	if len(edges) > 0 {
+		fmt.Fprintf(&content, "\n── Related (%d links) ──\n", len(edges))
+		for _, e := range edges {
+			targetID := e.ToObsID
+			if targetID == obs.ID {
+				targetID = e.FromObsID
+			}
+			fmt.Fprintf(&content, "  [%s] #%d  weight: %.1f\n", e.RelationType, targetID, e.Weight)
+		}
+	}
+
+	content.WriteString("\n── Content ──\n")
+	content.WriteString(obs.Content)
+
+	return content.String()
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

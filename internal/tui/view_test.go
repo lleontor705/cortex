@@ -9,6 +9,8 @@ import (
 	"github.com/lleontor705/cortex/internal/setup"
 	"github.com/lleontor705/cortex/internal/store/session"
 	"github.com/lleontor705/cortex/internal/update"
+
+	"github.com/charmbracelet/bubbles/viewport"
 )
 
 // Type alias for cleaner test literals.
@@ -119,7 +121,7 @@ func TestViewRecent(t *testing.T) {
 func TestViewObservationDetailWithEnrichment(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
-	m.SelectedObservation = &domain.Observation{
+	obs := &domain.Observation{
 		ID:        42,
 		Type:      "bugfix",
 		Title:     "Fix N+1 query",
@@ -128,18 +130,27 @@ func TestViewObservationDetailWithEnrichment(t *testing.T) {
 		Project:   "cortex",
 		CreatedAt: time.Now(),
 	}
-	m.DetailScore = &domain.ImportanceScore{
+	score := &domain.ImportanceScore{
 		ObservationID: 42,
 		Score:         3.7,
 		AccessCount:   15,
 	}
-	m.DetailEntities = []*domain.EntityLink{
+	entities := []*domain.EntityLink{
 		{EntityType: "file", EntityValue: "store.go"},
 		{EntityType: "package", EntityValue: "sqlitestore"},
 	}
-	m.DetailEdges = []*domain.Edge{
+	edges := []*domain.Edge{
 		{FromObsID: 42, ToObsID: 43, RelationType: "references", Weight: 1.0},
 	}
+	m.SelectedObservation = obs
+	m.DetailScore = score
+	m.DetailEntities = entities
+	m.DetailEdges = edges
+
+	// Build viewport content as the update handler would
+	contentStr := buildDetailContent(obs, score, entities, edges)
+	m.DetailViewport = viewport.New(m.Width-4, m.Height-8)
+	m.DetailViewport.SetContent(contentStr)
 
 	output := m.viewObservationDetail()
 	if !strings.Contains(output, "3.7/5.0") {
@@ -410,10 +421,24 @@ func TestViewRecentSmallTerminal(t *testing.T) {
 func TestViewObservationDetailSmallTerminal(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 20, 10
-	m.SelectedObservation = &domain.Observation{
+	obs := &domain.Observation{
 		ID: 1, Type: "test", Title: "Title", Content: "Content content content",
 		CreatedAt: time.Now(),
 	}
+	m.SelectedObservation = obs
+
+	// Build viewport content as the update handler would
+	contentStr := buildDetailContent(obs, nil, nil, nil)
+	w := m.Width - 4
+	if w < 20 {
+		w = 20
+	}
+	h := m.Height - 8
+	if h < 5 {
+		h = 5
+	}
+	m.DetailViewport = viewport.New(w, h)
+	m.DetailViewport.SetContent(contentStr)
 
 	output := m.viewObservationDetail()
 	if output == "" {

@@ -7,8 +7,10 @@ import (
 	"github.com/lleontor705/cortex/internal/store/session"
 	"github.com/lleontor705/cortex/internal/update"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -150,7 +152,14 @@ type configReloadedMsg struct {
 type reindexProgressMsg struct {
 	progress string
 	done     bool
+	total    int
+	indexed  int
 	err      error
+}
+
+type activityDataMsg struct {
+	daily []int // observation counts per day, last 7 days (index 0 = 6 days ago, index 6 = today)
+	err   error
 }
 
 type deleteObservationMsg struct {
@@ -201,7 +210,7 @@ type Model struct {
 	DetailScore         *domain.ImportanceScore
 	DetailEntities      []*domain.EntityLink
 	DetailEdges         []*domain.Edge
-	DetailScroll        int
+	DetailViewport      viewport.Model
 	DetailLoading       bool
 
 	// Timeline
@@ -274,6 +283,15 @@ type Model struct {
 	EmbCfgReindexWarning   bool
 	EmbCfgReindexing       bool
 	EmbCfgReindexProgress  string
+	ReindexProgressBar     progress.Model
+	ReindexTotal           int
+	ReindexDone            int
+
+	// Activity sparkline (7-day observation counts)
+	ActivityData []int
+
+	// Focus management (for future split pane)
+	FocusedPane int // 0=main, 1=preview (for future split pane)
 
 	// Toast messages
 	ToastMessage string
@@ -283,6 +301,11 @@ type Model struct {
 	ConfirmDelete     bool
 	ConfirmDeleteID   int64
 	DeleteTargetTitle string
+
+	// Command palette
+	CmdPaletteOpen   bool
+	CmdPaletteInput  textinput.Model
+	CmdPaletteCursor int
 }
 
 // New creates a new TUI model connected to the given stores.
@@ -305,6 +328,11 @@ func New(deps *Deps) Model {
 	embModel.CharLimit = 128
 	embModel.Width = 40
 
+	cmdInput := textinput.New()
+	cmdInput.Placeholder = "Type a command..."
+	cmdInput.CharLimit = 64
+	cmdInput.Width = 40
+
 	// Initialize embedding config from current config if available
 	embProvider := 0
 	embVector := false
@@ -322,16 +350,18 @@ func New(deps *Deps) Model {
 	}
 
 	return Model{
-		deps:            deps,
-		Version:         deps.Version,
-		Screen:          ScreenDashboard,
-		SearchInput:     ti,
-		SetupSpinner:    sp,
-		EmbCfgSpinner:   embSp,
-		EmbCfgModel:     embModel,
-		EmbCfgProvider:   embProvider,
-		EmbCfgVector:     embVector,
-		EmbCfgAutoStart:  embAutoStart,
+		deps:               deps,
+		Version:            deps.Version,
+		Screen:             ScreenDashboard,
+		SearchInput:        ti,
+		SetupSpinner:       sp,
+		EmbCfgSpinner:      embSp,
+		EmbCfgModel:        embModel,
+		EmbCfgProvider:     embProvider,
+		EmbCfgVector:       embVector,
+		EmbCfgAutoStart:    embAutoStart,
+		ReindexProgressBar: progress.New(progress.WithDefaultGradient()),
+		CmdPaletteInput:    cmdInput,
 	}
 }
 
@@ -339,6 +369,7 @@ func New(deps *Deps) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadStats(m.deps),
+		loadActivityData(m.deps),
 		checkForUpdate(m.Version),
 		tea.EnterAltScreen,
 	)

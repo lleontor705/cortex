@@ -2,11 +2,13 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/store/session"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -113,20 +115,31 @@ func TestHandleRecentKeysNavigation(t *testing.T) {
 func TestHandleObservationDetailKeysScroll(t *testing.T) {
 	m := New(&Deps{})
 	m.Screen = ScreenObservationDetail
-	m.SelectedObservation = &domain.Observation{ID: 1}
+	m.Width, m.Height = 120, 40
+	m.SelectedObservation = &domain.Observation{ID: 1, Content: "line1\nline2\nline3"}
+
+	// Set up the viewport with content that can scroll
+	longContent := ""
+	for i := 0; i < 100; i++ {
+		longContent += fmt.Sprintf("line %d\n", i)
+	}
+	contentStr := buildDetailContent(m.SelectedObservation, nil, nil, nil)
+	_ = contentStr // content built from observation
+	m.DetailViewport = viewport.New(80, 10)
+	m.DetailViewport.SetContent(longContent)
 
 	// Scroll down
 	updated, _ := m.handleObservationDetailKeys("j")
 	result := updated.(Model)
-	if result.DetailScroll != 1 {
-		t.Fatalf("scroll = %d, want 1", result.DetailScroll)
+	if result.DetailViewport.YOffset < 1 {
+		t.Fatalf("viewport YOffset = %d, want >= 1", result.DetailViewport.YOffset)
 	}
 
 	// Scroll up
 	updated, _ = result.handleObservationDetailKeys("k")
 	result = updated.(Model)
-	if result.DetailScroll != 0 {
-		t.Fatalf("scroll = %d, want 0", result.DetailScroll)
+	if result.DetailViewport.YOffset != 0 {
+		t.Fatalf("viewport YOffset = %d, want 0", result.DetailViewport.YOffset)
 	}
 }
 

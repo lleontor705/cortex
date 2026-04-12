@@ -178,33 +178,6 @@ var (
 // ─── Cortex-Exclusive Styles ────────────────────────────────────────────────
 
 var (
-	// Importance score badge (color varies by score range)
-	scoreBadgeHighStyle = lipgloss.NewStyle().
-				Foreground(colorGold).
-				Bold(true)
-
-	scoreBadgeMidStyle = lipgloss.NewStyle().
-				Foreground(colorTeal)
-
-	scoreBadgeLowStyle = lipgloss.NewStyle().
-				Foreground(colorSubtext)
-
-	// Entity link type pills
-	entityFileStyle = lipgloss.NewStyle().
-			Foreground(colorBlue)
-
-	entityURLStyle = lipgloss.NewStyle().
-			Foreground(colorCyan)
-
-	entityPackageStyle = lipgloss.NewStyle().
-				Foreground(colorGreen)
-
-	entitySymbolStyle = lipgloss.NewStyle().
-				Foreground(colorPurple)
-
-	entityDefaultStyle = lipgloss.NewStyle().
-				Foreground(colorSubtext)
-
 	// Graph edge relationship badges
 	graphEdgeStyle = lipgloss.NewStyle().
 			Foreground(colorMauve).
@@ -216,18 +189,6 @@ var (
 			Italic(true)
 )
 
-// scoreStyle returns the appropriate style for an importance score.
-func scoreStyle(score float64) lipgloss.Style {
-	switch {
-	case score >= 3.0:
-		return scoreBadgeHighStyle
-	case score >= 1.5:
-		return scoreBadgeMidStyle
-	default:
-		return scoreBadgeLowStyle
-	}
-}
-
 // ─── Status Bar & Toast Styles ──────────────────────────────────────────────
 
 var (
@@ -236,11 +197,6 @@ var (
 			Background(lipgloss.Color("#1a1b2e")).
 			Padding(0, 1)
 
-	modalStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorRed).
-			Padding(1, 2).
-			MarginTop(1)
 )
 
 // typeColor returns a lipgloss.Color for observation types.
@@ -265,18 +221,3 @@ func typeColor(obsType string) lipgloss.Color {
 	}
 }
 
-// entityStyle returns the style for an entity type.
-func entityStyle(entityType string) lipgloss.Style {
-	switch entityType {
-	case "file":
-		return entityFileStyle
-	case "url":
-		return entityURLStyle
-	case "package":
-		return entityPackageStyle
-	case "symbol":
-		return entitySymbolStyle
-	default:
-		return entityDefaultStyle
-	}
-}

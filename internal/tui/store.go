@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/config"
@@ -91,6 +92,28 @@ func loadStats(d *Deps) tea.Cmd {
 				ByType:            stats.ByType,
 			},
 		}
+	}
+}
+
+func loadActivityData(d *Deps) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return activityDataMsg{daily: make([]int, 7)}
+		}
+		ctx := context.Background()
+		daily := make([]int, 7)
+		now := time.Now()
+		for i := 0; i < 7; i++ {
+			dayStart := time.Date(now.Year(), now.Month(), now.Day()-6+i, 0, 0, 0, 0, now.Location())
+			dayEnd := dayStart.Add(24 * time.Hour)
+			obs, _ := d.Observations.List(ctx, domain.ObservationFilter{
+				CreatedAfter:  &dayStart,
+				CreatedBefore: &dayEnd,
+				Limit:         1000,
+			})
+			daily[i] = len(obs)
+		}
+		return activityDataMsg{daily: daily}
 	}
 }
 
@@ -446,7 +469,7 @@ func startReindexCmd(d *Deps) tea.Cmd {
 		}
 
 		progress := fmt.Sprintf("Reindexed %d/%d observations (%d errors)", indexed, len(obs), errCount)
-		return reindexProgressMsg{progress: progress, done: true}
+		return reindexProgressMsg{progress: progress, done: true, total: len(obs), indexed: indexed}
 	}
 }
 
