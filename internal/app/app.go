@@ -8,11 +8,14 @@ import (
 	"runtime"
 	"time"
 
+	"log"
+
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/database"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/internal/embedding"
 	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/internal/ollama"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/internal/store/graph"
@@ -93,9 +96,19 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	// Wire graph store into search for temporal-aware graph expansion
 	stores.Search.Graph = stores.Graph
 
+	// Auto-start Ollama if configured
+	if cfg.Search.EmbeddingProvider == "ollama" && cfg.Search.OllamaAutoStart {
+		mgr := ollama.NewManager(cfg.Search.EmbeddingBaseURL)
+		if err := mgr.EnsureRunning(context.Background()); err != nil {
+			log.Printf("warning: could not auto-start ollama: %v", err)
+		}
+	}
+
 	// Initialize embedding service if configured
 	embCfg := embedding.Config{
 		Provider: cfg.Search.EmbeddingProvider,
+		Model:    cfg.Search.EmbeddingModel,
+		BaseURL:  cfg.Search.EmbeddingBaseURL,
 	}
 	stores.Embeddings = embedding.New(embCfg)
 
@@ -122,6 +135,33 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	return a, nil
+}
+
+// ReloadConfig re-reads the configuration from disk and reinitializes
+// the embedding service. Useful after manual edits to cortex.yaml.
+func (a *App) ReloadConfig() error {
+	cfg, err := config.Load("")
+	if err != nil {
+		return fmt.Errorf("reload config: %w", err)
+	}
+	a.Config = cfg
+
+	// Auto-start Ollama if configured
+	if cfg.Search.EmbeddingProvider == "ollama" && cfg.Search.OllamaAutoStart {
+		mgr := ollama.NewManager(cfg.Search.EmbeddingBaseURL)
+		if err := mgr.EnsureRunning(context.Background()); err != nil {
+			log.Printf("warning: could not auto-start ollama on reload: %v", err)
+		}
+	}
+
+	// Reinitialize embedding service
+	a.Stores.Embeddings = embedding.New(embedding.Config{
+		Provider: cfg.Search.EmbeddingProvider,
+		Model:    cfg.Search.EmbeddingModel,
+		BaseURL:  cfg.Search.EmbeddingBaseURL,
+	})
+
+	return nil
 }
 
 // Close releases resources held by the application.

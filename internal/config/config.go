@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // CortexDir returns the centralized data directory (~/.cortex/).
@@ -91,7 +92,10 @@ type SearchConfig struct {
 	FTS5              bool    `yaml:"fts5" mapstructure:"fts5"`
 	Vector            bool    `yaml:"vector" mapstructure:"vector"`
 	FusionK           float64 `yaml:"fusion_k" mapstructure:"fusion_k"`
-	EmbeddingProvider string  `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "openai", "none" (default)
+	EmbeddingProvider string `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
+	EmbeddingModel    string `yaml:"embedding_model" mapstructure:"embedding_model"`       // Model name override (e.g. "qwen3-embedding:8b")
+	EmbeddingBaseURL  string `yaml:"embedding_base_url" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
+	OllamaAutoStart   bool   `yaml:"ollama_auto_start" mapstructure:"ollama_auto_start"`   // Auto-start Ollama when configured as provider
 }
 
 // MemoryConfig holds memory management configuration
@@ -188,12 +192,13 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 
 	// Read config file (optional - may not exist)
+	configNotFound := false
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			// Config file was found but another error was produced
 			return nil, fmt.Errorf("error reading config file: %w", err)
 		}
-		// Config file not found; ignore and use defaults + env vars
+		configNotFound = true
 	}
 
 	// Unmarshal into config struct
@@ -205,6 +210,11 @@ func Load(configPath string) (*Config, error) {
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+
+	// Create default config file if none was found and no explicit path was given
+	if configNotFound && configPath == "" {
+		_ = ensureDefaultConfig(&cfg)
 	}
 
 	return &cfg, nil
@@ -399,4 +409,45 @@ func (c *Config) String() string {
 		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v}",
 		c.Server, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle,
 	)
+}
+
+// ensureDefaultConfig creates ~/.cortex/cortex.yaml with default values
+// if it does not already exist. Errors are intentionally ignored (best-effort).
+func ensureDefaultConfig(cfg *Config) error {
+	path := filepath.Join(CortexDir(), "cortex.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return nil // file already exists
+	}
+	return Save(cfg, path)
+}
+
+// Save writes the configuration to the specified path.
+// If path is empty, writes to ~/.cortex/cortex.yaml.
+// The write is atomic: data goes to a .tmp file first, then renamed.
+func Save(cfg *Config, path string) error {
+	if path == "" {
+		path = filepath.Join(CortexDir(), "cortex.yaml")
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename config: %w", err)
+	}
+
+	return nil
 }
