@@ -364,8 +364,17 @@ func saveEmbeddingConfig(d *Deps, provider int, model string, vector, autoStart 
 		d.Config.Search.EmbeddingModel = model
 		d.Config.Search.Vector = vector
 		d.Config.Search.OllamaAutoStart = autoStart
-		err := config.Save(d.Config, "")
-		return configSavedMsg{err: err}
+		if err := config.Save(d.Config, ""); err != nil {
+			return configSavedMsg{err: err}
+		}
+		// Reload app to reinitialize embedding service with new config
+		if d.App != nil {
+			if err := d.App.ReloadConfig(); err != nil {
+				return configSavedMsg{err: fmt.Errorf("config saved but reload failed: %w", err)}
+			}
+			d.Config = d.App.Config
+		}
+		return configSavedMsg{}
 	}
 }
 
