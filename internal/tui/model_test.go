@@ -356,7 +356,7 @@ func TestLoadStatsWithNilObservations(t *testing.T) {
 }
 
 func TestLoadSearchWithNilDeps(t *testing.T) {
-	cmd := searchMemories(nil, "test")
+	cmd := searchMemories(nil, "test", "")
 	msg := cmd()
 	loaded, ok := msg.(searchResultsMsg)
 	if !ok {

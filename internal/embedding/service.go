@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -77,6 +78,7 @@ type ollamaService struct {
 	baseURL string
 	model   string
 	dims    int // cached after first call
+	mu      sync.Mutex
 }
 
 func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -122,14 +124,18 @@ func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, erro
 	}
 
 	// Cache dimensions from first result
+	s.mu.Lock()
 	if s.dims == 0 {
 		s.dims = len(vec)
 	}
+	s.mu.Unlock()
 
 	return vec, nil
 }
 
 func (s *ollamaService) Dimensions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.dims > 0 {
 		return s.dims
 	}
@@ -144,6 +150,8 @@ func (s *ollamaService) Model() string { return s.model }
 type openAIService struct {
 	apiKey string
 	model  string
+	dims   int
+	mu     sync.Mutex
 }
 
 func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -183,8 +191,25 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 		return nil, fmt.Errorf("openai: no data returned")
 	}
 
-	return result.Data[0].Embedding, nil
+	vec := result.Data[0].Embedding
+
+	// Cache dimensions from first result
+	s.mu.Lock()
+	if s.dims == 0 {
+		s.dims = len(vec)
+	}
+	s.mu.Unlock()
+
+	return vec, nil
 }
 
-func (s *openAIService) Dimensions() int { return 1536 }
+func (s *openAIService) Dimensions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dims > 0 {
+		return s.dims
+	}
+	// Default for text-embedding-3-small
+	return 1536
+}
 func (s *openAIService) Model() string   { return s.model }

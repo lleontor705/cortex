@@ -76,7 +76,8 @@ var (
 			PaddingLeft(2)
 
 	menuSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorCyan).
+				Background(colorCyan).
+				Foreground(lipgloss.Color("#16161e")).
 				Bold(true).
 				PaddingLeft(1)
 
@@ -94,7 +95,8 @@ var (
 			PaddingLeft(2)
 
 	listSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorCyan).
+				Background(colorCyan).
+				Foreground(lipgloss.Color("#16161e")).
 				Bold(true).
 				PaddingLeft(1)
 
@@ -136,8 +138,6 @@ var (
 				Align(lipgloss.Right).
 				PaddingRight(1)
 
-	detailValueStyle = lipgloss.NewStyle().
-				Foreground(colorText)
 )
 
 // ─── Timeline Styles ─────────────────────────────────────────────────────────
@@ -176,68 +176,42 @@ var (
 // ─── Cortex-Exclusive Styles ────────────────────────────────────────────────
 
 var (
-	// Importance score badge (color varies by score range)
-	scoreBadgeHighStyle = lipgloss.NewStyle().
-				Foreground(colorGold).
-				Bold(true)
-
-	scoreBadgeMidStyle = lipgloss.NewStyle().
-				Foreground(colorTeal)
-
-	scoreBadgeLowStyle = lipgloss.NewStyle().
-				Foreground(colorSubtext)
-
-	// Entity link type pills
-	entityFileStyle = lipgloss.NewStyle().
-			Foreground(colorBlue)
-
-	entityURLStyle = lipgloss.NewStyle().
-			Foreground(colorCyan)
-
-	entityPackageStyle = lipgloss.NewStyle().
-				Foreground(colorGreen)
-
-	entitySymbolStyle = lipgloss.NewStyle().
-				Foreground(colorPurple)
-
-	entityDefaultStyle = lipgloss.NewStyle().
-				Foreground(colorSubtext)
-
 	// Graph edge relationship badges
 	graphEdgeStyle = lipgloss.NewStyle().
 			Foreground(colorMauve).
 			Bold(true)
 
-	// Archived observation dimmed style
-	archivedStyle = lipgloss.NewStyle().
-			Foreground(colorSubtext).
-			Italic(true)
 )
 
-// scoreStyle returns the appropriate style for an importance score.
-func scoreStyle(score float64) lipgloss.Style {
-	switch {
-	case score >= 3.0:
-		return scoreBadgeHighStyle
-	case score >= 1.5:
-		return scoreBadgeMidStyle
+// ─── Status Bar & Toast Styles ──────────────────────────────────────────────
+
+var (
+	statusBarStyle = lipgloss.NewStyle().
+			Foreground(colorText).
+			Background(lipgloss.Color("#1a1b2e")).
+			Padding(0, 1)
+
+)
+
+// typeColor returns a lipgloss.Color for observation types.
+func typeColor(obsType string) lipgloss.Color {
+	switch obsType {
+	case "bugfix":
+		return colorRed
+	case "decision":
+		return colorCyan
+	case "architecture":
+		return colorPurple
+	case "discovery":
+		return colorTeal
+	case "pattern":
+		return colorBlue
+	case "config":
+		return colorAmber
+	case "preference":
+		return colorGold
 	default:
-		return scoreBadgeLowStyle
+		return colorSubtext
 	}
 }
 
-// entityStyle returns the style for an entity type.
-func entityStyle(entityType string) lipgloss.Style {
-	switch entityType {
-	case "file":
-		return entityFileStyle
-	case "url":
-		return entityURLStyle
-	case "package":
-		return entityPackageStyle
-	case "symbol":
-		return entitySymbolStyle
-	default:
-		return entityDefaultStyle
-	}
-}

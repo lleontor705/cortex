@@ -1,9 +1,15 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
+
+	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -21,11 +27,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.Screen == ScreenObservationDetail {
+			w := m.Width - 4
+			if w < 20 {
+				w = 20
+			}
+			h := m.Height - 8
+			if h < 5 {
+				h = 5
+			}
+			m.DetailViewport.Width = w
+			m.DetailViewport.Height = h
+		}
+		// Preview pane: disable if too narrow, resize if visible
+		if m.Width < 100 {
+			m.PreviewVisible = false
+		}
+		if m.PreviewVisible {
+			m.PreviewViewport.Width = m.Width*3/5 - 6
+			m.PreviewViewport.Height = m.Height - 10
+		}
+
+		// Resize all list components
+		w := msg.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		if m.PreviewVisible {
+			listWidth := m.Width * 2 / 5
+			m.SearchListModel.SetSize(listWidth-4, msg.Height-10)
+			m.RecentList.SetSize(listWidth-4, msg.Height-8)
+		} else {
+			m.SearchListModel.SetSize(w, msg.Height-10)
+			m.RecentList.SetSize(w, msg.Height-8)
+		}
+		m.SessionListModel.SetSize(w, msg.Height-8)
+		m.GraphListModel.SetSize(w, msg.Height-12)
+		m.ArchiveList.SetSize(w, msg.Height-8)
 		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+		// Command palette intercept
+		if m.CmdPaletteOpen {
+			return m.handleCmdPaletteKeys(msg)
 		}
 		if m.Screen == ScreenSearch && m.SearchInput.Focused() {
 			return m.handleSearchInputKeys(msg)
@@ -33,7 +80,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Screen == ScreenEmbeddingConfig && m.EmbCfgModel.Focused() {
 			return m.handleEmbeddingModelInput(msg)
 		}
-		return m.handleKeyPress(msg.String())
+
+		// For list screens, pass key messages to list component for navigation
+		var listCmd tea.Cmd
+		switch m.Screen {
+		case ScreenSearchResults:
+			if !m.ConfirmDelete {
+				m.SearchListModel, listCmd = m.SearchListModel.Update(msg)
+			}
+		case ScreenRecent:
+			if !m.ConfirmDelete {
+				m.RecentList, listCmd = m.RecentList.Update(msg)
+			}
+		case ScreenSessions:
+			m.SessionListModel, listCmd = m.SessionListModel.Update(msg)
+		case ScreenGraph:
+			m.GraphListModel, listCmd = m.GraphListModel.Update(msg)
+		case ScreenArchive:
+			if !m.ConfirmDelete {
+				m.ArchiveList, listCmd = m.ArchiveList.Update(msg)
+			}
+		}
+
+		// Update preview content if visible (cursor may have changed)
+		if m.PreviewVisible {
+			m.updatePreviewContent()
+		}
+
+		// Then handle action keys
+		actionModel, actionCmd := m.handleKeyPress(msg.String())
+		if listCmd != nil {
+			return actionModel, tea.Batch(listCmd, actionCmd)
+		}
+		return actionModel, actionCmd
 
 	// ─── Data loaded messages ────────────────────────────────────────
 	case updateCheckMsg:
@@ -48,6 +127,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Stats = msg.stats
 		return m, nil
 
+	case activityDataMsg:
+		if msg.err == nil {
+			m.ActivityData = msg.daily
+		}
+		return m, nil
+
 	case searchResultsMsg:
 		if msg.err != nil {
 			m.ErrorMsg = msg.err.Error()
@@ -58,6 +143,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Screen = ScreenSearchResults
 		m.Cursor = 0
 		m.Scroll = 0
+		// Populate bubbles/list
+		items := make([]list.Item, len(msg.results))
+		for i, r := range msg.results {
+			items[i] = searchResultItem{result: r}
+		}
+		m.SearchListModel.SetItems(items)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 10
+		if h < 5 {
+			h = 5
+		}
+		m.SearchListModel.SetSize(w, h)
 		return m, nil
 
 	case recentObservationsMsg:
@@ -66,9 +166,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.RecentObservations = msg.observations
+		// Populate bubbles/list
+		items := make([]list.Item, len(msg.observations))
+		for i, o := range msg.observations {
+			items[i] = observationItem{obs: o}
+		}
+		m.RecentList.SetItems(items)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 8
+		if h < 5 {
+			h = 5
+		}
+		m.RecentList.SetSize(w, h)
 		return m, nil
 
 	case observationDetailMsg:
+		m.DetailLoading = false
 		if msg.err != nil {
 			m.ErrorMsg = msg.err.Error()
 			return m, nil
@@ -78,7 +194,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.DetailEntities = msg.entities
 		m.DetailEdges = msg.edges
 		m.Screen = ScreenObservationDetail
-		m.DetailScroll = 0
+
+		// Build viewport content
+		contentStr := buildDetailContent(msg.observation, msg.score, msg.entities, msg.edges)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 8
+		if h < 5 {
+			h = 5
+		}
+		m.DetailViewport = viewport.New(w, h)
+		m.DetailViewport.SetContent(contentStr)
 		return m, nil
 
 	case timelineMsg:
@@ -99,6 +227,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.Sessions = msg.sessions
+		// Populate bubbles/list
+		items := make([]list.Item, len(msg.sessions))
+		for i, s := range msg.sessions {
+			items[i] = sessionItem{session: s}
+		}
+		m.SessionListModel.SetItems(items)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 8
+		if h < 5 {
+			h = 5
+		}
+		m.SessionListModel.SetSize(w, h)
 		return m, nil
 
 	case sessionObservationsMsg:
@@ -122,6 +265,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Screen = ScreenGraph
 		m.Cursor = 0
 		m.Scroll = 0
+		// Populate bubbles/list
+		items := make([]list.Item, len(msg.related))
+		for i, o := range msg.related {
+			edgeLabel := ""
+			for _, e := range msg.edges {
+				if e.FromObsID == o.ID || e.ToObsID == o.ID {
+					edgeLabel = e.RelationType
+					break
+				}
+			}
+			items[i] = graphItem{obs: o, edgeLabel: edgeLabel}
+		}
+		m.GraphListModel.SetItems(items)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 12
+		if h < 5 {
+			h = 5
+		}
+		m.GraphListModel.SetSize(w, h)
 		return m, nil
 
 	case healthLoadedMsg:
@@ -142,6 +307,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ArchivedObservations = msg.observations
+		// Populate bubbles/list
+		items := make([]list.Item, len(msg.observations))
+		for i, o := range msg.observations {
+			items[i] = observationItem{obs: o}
+		}
+		m.ArchiveList.SetItems(items)
+		w := m.Width - 4
+		if w < 20 {
+			w = 20
+		}
+		h := m.Height - 8
+		if h < 5 {
+			h = 5
+		}
+		m.ArchiveList.SetSize(w, h)
 		return m, nil
 
 	case setupInstallMsg:
@@ -169,12 +349,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.EmbCfgSaved = true
 		m.EmbCfgError = ""
+		m.EmbCfgDirty = false
+		// Detect provider/model changes for reindex warning
+		providerChanged := m.EmbCfgProvider != m.EmbCfgOriginalProvider
+		modelChanged := m.EmbCfgModel.Value() != m.EmbCfgOriginalModel
+		if providerChanged || modelChanged {
+			m.EmbCfgReindexWarning = true
+		}
+		m.EmbCfgOriginalProvider = m.EmbCfgProvider
+		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
 		// If ollama is configured, check its status
 		if m.EmbCfgProvider == 1 {
 			m.EmbCfgOllamaChecked = false
 			return m, checkOllamaStatus(m.deps)
 		}
 		return m, nil
+
+	case reindexProgressMsg:
+		m.EmbCfgReindexing = false
+		m.ReindexTotal = msg.total
+		m.ReindexDone = msg.indexed
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		if msg.done {
+			m.EmbCfgReindexProgress = msg.progress
+			m.EmbCfgReindexWarning = false
+		}
+		return m, nil
+
+	case deleteObservationMsg:
+		if msg.err != nil {
+			m.ErrorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.ConfirmDelete = false
+		m.ConfirmDeleteID = 0
+		m.ToastMessage = fmt.Sprintf("Observation #%d deleted", msg.id)
+		m.ToastType = "success"
+		return m, m.refreshScreen(m.Screen)
+
+	case unarchiveObservationMsg:
+		if msg.err != nil {
+			m.ErrorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.ToastMessage = fmt.Sprintf("Observation #%d restored", msg.id)
+		m.ToastType = "success"
+		return m, loadArchivedObservations(m.deps, m.FilterProject)
 
 	case ollamaStatusMsg:
 		m.EmbCfgOllamaChecked = true
@@ -206,6 +429,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case configReloadedMsg:
 		m.EmbCfgSaving = false
+		m.EmbCfgDirty = false
 		if msg.err != nil {
 			m.EmbCfgError = msg.err.Error()
 			return m, nil
@@ -235,15 +459,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		if m.DetailLoading {
+			var cmd tea.Cmd
+			m.SetupSpinner, cmd = m.SetupSpinner.Update(msg)
+			return m, cmd
+		}
 		if m.SetupInstalling {
 			var cmd tea.Cmd
 			m.SetupSpinner, cmd = m.SetupSpinner.Update(msg)
 			return m, cmd
 		}
-		if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+		if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving || m.EmbCfgReindexing {
 			var cmd tea.Cmd
 			m.EmbCfgSpinner, cmd = m.EmbCfgSpinner.Update(msg)
 			return m, cmd
+		}
+		return m, nil
+
+	case tea.MouseMsg:
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			// Scroll delegated to active component
+			switch m.Screen {
+			case ScreenObservationDetail:
+				var cmd tea.Cmd
+				m.DetailViewport, cmd = m.DetailViewport.Update(msg)
+				return m, cmd
+			}
 		}
 		return m, nil
 	}
@@ -256,7 +497,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 	m.ErrorMsg = ""
 
+	// Clear toast on any key press
+	if m.ToastMessage != "" {
+		m.ToastMessage = ""
+		m.ToastType = ""
+	}
+
+	// Cancel delete confirmation on any key except y/Y
+	if m.ConfirmDelete && key != "y" && key != "Y" {
+		m.ConfirmDelete = false
+		m.ConfirmDeleteID = 0
+		return m, nil
+	}
+
+	// Global help key — skip for screens with text input
+	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenHelp {
+		m.PrevScreen = m.Screen
+		m.Screen = ScreenHelp
+		return m, nil
+	}
+
+	// Command palette
+	if key == "ctrl+k" {
+		m.CmdPaletteOpen = true
+		m.CmdPaletteCursor = 0
+		m.CmdPaletteInput.SetValue("")
+		m.CmdPaletteInput.Focus()
+		return m, nil
+	}
+
 	switch m.Screen {
+	case ScreenHelp:
+		return m.handleHelpKeys(key)
 	case ScreenDashboard:
 		return m.handleDashboardKeys(key)
 	case ScreenSearch:
@@ -340,7 +612,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.Screen = ScreenRecent
 		m.Cursor = 0
 		m.Scroll = 0
-		return m, loadRecentObservations(m.deps)
+		return m, loadRecentObservations(m.deps, m.FilterProject)
 	case 2: // Sessions
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSessions
@@ -357,7 +629,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 			m.GraphRootID = m.RecentObservations[0].ID
 			return m, loadGraphRelated(m.deps, m.GraphRootID)
 		}
-		return m, loadRecentObservations(m.deps)
+		return m, loadRecentObservations(m.deps, m.FilterProject)
 	case 4: // Memory health
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenHealth
@@ -373,7 +645,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.Screen = ScreenArchive
 		m.Cursor = 0
 		m.Scroll = 0
-		return m, loadArchivedObservations(m.deps)
+		return m, loadArchivedObservations(m.deps, m.FilterProject)
 	case 6: // Embedding settings
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenEmbeddingConfig
@@ -382,9 +654,13 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.EmbCfgSaved = false
 		m.EmbCfgSaving = false
 		m.EmbCfgError = ""
+		m.EmbCfgDirty = false
 		m.EmbCfgOllamaChecked = false
 		m.EmbCfgPulling = false
 		m.EmbCfgStarting = false
+		m.EmbCfgReindexWarning = false
+		m.EmbCfgReindexing = false
+		m.EmbCfgReindexProgress = ""
 		// Reload current config values
 		if m.deps.Config != nil {
 			switch m.deps.Config.Search.EmbeddingProvider {
@@ -399,6 +675,9 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 			m.EmbCfgVector = m.deps.Config.Search.Vector
 			m.EmbCfgAutoStart = m.deps.Config.Search.OllamaAutoStart
 		}
+		// Save original values for change detection
+		m.EmbCfgOriginalProvider = m.EmbCfgProvider
+		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
 		return m, nil
 	case 7: // Setup
 		m.PrevScreen = ScreenDashboard
@@ -427,10 +706,35 @@ func (m Model) handleSearchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		query := m.SearchInput.Value()
 		if query != "" {
+			// Append to search history (max 20 entries)
+			m.SearchHistory = append(m.SearchHistory, query)
+			if len(m.SearchHistory) > 20 {
+				m.SearchHistory = m.SearchHistory[len(m.SearchHistory)-20:]
+			}
+			m.SearchHistoryIdx = len(m.SearchHistory)
 			m.SearchInput.Blur()
-			return m, searchMemories(m.deps, query)
+			return m, searchMemories(m.deps, query, m.FilterProject)
 		}
 		return m, nil
+	case "up":
+		if len(m.SearchHistory) > 0 {
+			if m.SearchHistoryIdx > 0 {
+				m.SearchHistoryIdx--
+			}
+			m.SearchInput.SetValue(m.SearchHistory[m.SearchHistoryIdx])
+			return m, nil
+		}
+	case "down":
+		if len(m.SearchHistory) > 0 {
+			if m.SearchHistoryIdx < len(m.SearchHistory)-1 {
+				m.SearchHistoryIdx++
+				m.SearchInput.SetValue(m.SearchHistory[m.SearchHistoryIdx])
+			} else {
+				m.SearchHistoryIdx = len(m.SearchHistory)
+				m.SearchInput.SetValue("")
+			}
+			return m, nil
+		}
 	case "esc":
 		m.SearchInput.Blur()
 		m.Screen = ScreenDashboard
@@ -459,46 +763,78 @@ func (m Model) handleSearchKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Search Results ─────────────────────────────────────────────────────────
 
 func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := (m.Height - 10) / linesPerItem
-	if visibleItems < minVisibleItems {
-		visibleItems = minVisibleItems
+	// Confirm delete
+	if m.ConfirmDelete {
+		switch key {
+		case "y", "Y":
+			m.ConfirmDelete = false
+			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
+		case "n", "N", "esc":
+			m.ConfirmDelete = false
+		}
+		return m, nil
 	}
 
 	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.Scroll {
-				m.Scroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.SearchResults)-1 {
-			m.Cursor++
-			if m.Cursor >= m.Scroll+visibleItems {
-				m.Scroll = m.Cursor - visibleItems + 1
-			}
-		}
 	case "enter":
-		if len(m.SearchResults) > 0 && m.Cursor < len(m.SearchResults) {
-			obsID := m.SearchResults[m.Cursor].ID
+		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			m.PrevScreen = ScreenSearchResults
-			m.PrevCursor = m.Cursor
-			return m, loadObservationDetail(m.deps, obsID)
+			m.PrevCursor = m.SearchListModel.Index()
+			m.DetailLoading = true
+			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.result.ID))
 		}
 	case "t":
-		if len(m.SearchResults) > 0 && m.Cursor < len(m.SearchResults) {
-			obsID := m.SearchResults[m.Cursor].ID
+		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			m.PrevScreen = ScreenSearchResults
-			m.PrevCursor = m.Cursor
-			return m, loadTimeline(m.deps, obsID)
+			m.PrevCursor = m.SearchListModel.Index()
+			return m, loadTimeline(m.deps, item.result.ID)
 		}
+	case "f":
+		if m.Stats != nil && len(m.Stats.Projects) > 0 {
+			projects := append([]string{""}, m.Stats.Projects...)
+			currentIdx := 0
+			for i, p := range projects {
+				if p == m.FilterProject {
+					currentIdx = i
+					break
+				}
+			}
+			m.FilterProject = projects[(currentIdx+1)%len(projects)]
+			return m, searchMemories(m.deps, m.SearchQuery, m.FilterProject)
+		}
+	case "d":
+		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = item.result.ID
+			m.DeleteTargetTitle = item.result.Title
+		}
+		return m, nil
 	case "/", "s":
 		m.PrevScreen = ScreenSearchResults
 		m.Screen = ScreenSearch
 		m.SearchInput.Focus()
 		return m, nil
+	case "p":
+		if m.Width >= 100 {
+			m.PreviewVisible = !m.PreviewVisible
+			if m.PreviewVisible {
+				m.PreviewViewport = viewport.New(m.Width*3/5-6, m.Height-10)
+				m.updatePreviewContent()
+				// Shrink list to left pane
+				listWidth := m.Width * 2 / 5
+				m.SearchListModel.SetSize(listWidth-4, m.Height-10)
+			} else {
+				// Restore full-width list
+				w := m.Width - 4
+				if w < 20 {
+					w = 20
+				}
+				m.SearchListModel.SetSize(w, m.Height-10)
+			}
+		}
+		return m, nil
 	case "esc", "q":
+		m.PreviewVisible = false
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSearch
 		m.Cursor = 0
@@ -512,41 +848,73 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Recent Observations ────────────────────────────────────────────────────
 
 func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := (m.Height - 8) / linesPerItem
-	if visibleItems < minVisibleItems {
-		visibleItems = minVisibleItems
+	// Confirm delete
+	if m.ConfirmDelete {
+		switch key {
+		case "y", "Y":
+			m.ConfirmDelete = false
+			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
+		case "n", "N", "esc":
+			m.ConfirmDelete = false
+		}
+		return m, nil
 	}
 
 	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.Scroll {
-				m.Scroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.RecentObservations)-1 {
-			m.Cursor++
-			if m.Cursor >= m.Scroll+visibleItems {
-				m.Scroll = m.Cursor - visibleItems + 1
-			}
-		}
 	case "enter":
-		if len(m.RecentObservations) > 0 && m.Cursor < len(m.RecentObservations) {
-			obsID := m.RecentObservations[m.Cursor].ID
+		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
 			m.PrevScreen = ScreenRecent
-			m.PrevCursor = m.Cursor
-			return m, loadObservationDetail(m.deps, obsID)
+			m.PrevCursor = m.RecentList.Index()
+			m.DetailLoading = true
+			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
 		}
 	case "t":
-		if len(m.RecentObservations) > 0 && m.Cursor < len(m.RecentObservations) {
-			obsID := m.RecentObservations[m.Cursor].ID
+		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
 			m.PrevScreen = ScreenRecent
-			m.PrevCursor = m.Cursor
-			return m, loadTimeline(m.deps, obsID)
+			m.PrevCursor = m.RecentList.Index()
+			return m, loadTimeline(m.deps, item.obs.ID)
 		}
+	case "d":
+		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = item.obs.ID
+			m.DeleteTargetTitle = item.obs.Title
+		}
+		return m, nil
+	case "f":
+		if m.Stats != nil && len(m.Stats.Projects) > 0 {
+			projects := append([]string{""}, m.Stats.Projects...)
+			currentIdx := 0
+			for i, p := range projects {
+				if p == m.FilterProject {
+					currentIdx = i
+					break
+				}
+			}
+			m.FilterProject = projects[(currentIdx+1)%len(projects)]
+			return m, loadRecentObservations(m.deps, m.FilterProject)
+		}
+	case "p":
+		if m.Width >= 100 {
+			m.PreviewVisible = !m.PreviewVisible
+			if m.PreviewVisible {
+				m.PreviewViewport = viewport.New(m.Width*3/5-6, m.Height-10)
+				m.updatePreviewContent()
+				// Shrink list to left pane
+				listWidth := m.Width * 2 / 5
+				m.RecentList.SetSize(listWidth-4, m.Height-8)
+			} else {
+				// Restore full-width list
+				w := m.Width - 4
+				if w < 20 {
+					w = 20
+				}
+				m.RecentList.SetSize(w, m.Height-8)
+			}
+		}
+		return m, nil
 	case "esc", "q":
+		m.PreviewVisible = false
 		m.Screen = ScreenDashboard
 		m.Cursor = 0
 		m.Scroll = 0
@@ -558,18 +926,26 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Observation Detail ─────────────────────────────────────────────────────
 
 func (m Model) handleObservationDetailKeys(key string) (tea.Model, tea.Cmd) {
+	if m.ConfirmDelete {
+		switch key {
+		case "y", "Y":
+			m.ConfirmDelete = false
+			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
+		case "n", "N", "esc":
+			m.ConfirmDelete = false
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "up", "k":
-		if m.DetailScroll > 0 {
-			m.DetailScroll--
-		}
+		m.DetailViewport.ScrollUp(1)
 	case "down", "j":
-		// Bounded scroll — view.go clamps to maxScroll during rendering,
-		// but we cap here to avoid ever-growing scroll values.
-		m.DetailScroll++
-		if m.DetailScroll > maxScrollOffset {
-			m.DetailScroll = maxScrollOffset
-		}
+		m.DetailViewport.ScrollDown(1)
+	case "pgup":
+		m.DetailViewport.HalfPageUp()
+	case "pgdown":
+		m.DetailViewport.HalfPageDown()
 	case "t":
 		if m.SelectedObservation != nil {
 			m.PrevScreen = ScreenObservationDetail
@@ -582,10 +958,25 @@ func (m Model) handleObservationDetailKeys(key string) (tea.Model, tea.Cmd) {
 			m.PrevScreen = ScreenObservationDetail
 			return m, loadGraphRelated(m.deps, m.SelectedObservation.ID)
 		}
+	case "s", "S":
+		if m.SelectedObservation != nil && m.SelectedObservation.SessionID != "" {
+			m.PrevScreen = ScreenObservationDetail
+			m.Screen = ScreenSessionDetail
+			m.Cursor = 0
+			m.SessionDetailScroll = 0
+			return m, loadSessionObservations(m.deps, m.SelectedObservation.SessionID)
+		}
+	case "d":
+		if m.SelectedObservation != nil {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = m.SelectedObservation.ID
+			m.DeleteTargetTitle = m.SelectedObservation.Title
+		}
+		return m, nil
 	case "esc", "q":
 		m.Screen = m.PrevScreen
 		m.Cursor = m.PrevCursor
-		m.DetailScroll = 0
+		m.DetailViewport.GotoTop()
 		return m, m.refreshScreen(m.PrevScreen)
 	}
 	return m, nil
@@ -616,32 +1007,12 @@ func (m Model) handleTimelineKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Sessions ───────────────────────────────────────────────────────────────
 
 func (m Model) handleSessionsKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := m.Height - 8
-	if visibleItems < minVisibleItems+2 {
-		visibleItems = minVisibleItems + 2
-	}
-
 	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.Scroll {
-				m.Scroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.Sessions)-1 {
-			m.Cursor++
-			if m.Cursor >= m.Scroll+visibleItems {
-				m.Scroll = m.Cursor - visibleItems + 1
-			}
-		}
 	case "enter":
-		if len(m.Sessions) > 0 && m.Cursor < len(m.Sessions) {
-			m.SelectedSessionIdx = m.Cursor
+		if item, ok := m.SessionListModel.SelectedItem().(sessionItem); ok {
+			m.SelectedSessionIdx = m.SessionListModel.Index()
 			m.PrevScreen = ScreenSessions
-			sessionID := m.Sessions[m.Cursor].Session.ID
-			return m, loadSessionObservations(m.deps, sessionID)
+			return m, loadSessionObservations(m.deps, item.session.Session.ID)
 		}
 	case "esc", "q":
 		m.Screen = ScreenDashboard
@@ -679,7 +1050,8 @@ func (m Model) handleSessionDetailKeys(key string) (tea.Model, tea.Cmd) {
 		if len(m.SessionObservations) > 0 && m.Cursor < len(m.SessionObservations) {
 			obsID := m.SessionObservations[m.Cursor].ID
 			m.PrevScreen = ScreenSessionDetail
-			return m, loadObservationDetail(m.deps, obsID)
+			m.DetailLoading = true
+			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, obsID))
 		}
 	case "t":
 		if len(m.SessionObservations) > 0 && m.Cursor < len(m.SessionObservations) {
@@ -699,40 +1071,20 @@ func (m Model) handleSessionDetailKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Graph (Cortex-exclusive) ───────────────────────────────────────────────
 
 func (m Model) handleGraphKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := (m.Height - 8) / linesPerItem
-	if visibleItems < minVisibleItems {
-		visibleItems = minVisibleItems
-	}
-
 	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.Scroll {
-				m.Scroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.GraphObservations)-1 {
-			m.Cursor++
-			if m.Cursor >= m.Scroll+visibleItems {
-				m.Scroll = m.Cursor - visibleItems + 1
-			}
-		}
 	case "enter":
-		if len(m.GraphObservations) > 0 && m.Cursor < len(m.GraphObservations) {
-			obsID := m.GraphObservations[m.Cursor].ID
+		if item, ok := m.GraphListModel.SelectedItem().(graphItem); ok {
 			m.PrevScreen = ScreenGraph
-			return m, loadObservationDetail(m.deps, obsID)
+			m.DetailLoading = true
+			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
 		}
 	case "r":
 		// Re-root graph on selected observation
-		if len(m.GraphObservations) > 0 && m.Cursor < len(m.GraphObservations) {
-			obsID := m.GraphObservations[m.Cursor].ID
-			m.GraphRootID = obsID
+		if item, ok := m.GraphListModel.SelectedItem().(graphItem); ok {
+			m.GraphRootID = item.obs.ID
 			m.Cursor = 0
 			m.Scroll = 0
-			return m, loadGraphRelated(m.deps, obsID)
+			return m, loadGraphRelated(m.deps, item.obs.ID)
 		}
 	case "esc", "q":
 		m.Screen = m.PrevScreen
@@ -746,31 +1098,47 @@ func (m Model) handleGraphKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Archive (Cortex-exclusive) ─────────────────────────────────────────────
 
 func (m Model) handleArchiveKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := (m.Height - 8) / linesPerItem
-	if visibleItems < minVisibleItems {
-		visibleItems = minVisibleItems
+	if m.ConfirmDelete {
+		switch key {
+		case "y", "Y":
+			m.ConfirmDelete = false
+			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
+		case "n", "N", "esc":
+			m.ConfirmDelete = false
+		}
+		return m, nil
 	}
 
 	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.Scroll {
-				m.Scroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.ArchivedObservations)-1 {
-			m.Cursor++
-			if m.Cursor >= m.Scroll+visibleItems {
-				m.Scroll = m.Cursor - visibleItems + 1
-			}
-		}
 	case "enter":
-		if len(m.ArchivedObservations) > 0 && m.Cursor < len(m.ArchivedObservations) {
-			obsID := m.ArchivedObservations[m.Cursor].ID
+		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
 			m.PrevScreen = ScreenArchive
-			return m, loadObservationDetail(m.deps, obsID)
+			m.DetailLoading = true
+			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
+		}
+	case "u":
+		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
+			return m, unarchiveObservationCmd(m.deps, item.obs.ID)
+		}
+	case "d":
+		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = item.obs.ID
+			m.DeleteTargetTitle = item.obs.Title
+		}
+		return m, nil
+	case "f":
+		if m.Stats != nil && len(m.Stats.Projects) > 0 {
+			projects := append([]string{""}, m.Stats.Projects...)
+			currentIdx := 0
+			for i, p := range projects {
+				if p == m.FilterProject {
+					currentIdx = i
+					break
+				}
+			}
+			m.FilterProject = projects[(currentIdx+1)%len(projects)]
+			return m, loadArchivedObservations(m.deps, m.FilterProject)
 		}
 	case "esc", "q":
 		m.Screen = ScreenDashboard
@@ -794,6 +1162,13 @@ func (m Model) handleHealthKeys(key string) (tea.Model, tea.Cmd) {
 		if m.Scroll > maxScrollOffset {
 			m.Scroll = maxScrollOffset
 		}
+	case "tab":
+		m.HealthSection = (m.HealthSection + 1) % 3
+		m.HealthExpanded = false
+		m.Scroll = 0
+	case "enter":
+		m.HealthExpanded = !m.HealthExpanded
+		m.Scroll = 0
 	case "esc", "q":
 		m.Screen = ScreenDashboard
 		m.Cursor = 0
@@ -894,8 +1269,18 @@ func (m Model) handleEmbeddingModelInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
 	// If async operation running, only allow esc
-	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving || m.EmbCfgReindexing {
 		return m, nil
+	}
+
+	// Post-save: reindex key available when warning is shown
+	if m.EmbCfgSaved && m.EmbCfgReindexWarning && !m.EmbCfgReindexing {
+		if key == "x" || key == "X" {
+			m.EmbCfgReindexing = true
+			m.EmbCfgReindexWarning = false
+			m.EmbCfgError = ""
+			return m, tea.Batch(m.EmbCfgSpinner.Tick, startReindexCmd(m.deps))
+		}
 	}
 
 	// Post-save Ollama actions
@@ -962,17 +1347,21 @@ func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		if m.EmbCfgFocusField == 0 {
 			m.EmbCfgProvider = (m.EmbCfgProvider + 2) % 3 // cycle left
+			m.EmbCfgDirty = true
 		}
 	case "right", "l":
 		if m.EmbCfgFocusField == 0 {
 			m.EmbCfgProvider = (m.EmbCfgProvider + 1) % 3 // cycle right
+			m.EmbCfgDirty = true
 		}
 	case " ":
 		switch m.EmbCfgFocusField {
 		case 2:
 			m.EmbCfgVector = !m.EmbCfgVector
+			m.EmbCfgDirty = true
 		case 3:
 			m.EmbCfgAutoStart = !m.EmbCfgAutoStart
+			m.EmbCfgDirty = true
 		}
 	case "enter":
 		switch m.EmbCfgFocusField {
@@ -996,18 +1385,204 @@ func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ─── Help ──────────────────────────────────────────────────────────────────
+
+func (m Model) handleHelpKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "q", "?":
+		m.Screen = m.PrevScreen
+		return m, nil
+	}
+	return m, nil
+}
+
+// ─── Command Palette ──────────────────────────────────────────────────────
+
+type paletteCommand struct {
+	name     string
+	shortcut string
+	execute  func(m Model) (Model, tea.Cmd)
+}
+
+func allCommands() []paletteCommand {
+	return []paletteCommand{
+		{"Search memories", "/", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSearch
+			m.SearchInput.Focus()
+			return m, nil
+		}},
+		{"Recent observations", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenRecent
+			return m, loadRecentObservations(m.deps, m.FilterProject)
+		}},
+		{"Browse sessions", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSessions
+			return m, loadRecentSessions(m.deps)
+		}},
+		{"Knowledge graph", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenGraph
+			return m, nil
+		}},
+		{"Memory health", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenHealth
+			return m, loadHealthData(m.deps, "")
+		}},
+		{"Archived observations", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenArchive
+			return m, loadArchivedObservations(m.deps, m.FilterProject)
+		}},
+		{"Embedding settings", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenEmbeddingConfig
+			return m, nil
+		}},
+		{"Setup agent plugin", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenSetup
+			return m, nil
+		}},
+		{"Help / Keyboard shortcuts", "?", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenHelp
+			return m, nil
+		}},
+		{"Go to Dashboard", "", func(m Model) (Model, tea.Cmd) {
+			m.Screen = ScreenDashboard
+			return m, loadStats(m.deps)
+		}},
+	}
+}
+
+func (m Model) filteredCommands() []paletteCommand {
+	query := strings.ToLower(m.CmdPaletteInput.Value())
+	if query == "" {
+		return allCommands()
+	}
+	var filtered []paletteCommand
+	for _, cmd := range allCommands() {
+		if strings.Contains(strings.ToLower(cmd.name), query) {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
+
+func (m Model) handleCmdPaletteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	switch key {
+	case "esc":
+		m.CmdPaletteOpen = false
+		m.CmdPaletteInput.Blur()
+		return m, nil
+	case "up", "ctrl+p":
+		if m.CmdPaletteCursor > 0 {
+			m.CmdPaletteCursor--
+		}
+		return m, nil
+	case "down", "ctrl+n":
+		filtered := m.filteredCommands()
+		if m.CmdPaletteCursor < len(filtered)-1 {
+			m.CmdPaletteCursor++
+		}
+		return m, nil
+	case "enter":
+		filtered := m.filteredCommands()
+		if len(filtered) > 0 && m.CmdPaletteCursor < len(filtered) {
+			cmd := filtered[m.CmdPaletteCursor]
+			m.CmdPaletteOpen = false
+			m.CmdPaletteInput.Blur()
+			return cmd.execute(m)
+		}
+		return m, nil
+	}
+	// Pass to text input for filtering
+	var cmd tea.Cmd
+	m.CmdPaletteInput, cmd = m.CmdPaletteInput.Update(msg)
+	m.CmdPaletteCursor = 0 // reset cursor on filter change
+	return m, cmd
+}
+
+
+// ─── Detail Content Builder ────────────────────────────────────────────────
+
+// buildDetailContent constructs the full text content for the observation
+// detail viewport. This is called once when the observation loads, and
+// the viewport handles scrolling from there.
+func buildDetailContent(obs *domain.Observation, score *domain.ImportanceScore, entities []*domain.EntityLink, edges []*domain.Edge) string {
+	var content strings.Builder
+
+	fmt.Fprintf(&content, "Type:       %s\n", obs.Type)
+	fmt.Fprintf(&content, "Title:      %s\n", obs.Title)
+	fmt.Fprintf(&content, "Session:    %s\n", obs.SessionID)
+	fmt.Fprintf(&content, "Created:    %s\n", obs.CreatedAt.Format("2006-01-02 15:04"))
+	if obs.Project != "" {
+		fmt.Fprintf(&content, "Project:    %s\n", obs.Project)
+	}
+
+	if score != nil {
+		fmt.Fprintf(&content, "Score:      %.1f/5.0  (accessed %d times)\n", score.Score, score.AccessCount)
+	}
+
+	if len(entities) > 0 {
+		content.WriteString("\n── Entities ──\n")
+		for _, e := range entities {
+			fmt.Fprintf(&content, "  [%s] %s\n", e.EntityType, e.EntityValue)
+		}
+	}
+
+	if len(edges) > 0 {
+		fmt.Fprintf(&content, "\n── Related (%d links) ──\n", len(edges))
+		for _, e := range edges {
+			targetID := e.ToObsID
+			if targetID == obs.ID {
+				targetID = e.FromObsID
+			}
+			fmt.Fprintf(&content, "  [%s] #%d  weight: %.1f\n", e.RelationType, targetID, e.Weight)
+		}
+	}
+
+	content.WriteString("\n── Content ──\n")
+	content.WriteString(obs.Content)
+
+	return content.String()
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+// updatePreviewContent sets the preview viewport content based on the
+// currently selected item in the active list screen.
+func (m *Model) updatePreviewContent() {
+	var content string
+	switch m.Screen {
+	case ScreenSearchResults:
+		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
+			r := item.result
+			content = fmt.Sprintf("Title: %s\nType: %s\nProject: %s\nCreated: %s\nScore: %.0f%%\n\n%s",
+				r.Title, r.Type, r.Project, formatTime(r.CreatedAt), r.Rank*100, r.Content)
+		}
+	case ScreenRecent:
+		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
+			o := item.obs
+			content = fmt.Sprintf("Title: %s\nType: %s\nProject: %s\nCreated: %s\n\n%s",
+				o.Title, o.Type, o.Project, formatTime(o.CreatedAt), o.Content)
+		}
+	}
+	m.PreviewViewport.SetContent(content)
+	m.PreviewViewport.GotoTop()
+}
 
 func (m Model) refreshScreen(screen Screen) tea.Cmd {
 	switch screen {
 	case ScreenDashboard:
 		return loadStats(m.deps)
 	case ScreenRecent:
-		return loadRecentObservations(m.deps)
+		return loadRecentObservations(m.deps, m.FilterProject)
+	case ScreenSearchResults:
+		if m.SearchQuery != "" {
+			return searchMemories(m.deps, m.SearchQuery, m.FilterProject)
+		}
+		return nil
 	case ScreenSessions:
 		return loadRecentSessions(m.deps)
 	case ScreenArchive:
-		return loadArchivedObservations(m.deps)
+		return loadArchivedObservations(m.deps, m.FilterProject)
 	default:
 		return nil
 	}

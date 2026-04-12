@@ -575,7 +575,7 @@ func runTUI(stdout, stderr io.Writer) int {
 	}
 
 	model := tui.New(deps)
-	p := tea.NewProgram(model)
+	p := tea.NewProgram(model, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1

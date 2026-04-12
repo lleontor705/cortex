@@ -7,8 +7,11 @@ import (
 	"github.com/lleontor705/cortex/internal/store/session"
 	"github.com/lleontor705/cortex/internal/update"
 
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -32,6 +35,7 @@ const (
 	ScreenArchive
 	ScreenHealth
 	ScreenEmbeddingConfig
+	ScreenHelp
 )
 
 // ─── Aggregate types ────────────────────────────────────────────────────────
@@ -146,6 +150,29 @@ type configReloadedMsg struct {
 	err error
 }
 
+type reindexProgressMsg struct {
+	progress string
+	done     bool
+	total    int
+	indexed  int
+	err      error
+}
+
+type activityDataMsg struct {
+	daily []int // observation counts per day, last 7 days (index 0 = 6 days ago, index 6 = today)
+	err   error
+}
+
+type deleteObservationMsg struct {
+	id  int64
+	err error
+}
+
+type unarchiveObservationMsg struct {
+	id  int64
+	err error
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 // Model holds the TUI state.
@@ -170,9 +197,11 @@ type Model struct {
 	Stats *combinedStats
 
 	// Search
-	SearchInput   textinput.Model
-	SearchQuery   string
-	SearchResults []*domain.SearchResult
+	SearchInput      textinput.Model
+	SearchQuery      string
+	SearchResults    []*domain.SearchResult
+	SearchHistory    []string
+	SearchHistoryIdx int
 
 	// Recent observations
 	RecentObservations []*domain.Observation
@@ -182,7 +211,8 @@ type Model struct {
 	DetailScore         *domain.ImportanceScore
 	DetailEntities      []*domain.EntityLink
 	DetailEdges         []*domain.Edge
-	DetailScroll        int
+	DetailViewport      viewport.Model
+	DetailLoading       bool
 
 	// Timeline
 	TimelineFocus  *domain.Observation
@@ -200,6 +230,13 @@ type Model struct {
 	GraphEdges        []*domain.Edge
 	GraphRootID       int64
 
+	// List filtering
+	FilterProject string // active project filter ("" = all)
+	FilterActive  bool   // whether filter is shown
+
+	// Vim multi-key sequences
+	PendingKey string // for multi-key sequences like "gg"
+
 	// Archive (Cortex-exclusive)
 	ArchivedObservations []*domain.Observation
 
@@ -209,6 +246,8 @@ type Model struct {
 	HealthEdgeCount  int
 	HealthObsCount   int
 	HealthCandidates []healthCandidate
+	HealthSection    int  // 0=stale, 1=orphans, 2=candidates
+	HealthExpanded   bool
 
 	// Setup
 	SetupAgents           []setup.Agent
@@ -223,6 +262,7 @@ type Model struct {
 	SetupSpinner          spinner.Model
 
 	// Embedding config
+	EmbCfgDirty          bool
 	EmbCfgProvider       int             // 0=none, 1=ollama, 2=openai
 	EmbCfgModel          textinput.Model // model name input
 	EmbCfgVector         bool            // vector search toggle
@@ -237,6 +277,45 @@ type Model struct {
 	EmbCfgPulling        bool
 	EmbCfgStarting       bool
 	EmbCfgSpinner        spinner.Model
+
+	// Embedding config — provider/model change detection
+	EmbCfgOriginalProvider int
+	EmbCfgOriginalModel    string
+	EmbCfgReindexWarning   bool
+	EmbCfgReindexing       bool
+	EmbCfgReindexProgress  string
+	ReindexProgressBar     progress.Model
+	ReindexTotal           int
+	ReindexDone            int
+
+	// Activity sparkline (7-day observation counts)
+	ActivityData []int
+
+	// Split pane preview
+	PreviewVisible  bool
+	PreviewViewport viewport.Model
+	FocusedPane     int // 0=main, 1=preview
+
+	// Toast messages
+	ToastMessage string
+	ToastType    string // "success", "warning", "error"
+
+	// Delete confirmation
+	ConfirmDelete     bool
+	ConfirmDeleteID   int64
+	DeleteTargetTitle string
+
+	// Command palette
+	CmdPaletteOpen   bool
+	CmdPaletteInput  textinput.Model
+	CmdPaletteCursor int
+
+	// List components (bubbles/list)
+	SearchListModel  list.Model
+	RecentList       list.Model
+	SessionListModel list.Model
+	GraphListModel   list.Model
+	ArchiveList      list.Model
 }
 
 // New creates a new TUI model connected to the given stores.
@@ -259,6 +338,11 @@ func New(deps *Deps) Model {
 	embModel.CharLimit = 128
 	embModel.Width = 40
 
+	cmdInput := textinput.New()
+	cmdInput.Placeholder = "Type a command..."
+	cmdInput.CharLimit = 64
+	cmdInput.Width = 40
+
 	// Initialize embedding config from current config if available
 	embProvider := 0
 	embVector := false
@@ -275,17 +359,35 @@ func New(deps *Deps) Model {
 		embAutoStart = deps.Config.Search.OllamaAutoStart
 	}
 
+	// Create empty list models with default delegate
+	newEmptyList := func() list.Model {
+		l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+		l.SetShowHelp(false)
+		l.SetShowStatusBar(false)
+		l.SetShowTitle(false)
+		l.DisableQuitKeybindings()
+		l.SetFilteringEnabled(true)
+		return l
+	}
+
 	return Model{
-		deps:            deps,
-		Version:         deps.Version,
-		Screen:          ScreenDashboard,
-		SearchInput:     ti,
-		SetupSpinner:    sp,
-		EmbCfgSpinner:   embSp,
-		EmbCfgModel:     embModel,
-		EmbCfgProvider:   embProvider,
-		EmbCfgVector:     embVector,
-		EmbCfgAutoStart:  embAutoStart,
+		deps:               deps,
+		Version:            deps.Version,
+		Screen:             ScreenDashboard,
+		SearchInput:        ti,
+		SetupSpinner:       sp,
+		EmbCfgSpinner:      embSp,
+		EmbCfgModel:        embModel,
+		EmbCfgProvider:     embProvider,
+		EmbCfgVector:       embVector,
+		EmbCfgAutoStart:    embAutoStart,
+		ReindexProgressBar: progress.New(progress.WithDefaultGradient()),
+		CmdPaletteInput:    cmdInput,
+		SearchListModel:    newEmptyList(),
+		RecentList:         newEmptyList(),
+		SessionListModel:   newEmptyList(),
+		GraphListModel:     newEmptyList(),
+		ArchiveList:        newEmptyList(),
 	}
 }
 
@@ -293,6 +395,7 @@ func New(deps *Deps) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadStats(m.deps),
+		loadActivityData(m.deps),
 		checkForUpdate(m.Version),
 		tea.EnterAltScreen,
 	)
