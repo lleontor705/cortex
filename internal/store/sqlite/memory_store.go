@@ -338,6 +338,30 @@ func (s *Store) HardDelete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// Unarchive restores a soft-deleted observation by clearing its deleted_at field.
+// Returns ErrNotFound if the observation doesn't exist or is not archived.
+func (s *Store) Unarchive(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE observations
+		SET deleted_at = NULL, updated_at = datetime('now')
+		WHERE id = ? AND deleted_at IS NOT NULL
+	`, id)
+	if err != nil {
+		return fmt.Errorf("memory store: unarchive observation: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("memory store: get rows affected: %w", err)
+	}
+
+	if affected == 0 {
+		return &domain.NotFoundError{Type: "observation", ID: id}
+	}
+
+	return nil
+}
+
 // ListArchivable retrieves observations older than cutoff with score below minScore.
 // Uses a JOIN with importance_scores to avoid N+1 queries during archival.
 func (s *Store) ListArchivable(ctx context.Context, cutoff time.Time, minScore float64, limit int) ([]*domain.Observation, error) {

@@ -382,6 +382,73 @@ func pullOllamaModelCmd(baseURL, model string) tea.Cmd {
 	}
 }
 
+func deleteObservationCmd(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return deleteObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.SoftDelete(ctx, id)
+		return deleteObservationMsg{id: id, err: err}
+	}
+}
+
+func unarchiveObservationCmd(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return unarchiveObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.Unarchive(ctx, id)
+		return unarchiveObservationMsg{id: id, err: err}
+	}
+}
+
+func startReindexCmd(d *Deps) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.App == nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("app not available")}
+		}
+
+		// Reload config to pick up new provider/model
+		if err := d.App.ReloadConfig(); err != nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("reload config: %w", err)}
+		}
+		d.Config = d.App.Config
+
+		if d.App.Stores.Embeddings == nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("no embedding provider configured")}
+		}
+		if d.App.Stores.Vectors == nil || !d.App.Stores.Vectors.IsAvailable() {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("vector store not available (build with -tags cortex_vectors)")}
+		}
+
+		ctx := context.Background()
+		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 5000})
+		if err != nil {
+			return reindexProgressMsg{done: true, err: fmt.Errorf("list observations: %w", err)}
+		}
+
+		indexed, errCount := 0, 0
+		for _, o := range obs {
+			text := o.Title + "\n" + o.Content
+			vec, embErr := d.App.Stores.Embeddings.Embed(ctx, text)
+			if embErr != nil {
+				errCount++
+				continue
+			}
+			if storeErr := d.App.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, d.App.Stores.Embeddings.Model()); storeErr != nil {
+				errCount++
+				continue
+			}
+			indexed++
+		}
+
+		progress := fmt.Sprintf("Reindexed %d/%d observations (%d errors)", indexed, len(obs), errCount)
+		return reindexProgressMsg{progress: progress, done: true}
+	}
+}
+
 func reloadConfigCmd(d *Deps) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.App == nil {

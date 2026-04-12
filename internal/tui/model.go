@@ -32,6 +32,7 @@ const (
 	ScreenArchive
 	ScreenHealth
 	ScreenEmbeddingConfig
+	ScreenHelp
 )
 
 // ─── Aggregate types ────────────────────────────────────────────────────────
@@ -146,6 +147,22 @@ type configReloadedMsg struct {
 	err error
 }
 
+type reindexProgressMsg struct {
+	progress string
+	done     bool
+	err      error
+}
+
+type deleteObservationMsg struct {
+	id  int64
+	err error
+}
+
+type unarchiveObservationMsg struct {
+	id  int64
+	err error
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 // Model holds the TUI state.
@@ -237,6 +254,21 @@ type Model struct {
 	EmbCfgPulling        bool
 	EmbCfgStarting       bool
 	EmbCfgSpinner        spinner.Model
+
+	// Embedding config — provider/model change detection
+	EmbCfgOriginalProvider int
+	EmbCfgOriginalModel    string
+	EmbCfgReindexWarning   bool
+	EmbCfgReindexing       bool
+	EmbCfgReindexProgress  string
+
+	// Toast messages
+	ToastMessage string
+	ToastType    string // "success", "warning", "error"
+
+	// Delete confirmation
+	ConfirmDelete   bool
+	ConfirmDeleteID int64
 }
 
 // New creates a new TUI model connected to the given stores.

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/lleontor705/cortex/internal/setup"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -169,12 +171,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.EmbCfgSaved = true
 		m.EmbCfgError = ""
+		// Detect provider/model changes for reindex warning
+		providerChanged := m.EmbCfgProvider != m.EmbCfgOriginalProvider
+		modelChanged := m.EmbCfgModel.Value() != m.EmbCfgOriginalModel
+		if providerChanged || modelChanged {
+			m.EmbCfgReindexWarning = true
+		}
+		m.EmbCfgOriginalProvider = m.EmbCfgProvider
+		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
 		// If ollama is configured, check its status
 		if m.EmbCfgProvider == 1 {
 			m.EmbCfgOllamaChecked = false
 			return m, checkOllamaStatus(m.deps)
 		}
 		return m, nil
+
+	case reindexProgressMsg:
+		m.EmbCfgReindexing = false
+		if msg.err != nil {
+			m.EmbCfgError = msg.err.Error()
+			return m, nil
+		}
+		if msg.done {
+			m.EmbCfgReindexProgress = msg.progress
+			m.EmbCfgReindexWarning = false
+		}
+		return m, nil
+
+	case deleteObservationMsg:
+		if msg.err != nil {
+			m.ErrorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.ConfirmDelete = false
+		m.ConfirmDeleteID = 0
+		m.ToastMessage = fmt.Sprintf("Observation #%d deleted", msg.id)
+		m.ToastType = "success"
+		return m, m.refreshScreen(m.Screen)
+
+	case unarchiveObservationMsg:
+		if msg.err != nil {
+			m.ErrorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.ToastMessage = fmt.Sprintf("Observation #%d restored", msg.id)
+		m.ToastType = "success"
+		return m, loadArchivedObservations(m.deps)
 
 	case ollamaStatusMsg:
 		m.EmbCfgOllamaChecked = true
@@ -240,7 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.SetupSpinner, cmd = m.SetupSpinner.Update(msg)
 			return m, cmd
 		}
-		if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+		if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving || m.EmbCfgReindexing {
 			var cmd tea.Cmd
 			m.EmbCfgSpinner, cmd = m.EmbCfgSpinner.Update(msg)
 			return m, cmd
@@ -256,7 +298,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 	m.ErrorMsg = ""
 
+	// Clear toast on any key press
+	if m.ToastMessage != "" {
+		m.ToastMessage = ""
+		m.ToastType = ""
+	}
+
+	// Cancel delete confirmation on any key except y/Y
+	if m.ConfirmDelete && key != "y" && key != "Y" {
+		m.ConfirmDelete = false
+		m.ConfirmDeleteID = 0
+		return m, nil
+	}
+
+	// Global help key — skip for screens with text input
+	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenHelp {
+		m.PrevScreen = m.Screen
+		m.Screen = ScreenHelp
+		return m, nil
+	}
+
 	switch m.Screen {
+	case ScreenHelp:
+		return m.handleHelpKeys(key)
 	case ScreenDashboard:
 		return m.handleDashboardKeys(key)
 	case ScreenSearch:
@@ -385,6 +449,9 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.EmbCfgOllamaChecked = false
 		m.EmbCfgPulling = false
 		m.EmbCfgStarting = false
+		m.EmbCfgReindexWarning = false
+		m.EmbCfgReindexing = false
+		m.EmbCfgReindexProgress = ""
 		// Reload current config values
 		if m.deps.Config != nil {
 			switch m.deps.Config.Search.EmbeddingProvider {
@@ -399,6 +466,9 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 			m.EmbCfgVector = m.deps.Config.Search.Vector
 			m.EmbCfgAutoStart = m.deps.Config.Search.OllamaAutoStart
 		}
+		// Save original values for change detection
+		m.EmbCfgOriginalProvider = m.EmbCfgProvider
+		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
 		return m, nil
 	case 7: // Setup
 		m.PrevScreen = ScreenDashboard
@@ -464,6 +534,17 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 		visibleItems = minVisibleItems
 	}
 
+	// Confirm delete
+	if m.ConfirmDelete {
+		if key == "y" || key == "Y" {
+			id := m.ConfirmDeleteID
+			m.ConfirmDelete = false
+			m.ConfirmDeleteID = 0
+			return m, deleteObservationCmd(m.deps, id)
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "up", "k":
 		if m.Cursor > 0 {
@@ -493,6 +574,11 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 			m.PrevCursor = m.Cursor
 			return m, loadTimeline(m.deps, obsID)
 		}
+	case "d":
+		if len(m.SearchResults) > 0 && m.Cursor < len(m.SearchResults) {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = m.SearchResults[m.Cursor].ID
+		}
 	case "/", "s":
 		m.PrevScreen = ScreenSearchResults
 		m.Screen = ScreenSearch
@@ -515,6 +601,17 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 	visibleItems := (m.Height - 8) / linesPerItem
 	if visibleItems < minVisibleItems {
 		visibleItems = minVisibleItems
+	}
+
+	// Confirm delete
+	if m.ConfirmDelete {
+		if key == "y" || key == "Y" {
+			id := m.ConfirmDeleteID
+			m.ConfirmDelete = false
+			m.ConfirmDeleteID = 0
+			return m, deleteObservationCmd(m.deps, id)
+		}
+		return m, nil
 	}
 
 	switch key {
@@ -545,6 +642,11 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 			m.PrevScreen = ScreenRecent
 			m.PrevCursor = m.Cursor
 			return m, loadTimeline(m.deps, obsID)
+		}
+	case "d":
+		if len(m.RecentObservations) > 0 && m.Cursor < len(m.RecentObservations) {
+			m.ConfirmDelete = true
+			m.ConfirmDeleteID = m.RecentObservations[m.Cursor].ID
 		}
 	case "esc", "q":
 		m.Screen = ScreenDashboard
@@ -772,6 +874,11 @@ func (m Model) handleArchiveKeys(key string) (tea.Model, tea.Cmd) {
 			m.PrevScreen = ScreenArchive
 			return m, loadObservationDetail(m.deps, obsID)
 		}
+	case "u":
+		if len(m.ArchivedObservations) > 0 && m.Cursor < len(m.ArchivedObservations) {
+			obsID := m.ArchivedObservations[m.Cursor].ID
+			return m, unarchiveObservationCmd(m.deps, obsID)
+		}
 	case "esc", "q":
 		m.Screen = ScreenDashboard
 		m.Cursor = 0
@@ -894,8 +1001,18 @@ func (m Model) handleEmbeddingModelInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
 	// If async operation running, only allow esc
-	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving {
+	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving || m.EmbCfgReindexing {
 		return m, nil
+	}
+
+	// Post-save: reindex key available when warning is shown
+	if m.EmbCfgSaved && m.EmbCfgReindexWarning && !m.EmbCfgReindexing {
+		if key == "x" || key == "X" {
+			m.EmbCfgReindexing = true
+			m.EmbCfgReindexWarning = false
+			m.EmbCfgError = ""
+			return m, tea.Batch(m.EmbCfgSpinner.Tick, startReindexCmd(m.deps))
+		}
 	}
 
 	// Post-save Ollama actions
@@ -996,6 +1113,17 @@ func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ─── Help ──────────────────────────────────────────────────────────────────
+
+func (m Model) handleHelpKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "q", "?":
+		m.Screen = m.PrevScreen
+		return m, nil
+	}
+	return m, nil
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 func (m Model) refreshScreen(screen Screen) tea.Cmd {
@@ -1004,6 +1132,11 @@ func (m Model) refreshScreen(screen Screen) tea.Cmd {
 		return loadStats(m.deps)
 	case ScreenRecent:
 		return loadRecentObservations(m.deps)
+	case ScreenSearchResults:
+		if m.SearchQuery != "" {
+			return searchMemories(m.deps, m.SearchQuery)
+		}
+		return nil
 	case ScreenSessions:
 		return loadRecentSessions(m.deps)
 	case ScreenArchive:
