@@ -94,24 +94,24 @@ func loadStats(d *Deps) tea.Cmd {
 	}
 }
 
-func searchMemories(d *Deps, query string) tea.Cmd {
+func searchMemories(d *Deps, query string, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Search == nil {
 			return searchResultsMsg{err: fmt.Errorf("search store not available")}
 		}
 		ctx := context.Background()
-		results, err := d.Search.Search(ctx, query, domain.SearchOptions{Limit: 50})
+		results, err := d.Search.Search(ctx, query, domain.SearchOptions{Limit: 50, Project: project})
 		return searchResultsMsg{results: results, query: query, err: err}
 	}
 }
 
-func loadRecentObservations(d *Deps) tea.Cmd {
+func loadRecentObservations(d *Deps, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Observations == nil {
 			return recentObservationsMsg{err: fmt.Errorf("observations store not available")}
 		}
 		ctx := context.Background()
-		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 50})
+		obs, err := d.Observations.List(ctx, domain.ObservationFilter{Limit: 50, Project: project})
 		return recentObservationsMsg{observations: obs, err: err}
 	}
 }
@@ -249,7 +249,7 @@ func loadGraphRelated(d *Deps, obsID int64) tea.Cmd {
 	}
 }
 
-func loadArchivedObservations(d *Deps) tea.Cmd {
+func loadArchivedObservations(d *Deps, project string) tea.Cmd {
 	return func() tea.Msg {
 		if d == nil || d.Observations == nil {
 			return archiveLoadedMsg{err: fmt.Errorf("observations store not available")}
@@ -258,6 +258,7 @@ func loadArchivedObservations(d *Deps) tea.Cmd {
 		obs, err := d.Observations.List(ctx, domain.ObservationFilter{
 			Limit:           50,
 			IncludeArchived: true,
+			Project:         project,
 		})
 		return archiveLoadedMsg{observations: obs, err: err}
 	}
@@ -324,6 +325,30 @@ func loadHealthData(d *Deps, project string) tea.Cmd {
 			obsCount:   obsCount,
 			candidates: candidates,
 		}
+	}
+}
+
+// ─── Delete / Unarchive Commands ──────────────────────────────────────────
+
+func deleteObservation(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return deleteObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.Delete(ctx, id)
+		return deleteObservationMsg{id: id, err: err}
+	}
+}
+
+func unarchiveObservation(d *Deps, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return unarchiveObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		err := d.Observations.Restore(ctx, id)
+		return unarchiveObservationMsg{id: id, err: err}
 	}
 }
 

@@ -90,6 +90,15 @@ func (m Model) View() string {
 		content += "\n" + errorStyle.Render("Error: "+m.ErrorMsg)
 	}
 
+	if m.ConfirmDelete {
+		title := m.DeleteTargetTitle
+		if len(title) > 40 {
+			title = title[:40] + "..."
+		}
+		overlay := fmt.Sprintf("\n  Delete %q? (y/n)", title)
+		content += "\n" + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render(overlay)
+	}
+
 	return appStyle.Render(content)
 }
 
@@ -192,6 +201,9 @@ func (m Model) viewSearchResults() string {
 	if resultCount != 1 {
 		header += "s"
 	}
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -212,9 +224,16 @@ func (m Model) viewSearchResults() string {
 		end = resultCount
 	}
 
+	scoreStyle := lipgloss.NewStyle().Foreground(colorSubtext)
 	for i := m.Scroll; i < end; i++ {
 		r := m.SearchResults[i]
 		b.WriteString(m.renderObservationListItem(i, r.ID, r.Type, r.Title, r.Content, r.CreatedAt, r.Project, nil))
+		scoreInfo := fmt.Sprintf("     score: %.0f%%", r.Rank*100)
+		if r.ScoreBreakdown.Strategy != "" {
+			scoreInfo += fmt.Sprintf("  strategy: %s", r.ScoreBreakdown.Strategy)
+		}
+		b.WriteString(scoreStyle.Render(scoreInfo))
+		b.WriteString("\n")
 	}
 
 	if resultCount > visibleItems {
@@ -222,7 +241,7 @@ func (m Model) viewSearchResults() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, resultCount)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • / search • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • / search • esc back"))
 
 	return b.String()
 }
@@ -234,6 +253,9 @@ func (m Model) viewRecent() string {
 
 	count := len(m.RecentObservations)
 	header := fmt.Sprintf("  Recent Observations — %d total", count)
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -264,7 +286,7 @@ func (m Model) viewRecent() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • t timeline • d delete • f filter • esc back"))
 
 	return b.String()
 }
@@ -277,7 +299,11 @@ func (m Model) viewObservationDetail() string {
 	if m.SelectedObservation == nil {
 		b.WriteString(headerStyle.Render("  Observation Detail"))
 		b.WriteString("\n")
-		b.WriteString(noResultsStyle.Render("Loading..."))
+		if m.DetailLoading {
+			b.WriteString(noResultsStyle.Render(m.SetupSpinner.View() + " Loading observation..."))
+		} else {
+			b.WriteString(noResultsStyle.Render("Loading..."))
+		}
 		return b.String()
 	}
 
@@ -390,7 +416,7 @@ func (m Model) viewObservationDetail() string {
 			timestampStyle.Render(fmt.Sprintf("line %d-%d of %d", scroll+1, end, len(contentLines))))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k scroll • t timeline • g graph • s session • d delete • esc back"))
 
 	return b.String()
 }
@@ -794,6 +820,9 @@ func (m Model) viewArchive() string {
 
 	count := len(m.ArchivedObservations)
 	header := fmt.Sprintf("  Archived Observations — %d total", count)
+	if m.FilterProject != "" {
+		header += fmt.Sprintf(" (project: %s)", m.FilterProject)
+	}
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -824,7 +853,7 @@ func (m Model) viewArchive() string {
 			timestampStyle.Render(fmt.Sprintf("showing %d-%d of %d", m.Scroll+1, end, count)))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • u unarchive • d delete • f filter • esc back"))
 
 	return b.String()
 }
@@ -861,16 +890,28 @@ func (m Model) viewHealth() string {
 	b.WriteString(statCardStyle.Render(statsContent))
 	b.WriteString("\n")
 
-	// Stale observations
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Stale Observations (%d)", len(m.HealthStale))))
+	// Section focus marker
+	sectionMarker := func(section int) string {
+		if m.HealthSection == section {
+			return "▸ "
+		}
+		return "  "
+	}
+
+	// Stale observations (section 0)
+	staleLimit := 5
+	if m.HealthSection == 0 && m.HealthExpanded {
+		staleLimit = len(m.HealthStale)
+	}
+	b.WriteString(sectionHeadingStyle.Render(sectionMarker(0) + fmt.Sprintf("Stale Observations (%d)", len(m.HealthStale))))
 	b.WriteString("\n")
 	if len(m.HealthStale) == 0 {
 		b.WriteString(listItemStyle.Render("  None — all high-score observations accessed recently"))
 		b.WriteString("\n")
 	} else {
 		for i, o := range m.HealthStale {
-			if i >= 5 {
-				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthStale)-5)))
+			if i >= staleLimit {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more (enter to expand)", len(m.HealthStale)-staleLimit)))
 				break
 			}
 			fmt.Fprintf(&b, "  %s %s  %s\n",
@@ -881,16 +922,20 @@ func (m Model) viewHealth() string {
 	}
 	b.WriteString("\n")
 
-	// Orphan observations
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Orphan Observations (%d)", len(m.HealthOrphans))))
+	// Orphan observations (section 1)
+	orphanLimit := 5
+	if m.HealthSection == 1 && m.HealthExpanded {
+		orphanLimit = len(m.HealthOrphans)
+	}
+	b.WriteString(sectionHeadingStyle.Render(sectionMarker(1) + fmt.Sprintf("Orphan Observations (%d)", len(m.HealthOrphans))))
 	b.WriteString("\n")
 	if len(m.HealthOrphans) == 0 {
 		b.WriteString(listItemStyle.Render("  None — all observations are connected via graph"))
 		b.WriteString("\n")
 	} else {
 		for i, o := range m.HealthOrphans {
-			if i >= 5 {
-				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthOrphans)-5)))
+			if i >= orphanLimit {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more (enter to expand)", len(m.HealthOrphans)-orphanLimit)))
 				break
 			}
 			fmt.Fprintf(&b, "  %s %s  %s\n",
@@ -901,15 +946,20 @@ func (m Model) viewHealth() string {
 	}
 	b.WriteString("\n")
 
-	// Consolidation candidates
-	b.WriteString(sectionHeadingStyle.Render(fmt.Sprintf("  Consolidation Candidates (%d)", len(m.HealthCandidates))))
+	// Consolidation candidates (section 2)
+	candidateLimit := 8
+	if m.HealthSection == 2 && m.HealthExpanded {
+		candidateLimit = len(m.HealthCandidates)
+	}
+	b.WriteString(sectionHeadingStyle.Render(sectionMarker(2) + fmt.Sprintf("Consolidation Candidates (%d)", len(m.HealthCandidates))))
 	b.WriteString("\n")
 	if len(m.HealthCandidates) == 0 {
 		b.WriteString(listItemStyle.Render("  None — no duplicate topic keys found"))
 		b.WriteString("\n")
 	} else {
 		for i, c := range m.HealthCandidates {
-			if i >= 8 {
+			if i >= candidateLimit {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more (enter to expand)", len(m.HealthCandidates)-candidateLimit)))
 				break
 			}
 			fmt.Fprintf(&b, "  %-40s  %s\n",
@@ -918,7 +968,7 @@ func (m Model) viewHealth() string {
 		}
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k scroll • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k scroll • tab section • enter expand/collapse • esc back"))
 
 	return b.String()
 }
@@ -997,7 +1047,13 @@ func (m Model) viewEmbeddingConfig() string {
 	var b strings.Builder
 
 	b.WriteString(headerStyle.Render("  Embedding Settings"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if m.EmbCfgDirty {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorAmber).Render("* Unsaved changes"))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	providers := []string{"none", "ollama", "openai"}
 	focusMarker := func(field int) string {
