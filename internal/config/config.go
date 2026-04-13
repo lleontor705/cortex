@@ -41,6 +41,11 @@ type Config struct {
 	Search    SearchConfig    `yaml:"search" mapstructure:"search"`
 	Memory    MemoryConfig    `yaml:"memory" mapstructure:"memory"`
 	Lifecycle LifecycleConfig `yaml:"lifecycle" mapstructure:"lifecycle"`
+
+	// LoadedFrom is the path of the config file that was loaded.
+	// Used by Save() and ReloadConfig() to always use the same file.
+	// Not serialized to YAML.
+	LoadedFrom string `yaml:"-" mapstructure:"-"`
 }
 
 // ServerConfig holds server-related configuration
@@ -212,9 +217,18 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
+	// Track which file was loaded for Save() and ReloadConfig()
+	if !configNotFound {
+		cfg.LoadedFrom = v.ConfigFileUsed()
+	} else if configPath != "" {
+		cfg.LoadedFrom = configPath
+	}
+
 	// Create default config file if none was found and no explicit path was given
 	if configNotFound && configPath == "" {
+		defaultPath := filepath.Join(CortexDir(), "cortex.yaml")
 		_ = ensureDefaultConfig(&cfg)
+		cfg.LoadedFrom = defaultPath
 	}
 
 	return &cfg, nil
@@ -426,7 +440,12 @@ func ensureDefaultConfig(cfg *Config) error {
 // The write is atomic: data goes to a .tmp file first, then renamed.
 func Save(cfg *Config, path string) error {
 	if path == "" {
-		path = filepath.Join(CortexDir(), "cortex.yaml")
+		// Use the same file that was loaded, or default to ~/.cortex/cortex.yaml
+		if cfg.LoadedFrom != "" {
+			path = cfg.LoadedFrom
+		} else {
+			path = filepath.Join(CortexDir(), "cortex.yaml")
+		}
 	}
 
 	dir := filepath.Dir(path)

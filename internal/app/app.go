@@ -140,9 +140,11 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 // ReloadConfig re-reads the configuration from disk and reinitializes
 // the embedding service. Useful after manual edits to cortex.yaml.
 func (a *App) ReloadConfig() error {
-	// Load from the canonical config path (~/.cortex/cortex.yaml)
-	// to ensure we read the same file that Save() writes to.
-	configPath := filepath.Join(config.CortexDir(), "cortex.yaml")
+	// Reload from the same file that was originally loaded
+	configPath := ""
+	if a.Config != nil && a.Config.LoadedFrom != "" {
+		configPath = a.Config.LoadedFrom
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("reload config: %w", err)
