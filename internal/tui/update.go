@@ -661,7 +661,12 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.EmbCfgReindexWarning = false
 		m.EmbCfgReindexing = false
 		m.EmbCfgReindexProgress = ""
-		// Reload current config values
+		// Reload config from disk to get latest values
+		if m.deps.App != nil {
+			_ = m.deps.App.ReloadConfig()
+			m.deps.Config = m.deps.App.Config
+		}
+		// Load current config values into TUI fields
 		if m.deps.Config != nil {
 			switch m.deps.Config.Search.EmbeddingProvider {
 			case "ollama":
