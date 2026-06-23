@@ -526,6 +526,7 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+
 	switch m.Screen {
 	case ScreenHelp:
 		return m.handleHelpKeys(key)
@@ -784,6 +785,17 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 		m.PendingKey = ""
 	}
 
+	// Confirm delete
+	if m.ConfirmDelete {
+		if key == "y" || key == "Y" {
+			id := m.ConfirmDeleteID
+			m.ConfirmDelete = false
+			m.ConfirmDeleteID = 0
+			return m, deleteObservationCmd(m.deps, id)
+		}
+		return m, nil
+	}
+
 	switch key {
 	case "enter":
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
@@ -874,6 +886,17 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
+	}
+
+	// Confirm delete
+	if m.ConfirmDelete {
+		if key == "y" || key == "Y" {
+			id := m.ConfirmDeleteID
+			m.ConfirmDelete = false
+			m.ConfirmDeleteID = 0
+			return m, deleteObservationCmd(m.deps, id)
+		}
+		return m, nil
 	}
 
 	switch key {
@@ -1127,10 +1150,6 @@ func (m Model) handleArchiveKeys(key string) (tea.Model, tea.Cmd) {
 
 	if key != "g" {
 		m.PendingKey = ""
-	}
-
-	switch key {
-		return m, nil
 	}
 
 	switch key {
@@ -1567,6 +1586,7 @@ func buildDetailContent(obs *domain.Observation, score *domain.ImportanceScore, 
 
 	return content.String()
 }
+
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
