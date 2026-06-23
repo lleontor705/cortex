@@ -780,6 +780,10 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if key != "g" {
+		m.PendingKey = ""
+	}
+
 	switch key {
 	case "enter":
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
@@ -863,6 +867,13 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 			m.ConfirmDelete = false
 		}
 		return m, nil
+	}
+
+	if key != "g" {
+		m.PendingKey = ""
+	}
+
+	switch key {
 	}
 
 	switch key {
@@ -1111,6 +1122,14 @@ func (m Model) handleArchiveKeys(key string) (tea.Model, tea.Cmd) {
 		case "n", "N", "esc":
 			m.ConfirmDelete = false
 		}
+		return m, nil
+	}
+
+	if key != "g" {
+		m.PendingKey = ""
+	}
+
+	switch key {
 		return m, nil
 	}
 

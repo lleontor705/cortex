@@ -886,7 +886,8 @@ func (m Model) viewHealth() string {
 		b.WriteString("\n")
 	} else {
 		for i, c := range m.HealthCandidates {
-			if i >= 8 {
+			if i >= 10 {
+				fmt.Fprintf(&b, "    %s\n", timestampStyle.Render(fmt.Sprintf("...and %d more", len(m.HealthCandidates)-10)))
 				break
 			}
 			fmt.Fprintf(&b, "  %-40s  %s\n",
