@@ -2,6 +2,29 @@
 
 Evaluation suite for Cortex memory retrieval against standard benchmarks.
 
+## Retrieval baseline quick path
+
+The deterministic baseline proves the corpus, report, reproducibility, gate, and
+legacy-adapter contracts. It does **not** prove that a candidate improves Cortex,
+that external benchmark scores are Cortex-reproduced, or that answer-token
+F1/ROUGE/judge results measure labelled stable-ID retrieval relevance.
+
+```bash
+# Validate the benchmark-claim documentation contract.
+go test -v -count=1 ./bench -run TestRetrievalBaselineDocumentationContract
+
+# Validate the offline baseline contracts and preserved adapters.
+go test -v -count=1 ./bench/...
+```
+
+These commands preserve LOCOMO, DMR, and LongMemEval without requiring a dataset
+download, embedding provider, live judge, or external service. Dataset-scale and
+performance runs are opt-in: record corpus/split, evaluator, protocol/profile,
+provider/model, build, hardware, uncertainty, resources, licences, limitations,
+and report IDs before using their results as evidence. See
+[the full methodology](../docs/BENCHMARKS.md) for metric definitions and release
+claim rules.
+
 ## Benchmarks
 
 | Benchmark | Questions | Focus | Source |
