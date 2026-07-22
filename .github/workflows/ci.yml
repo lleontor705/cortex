@@ -25,6 +25,21 @@ jobs:
       - name: Run unit tests
         run: go test -v -count=1 ./...
 
+  baseline-contracts:
+    name: Offline Retrieval Baseline Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Validate deterministic baseline contracts
+        run: make test-baseline
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

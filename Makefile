@@ -1,4 +1,4 @@
-.PHONY: build run test test-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
+.PHONY: build run test test-baseline test-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
 
 # Binary name
 BINARY_NAME=cortex
@@ -40,6 +40,7 @@ help:
 	@echo "  build          Build the binary"
 	@echo "  run            Run the server"
 	@echo "  test           Run all tests"
+	@echo "  test-baseline  Validate offline retrieval baseline contracts"
 	@echo "  test-coverage  Run tests with coverage report"
 	@echo "  lint           Run golangci-lint"
 	@echo "  fmt            Format code"
@@ -65,6 +66,13 @@ run:
 test:
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
+
+# Validate the offline Cortex retrieval baseline contracts.
+test-baseline:
+	@echo "Validating offline retrieval baseline contracts..."
+	$(GOTEST) -v -count=1 ./bench/common -run '^(TestCorpus|TestEvidence|TestF1Score|TestRougeL|TestAggregate|TestRecall|TestMRR|TestNDCG|TestIsolation|TestFilter|TestReport|TestRepro|TestVariance|TestGateRegistry)'
+	$(GOTEST) -v -count=1 ./bench/fixtures/cortex-native -run '^Test(Authority|Collision)Fixtures$$'
+	$(GOTEST) -v -count=1 ./bench/cortex -run '^(TestRunCurrentProductionBaseline|TestDetect)'
 
 # Run tests with coverage report
 test-coverage:
