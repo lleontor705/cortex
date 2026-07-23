@@ -1,9 +1,11 @@
 package common
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
+	"time"
 )
 
 const (
@@ -29,19 +31,23 @@ const (
 // GateBaseline binds a protocol to representative, independently preserved
 // baseline evidence and its approved corpus and hardware envelope.
 type GateBaseline struct {
-	CorpusVersion      string           `json:"corpus_version"`
-	Hardware           HardwareMetadata `json:"hardware"`
-	BaselineReportIDs  []string         `json:"baseline_report_ids"`
-	Representative     bool             `json:"representative"`
-	VarianceAnalyzed   bool             `json:"variance_analyzed"`
-	CorpusApprovedBy   string           `json:"corpus_approved_by"`
-	HardwareApprovedBy string           `json:"hardware_approved_by"`
+	CorpusVersion        string           `json:"corpus_version"`
+	Hardware             HardwareMetadata `json:"hardware"`
+	BaselineReportIDs    []string         `json:"baseline_report_ids"`
+	BaselineReportSHA256 []string         `json:"baseline_report_sha256"`
+	ReproSHA256          string           `json:"repro_sha256"`
+	EvidenceCompletedAt  string           `json:"evidence_completed_at"`
+	Representative       bool             `json:"representative"`
+	VarianceAnalyzed     bool             `json:"variance_analyzed"`
+	CorpusApprovedBy     string           `json:"corpus_approved_by"`
+	HardwareApprovedBy   string           `json:"hardware_approved_by"`
 }
 
 // GateApproval records reviewer sign-off and its written rationale.
 type GateApproval struct {
-	ApprovedBy string `json:"approved_by"`
-	Rationale  string `json:"rationale"`
+	Reviewers  []string `json:"reviewers"`
+	Rationale  string   `json:"rationale"`
+	ApprovedAt string   `json:"approved_at"`
 }
 
 // GateDefinition declares one preregistered metric or correctness predicate.
@@ -216,11 +222,8 @@ func validateGateProtocol(protocol GateProtocol) error {
 	if err := validateGateBaseline(protocol.Baseline); err != nil {
 		return err
 	}
-	if strings.TrimSpace(protocol.Approval.ApprovedBy) == "" {
-		return fmt.Errorf("gate approval approved_by is required")
-	}
-	if strings.TrimSpace(protocol.Approval.Rationale) == "" {
-		return fmt.Errorf("gate approval rationale is required")
+	if err := validateGateApproval(protocol.Approval); err != nil {
+		return err
 	}
 	return nil
 }
@@ -263,13 +266,30 @@ func validateGateBaseline(baseline GateBaseline) error {
 	if !validHardwareEnvelope(baseline.Hardware) {
 		return fmt.Errorf("baseline hardware envelope is incomplete")
 	}
-	if len(baseline.BaselineReportIDs) < 2 {
-		return fmt.Errorf("at least two independent baseline_report_ids are required")
+	if len(baseline.BaselineReportIDs) != 2 {
+		return fmt.Errorf("exactly two independent baseline_report_ids are required")
 	}
+	if len(baseline.BaselineReportSHA256) != len(baseline.BaselineReportIDs) {
+		return fmt.Errorf("baseline requires one SHA-256 hash per report ID")
+	}
+	seenReportIDs := make(map[string]struct{}, len(baseline.BaselineReportIDs))
 	for i, id := range baseline.BaselineReportIDs {
 		if strings.TrimSpace(id) == "" {
 			return fmt.Errorf("baseline_report_ids[%d] is empty", i)
 		}
+		if _, exists := seenReportIDs[id]; exists {
+			return fmt.Errorf("baseline_report_ids[%d] %q is duplicated", i, id)
+		}
+		seenReportIDs[id] = struct{}{}
+		if !validSHA256(baseline.BaselineReportSHA256[i]) {
+			return fmt.Errorf("baseline_report_sha256[%d] must be a SHA-256 hash", i)
+		}
+	}
+	if !validSHA256(baseline.ReproSHA256) {
+		return fmt.Errorf("baseline repro_sha256 must be a SHA-256 hash")
+	}
+	if _, err := time.Parse(time.RFC3339, baseline.EvidenceCompletedAt); err != nil {
+		return fmt.Errorf("baseline evidence_completed_at must be RFC3339: %w", err)
 	}
 	if !baseline.Representative {
 		return fmt.Errorf("representative baseline evidence is required")
@@ -284,14 +304,44 @@ func validateGateBaseline(baseline GateBaseline) error {
 }
 
 func validateNumericThresholdEvidence(protocol GateProtocol) error {
-	baseline := protocol.Baseline
-	if strings.TrimSpace(baseline.CorpusVersion) == "" || !validHardwareEnvelope(baseline.Hardware) ||
-		len(baseline.BaselineReportIDs) < 2 || !baseline.Representative || !baseline.VarianceAnalyzed ||
-		strings.TrimSpace(baseline.CorpusApprovedBy) == "" || strings.TrimSpace(baseline.HardwareApprovedBy) == "" ||
-		strings.TrimSpace(protocol.Approval.ApprovedBy) == "" {
-		return fmt.Errorf("representative baseline metadata, variance analysis, corpus/hardware approval, and reviewer sign-off are required")
+	if err := validateGateBaseline(protocol.Baseline); err != nil {
+		return fmt.Errorf("approved representative baseline evidence is required: %w", err)
+	}
+	if err := validateGateApproval(protocol.Approval); err != nil {
+		return fmt.Errorf("reviewer sign-off is required: %w", err)
+	}
+	evidenceCompletedAt, evidenceErr := time.Parse(time.RFC3339, protocol.Baseline.EvidenceCompletedAt)
+	approvedAt, approvalErr := time.Parse(time.RFC3339, protocol.Approval.ApprovedAt)
+	if evidenceErr != nil || approvalErr != nil || !approvedAt.After(evidenceCompletedAt) {
+		return fmt.Errorf("numeric thresholds require reviewer approval after baseline evidence completion")
 	}
 	return nil
+}
+
+func validateGateApproval(approval GateApproval) error {
+	if len(approval.Reviewers) == 0 {
+		return fmt.Errorf("gate approval reviewers are required")
+	}
+	for i, reviewer := range approval.Reviewers {
+		if strings.TrimSpace(reviewer) == "" {
+			return fmt.Errorf("gate approval reviewers[%d] is empty", i)
+		}
+	}
+	if strings.TrimSpace(approval.Rationale) == "" {
+		return fmt.Errorf("gate approval rationale is required")
+	}
+	if _, err := time.Parse(time.RFC3339, approval.ApprovedAt); err != nil {
+		return fmt.Errorf("gate approval approved_at must be RFC3339: %w", err)
+	}
+	return nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
 }
 
 func validHardwareEnvelope(hardware HardwareMetadata) bool {

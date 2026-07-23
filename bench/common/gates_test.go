@@ -19,8 +19,55 @@ func TestGateRegistryRequiresPreregisteredProtocolMetadata(t *testing.T) {
 		{name: "corpus version", mutate: func(p *GateProtocol) { p.Baseline.CorpusVersion = "" }, wantErr: "corpus_version"},
 		{name: "hardware envelope", mutate: func(p *GateProtocol) { p.Baseline.Hardware.ProfileID = "" }, wantErr: "hardware"},
 		{name: "variance analysis", mutate: func(p *GateProtocol) { p.Baseline.VarianceAnalyzed = false }, wantErr: "variance"},
-		{name: "reviewer approval", mutate: func(p *GateProtocol) { p.Approval.ApprovedBy = "" }, wantErr: "approved_by"},
+		{name: "report hash", mutate: func(p *GateProtocol) { p.Baseline.BaselineReportSHA256[0] = "" }, wantErr: "report"},
+		{name: "repro hash", mutate: func(p *GateProtocol) { p.Baseline.ReproSHA256 = "" }, wantErr: "repro"},
+		{name: "named reviewers", mutate: func(p *GateProtocol) { p.Approval.Reviewers = nil }, wantErr: "reviewers"},
+		{name: "reviewer rationale", mutate: func(p *GateProtocol) { p.Approval.Rationale = "" }, wantErr: "rationale"},
+		{name: "approval date", mutate: func(p *GateProtocol) { p.Approval.ApprovedAt = "" }, wantErr: "approved_at"},
 		{name: "blocking policy", mutate: func(p *GateProtocol) { p.Gates[0].Blocking = "" }, wantErr: "blocking"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol := validGateProtocol()
+			tt.mutate(&protocol)
+
+			_, err := RegisterGateRegistry(protocol)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("RegisterGateRegistry() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGateRegistryRejectsInvalidEvidenceBindings(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*GateProtocol)
+		wantErr string
+	}{
+		{name: "report ID and hash count differ", mutate: func(p *GateProtocol) {
+			p.Baseline.BaselineReportSHA256 = p.Baseline.BaselineReportSHA256[:1]
+		}, wantErr: "one SHA-256 hash per report ID"},
+		{name: "requires exactly two reports", mutate: func(p *GateProtocol) {
+			p.Baseline.BaselineReportIDs = append(p.Baseline.BaselineReportIDs, "baseline-3")
+			p.Baseline.BaselineReportSHA256 = append(p.Baseline.BaselineReportSHA256, strings.Repeat("d", 64))
+		}, wantErr: "exactly two"},
+		{name: "duplicate report ID", mutate: func(p *GateProtocol) {
+			p.Baseline.BaselineReportIDs[1] = p.Baseline.BaselineReportIDs[0]
+		}, wantErr: "duplicated"},
+		{name: "report hash is not SHA-256", mutate: func(p *GateProtocol) {
+			p.Baseline.BaselineReportSHA256[0] = "not-a-sha256"
+		}, wantErr: "SHA-256"},
+		{name: "repro hash is not SHA-256", mutate: func(p *GateProtocol) {
+			p.Baseline.ReproSHA256 = "not-a-sha256"
+		}, wantErr: "SHA-256"},
+		{name: "blank named reviewer", mutate: func(p *GateProtocol) {
+			p.Approval.Reviewers = []string{"data-reviewer", " "}
+		}, wantErr: "reviewers"},
+		{name: "invalid approval date", mutate: func(p *GateProtocol) {
+			p.Approval.ApprovedAt = "after the run"
+		}, wantErr: "approved_at"},
 	}
 
 	for _, tt := range tests {
@@ -70,7 +117,8 @@ func TestGateRegistryRejectsNumericThresholdWithoutBaselineApproval(t *testing.T
 		{name: "missing variance analysis", mutate: func(p *GateProtocol) { p.Baseline.VarianceAnalyzed = false }},
 		{name: "missing hardware approval", mutate: func(p *GateProtocol) { p.Baseline.HardwareApprovedBy = "" }},
 		{name: "missing corpus approval", mutate: func(p *GateProtocol) { p.Baseline.CorpusApprovedBy = "" }},
-		{name: "missing reviewer sign-off", mutate: func(p *GateProtocol) { p.Approval.ApprovedBy = "" }},
+		{name: "missing reviewer sign-off", mutate: func(p *GateProtocol) { p.Approval.Reviewers = nil }},
+		{name: "approval predates evidence", mutate: func(p *GateProtocol) { p.Approval.ApprovedAt = "2026-07-21T23:59:59Z" }},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +131,48 @@ func TestGateRegistryRejectsNumericThresholdWithoutBaselineApproval(t *testing.T
 			_, err := RegisterGateRegistry(protocol)
 			if err == nil || !strings.Contains(err.Error(), "numeric threshold") {
 				t.Fatalf("RegisterGateRegistry() error = %v, want numeric threshold baseline/sign-off rejection", err)
+			}
+		})
+	}
+}
+
+func TestGateRegistryDefensivelyCopiesRegisteredProtocol(t *testing.T) {
+	protocol := validGateProtocol()
+	threshold := 0.8
+	protocol.Gates[0].Threshold = &threshold
+
+	registry, err := RegisterGateRegistry(protocol)
+	if err != nil {
+		t.Fatalf("RegisterGateRegistry() error = %v", err)
+	}
+	protocol.Gates[0].ID = GateIDZeroIsolationLeakage
+	protocol.Gates[0].Blocking = BlockingAdvisory
+	*protocol.Gates[0].Threshold = 0
+
+	gate, ok := findGate(registry.Gates(), "recall-critical-class")
+	if !ok || gate.Blocking != BlockingProfile || gate.Threshold == nil || *gate.Threshold != 0.8 {
+		t.Fatalf("registered gate mutated through input protocol: %#v, found %v", gate, ok)
+	}
+}
+
+func TestGateRegistryRejectsUniversalGateRedefinition(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*GateProtocol)
+	}{
+		{name: "zero isolation violations", mutate: func(p *GateProtocol) { p.Gates[0].ID = GateIDZeroIsolationLeakage }},
+		{name: "exact supported-filter eligible IDs", mutate: func(p *GateProtocol) { p.Gates[0].ID = GateIDExactFilterCorrectness }},
+		{name: "reserved universal predicate", mutate: func(p *GateProtocol) { p.Gates[0].Rule = RuleZeroViolations }},
+		{name: "universal blocking policy", mutate: func(p *GateProtocol) { p.Gates[0].Blocking = BlockingUniversal }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol := validGateProtocol()
+			tt.mutate(&protocol)
+
+			if _, err := RegisterGateRegistry(protocol); err == nil {
+				t.Fatal("RegisterGateRegistry() error = nil, want immutable universal-gate rejection")
 			}
 		})
 	}
@@ -213,9 +303,14 @@ func validGateProtocol() GateProtocol {
 			CorpusVersion:     "cortex-native-v1",
 			Hardware:          HardwareMetadata{ProfileID: "ci-linux-amd64", OS: "linux", Arch: "amd64", CPU: "representative-cpu", MemoryMB: 16384},
 			BaselineReportIDs: []string{"baseline-1", "baseline-2"}, Representative: true, VarianceAnalyzed: true,
+			BaselineReportSHA256: []string{strings.Repeat("a", 64), strings.Repeat("b", 64)},
+			ReproSHA256:          strings.Repeat("c", 64), EvidenceCompletedAt: "2026-07-22T00:00:00Z",
 			CorpusApprovedBy: "retrieval-reviewers", HardwareApprovedBy: "retrieval-reviewers",
 		},
-		Approval: GateApproval{ApprovedBy: "retrieval-reviewers", Rationale: "baseline evidence and invariants reviewed"},
+		Approval: GateApproval{
+			Reviewers: []string{"data-privacy-reviewer", "performance-reviewer"},
+			Rationale: "baseline evidence and invariants reviewed", ApprovedAt: "2026-07-22T01:00:00Z",
+		},
 		Gates: []GateDefinition{{
 			ID:         "recall-critical-class",
 			Metric:     MetricDefinition{Name: "recall_at_10", Unit: "ratio", Direction: DirectionHigherIsBetter, Description: "Recall for the preregistered critical query class."},
