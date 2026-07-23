@@ -3,6 +3,7 @@ package bench
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -61,5 +62,47 @@ func TestRetrievalBaselineDocumentationContract(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	benchmarkPath := filepath.Join(repositoryRoot, "docs", "BENCHMARKS.md")
+	benchmarkDocument, err := os.ReadFile(benchmarkPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", benchmarkPath, err)
+	}
+	benchmarkText := string(benchmarkDocument)
+
+	legacyStart := strings.Index(benchmarkText, "## Results Summary")
+	legacyEnd := strings.Index(benchmarkText, "## Methodology")
+	if legacyStart == -1 || legacyEnd == -1 || legacyEnd <= legacyStart {
+		t.Fatal("legacy results must remain in a distinct Results Summary section before Methodology")
+	}
+	legacyResults := benchmarkText[legacyStart:legacyEnd]
+	for _, marker := range []string{
+		"**Evidence classification:**",
+		"**Evidence identity:**",
+		"**Evaluator classification:**",
+		"**Comparability:**",
+	} {
+		if !strings.Contains(legacyResults, marker) {
+			t.Errorf("legacy results are missing structural evidence marker %q", marker)
+		}
+	}
+
+	forbiddenClaims := []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{name: "unsupported external LOCOMO accuracy", pattern: regexp.MustCompile(`(?i)Engram reports\s+80%\s+LOCOMO`)},
+		{name: "unsupported retrieval multiplier", pattern: regexp.MustCompile(`(?i)(vector search improves retrieval|overall improvement).{0,30}12\s*[-–]\s*37x`)},
+		{name: "unsupported provider parity", pattern: regexp.MustCompile(`(?i)Ollama.{0,20}matches OpenAI`)},
+		{name: "unsupported dimensionality cause", pattern: regexp.MustCompile(`(?i)due to higher[- ]dimensional embeddings`)},
+		{name: "unsupported provider speed claim", pattern: regexp.MustCompile(`(?i)Ollama is\s+1[.]7x faster`)},
+		{name: "unsupported network-latency cause", pattern: regexp.MustCompile(`(?i)no network latency for inference`)},
+		{name: "unsupported absolute temporal limitation", pattern: regexp.MustCompile(`(?i)FTS5 cannot answer temporal questions at all`)},
+	}
+	for _, claim := range forbiddenClaims {
+		if claim.pattern.MatchString(benchmarkText) {
+			t.Errorf("benchmark documentation contains %s; remove it or replace it with explicitly scoped evidence", claim.name)
+		}
 	}
 }

@@ -153,18 +153,32 @@ constitute Cortex release evidence.
 
 ## Results Summary
 
+> **Evidence classification:** Historical, unverified repository snapshot.
+> **Evidence identity:** The retained rows do not identify a result artifact,
+> run ID, build commit/dirty state, exact dataset artifact and split, hardware
+> profile, or uncertainty. They are not reproducible Cortex release evidence.
+> **Evaluator classification:** The numeric scores use legacy answer-token F1
+> (and, where stated, ROUGE-L or an optional answer judge), not labelled
+> stable-ID/span retrieval relevance.
+> **Comparability:** Values are preserved for historical continuity only. Do not
+> use them for cross-provider, cross-system, performance, or causal conclusions.
+
 ### LOCOMO (Long-Term Conversational Memory)
 
 **Dataset:** 1,986 questions across 10 conversations, 5 question types.
 **Source:** [snap-research/locomo](https://github.com/snap-research/locomo) (ACL 2024)
 
-| Mode | single-hop | multi-hop | temporal | Overall improvement |
+| Mode | single-hop | multi-hop | temporal | Legacy ratio shown in snapshot |
 |------|-----------|-----------|----------|-------------------|
 | FTS5 only (baseline) | 0.002 | 0.001 | 0.000 | — |
 | FTS5 + Ollama (nomic-embed-text) | 0.025 | 0.016 | 0.026 | **12-16x** |
 | FTS5 + OpenAI (text-embedding-3-small) | 0.026 | 0.016 | 0.037 | **13-37x** |
 
-> **Note:** These scores are raw F1 token overlap between retrieved context and gold answers. Cortex is a **retrieval system**, not a generative model — it finds relevant memories, not generates answers. For end-to-end accuracy (retrieval + LLM answer generation), scores are significantly higher. Engram reports 80% LOCOMO with an LLM-as-Judge evaluator on top of retrieval.
+> **Note:** These scores are raw answer-token F1 between retrieved context and
+> gold answers. They do not measure answer-generation accuracy, do not contain
+> Cortex stable-ID/span relevance labels, and do not substantiate an external
+> system's accuracy. The ratios are retained data from the legacy snapshot, not
+> verified retrieval-improvement claims.
 
 ### DMR (Deep Memory Retrieval)
 
@@ -187,13 +201,12 @@ Tested on LOCOMO (50 questions subset):
 | **OpenAI** | text-embedding-3-small | 1536 | 0.026 | 0.016 | 0.037 | 21 min | ~$0.02 |
 | None (FTS5) | — | — | 0.002 | 0.001 | 0.000 | 4 min | $0 |
 
-**Key findings:**
-
-1. **Vector search improves retrieval 12-37x** across all question types vs. keyword-only FTS5
-2. **Ollama (local) matches OpenAI** on single-hop and multi-hop questions
-3. **OpenAI leads on temporal reasoning** (+42% over Ollama) due to higher-dimensional embeddings
-4. **Ollama is 1.7x faster** than OpenAI (no network latency for inference, but sequential embedding)
-5. **Both providers improve temporal from zero** — FTS5 cannot answer temporal questions at all
+**Interpretation limit:** The table preserves answer-token scores, elapsed times,
+and reported costs from an unidentified 50-question legacy run. Without the
+required evidence identity and repeated-run uncertainty, these rows do not
+support provider equivalence, temporal-reasoning conclusions, embedding-dimension
+causality, provider speed or network-cause claims, retrieval multipliers, or an
+absolute statement about FTS5 temporal capability.
 
 ## Methodology
 
@@ -228,8 +241,8 @@ Each ranking system (FTS5 by BM25, vectors by cosine similarity) contributes ind
 ### Limitations
 
 1. **Retrieval-only evaluation** — Cortex retrieves relevant memories but does not generate answers. End-to-end evaluation requires an LLM layer on top.
-2. **Sequential embedding** — Each observation is embedded one at a time. Batch embedding would significantly reduce benchmark runtime.
-3. **No graph boost** — Knowledge graph neighbor expansion is not yet used in benchmarks. This is expected to improve multi-hop scores in v0.5.
+2. **Sequential embedding** — Each observation is embedded one at a time. The effect of batch embedding on runtime was not evaluated by this snapshot.
+3. **No graph boost** — Knowledge graph neighbor expansion is not used in these benchmarks; its effect on multi-hop scores was not evaluated.
 4. **F1 is conservative** — Token overlap penalizes retrieval systems that return contextually correct but lexically different content.
 
 ## Running Benchmarks
