@@ -2,8 +2,11 @@ package cortex
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleontor705/cortex/bench/common"
 	"github.com/lleontor705/cortex/internal/domain"
@@ -108,19 +111,91 @@ func TestDetectProjectLeakageIsBlocking(t *testing.T) {
 	}
 }
 
-func TestDetectMissingStableIDsIsBlocking(t *testing.T) {
-	trace := QueryTrace{
-		QueryID: "missing-label-query",
-		Ranked: []RankedResult{
-			{StableID: "current:42", CurrentID: 42, Project: "project-a", Position: 1},
-		},
+func TestRunCurrentProductionBaselineClassifiesTraceFindings(t *testing.T) {
+	ctx := context.Background()
+	stores, err := common.NewBenchStores()
+	if err != nil {
+		t.Fatalf("NewBenchStores() error = %v", err)
+	}
+	t.Cleanup(func() { _ = stores.Close() })
+
+	records := []domain.Observation{
+		{Title: "Isolation policy", Content: "Authorize retrieval only after project isolation checks.", Type: domain.TypeDecision, Scope: domain.ScopeProject},
+	}
+	if err := stores.IngestSession(ctx, "session-a", "project-a", records); err != nil {
+		t.Fatalf("IngestSession() error = %v", err)
 	}
 
-	failures := detectMissingStableIDs(trace)
-	if len(failures) != 1 {
-		t.Fatalf("len(failures) = %d, want 1", len(failures))
+	asOf := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
+	run, err := RunCurrentProductionBaseline(ctx, stores, nil, []Query{
+		{
+			ID:                      "missing-label-query",
+			Text:                    "project isolation",
+			UnsupportedCapabilities: []string{"privacy", "lifecycle"},
+			Options: domain.SearchOptions{
+				Project:     "project-a",
+				Type:        domain.TypeDecision,
+				Scope:       domain.ScopeProject,
+				Limit:       10,
+				FusionK:     60,
+				GraphExpand: true,
+				AsOf:        &asOf,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("RunCurrentProductionBaseline() error = nil, want incomplete-evidence error")
 	}
-	if !strings.Contains(failures[0], "current ID 42") {
-		t.Fatalf("failure = %q, want traceable current ID", failures[0])
+	if !strings.Contains(err.Error(), "evidence incomplete") || strings.Contains(err.Error(), "project isolation") {
+		t.Fatalf("error = %q, want incomplete evidence distinct from project leakage", err)
+	}
+	if len(run.BlockingFailures) != 0 {
+		t.Fatalf("BlockingFailures = %v, want no project leakage", run.BlockingFailures)
+	}
+	if len(run.IncompleteEvidence) != 1 || !strings.Contains(run.IncompleteEvidence[0], fmt.Sprintf("current ID %d", records[0].ID)) {
+		t.Fatalf("IncompleteEvidence = %v, want missing stable-ID finding", run.IncompleteEvidence)
+	}
+	if len(run.Queries) != 1 {
+		t.Fatalf("len(run.Queries) = %d, want 1", len(run.Queries))
+	}
+
+	trace := run.Queries[0]
+	if trace.Error != "" {
+		t.Fatalf("trace.Error = %q, want empty production error", trace.Error)
+	}
+	if trace.EffectiveInput.Project != "project-a" || trace.EffectiveInput.Type != domain.TypeDecision || trace.EffectiveInput.Scope != domain.ScopeProject || trace.EffectiveInput.AsOf == nil || !trace.EffectiveInput.AsOf.Equal(asOf) {
+		t.Fatalf("EffectiveInput = %+v, want supported inputs retained", trace.EffectiveInput)
+	}
+	if len(trace.Ranked) != 1 || trace.Ranked[0].StableID != fmt.Sprintf("current:%d", records[0].ID) {
+		t.Fatalf("Ranked = %+v, want raw fallback identity retained", trace.Ranked)
+	}
+	wantCapabilities := []CapabilityTrace{
+		{Field: "privacy", Status: CapabilityNotExecuted},
+		{Field: "lifecycle", Status: CapabilityNotExecuted},
+	}
+	if !reflect.DeepEqual(trace.Capabilities, wantCapabilities) {
+		t.Fatalf("Capabilities = %+v, want %+v", trace.Capabilities, wantCapabilities)
+	}
+}
+
+func TestRunCurrentProductionBaselineRetainsProductionErrors(t *testing.T) {
+	stores, err := common.NewBenchStores()
+	if err != nil {
+		t.Fatalf("NewBenchStores() error = %v", err)
+	}
+	t.Cleanup(func() { _ = stores.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	run, err := RunCurrentProductionBaseline(ctx, stores, nil, []Query{{
+		ID:      "canceled-query",
+		Text:    "project isolation",
+		Options: domain.SearchOptions{Project: "project-a", Limit: 10},
+	}})
+	if err != nil {
+		t.Fatalf("RunCurrentProductionBaseline() error = %v, want raw trace without classification error", err)
+	}
+	if len(run.Queries) != 1 || run.Queries[0].Error == "" {
+		t.Fatalf("Queries = %+v, want retained production error", run.Queries)
 	}
 }

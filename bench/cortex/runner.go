@@ -17,27 +17,41 @@ import (
 // Query identifies one immutable baseline query and its effective production
 // search inputs.
 type Query struct {
-	ID      string               `json:"id"`
-	Text    string               `json:"text"`
-	Options domain.SearchOptions `json:"options"`
+	ID                      string               `json:"id"`
+	Text                    string               `json:"text"`
+	Options                 domain.SearchOptions `json:"options"`
+	UnsupportedCapabilities []string             `json:"unsupported_capabilities,omitempty"`
 }
 
 // BaselineRun contains per-query current-production traces and any correctness
 // failures that block use of the run as baseline evidence.
 type BaselineRun struct {
-	Queries          []QueryTrace `json:"queries"`
-	BlockingFailures []string     `json:"blocking_failures"`
+	Queries            []QueryTrace `json:"queries"`
+	BlockingFailures   []string     `json:"blocking_failures"`
+	IncompleteEvidence []string     `json:"incomplete_evidence"`
 }
 
 // QueryTrace records effective inputs, ranked identities, performance samples,
 // and a safe error string for one production search invocation.
 type QueryTrace struct {
-	QueryID        string         `json:"query_id"`
-	EffectiveInput EffectiveInput `json:"effective_input"`
-	Ranked         []RankedResult `json:"ranked"`
-	Latency        LatencySample  `json:"latency"`
-	Resources      ResourceSample `json:"resources"`
-	Error          string         `json:"error,omitempty"`
+	QueryID        string            `json:"query_id"`
+	EffectiveInput EffectiveInput    `json:"effective_input"`
+	Ranked         []RankedResult    `json:"ranked"`
+	Capabilities   []CapabilityTrace `json:"capabilities,omitempty"`
+	Latency        LatencySample     `json:"latency"`
+	Resources      ResourceSample    `json:"resources"`
+	Error          string            `json:"error,omitempty"`
+}
+
+// CapabilityNotExecuted identifies a labelled authority field that the current
+// production search path cannot execute without broadening its semantics.
+const CapabilityNotExecuted = "not_executed_capability"
+
+// CapabilityTrace records an explicitly labelled field that was not executed
+// by the current production retrieval path.
+type CapabilityTrace struct {
+	Field  string `json:"field"`
+	Status string `json:"status"`
 }
 
 // EffectiveInput is the exact supported filter and execution input passed to
@@ -106,7 +120,8 @@ func RunCurrentProductionBaseline(ctx context.Context, stores *common.BenchStore
 				GraphExpand: options.GraphExpand,
 				AsOf:        options.AsOf,
 			},
-			Ranked: []RankedResult{},
+			Ranked:       []RankedResult{},
+			Capabilities: notExecutedCapabilities(query.UnsupportedCapabilities),
 		}
 
 		var before, after runtime.MemStats
@@ -142,14 +157,29 @@ func RunCurrentProductionBaseline(ctx context.Context, stores *common.BenchStore
 		}
 
 		run.BlockingFailures = append(run.BlockingFailures, detectProjectLeakage(trace)...)
-		run.BlockingFailures = append(run.BlockingFailures, detectMissingStableIDs(trace)...)
+		run.IncompleteEvidence = append(run.IncompleteEvidence, detectIncompleteStableIDs(trace)...)
 		run.Queries = append(run.Queries, trace)
 	}
 
 	if len(run.BlockingFailures) > 0 {
 		return run, fmt.Errorf("baseline blocked by %d project isolation violation(s)", len(run.BlockingFailures))
 	}
+	if len(run.IncompleteEvidence) > 0 {
+		return run, fmt.Errorf("baseline evidence incomplete: %d result(s) lack immutable corpus stable IDs", len(run.IncompleteEvidence))
+	}
 	return run, nil
+}
+
+func notExecutedCapabilities(fields []string) []CapabilityTrace {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	capabilities := make([]CapabilityTrace, 0, len(fields))
+	for _, field := range fields {
+		capabilities = append(capabilities, CapabilityTrace{Field: field, Status: CapabilityNotExecuted})
+	}
+	return capabilities
 }
 
 func detectProjectLeakage(trace QueryTrace) []string {
@@ -173,18 +203,18 @@ func detectProjectLeakage(trace QueryTrace) []string {
 	return failures
 }
 
-func detectMissingStableIDs(trace QueryTrace) []string {
-	failures := make([]string, 0)
+func detectIncompleteStableIDs(trace QueryTrace) []string {
+	findings := make([]string, 0)
 	for _, result := range trace.Ranked {
 		if strings.HasPrefix(result.StableID, "current:") {
-			failures = append(failures, fmt.Sprintf(
+			findings = append(findings, fmt.Sprintf(
 				"query %q returned current ID %d without an immutable corpus stable ID",
 				trace.QueryID,
 				result.CurrentID,
 			))
 		}
 	}
-	return failures
+	return findings
 }
 
 func allocationDelta(before, after uint64) uint64 {
