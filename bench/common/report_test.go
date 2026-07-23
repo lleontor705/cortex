@@ -27,7 +27,11 @@ func TestReportDeterministicSerialization(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatalf("serialization is not deterministic:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
+	if firstRank, secondRank := bytes.Index(first, []byte(`"stable_id": "fact-current"`)), bytes.Index(first, []byte(`"stable_id": "fact-current-second"`)); firstRank < 0 || secondRank < 0 || firstRank > secondRank {
+		t.Fatalf("serialization changed observed ranked order:\n%s", first)
+	}
 	for _, required := range []string{
+		`"run_id": "run-001"`,
 		`"corpus_version": "corpus-v1"`,
 		`"protocol_version": "protocol-v1"`,
 		`"p50": 4.5`,
@@ -38,6 +42,10 @@ func TestReportDeterministicSerialization(t *testing.T) {
 		`"peak_rss_bytes": 67108864`,
 		`"storage_bytes": 1048576`,
 		`"index_bytes": 262144`,
+		`"cpu_available": true`,
+		`"peak_rss_available": true`,
+		`"storage_available": true`,
+		`"index_available": true`,
 		`"current_output"`,
 		`"candidate_output"`,
 		`"uncertainty"`,
@@ -46,6 +54,80 @@ func TestReportDeterministicSerialization(t *testing.T) {
 		if !strings.Contains(string(first), required) {
 			t.Errorf("serialized report missing %s", required)
 		}
+	}
+}
+
+func TestReportValidationRejectsDuplicateIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*EvidenceReport)
+		wantErr string
+	}{
+		{name: "run and report", mutate: func(r *EvidenceReport) { r.RunID = r.ReportID }, wantErr: "run_id and report_id"},
+		{name: "profile", mutate: func(r *EvidenceReport) { r.Profiles = append(r.Profiles, r.Profiles[0]) }, wantErr: "profile identity"},
+		{name: "query", mutate: func(r *EvidenceReport) { r.Queries[1].QueryID = r.Queries[0].QueryID }, wantErr: "query identity"},
+		{name: "current output stable ID", mutate: func(r *EvidenceReport) {
+			r.Queries[0].CurrentOutput[1].StableID = r.Queries[0].CurrentOutput[0].StableID
+		}, wantErr: "stable_id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := validEvidenceReport()
+			tt.mutate(&report)
+			if err := report.Validate(); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReportValidationPreservesContiguousRankedOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		outputs []RankedOutput
+		wantErr string
+	}{
+		{name: "contiguous", outputs: []RankedOutput{{StableID: "first", Rank: 1, Score: 0.9}, {StableID: "second", Rank: 2, Score: 0.8}}},
+		{name: "gap", outputs: []RankedOutput{{StableID: "first", Rank: 1, Score: 0.9}, {StableID: "third", Rank: 3, Score: 0.8}}, wantErr: "contiguous"},
+		{name: "observed order", outputs: []RankedOutput{{StableID: "second", Rank: 2, Score: 0.8}, {StableID: "first", Rank: 1, Score: 0.9}}, wantErr: "contiguous"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := validEvidenceReport()
+			report.Queries[0].CurrentOutput = tt.outputs
+			err := report.Validate()
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("Validate() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestReportResourceAvailabilityDistinguishesUnavailableFromZero(t *testing.T) {
+	unavailable := false
+	available := true
+
+	report := validEvidenceReport()
+	report.Resources.CPUAvailable = &unavailable
+	report.Resources.CPUSeconds = 0
+	if err := report.Validate(); err != nil {
+		t.Fatalf("Validate() unavailable zero error = %v", err)
+	}
+
+	report.Resources.CPUSeconds = 1
+	if err := report.Validate(); err == nil || !strings.Contains(err.Error(), "cpu availability") {
+		t.Fatalf("Validate() unavailable non-zero error = %v, want cpu availability error", err)
+	}
+
+	report.Resources.CPUAvailable = &available
+	report.Resources.CPUSeconds = 0
+	if err := report.Validate(); err != nil {
+		t.Fatalf("Validate() measured zero error = %v", err)
 	}
 }
 
@@ -85,6 +167,7 @@ func TestReportValidationRequiresReproducibleEvidence(t *testing.T) {
 func validEvidenceReport() EvidenceReport {
 	return EvidenceReport{
 		SchemaVersion:   "retrieval-evidence-report/v1",
+		RunID:           "run-001",
 		ReportID:        "baseline-run-001",
 		CorpusVersion:   "corpus-v1",
 		ProtocolVersion: "protocol-v1",
@@ -120,13 +203,19 @@ func validEvidenceReport() EvidenceReport {
 		},
 		Queries: []QueryReport{
 			{
-				QueryID:         "query-001",
-				ProfileID:       "lexical-fast",
-				ProfileVersion:  "1.0.0",
-				QueryClass:      "single-hop",
-				Metrics:         map[string]float64{"recall_at_10": 1, "isolation_violations": 0},
-				CurrentOutput:   []RankedOutput{{StableID: "fact-current", Rank: 1, Score: 0.91}},
-				CandidateOutput: []RankedOutput{{StableID: "fact-candidate", Rank: 1, Score: 0.93}},
+				QueryID:        "query-001",
+				ProfileID:      "lexical-fast",
+				ProfileVersion: "1.0.0",
+				QueryClass:     "single-hop",
+				Metrics:        map[string]float64{"recall_at_10": 1, "isolation_violations": 0},
+				CurrentOutput: []RankedOutput{
+					{StableID: "fact-current", Rank: 1, Score: 0.91},
+					{StableID: "fact-current-second", Rank: 2, Score: 0.81},
+				},
+				CandidateOutput: []RankedOutput{
+					{StableID: "fact-candidate", Rank: 1, Score: 0.93},
+					{StableID: "fact-candidate-second", Rank: 2, Score: 0.83},
+				},
 			},
 			{
 				QueryID:         "query-002",

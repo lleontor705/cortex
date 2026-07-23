@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 )
 
 // EvidenceReport is the versioned release-evidence contract for retrieval runs.
@@ -12,6 +13,7 @@ import (
 // answer-evaluation format used by existing benchmark runners.
 type EvidenceReport struct {
 	SchemaVersion     string             `json:"schema_version"`
+	RunID             string             `json:"run_id,omitempty"`
 	ReportID          string             `json:"report_id"`
 	CorpusVersion     string             `json:"corpus_version"`
 	ProtocolVersion   string             `json:"protocol_version"`
@@ -81,14 +83,18 @@ type RankedOutput struct {
 // ResourceReport records CPU, peak RSS, corpus storage, and retrieval-index
 // costs. Units are explicit so reports cannot silently reinterpret values.
 type ResourceReport struct {
-	CPUSeconds   float64 `json:"cpu_seconds"`
-	CPUUnit      string  `json:"cpu_unit"`
-	PeakRSSBytes int64   `json:"peak_rss_bytes"`
-	PeakRSSUnit  string  `json:"peak_rss_unit"`
-	StorageBytes int64   `json:"storage_bytes"`
-	StorageUnit  string  `json:"storage_unit"`
-	IndexBytes   int64   `json:"index_bytes"`
-	IndexUnit    string  `json:"index_unit"`
+	CPUSeconds       float64 `json:"cpu_seconds"`
+	CPUUnit          string  `json:"cpu_unit"`
+	CPUAvailable     *bool   `json:"cpu_available,omitempty"`
+	PeakRSSBytes     int64   `json:"peak_rss_bytes"`
+	PeakRSSUnit      string  `json:"peak_rss_unit"`
+	PeakRSSAvailable *bool   `json:"peak_rss_available,omitempty"`
+	StorageBytes     int64   `json:"storage_bytes"`
+	StorageUnit      string  `json:"storage_unit"`
+	StorageAvailable *bool   `json:"storage_available,omitempty"`
+	IndexBytes       int64   `json:"index_bytes"`
+	IndexUnit        string  `json:"index_unit"`
+	IndexAvailable   *bool   `json:"index_available,omitempty"`
 }
 
 // UncertaintyReport discloses the uncertainty method and sampling basis.
@@ -106,6 +112,9 @@ func (r EvidenceReport) Validate() error {
 	}
 	if r.CorpusVersion == "" {
 		return fmt.Errorf("corpus_version is required")
+	}
+	if r.RunID != "" && r.RunID == r.ReportID {
+		return fmt.Errorf("run_id and report_id must identify distinct artifacts")
 	}
 	if r.ProtocolVersion == "" {
 		return fmt.Errorf("protocol_version is required")
@@ -135,17 +144,32 @@ func (r EvidenceReport) Validate() error {
 	if len(r.Profiles) == 0 {
 		return fmt.Errorf("profiles are required")
 	}
+	profileIdentities := make(map[string]struct{}, len(r.Profiles))
 	for i, profile := range r.Profiles {
 		if err := profile.validate(definitions); err != nil {
 			return fmt.Errorf("profiles[%d]: %w", i, err)
 		}
+		identity := profileIdentity(profile.ProfileID, profile.ProfileVersion, profile.QueryClass)
+		if _, duplicate := profileIdentities[identity]; duplicate {
+			return fmt.Errorf("profiles[%d] profile identity %q is duplicated", i, identity)
+		}
+		profileIdentities[identity] = struct{}{}
 	}
 	if len(r.Queries) == 0 {
 		return fmt.Errorf("queries are required")
 	}
+	queryIdentities := make(map[string]struct{}, len(r.Queries))
 	for i, query := range r.Queries {
 		if err := query.validate(definitions); err != nil {
 			return fmt.Errorf("queries[%d]: %w", i, err)
+		}
+		if _, duplicate := queryIdentities[query.QueryID]; duplicate {
+			return fmt.Errorf("queries[%d] query identity %q is duplicated", i, query.QueryID)
+		}
+		queryIdentities[query.QueryID] = struct{}{}
+		identity := profileIdentity(query.ProfileID, query.ProfileVersion, query.QueryClass)
+		if _, exists := profileIdentities[identity]; !exists {
+			return fmt.Errorf("queries[%d] references unknown profile identity %q", i, identity)
 		}
 	}
 	if err := r.Resources.validate(); err != nil {
@@ -177,6 +201,7 @@ func SerializeEvidenceReport(report EvidenceReport) ([]byte, error) {
 	canonical.Profiles = append([]ProfileReport(nil), report.Profiles...)
 	canonical.Queries = append([]QueryReport(nil), report.Queries...)
 	canonical.Limitations = append([]string(nil), report.Limitations...)
+	canonical.Resources = report.Resources.withExplicitAvailability()
 	sort.Slice(canonical.MetricDefinitions, func(i, j int) bool {
 		return canonical.MetricDefinitions[i].Name < canonical.MetricDefinitions[j].Name
 	})
@@ -245,10 +270,18 @@ func (r QueryReport) validate(definitions map[string]struct{}) error {
 		return fmt.Errorf("candidate_output is required")
 	}
 	for name, outputs := range map[string][]RankedOutput{"current_output": r.CurrentOutput, "candidate_output": r.CandidateOutput} {
+		stableIDs := make(map[string]struct{}, len(outputs))
 		for i, output := range outputs {
 			if output.StableID == "" || output.Rank <= 0 || !finite(output.Score) {
 				return fmt.Errorf("%s[%d] stable_id, positive rank, and finite score are required", name, i)
 			}
+			if output.Rank != i+1 {
+				return fmt.Errorf("%s ranks must be contiguous in observed order starting at 1", name)
+			}
+			if _, duplicate := stableIDs[output.StableID]; duplicate {
+				return fmt.Errorf("%s[%d].stable_id %q is duplicated", name, i, output.StableID)
+			}
+			stableIDs[output.StableID] = struct{}{}
 		}
 	}
 	return nil
@@ -261,7 +294,44 @@ func (r ResourceReport) validate() error {
 	if !finiteNonNegative(r.CPUSeconds) || r.PeakRSSBytes < 0 || r.StorageBytes < 0 || r.IndexBytes < 0 {
 		return fmt.Errorf("cpu, peak RSS, storage, and index values must be non-negative")
 	}
+	if explicitlyUnavailable(r.CPUAvailable) && r.CPUSeconds != 0 {
+		return fmt.Errorf("cpu availability is false but cpu_seconds is non-zero")
+	}
+	if explicitlyUnavailable(r.PeakRSSAvailable) && r.PeakRSSBytes != 0 {
+		return fmt.Errorf("peak RSS availability is false but peak_rss_bytes is non-zero")
+	}
+	if explicitlyUnavailable(r.StorageAvailable) && r.StorageBytes != 0 {
+		return fmt.Errorf("storage availability is false but storage_bytes is non-zero")
+	}
+	if explicitlyUnavailable(r.IndexAvailable) && r.IndexBytes != 0 {
+		return fmt.Errorf("index availability is false but index_bytes is non-zero")
+	}
 	return nil
+}
+
+func (r ResourceReport) withExplicitAvailability() ResourceReport {
+	r.CPUAvailable = availabilityOrDefault(r.CPUAvailable)
+	r.PeakRSSAvailable = availabilityOrDefault(r.PeakRSSAvailable)
+	r.StorageAvailable = availabilityOrDefault(r.StorageAvailable)
+	r.IndexAvailable = availabilityOrDefault(r.IndexAvailable)
+	return r
+}
+
+func availabilityOrDefault(value *bool) *bool {
+	if value != nil {
+		copy := *value
+		return &copy
+	}
+	available := true
+	return &available
+}
+
+func explicitlyUnavailable(value *bool) bool {
+	return value != nil && !*value
+}
+
+func profileIdentity(profileID, profileVersion, queryClass string) string {
+	return strings.Join([]string{profileID, profileVersion, queryClass}, "@")
 }
 
 func validateMetricValues(values map[string]float64, definitions map[string]struct{}) error {
