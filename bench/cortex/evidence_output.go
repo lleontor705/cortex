@@ -37,9 +37,9 @@ func RefuseExternalProviders() error {
 	return nil
 }
 
-// WriteEvidenceOutput validates and stages both evidence artifacts before one
+// WriteEvidenceOutput validates and stages all evidence artifacts before one
 // directory rename makes the complete output visible to readers.
-func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.EvidenceReport) error {
+func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.EvidenceReport, run common.IndependentRun) error {
 	if strings.TrimSpace(outputDir) == "" {
 		return fmt.Errorf("evidence output directory is required")
 	}
@@ -56,6 +56,11 @@ func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.Eviden
 		return fmt.Errorf("serialize raw evidence: %w", err)
 	}
 	rawJSON = append(rawJSON, '\n')
+	runJSON, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize independent run: %w", err)
+	}
+	runJSON = append(runJSON, '\n')
 
 	parent := filepath.Dir(outputDir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -72,6 +77,9 @@ func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.Eviden
 	}
 	if err := os.WriteFile(filepath.Join(staging, "report.json"), reportJSON, 0o600); err != nil {
 		return fmt.Errorf("write staged evidence report: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "independent-run.json"), runJSON, 0o600); err != nil {
+		return fmt.Errorf("write staged independent run: %w", err)
 	}
 	if _, err := os.Stat(outputDir); err == nil {
 		return fmt.Errorf("%s: %w", outputDir, ErrEvidenceOutputExists)

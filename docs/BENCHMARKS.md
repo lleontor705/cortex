@@ -219,13 +219,13 @@ For each benchmark question:
 3. **Search** — Run FTS5 keyword search + optional vector cosine similarity search
 4. **Fuse** — Combine FTS5 and vector results using Reciprocal Rank Fusion (k=60)
 5. **Score** — Compare top-5 retrieved results against gold answer using F1 token overlap
-6. **Judge** — Optionally evaluate with LLM-as-Judge (requires API key)
+6. **Judge** — Optionally evaluate answer acceptability with the local Ollama runtime
 
 ### Scoring
 
 - **F1 Token Overlap:** Tokenize prediction and reference, compute precision/recall/F1 on token sets
 - **ROUGE-L:** Longest Common Subsequence F1 between prediction and reference
-- **LLM-as-Judge:** GPT-4o or Claude evaluates if the retrieved context contains the correct answer (optional, requires API key)
+- **Ollama answer judge:** The committed runtime is Ollama-only and defaults to `qwen2.5:7b-instruct`, `temperature=0`, and `seed=42`. Configure it with `OLLAMA_ENDPOINT` and `OLLAMA_JUDGE_MODEL`. This optional score is not retrieval evidence and never replaces stable-ID or evidence-span relevance labels.
 - **Correct threshold:** F1 >= 0.3 for LOCOMO, (F1 + ROUGE-L) / 2 >= 0.3 for DMR
 
 ### Reciprocal Rank Fusion (RRF)

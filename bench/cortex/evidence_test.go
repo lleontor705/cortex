@@ -102,7 +102,7 @@ func TestEvidence(t *testing.T) {
 				t.Fatalf("partial staging artifact remains after success: %q", entry.Name())
 			}
 		}
-		wantNames := []string{"raw.json", "report.json"}
+		wantNames := []string{"independent-run.json", "raw.json", "report.json"}
 		if !reflect.DeepEqual(gotNames, wantNames) {
 			t.Fatalf("output files = %v, want %v", gotNames, wantNames)
 		}

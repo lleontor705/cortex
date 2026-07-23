@@ -106,3 +106,65 @@ func TestRetrievalBaselineDocumentationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestBaselineWorkflowContract(t *testing.T) {
+	t.Parallel()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve workflow test location")
+	}
+	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
+
+	ci, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	ciText := string(ci)
+	ciText = strings.ReplaceAll(ciText, "\r\n", "\n")
+	for _, branch := range []string{"      - main\n", "      - develop\n"} {
+		if !strings.Contains(ciText, branch) {
+			t.Errorf("CI pull_request branches missing %q", strings.TrimSpace(branch))
+		}
+	}
+	if strings.Contains(ciText, "      - master\n") {
+		t.Error("CI pull_request branches include unsupported master")
+	}
+	if !strings.Contains(ciText, "go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline") {
+		t.Error("CI baseline validation must use the direct offline Go command")
+	}
+
+	protocol, err := os.ReadFile(filepath.Join(repositoryRoot, "bench", "evidence", "cortex-native", "v1", "protocol.json"))
+	if err != nil {
+		t.Fatalf("read baseline protocol: %v", err)
+	}
+	for _, line := range strings.Split(string(protocol), "\n") {
+		if strings.Contains(line, "baseline repro ") && !strings.Contains(line, " --protocol ") {
+			t.Errorf("repro command omits required --protocol: %s", strings.TrimSpace(line))
+		}
+		if strings.Contains(line, "baseline run ") && strings.Contains(line, "--out bench/") {
+			t.Errorf("representative run output is staged inside repository: %s", strings.TrimSpace(line))
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(repositoryRoot, "bench", "README.md"),
+		filepath.Join(repositoryRoot, "docs", "BENCHMARKS.md"),
+	} {
+		document, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read judge documentation %s: %v", path, err)
+		}
+		text := string(document)
+		for _, forbidden := range []string{"GPT-4o", "claude-sonnet", "LLM-as-Judge (requires API key)", "Set an API key", "Without an API key"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s contains unsupported active judge guidance %q", path, forbidden)
+			}
+		}
+		for _, required := range []string{"Ollama-only", "qwen2.5:7b-instruct", "OLLAMA_ENDPOINT", "OLLAMA_JUDGE_MODEL", "temperature=0", "seed=42", "not retrieval evidence"} {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s is missing committed judge runtime contract %q", path, required)
+			}
+		}
+	}
+}

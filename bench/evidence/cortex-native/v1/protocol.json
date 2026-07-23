@@ -87,16 +87,16 @@
     "windows_commands": [
       "go test -v -count=1 ./bench/common ./bench/cortex ./bench/fixtures/cortex-native",
       "go run ./bench/cortex/cmd/baseline verify --root bench/evidence/cortex-native/v1",
-      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out bench/evidence/cortex-native/v1/runs/run-001",
-      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out bench/evidence/cortex-native/v1/runs/run-002",
-      "go run ./bench/cortex/cmd/baseline repro --run bench/evidence/cortex-native/v1/runs/run-001/report.json --run bench/evidence/cortex-native/v1/runs/run-002/report.json --out bench/evidence/cortex-native/v1/repro.json"
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out ../cortex-baseline-staging/run-001",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out ../cortex-baseline-staging/run-002",
+      "go run ./bench/cortex/cmd/baseline repro --run ../cortex-baseline-staging/run-001/report.json --run ../cortex-baseline-staging/run-002/report.json --protocol <approved-repro-protocol.json> --out ../cortex-baseline-staging/repro.json"
     ],
     "linux_commands": [
       "go test -v -count=1 ./bench/common ./bench/cortex ./bench/fixtures/cortex-native",
       "go run ./bench/cortex/cmd/baseline verify --root bench/evidence/cortex-native/v1",
-      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out bench/evidence/cortex-native/v1/runs/run-001",
-      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out bench/evidence/cortex-native/v1/runs/run-002",
-      "go run ./bench/cortex/cmd/baseline repro --run bench/evidence/cortex-native/v1/runs/run-001/report.json --run bench/evidence/cortex-native/v1/runs/run-002/report.json --out bench/evidence/cortex-native/v1/repro.json"
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out ../cortex-baseline-staging/run-001",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out ../cortex-baseline-staging/run-002",
+      "go run ./bench/cortex/cmd/baseline repro --run ../cortex-baseline-staging/run-001/report.json --run ../cortex-baseline-staging/run-002/report.json --protocol <approved-repro-protocol.json> --out ../cortex-baseline-staging/repro.json"
     ]
   },
   "measurement": {

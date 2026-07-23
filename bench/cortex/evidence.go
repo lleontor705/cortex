@@ -65,12 +65,8 @@ func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.Indepe
 	if err != nil {
 		return common.IndependentRun{}, err
 	}
-	if err := WriteEvidenceOutput(request.OutputDir, orchestrated.Baseline, orchestrated.Report); err != nil {
-		return common.IndependentRun{}, err
-	}
-
 	resources := orchestrated.Resources
-	return common.IndependentRun{
+	run := common.IndependentRun{
 		RunID:                request.RunID,
 		Seed:                 request.Seed,
 		BinarySHA256:         request.Identity.BinarySHA256,
@@ -79,7 +75,11 @@ func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.Indepe
 		TotalAllocBytes:      resources.TotalAllocBytes,
 		AllocationsAvailable: resources.Availability.HeapAlloc && resources.Availability.TotalAlloc,
 		Outliers:             []common.OutlierDisclosure{},
-	}, nil
+	}
+	if err := WriteEvidenceOutput(request.OutputDir, orchestrated.Baseline, orchestrated.Report, run); err != nil {
+		return common.IndependentRun{}, err
+	}
+	return run, nil
 }
 
 func evidenceQueries(corpus common.Corpus) ([]Query, error) {

@@ -1,6 +1,7 @@
 # Binaries
 bin/
 *.exe
+/cortex.exe~
 
 # Database files
 *.db

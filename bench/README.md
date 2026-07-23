@@ -51,20 +51,24 @@ go run ./bench/locomo -data bench/datasets/locomo10.json -report bench/results/l
 
 1. **Ingest** — Parse dataset conversations into Cortex sessions + observations
 2. **Query** — For each question, run `mem_search` (FTS5 + optional graph boost)
-3. **Score** — F1 token overlap (always) + LLM-as-Judge (optional, needs API key)
+3. **Score** — F1 token overlap (always) + optional local answer evaluation
 4. **Aggregate** — Per-type and overall accuracy
 
-### LLM Judge (Optional)
+### Ollama Answer Judge (Optional)
 
-Set an API key to enable LLM-based answer evaluation:
+The committed answer-evaluation runtime is Ollama-only. It defaults to
+`qwen2.5:7b-instruct`, `temperature=0`, and `seed=42`; configure it with
+`OLLAMA_ENDPOINT` and `OLLAMA_JUDGE_MODEL`.
 
 ```bash
-export OPENAI_API_KEY=sk-...    # Uses gpt-4o
-# OR
-export ANTHROPIC_API_KEY=sk-... # Uses claude-sonnet
+ollama pull qwen2.5:7b-instruct
+export OLLAMA_ENDPOINT=http://localhost:11434
+export OLLAMA_JUDGE_MODEL=qwen2.5:7b-instruct
 ```
 
-Without an API key, scoring falls back to F1 token overlap only.
+The optional judge measures answer acceptability. It is not retrieval evidence
+and never replaces stable-ID or evidence-span relevance labels. Without a
+reachable configured Ollama runtime, scoring uses token overlap only.
 
 ## Dataset Licenses
 

@@ -221,7 +221,14 @@ func executeEvidenceRun(ctx context.Context, command runCommand, runEvidence fun
 	if runEvidence == nil {
 		return fmt.Errorf("evidence runner is unavailable")
 	}
-	if err := requireCleanBuild(); err != nil {
+	repository, err := commandOutput("git", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	if err := requireOutputOutsideRepository(repository, command.OutputDir); err != nil {
+		return err
+	}
+	if err := requireCleanBuild(repository); err != nil {
 		return err
 	}
 	request, err := benchcortex.NewEvidenceRunRequest(command.Root, command.OutputDir, command.RunID, command.Seed, command.ProtocolVersion, benchcortex.EvidenceIdentity{})
@@ -255,15 +262,54 @@ func executeEvidenceRun(ctx context.Context, command runCommand, runEvidence fun
 	if err := benchcortex.ValidateEvidenceIdentity(request); err != nil {
 		return err
 	}
-	run, err := runEvidence(ctx, request)
+	_, err = runEvidence(ctx, request)
+	return err
+}
+
+func requireOutputOutsideRepository(repository, output string) error {
+	repositoryPath, err := canonicalPath(repository)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve repository path: %w", err)
 	}
-	encoded, err := json.MarshalIndent(run, "", "  ")
+	outputPath, err := canonicalPath(output)
 	if err != nil {
-		return fmt.Errorf("marshal independent run: %w", err)
+		return fmt.Errorf("resolve output path: %w", err)
 	}
-	return writeNewFile(filepath.Join(command.OutputDir, "independent-run.json"), append(encoded, '\n'))
+	relative, err := filepath.Rel(repositoryPath, outputPath)
+	if err != nil {
+		return fmt.Errorf("compare repository and output paths: %w", err)
+	}
+	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("representative output must be staged outside repository %s", repositoryPath)
+	}
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	cursor := absolute
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(cursor)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(cursor))
+		cursor = parent
+	}
 }
 
 func createRepro(command reproCommand) error {
@@ -351,8 +397,8 @@ func currentIdentity(root string, hardware common.HardwareMetadata) (benchcortex
 	return benchcortex.EvidenceIdentity{Commit: commit, BinarySHA256: binaryHash, CorpusSHA256: corpusHash, ProtocolSHA256: protocolHash, Hardware: hardware}, nil
 }
 
-func requireCleanBuild() error {
-	status, err := commandOutput("git", "status", "--porcelain", "--untracked-files=all")
+func requireCleanBuild(repository string) error {
+	status, err := commandOutput("git", "-C", repository, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return err
 	}
@@ -428,11 +474,11 @@ func usageText() string {
 
 Usage (PowerShell, cmd.exe, and bash; GNU Make is not required):
   go run ./bench/cortex/cmd/baseline verify --root <bundle>
-  go run ./bench/cortex/cmd/baseline run --root <bundle> --run-id run-001 --out <new-dir>
+  go run ./bench/cortex/cmd/baseline run --root <bundle> --run-id run-001 --out <new-dir-outside-repository>
   go run ./bench/cortex/cmd/baseline repro --run <run-001/report.json> --run <run-002/report.json> --protocol <approved-repro.json> --out <new-file>
   go run ./bench/cortex/cmd/baseline approve-input --root <bundle> --out <new-template.json>
 
-Run reads <bundle>/approval-input.json, invokes exactly one fresh process/database evidence run, and never overwrites output.
+Run reads <bundle>/approval-input.json, requires output staging outside the repository, invokes exactly one fresh process/database evidence run, and never overwrites output.
 Invoke run a second time with a distinct run ID and output directory for reproducibility.
 approve-input validates the bundle and emits identity inputs only; it does not execute evidence or record human approval.
 `

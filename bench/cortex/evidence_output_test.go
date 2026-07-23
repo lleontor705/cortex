@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lleontor705/cortex/bench/common"
@@ -24,7 +25,7 @@ func TestEvidenceOutput(t *testing.T) {
 		if err := run.Report.Validate(); err != nil {
 			t.Fatalf("EvidenceReport.Validate() error = %v", err)
 		}
-		for _, name := range []string{"raw.json", "report.json"} {
+		for _, name := range []string{"independent-run.json", "raw.json", "report.json"} {
 			if _, err := os.Stat(filepath.Join(output, name)); err != nil {
 				t.Fatalf("Stat(%s) error = %v", name, err)
 			}
@@ -62,8 +63,9 @@ func TestEvidenceOutput(t *testing.T) {
 		output := filepath.Join(t.TempDir(), "evidence")
 		raw := BaselineRun{Queries: []QueryTrace{}}
 		report := validOutputReport()
+		run := validIndependentRun(report)
 
-		if err := WriteEvidenceOutput(output, raw, report); err != nil {
+		if err := WriteEvidenceOutput(output, raw, report, run); err != nil {
 			t.Fatalf("WriteEvidenceOutput() error = %v", err)
 		}
 
@@ -75,7 +77,7 @@ func TestEvidenceOutput(t *testing.T) {
 		for _, entry := range entries {
 			got = append(got, entry.Name())
 		}
-		if want := []string{"raw.json", "report.json"}; !reflect.DeepEqual(got, want) {
+		if want := []string{"independent-run.json", "raw.json", "report.json"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("output entries = %v, want %v", got, want)
 		}
 	})
@@ -87,7 +89,8 @@ func TestEvidenceOutput(t *testing.T) {
 			t.Fatalf("WriteFile(existing) error = %v", err)
 		}
 
-		err := WriteEvidenceOutput(output, BaselineRun{}, validOutputReport())
+		report := validOutputReport()
+		err := WriteEvidenceOutput(output, BaselineRun{}, report, validIndependentRun(report))
 		if !errors.Is(err, ErrEvidenceOutputExists) {
 			t.Fatalf("WriteEvidenceOutput() error = %v, want ErrEvidenceOutputExists", err)
 		}
@@ -104,7 +107,7 @@ func TestEvidenceOutput(t *testing.T) {
 		parent := t.TempDir()
 		output := filepath.Join(parent, "evidence")
 
-		err := WriteEvidenceOutput(output, BaselineRun{}, common.EvidenceReport{})
+		err := WriteEvidenceOutput(output, BaselineRun{}, common.EvidenceReport{}, common.IndependentRun{})
 		if err == nil {
 			t.Fatal("WriteEvidenceOutput() error = nil, want invalid report error")
 		}
@@ -131,6 +134,17 @@ func TestEvidenceOutput(t *testing.T) {
 			})
 		}
 	})
+}
+
+func validIndependentRun(report common.EvidenceReport) common.IndependentRun {
+	return common.IndependentRun{
+		RunID:                report.RunID,
+		Seed:                 "42",
+		BinarySHA256:         strings.Repeat("a", 64),
+		Report:               report,
+		AllocationsAvailable: true,
+		Outliers:             []common.OutlierDisclosure{},
+	}
 }
 
 func validOutputReport() common.EvidenceReport {
