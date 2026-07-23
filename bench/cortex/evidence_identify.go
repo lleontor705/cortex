@@ -195,16 +195,6 @@ func IngestEvidenceCorpus(ctx context.Context, stores *common.BenchStores, corpu
 	return stableIDs, nil
 }
 
-// RunEvidence is a minimal stub that validates identity before any database
-// creation. Full orchestration (runner, resource capture, report construction,
-// atomic output) is implemented by downstream tasks 2.5C and 2.5D.
-func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.IndependentRun, error) {
-	if err := ValidateEvidenceIdentity(request); err != nil {
-		return common.IndependentRun{}, err
-	}
-	return common.IndependentRun{}, fmt.Errorf("evidence orchestration not yet implemented (pending task 2.5C/2.5D)")
-}
-
 func loadEvidenceCorpus(root string) (common.Corpus, error) {
 	contents, err := os.ReadFile(filepath.Join(root, "corpus.json"))
 	if err != nil {
