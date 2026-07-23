@@ -73,6 +73,7 @@ test-baseline:
 	$(GOTEST) -v -count=1 ./bench/common -run '^(TestCorpus|TestEvidence|TestF1Score|TestRougeL|TestAggregate|TestRecall|TestMRR|TestNDCG|TestIsolation|TestFilter|TestReport|TestRepro|TestVariance|TestGateRegistry)'
 	$(GOTEST) -v -count=1 ./bench/fixtures/cortex-native -run '^Test(Authority|Collision)Fixtures$$'
 	$(GOTEST) -v -count=1 ./bench/cortex -run '^(TestRunCurrentProductionBaseline|TestDetect)'
+	go test -v -count=1 ./bench -run TestRetrievalBaselineDocumentationContract
 
 # Run tests with coverage report
 test-coverage:
