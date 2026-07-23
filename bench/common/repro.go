@@ -9,13 +9,17 @@ import (
 	"strings"
 )
 
-// IndependentRun preserves one complete, independently executed evidence report
-// and the seed used by its registered protocol.
+// IndependentRun preserves one complete, independently executed evidence report,
+// its binary identity, and process allocation samples.
 type IndependentRun struct {
-	RunID    string              `json:"run_id"`
-	Seed     string              `json:"seed"`
-	Report   EvidenceReport      `json:"report"`
-	Outliers []OutlierDisclosure `json:"outliers,omitempty"`
+	RunID                string              `json:"run_id"`
+	Seed                 string              `json:"seed"`
+	BinarySHA256         string              `json:"binary_sha256"`
+	Report               EvidenceReport      `json:"report"`
+	HeapAllocBytes       uint64              `json:"heap_alloc_bytes"`
+	TotalAllocBytes      uint64              `json:"total_alloc_bytes"`
+	AllocationsAvailable bool                `json:"allocations_available"`
+	Outliers             []OutlierDisclosure `json:"outliers,omitempty"`
 }
 
 // OutlierDisclosure records an observed anomaly without silently excluding the
@@ -43,9 +47,10 @@ type MetricTolerance struct {
 	ApprovedBy string  `json:"approved_by"`
 }
 
-// ReproIdentity contains every field that must match before runs are compared.
+// ReproIdentity contains every semantic field that must match before runs are compared.
 type ReproIdentity struct {
 	Seed            string           `json:"seed"`
+	BinarySHA256    string           `json:"binary_sha256"`
 	Build           BuildMetadata    `json:"build"`
 	CorpusVersion   string           `json:"corpus_version"`
 	Hardware        HardwareMetadata `json:"hardware"`
@@ -55,15 +60,16 @@ type ReproIdentity struct {
 // MetricVariance reports descriptive dispersion without assigning an
 // unregistered release threshold.
 type MetricVariance struct {
-	MetricKey               string  `json:"metric_key"`
-	SampleSize              int     `json:"sample_size"`
-	Minimum                 float64 `json:"minimum"`
-	Maximum                 float64 `json:"maximum"`
-	Mean                    float64 `json:"mean"`
-	Range                   float64 `json:"range"`
-	SampleStandardDeviation float64 `json:"sample_standard_deviation"`
-	DispersionMethod        string  `json:"dispersion_method"`
-	DispersionApprovedBy    string  `json:"dispersion_approved_by"`
+	MetricKey               string    `json:"metric_key"`
+	SampleSize              int       `json:"sample_size"`
+	Samples                 []float64 `json:"samples"`
+	Minimum                 float64   `json:"minimum"`
+	Maximum                 float64   `json:"maximum"`
+	Mean                    float64   `json:"mean"`
+	Range                   float64   `json:"range"`
+	SampleStandardDeviation float64   `json:"sample_standard_deviation"`
+	DispersionMethod        string    `json:"dispersion_method"`
+	DispersionApprovedBy    string    `json:"dispersion_approved_by"`
 }
 
 // ToleranceEvaluation compares observed dispersion only with a caller-supplied,
@@ -103,6 +109,9 @@ func AnalyzeReproducibility(runs []IndependentRun, protocol ReproProtocol) (Repr
 	for i := range runs {
 		if strings.TrimSpace(runs[i].RunID) == "" || strings.TrimSpace(runs[i].Seed) == "" {
 			return ReproAnalysis{}, fmt.Errorf("runs[%d] run_id and seed are required", i)
+		}
+		if strings.TrimSpace(runs[i].BinarySHA256) == "" {
+			return ReproAnalysis{}, fmt.Errorf("runs[%d] binary_sha256 is required", i)
 		}
 		if _, exists := seenRunIDs[runs[i].RunID]; exists {
 			return ReproAnalysis{}, fmt.Errorf("run_id %q is duplicated", runs[i].RunID)
@@ -218,6 +227,7 @@ func validateReproProtocol(protocol ReproProtocol) error {
 func reproIdentity(run IndependentRun) ReproIdentity {
 	return ReproIdentity{
 		Seed:            run.Seed,
+		BinarySHA256:    run.BinarySHA256,
 		Build:           run.Report.Build,
 		CorpusVersion:   run.Report.CorpusVersion,
 		Hardware:        run.Report.Hardware,
@@ -231,6 +241,9 @@ func compareReproIdentity(want, got ReproIdentity) error {
 	}
 	if got.Build != want.Build {
 		return fmt.Errorf("build differs")
+	}
+	if got.BinarySHA256 != want.BinarySHA256 {
+		return fmt.Errorf("binary differs")
 	}
 	if got.CorpusVersion != want.CorpusVersion {
 		return fmt.Errorf("corpus version differs")
@@ -271,6 +284,22 @@ func collectMetricSamples(runs []IndependentRun) (map[string][]float64, error) {
 				}
 				current[key] = value
 			}
+			measurements := map[string]float64{
+				"latency_p50_" + profile.Latency.Unit:   profile.Latency.P50,
+				"latency_p95_" + profile.Latency.Unit:   profile.Latency.P95,
+				"latency_p99_" + profile.Latency.Unit:   profile.Latency.P99,
+				"throughput_" + profile.Throughput.Unit: profile.Throughput.QueriesPerSecond,
+			}
+			for name, value := range measurements {
+				key := metricKey(profile.ProfileID, profile.ProfileVersion, profile.QueryClass, name)
+				if _, duplicate := current[key]; duplicate {
+					return nil, fmt.Errorf("run %q contains duplicate metric %q", run.RunID, key)
+				}
+				current[key] = value
+			}
+		}
+		if err := collectRunResourceSamples(current, run); err != nil {
+			return nil, err
 		}
 		if runIndex > 0 && len(current) != len(all) {
 			return nil, fmt.Errorf("run %q metric set differs from run %q", run.RunID, runs[0].RunID)
@@ -285,6 +314,34 @@ func collectMetricSamples(runs []IndependentRun) (map[string][]float64, error) {
 		}
 	}
 	return all, nil
+}
+
+func collectRunResourceSamples(current map[string]float64, run IndependentRun) error {
+	resources := run.Report.Resources
+	required := []struct {
+		name      string
+		available *bool
+	}{
+		{name: "cpu", available: resources.CPUAvailable},
+		{name: "peak RSS", available: resources.PeakRSSAvailable},
+		{name: "storage", available: resources.StorageAvailable},
+		{name: "index", available: resources.IndexAvailable},
+	}
+	for _, sample := range required {
+		if sample.available != nil && !*sample.available {
+			return fmt.Errorf("run %q has no %s resource sample", run.RunID, sample.name)
+		}
+	}
+	if !run.AllocationsAvailable {
+		return fmt.Errorf("run %q has no allocation resource samples", run.RunID)
+	}
+	current["resources/cpu_seconds"] = resources.CPUSeconds
+	current["resources/peak_rss_bytes"] = float64(resources.PeakRSSBytes)
+	current["resources/storage_bytes"] = float64(resources.StorageBytes)
+	current["resources/index_bytes"] = float64(resources.IndexBytes)
+	current["resources/heap_alloc_bytes"] = float64(run.HeapAllocBytes)
+	current["resources/total_alloc_bytes"] = float64(run.TotalAllocBytes)
+	return nil
 }
 
 func metricKey(profileID, profileVersion, queryClass, metricName string) string {
@@ -311,6 +368,7 @@ func calculateVariance(key string, samples []float64, protocol ReproProtocol) Me
 	return MetricVariance{
 		MetricKey:               key,
 		SampleSize:              len(samples),
+		Samples:                 append([]float64(nil), samples...),
 		Minimum:                 minimum,
 		Maximum:                 maximum,
 		Mean:                    mean,

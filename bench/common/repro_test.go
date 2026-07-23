@@ -15,6 +15,7 @@ func TestReproRejectsMismatchedIdentity(t *testing.T) {
 	}{
 		{name: "seed", mutate: func(run *IndependentRun) { run.Seed = "seed-2" }, wantErr: "seed"},
 		{name: "build commit", mutate: func(run *IndependentRun) { run.Report.Build.Commit = "different" }, wantErr: "build"},
+		{name: "binary", mutate: func(run *IndependentRun) { run.BinarySHA256 = strings.Repeat("b", 64) }, wantErr: "binary"},
 		{name: "corpus", mutate: func(run *IndependentRun) { run.Report.CorpusVersion = "corpus-v2" }, wantErr: "corpus"},
 		{name: "hardware", mutate: func(run *IndependentRun) { run.Report.Hardware.CPU = "different-cpu" }, wantErr: "hardware"},
 		{name: "protocol", mutate: func(run *IndependentRun) { run.Report.ProtocolVersion = "protocol-v2" }, wantErr: "protocol"},
@@ -85,6 +86,9 @@ func TestVarianceReportsApprovedDispersionOutliersAndTolerance(t *testing.T) {
 	if variance.SampleSize != 2 || math.Abs(variance.Mean-0.9) > 1e-12 || math.Abs(variance.Range-0.2) > 1e-12 || math.Abs(variance.SampleStandardDeviation-math.Sqrt(0.02)) > 1e-12 {
 		t.Fatalf("variance = %#v, want sample size 2, mean .9, range .2, sample stddev sqrt(.02)", variance)
 	}
+	if len(variance.Samples) != 2 || variance.Samples[0] != 0.8 || variance.Samples[1] != 1.0 {
+		t.Fatalf("variance samples = %#v, want every observed sample retained in run order", variance.Samples)
+	}
 	if variance.DispersionMethod != "sample_standard_deviation" || variance.DispersionApprovedBy != "retrieval-reviewers" {
 		t.Fatalf("dispersion registration = %#v, want approved method", variance)
 	}
@@ -94,6 +98,66 @@ func TestVarianceReportsApprovedDispersionOutliersAndTolerance(t *testing.T) {
 	evaluation, ok := findTolerance(analysis.ToleranceEvaluations, metricKey)
 	if !ok || !evaluation.Passed || evaluation.ObservedRange != variance.Range || evaluation.RegisteredMaximum != 0.25 {
 		t.Fatalf("tolerance evaluation = %#v, found %v, want preregistered passing range", evaluation, ok)
+	}
+}
+
+func TestVarianceIncludesPerformanceResourceAndAllocationSeries(t *testing.T) {
+	runs := []IndependentRun{reproRun(t, "run-1"), reproRun(t, "run-2")}
+	runs[1].Report.Profiles[0].Latency = LatencyReport{Unit: "milliseconds", P50: 5.5, P95: 10, P99: 13}
+	runs[1].Report.Profiles[0].Throughput.QueriesPerSecond = 180
+	runs[1].Report.Resources.CPUSeconds = 1.5
+	runs[1].Report.Resources.PeakRSSBytes = 70 << 20
+	runs[1].Report.Resources.StorageBytes = 2 << 20
+	runs[1].Report.Resources.IndexBytes = 512 << 10
+	runs[1].HeapAllocBytes = 2 << 20
+	runs[1].TotalAllocBytes = 4 << 20
+
+	analysis, err := AnalyzeReproducibility(runs, approvedReproProtocol(0.25))
+	if err != nil {
+		t.Fatalf("AnalyzeReproducibility() error = %v", err)
+	}
+
+	for _, key := range []string{
+		"lexical-fast@1.0.0/single-hop/latency_p50_milliseconds",
+		"lexical-fast@1.0.0/single-hop/latency_p95_milliseconds",
+		"lexical-fast@1.0.0/single-hop/latency_p99_milliseconds",
+		"lexical-fast@1.0.0/single-hop/throughput_queries_per_second",
+		"resources/cpu_seconds",
+		"resources/peak_rss_bytes",
+		"resources/storage_bytes",
+		"resources/index_bytes",
+		"resources/heap_alloc_bytes",
+		"resources/total_alloc_bytes",
+	} {
+		variance, ok := findVariance(analysis.Variance, key)
+		if !ok || variance.SampleSize != 2 || len(variance.Samples) != 2 {
+			t.Errorf("variance[%q] = %#v, found %v; want two retained samples", key, variance, ok)
+		}
+	}
+}
+
+func TestVarianceRejectsAbsentResourceSamples(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*IndependentRun)
+		want   string
+	}{
+		{name: "cpu", mutate: func(run *IndependentRun) { run.Report.Resources.CPUAvailable = boolPointer(false) }, want: "cpu"},
+		{name: "peak rss", mutate: func(run *IndependentRun) { run.Report.Resources.PeakRSSAvailable = boolPointer(false) }, want: "peak RSS"},
+		{name: "storage", mutate: func(run *IndependentRun) { run.Report.Resources.StorageAvailable = boolPointer(false) }, want: "storage"},
+		{name: "index", mutate: func(run *IndependentRun) { run.Report.Resources.IndexAvailable = boolPointer(false) }, want: "index"},
+		{name: "allocations", mutate: func(run *IndependentRun) { run.AllocationsAvailable = false }, want: "allocation"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := []IndependentRun{reproRun(t, "run-1"), reproRun(t, "run-2")}
+			tt.mutate(&runs[1])
+			_, err := AnalyzeReproducibility(runs, approvedReproProtocol(0.25))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("AnalyzeReproducibility() error = %v, want absent %s sample rejection", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -125,8 +189,18 @@ func reproRun(t *testing.T, runID string) IndependentRun {
 	t.Helper()
 	report := cloneEvidenceReport(t, validEvidenceReport())
 	report.ReportID = runID
-	return IndependentRun{RunID: runID, Seed: "seed-1", Report: report}
+	return IndependentRun{
+		RunID:                runID,
+		Seed:                 "seed-1",
+		BinarySHA256:         strings.Repeat("a", 64),
+		Report:               report,
+		HeapAllocBytes:       1 << 20,
+		TotalAllocBytes:      2 << 20,
+		AllocationsAvailable: true,
+	}
 }
+
+func boolPointer(value bool) *bool { return &value }
 
 func cloneEvidenceReport(t *testing.T, report EvidenceReport) EvidenceReport {
 	t.Helper()
