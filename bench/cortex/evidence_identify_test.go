@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,16 +90,18 @@ func TestEvidenceIdentify(t *testing.T) {
 		}
 	})
 
-	t.Run("ValidateEvidenceIdentity rejects mismatched commit", func(t *testing.T) {
+	t.Run("ValidateEvidenceIdentity accepts identity commit that differs from corpus build commit", func(t *testing.T) {
 		identity := validEvidenceIdentity(t, root)
-		identity.Commit = "different-commit"
-		request, err := NewEvidenceRunRequest(root, t.TempDir(), "run-commit-mismatch", "seed-42", "cortex-native-v1", identity)
+		corpus := loadCorpusForTest(t, root)
+		if identity.Commit == corpus.Build.Commit {
+			t.Skipf("evaluated HEAD %s equals corpus build commit; cannot prove differing source revision", identity.Commit)
+		}
+		request, err := NewEvidenceRunRequest(root, t.TempDir(), "run-commit-independence", "seed-42", "cortex-native-v1", identity)
 		if err != nil {
 			t.Fatalf("NewEvidenceRunRequest() error = %v", err)
 		}
-		err = ValidateEvidenceIdentity(request)
-		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "commit") {
-			t.Fatalf("ValidateEvidenceIdentity() error = %v, want error containing %q", err, "commit")
+		if err := ValidateEvidenceIdentity(request); err != nil {
+			t.Fatalf("ValidateEvidenceIdentity() rejected identity whose evaluated commit differs from corpus build commit: %v", err)
 		}
 	})
 
@@ -242,8 +245,10 @@ func TestEvidenceIdentify(t *testing.T) {
 	})
 }
 
-// validEvidenceIdentity constructs an EvidenceIdentity that matches the
-// committed corpus and protocol at root and the current test binary.
+// validEvidenceIdentity constructs an EvidenceIdentity whose commit is the
+// current evaluated HEAD (the subject/evaluator revision), not the stale
+// corpus build commit. The corpus/protocol hashes and hardware still match the
+// committed bundle at root, and the binary hash matches the current test binary.
 func validEvidenceIdentity(t *testing.T, root string) EvidenceIdentity {
 	t.Helper()
 	corpus := loadCorpusForTest(t, root)
@@ -252,12 +257,24 @@ func validEvidenceIdentity(t *testing.T, root string) EvidenceIdentity {
 		t.Fatalf("Executable() error = %v", err)
 	}
 	return EvidenceIdentity{
-		Commit:         corpus.Build.Commit,
+		Commit:         currentHEAD(t),
 		BinarySHA256:   fileHashSHA256(t, binary),
 		CorpusSHA256:   fileHashSHA256(t, filepath.Join(root, "corpus.json")),
 		ProtocolSHA256: fileHashSHA256(t, filepath.Join(root, "protocol.json")),
 		Hardware:       corpus.Hardware,
 	}
+}
+
+// currentHEAD returns the current evaluated git HEAD revision. This is the
+// subject/evaluator commit recorded by approve-input; it must not be conflated
+// with the corpus build commit embedded in corpus.json.
+func currentHEAD(t *testing.T) string {
+	t.Helper()
+	output, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func loadCorpusForTest(t *testing.T, root string) common.Corpus {

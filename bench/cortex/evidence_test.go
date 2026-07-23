@@ -27,7 +27,6 @@ func TestEvidence(t *testing.T) {
 			{name: "corpus hash", mutate: func(r *EvidenceRunRequest) { r.Identity.CorpusSHA256 = strings.Repeat("0", 64) }, wantErr: "corpus"},
 			{name: "protocol hash", mutate: func(r *EvidenceRunRequest) { r.Identity.ProtocolSHA256 = strings.Repeat("0", 64) }, wantErr: "protocol"},
 			{name: "binary hash", mutate: func(r *EvidenceRunRequest) { r.Identity.BinarySHA256 = strings.Repeat("0", 64) }, wantErr: "binary"},
-			{name: "commit", mutate: func(r *EvidenceRunRequest) { r.Identity.Commit = "different-commit" }, wantErr: "commit"},
 			{name: "hardware", mutate: func(r *EvidenceRunRequest) { r.Identity.Hardware.CPU = "different-cpu" }, wantErr: "hardware"},
 		}
 
@@ -182,6 +181,25 @@ func TestEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("report build provenance uses validated execution identity", func(t *testing.T) {
+		output := filepath.Join(t.TempDir(), "provenance")
+		request := newEvidenceRequest(t, output, "provenance-identity")
+		run, err := RunEvidence(context.Background(), request)
+		if err != nil {
+			t.Fatalf("RunEvidence() error = %v", err)
+		}
+		if run.Report.Build.Commit != request.Identity.Commit {
+			t.Fatalf("Report.Build.Commit = %q, want request identity commit %q", run.Report.Build.Commit, request.Identity.Commit)
+		}
+		if run.Report.Build.Dirty {
+			t.Fatalf("Report.Build.Dirty = true, want false for clean validated execution")
+		}
+		corpus := readCorpus(t, filepath.Join("..", "evidence", "cortex-native", "v1"))
+		if run.Report.Build.Commit == corpus.Build.Commit {
+			t.Fatalf("Report.Build.Commit = %q equals stale corpus build commit; provenance must reflect evaluated HEAD", run.Report.Build.Commit)
+		}
+	})
+
 	t.Run("preserves unsupported authority as not_executed_capability", func(t *testing.T) {
 		run := runEvidenceContract(t, "unsupported-authority")
 		serialized, err := json.Marshal(run.Report)
@@ -206,7 +224,7 @@ func newEvidenceRequest(t *testing.T, outputDir, runID string) EvidenceRunReques
 		t.Fatalf("Executable() error = %v", err)
 	}
 	identity := EvidenceIdentity{
-		Commit:         readCorpus(t, root).Build.Commit,
+		Commit:         currentHEAD(t),
 		BinarySHA256:   fileSHA256(t, binary),
 		CorpusSHA256:   fileSHA256(t, filepath.Join(root, "corpus.json")),
 		ProtocolSHA256: fileSHA256(t, filepath.Join(root, "protocol.json")),

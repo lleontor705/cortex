@@ -87,10 +87,17 @@ func NewEvidenceRunRequest(root, outputDir, runID, seed, protocolVersion string,
 	}, nil
 }
 
-// ValidateEvidenceIdentity checks that the committed corpus, protocol, commit,
-// binary, and hardware identities match the request before any database or
-// output is created. Each mismatch returns a typed error whose message contains
-// the field name for test matching.
+// ValidateEvidenceIdentity checks that the committed corpus, protocol, binary,
+// and hardware identities match the request before any database or output is
+// created. Each mismatch returns a typed error whose message contains the field
+// name for test matching.
+//
+// The evaluated commit is NOT compared against corpus.Build.Commit here. That
+// comparison is structurally self-referential: the corpus file is part of the
+// evaluated commit, so changing its embedded build commit necessarily changes
+// the containing HEAD, yielding no stable fixed point. Commit integrity is
+// instead enforced by the CLI preflight (executeEvidenceRun), which compares
+// the approved commit against the current clean repository HEAD.
 func ValidateEvidenceIdentity(request EvidenceRunRequest) error {
 	root := request.EvidenceRoot
 
@@ -108,10 +115,6 @@ func ValidateEvidenceIdentity(request EvidenceRunRequest) error {
 	}
 	if protocolHash != request.Identity.ProtocolSHA256 {
 		return fmt.Errorf("protocol hash mismatch: want %s, got %s: %w", protocolHash, request.Identity.ProtocolSHA256, ErrProtocolHashMismatch)
-	}
-
-	if request.Identity.Commit != request.Corpus.Build.Commit {
-		return fmt.Errorf("commit mismatch: want %s, got %s: %w", request.Corpus.Build.Commit, request.Identity.Commit, ErrCommitMismatch)
 	}
 
 	binaryPath, err := os.Executable()

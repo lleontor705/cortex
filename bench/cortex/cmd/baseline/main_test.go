@@ -388,6 +388,151 @@ func TestExecuteEvidenceRunRejectsRepositoryOutputBeforeRunner(t *testing.T) {
 	}
 }
 
+// TestApproveInputToRunPreflightAcceptsDifferingCorpusCommit proves that a
+// real approval input generated from the current evaluated HEAD is accepted by
+// ValidateEvidenceIdentity even though its commit necessarily differs from the
+// stale corpus build commit. Before the fix this was structurally impossible:
+// changing the corpus field changed the containing commit, so the equality had
+// no stable fixed point and blocked every approve-input to run preflight.
+func TestApproveInputToRunPreflightAcceptsDifferingCorpusCommit(t *testing.T) {
+	repository := testRepositoryRoot(t)
+	root := filepath.Join(repository, "bench", "evidence", "cortex-native", "v1")
+
+	output := filepath.Join(t.TempDir(), "approval-input.json")
+	if err := createApprovalInput(approveInputCommand{Root: root, Output: output}); err != nil {
+		t.Fatalf("createApprovalInput() error = %v", err)
+	}
+	var approved approvalInput
+	if err := readJSON(output, &approved); err != nil {
+		t.Fatalf("readJSON(approval input) error = %v", err)
+	}
+
+	template, err := benchcortex.NewEvidenceRunRequest(root, "validation-only", "validation-only", "42", "cortex-native-v1", benchcortex.EvidenceIdentity{})
+	if err != nil {
+		t.Fatalf("NewEvidenceRunRequest() error = %v", err)
+	}
+	if approved.Commit == template.Corpus.Build.Commit {
+		t.Skipf("corpus build commit equals current HEAD %s; cannot prove differing source revision", approved.Commit)
+	}
+
+	identity := benchcortex.EvidenceIdentity{
+		Commit: approved.Commit, BinarySHA256: approved.BinarySHA256,
+		CorpusSHA256: approved.CorpusSHA256, ProtocolSHA256: approved.ProtocolSHA256, Hardware: approved.Hardware,
+	}
+	request, err := benchcortex.NewEvidenceRunRequest(root, filepath.Join(t.TempDir(), "evidence-output"), "regression-001", "42", "cortex-native-v1", identity)
+	if err != nil {
+		t.Fatalf("NewEvidenceRunRequest() error = %v", err)
+	}
+	if err := benchcortex.ValidateEvidenceIdentity(request); err != nil {
+		t.Fatalf("ValidateEvidenceIdentity() rejected approved identity whose evaluated commit differs from corpus build commit: %v", err)
+	}
+}
+
+// TestExecuteEvidenceRunReachesRunnerWithApprovedInput is the full
+// approve-input to run preflight seam regression: it generates a real approval
+// input, then drives executeEvidenceRun end-to-end and confirms the injected
+// runner spy is reached rather than blocked by a corpus/commit self-reference.
+// Requires a clean working tree (the cleanliness preflight is a correct,
+// independent control that must remain fail-closed).
+func TestExecuteEvidenceRunReachesRunnerWithApprovedInput(t *testing.T) {
+	repository := testRepositoryRoot(t)
+	root := filepath.Join(repository, "bench", "evidence", "cortex-native", "v1")
+
+	if err := requireCleanBuild(repository); err != nil {
+		t.Skipf("clean working tree required for full preflight seam regression: %v", err)
+	}
+
+	staging := sameDriveTempDir(t, repository)
+	output := filepath.Join(staging, "approval-input.json")
+	if err := createApprovalInput(approveInputCommand{Root: root, Output: output}); err != nil {
+		t.Fatalf("createApprovalInput() error = %v", err)
+	}
+
+	called := false
+	runOutput := filepath.Join(staging, "run-seam-001")
+	err := executeEvidenceRun(context.Background(), runCommand{
+		Root: root, RunID: "run-seam-001", OutputDir: runOutput, Input: output, Seed: "42", ProtocolVersion: "1.0.0",
+	}, func(_ context.Context, req benchcortex.EvidenceRunRequest) (common.IndependentRun, error) {
+		called = true
+		return common.IndependentRun{}, nil
+	})
+	if err != nil {
+		t.Fatalf("executeEvidenceRun() error = %v, want runner reached after preflight", err)
+	}
+	if !called {
+		t.Fatal("evidence runner spy was not reached; preflight blocked the approve-input to run seam")
+	}
+}
+
+// TestExecuteEvidenceRunRejectsAlteredApprovedCommitBeforeRunner confirms that
+// removing the corpus/commit equality from ValidateEvidenceIdentity did NOT
+// weaken commit integrity: the CLI preflight still rejects an approval input
+// whose commit no longer matches the current clean HEAD before the runner fires.
+func TestExecuteEvidenceRunRejectsAlteredApprovedCommitBeforeRunner(t *testing.T) {
+	repository := testRepositoryRoot(t)
+	root := filepath.Join(repository, "bench", "evidence", "cortex-native", "v1")
+
+	if err := requireCleanBuild(repository); err != nil {
+		t.Skipf("clean working tree required for commit preflight regression: %v", err)
+	}
+
+	staging := sameDriveTempDir(t, repository)
+	output := filepath.Join(staging, "approval-input.json")
+	if err := createApprovalInput(approveInputCommand{Root: root, Output: output}); err != nil {
+		t.Fatalf("createApprovalInput() error = %v", err)
+	}
+	var approved approvalInput
+	if err := readJSON(output, &approved); err != nil {
+		t.Fatalf("readJSON(approval input) error = %v", err)
+	}
+	approved.Commit = strings.Repeat("f", 40)
+	altered := filepath.Join(staging, "altered-approval.json")
+	encoded, err := marshalApprovalInput(approved)
+	if err != nil {
+		t.Fatalf("marshalApprovalInput() error = %v", err)
+	}
+	if err := os.WriteFile(altered, encoded, 0o600); err != nil {
+		t.Fatalf("WriteFile(altered) error = %v", err)
+	}
+
+	called := false
+	runOutput := filepath.Join(staging, "run-altered-001")
+	err = executeEvidenceRun(context.Background(), runCommand{
+		Root: root, RunID: "run-altered-001", OutputDir: runOutput, Input: altered, Seed: "42", ProtocolVersion: "1.0.0",
+	}, func(_ context.Context, req benchcortex.EvidenceRunRequest) (common.IndependentRun, error) {
+		called = true
+		return common.IndependentRun{}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "commit mismatch") {
+		t.Fatalf("executeEvidenceRun() error = %v, want commit mismatch before runner", err)
+	}
+	if called {
+		t.Fatal("evidence runner spy was called after an altered approved commit; preflight must reject first")
+	}
+}
+
+// sameDriveTempDir creates a temporary directory on the same Windows volume as
+// the repository so that filepath.Rel in requireOutputOutsideRepository can
+// compute a relative path. Falls back to t.TempDir() when the system temp and
+// the repository are already on the same volume.
+func sameDriveTempDir(t *testing.T, repository string) string {
+	t.Helper()
+	tempDir := t.TempDir()
+	if filepath.VolumeName(tempDir) == filepath.VolumeName(repository) {
+		return tempDir
+	}
+	stagingBase := filepath.Join(filepath.Dir(repository), filepath.Base(repository)+"-seam-tmp")
+	if err := os.MkdirAll(stagingBase, 0o755); err != nil {
+		t.Fatalf("MkdirAll(stagingBase) error = %v", err)
+	}
+	dir, err := os.MkdirTemp(stagingBase, "seam-")
+	if err != nil {
+		t.Fatalf("MkdirTemp(staging) error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func cliIndependentRun(runID string) common.IndependentRun {
 	available := true
 	report := common.EvidenceReport{

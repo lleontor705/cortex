@@ -158,7 +158,7 @@ func evidenceReportTemplate(request EvidenceRunRequest, databasePath string) (co
 	return common.EvidenceReport{
 		SchemaVersion: "cortex.retrieval-evidence/v1", RunID: request.RunID, ReportID: request.RunID + "-report",
 		CorpusVersion: request.Corpus.Version, ProtocolVersion: request.ProtocolVersion,
-		Build: request.Corpus.Build, Hardware: request.Corpus.Hardware,
+		Build: common.BuildMetadata{Commit: request.Identity.Commit, Dirty: false}, Hardware: request.Corpus.Hardware,
 		MetricDefinitions: []common.MetricDefinition{{
 			Name: "retrieved_count", Unit: "count", Direction: "higher_is_better", Description: "Observed current-production results.",
 		}},
