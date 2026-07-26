@@ -20,6 +20,12 @@ Thumbs.db
 # Go
 vendor/
 
+# Coverage profiles (go test -coverprofile / go tool cover)
+/cover
+/coverage
+*.prof
+coverage*.out
+
 # Claude local settings
 .claude/settings.local.json
 
