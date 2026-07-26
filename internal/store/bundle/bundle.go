@@ -52,12 +52,11 @@ type Stores struct {
 	// through the composition root rather than reaching into App internals. The
 	// worker's lifecycle (Start/Drain) is still owned by App; callers MUST NOT
 	// call Start on a worker returned here (it is already running).
+	//
+	// The worker is ALSO the single source of truth for outbox saturation
+	// (Worker.IsSaturated, backed by WorkerConfig.MaxBacklog). SaveWithEmbedIntent
+	// consults it directly — there is no duplicated bundle-side threshold.
 	Worker *embedding.Worker
-
-	// MaxEmbedBacklog is the saturation threshold for the embedding outbox. When
-	// PendingCount exceeds this, the save path fails-closed (REQ-EMB-001). A
-	// value <= 0 means use the default (1000).
-	MaxEmbedBacklog int
 
 	// LastSearchQuery tracks the most recent search query for implicit feedback.
 	// When mem_get_observation is called after mem_search, we log the
@@ -281,10 +280,6 @@ func computeBackoff(cfg domain.BusyRetryConfig, attempt int) time.Duration {
 // REQ-EMB-002)
 // ---------------------------------------------------------------------------
 
-// defaultMaxEmbedBacklog is the saturation threshold used when
-// Stores.MaxEmbedBacklog is not set.
-const defaultMaxEmbedBacklog = 1000
-
 // SaveWithEmbedIntent saves an observation. When the outbox and UnitOfWork are
 // wired (non-nil), it also enqueues an embed+upsert intent in the SAME
 // transaction as the observation write — the intent commits atomically with the
@@ -295,26 +290,30 @@ const defaultMaxEmbedBacklog = 1000
 // unavailable), it performs a standalone Save with NO outbox activity — the
 // zero-embedding local path is byte-for-byte unchanged (REQ-EMB-001 non-goal).
 //
-// Saturation: when the outbox backlog (PendingCount) exceeds MaxEmbedBacklog,
-// the save fails-closed — the transaction rolls back and the caller sees the
-// error. No embedding work is silently accepted under overload (REQ-EMB-001).
+// Saturation: the worker is the single authoritative source of the saturation
+// threshold (WorkerConfig.MaxBacklog, consulted via Worker.IsSaturated). When
+// the worker reports saturation, the save fails-closed — the transaction never
+// begins and the caller sees the error. No embedding work is silently accepted
+// under overload (REQ-EMB-001). When the worker is absent (Worker == nil), no
+// saturation gate is applied: in production the worker and outbox are always
+// paired, so this only affects test wiring and preserves zero-worker behavior.
 func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observation) error {
 	// Zero-embedding / unwired path: standalone save, no outbox activity.
 	if stores.Outbox == nil || stores.UnitOfWork == nil {
 		return stores.Observations.Save(ctx, obs)
 	}
 
-	// Saturation check: fail-closed under overload (REQ-EMB-001).
-	maxBacklog := stores.MaxEmbedBacklog
-	if maxBacklog <= 0 {
-		maxBacklog = defaultMaxEmbedBacklog
-	}
-	count, err := stores.Outbox.PendingCount(ctx)
-	if err != nil {
-		return fmt.Errorf("bundle: check embed backlog: %w", err)
-	}
-	if count > maxBacklog {
-		return fmt.Errorf("bundle: embedding backlog saturated (%d pending > %d max)", count, maxBacklog)
+	// Saturation check via the worker's authoritative state (single source of
+	// truth — no duplicated bundle-side constant). Fail-closed under overload
+	// (REQ-EMB-001). Skipped when the worker is absent (zero-worker behavior).
+	if stores.Worker != nil {
+		saturated, err := stores.Worker.IsSaturated(ctx)
+		if err != nil {
+			return fmt.Errorf("bundle: check embed backlog: %w", err)
+		}
+		if saturated {
+			return fmt.Errorf("bundle: embedding backlog saturated (worker reports overload)")
+		}
 	}
 
 	// Transactional outbox: save observation + enqueue intent atomically.

@@ -141,14 +141,41 @@ func (w *Worker) setBackoffFn(fn func(attempt int) time.Duration) {
 
 // Start begins processing outbox intents in a bounded pool of goroutines. It
 // first recovers any intents left 'leased' by a crashed worker (crash recovery,
-// REQ-EMB-001). The returned cancel func stops accepting new work, drains
-// in-flight tasks (bounded by DrainTimeout), and then returns — DB.Close MUST
-// only be called after this returns (no goroutine touching the DB remains).
+// REQ-EMB-001). The returned cancel func is the worker's STOP function and
+// implements explicit cancel/stop/join semantics with TWO bounded contexts:
+//
+//   - runCtx      bounds leasing, hydration, embedding, and upsert work.
+//   - finalizeCtx bounds outcome-recording operations (MarkComplete/MarkFailed/
+//                 DeadLetter/UpdateIndexState).
+//
+// The stop func executes three phases:
+//  1. STOP  — cancel runCtx: no new leases; in-flight embed/upsert abort and the
+//             intent is left leased for crash-recovery on next startup.
+//  2. JOIN  — wait for all worker goroutines to exit, bounded by DrainTimeout.
+//             finalizeCtx is still alive, so outcomes of in-flight intents are
+//             recorded normally (no silent loss on a graceful drain).
+//  3. CANCEL FINALIZE — unconditionally cancel finalizeCtx. After this returns,
+//             no goroutine can complete a finalize DB write:
+//               • joined goroutines have already exited;
+//               • a goroutine still unwinding an in-flight finalize observes
+//                 ctx.Done and the ExecContext aborts BEFORE touching the DB;
+//               • a goroutine stuck in an embed/upsert (runCtx already cancelled)
+//                 cannot reach finalize; its intent remains leased → recovery.
+//
+// Therefore DB.Close MUST be called only after this stop func returns — and when
+// it does, no goroutine is touching or can touch the DB (no write-after-close,
+// no leaked DB-accessing goroutine).
 func (w *Worker) Start(ctx context.Context) context.CancelFunc {
-	ctx, cancel := context.WithCancel(ctx)
+	// runCtx: bounds all leasing/hydration/embedding/upsert work.
+	runCtx, runCancel := context.WithCancel(ctx)
+	// finalizeCtx: bounds outcome-recording writes. Lives for the whole worker
+	// lifecycle and is cancelled only after the drain join completes, so a
+	// graceful drain records outcomes while a timeout drain prevents any
+	// finalize write from landing after the caller closes the DB.
+	finalizeCtx, finalizeCancel := context.WithCancel(context.Background())
 
 	// Crash recovery: reset 'leased' intents to 'pending' (REQ-EMB-001 startup recovery).
-	if err := w.outbox.RecoverPending(ctx); err != nil {
+	if err := w.outbox.RecoverPending(runCtx); err != nil {
 		log.Printf("embedding worker: recover pending intents: %v", err)
 	}
 
@@ -157,12 +184,14 @@ func (w *Worker) Start(ctx context.Context) context.CancelFunc {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w.runLoop(ctx)
+			w.runLoop(runCtx, finalizeCtx)
 		}()
 	}
 
 	return func() {
-		cancel() // stop accepting new leases
+		// 1. STOP accepting new work / abort in-flight embed+upsert.
+		runCancel()
+		// 2. JOIN worker goroutines, bounded by DrainTimeout.
 		done := make(chan struct{})
 		go func() {
 			wg.Wait() // wait for all worker goroutines to exit
@@ -170,21 +199,28 @@ func (w *Worker) Start(ctx context.Context) context.CancelFunc {
 		}()
 		select {
 		case <-done:
+			// Graceful drain: all goroutines exited; finalizeCtx was alive for
+			// the whole join so outcomes were recorded.
 		case <-time.After(w.config.DrainTimeout):
-			log.Printf("embedding worker: drain timeout exceeded (%v), in-flight tasks may be incomplete", w.config.DrainTimeout)
+			log.Printf("embedding worker: drain timeout exceeded (%v), in-flight finalize cancelled", w.config.DrainTimeout)
 		}
+		// 3. CANCEL FINALIZE — guarantee no finalize DB write can land after
+		//    this stop func returns (no write-after-close). Idempotent.
+		finalizeCancel()
 	}
 }
 
 // runLoop is the per-goroutine processing loop. It leases and processes intents
 // until the context is cancelled. When no work is available it sleeps for
-// PollInterval; when work is available it loops immediately.
-func (w *Worker) runLoop(ctx context.Context) {
+// PollInterval; when work is available it loops immediately. finalizeCtx is
+// threaded into processIntent so outcome-recording writes are bounded by the
+// worker lifecycle rather than an unbounded context.
+func (w *Worker) runLoop(ctx, finalizeCtx context.Context) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		processed := w.processOne(ctx)
+		processed := w.processOne(ctx, finalizeCtx)
 
 		if err := ctx.Err(); err != nil {
 			return
@@ -203,7 +239,7 @@ func (w *Worker) runLoop(ctx context.Context) {
 // processOne leases a batch of intents and processes each. Returns true if at
 // least one intent was leased (more may be available). Returns false if the
 // outbox was empty.
-func (w *Worker) processOne(ctx context.Context) bool {
+func (w *Worker) processOne(ctx, finalizeCtx context.Context) bool {
 	intents, err := w.outbox.Lease(ctx, w.config.LeaseBatch)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -221,7 +257,7 @@ func (w *Worker) processOne(ctx context.Context) bool {
 			// will requeue it on next startup (REQ-EMB-001 durability).
 			return true
 		}
-		w.processIntent(ctx, in)
+		w.processIntent(ctx, finalizeCtx, in)
 	}
 	return true
 }
@@ -230,20 +266,23 @@ func (w *Worker) processOne(ctx context.Context) bool {
 // validate dims → upsert → track namespace → mark complete. On failure it
 // classifies retryable vs non-retryable and records the outcome.
 //
-// Finalize operations (MarkComplete/MarkFailed/DeadLetter) use a background
-// context so they succeed even during shutdown drain — the outcome MUST be
-// recorded, never silently dropped (REQ-EMB-002 no silent loss).
-func (w *Worker) processIntent(ctx context.Context, in sqlitestore.OutboxIntent) {
-	bgCtx := context.Background()
-
-	// 1. Hydrate observation text.
+// Context discipline (W4 advisory — no write-after-close):
+//   - ctx (runCtx) bounds hydrate/embed/upsert. On drain these abort and the
+//     intent is left leased for crash recovery — never silently dropped.
+//   - finalizeCtx bounds the outcome-recording writes (MarkComplete/MarkFailed/
+//     DeadLetter/UpdateIndexState). It is cancelled by the stop func only AFTER
+//     the drain join, so a graceful drain records outcomes while a timeout drain
+//     aborts any lingering finalize BEFORE the caller closes the DB. The intent
+//     remains durable (leased/pending) for recovery either way (REQ-EMB-002).
+func (w *Worker) processIntent(ctx, finalizeCtx context.Context, in sqlitestore.OutboxIntent) {
+	// 1. Hydrate observation text (runCtx-bounded).
 	obs, err := w.obs.GetByID(ctx, in.ObservationID)
 	if err != nil {
-		w.finalizeFailure(bgCtx, in, fmt.Errorf("hydrate observation %d: %w", in.ObservationID, err))
+		w.finalizeFailure(finalizeCtx, in, fmt.Errorf("hydrate observation %d: %w", in.ObservationID, err))
 		return
 	}
 
-	// 2. Embed with model-version namespace.
+	// 2. Embed with model-version namespace (runCtx-bounded).
 	text := obs.Title + "\n" + obs.Content
 	vec, err := w.embeddings.Embed(ctx, text)
 	if err != nil {
@@ -251,7 +290,7 @@ func (w *Worker) processIntent(ctx context.Context, in sqlitestore.OutboxIntent)
 			// Cancellation during embed: leave leased; recovery handles restart.
 			return
 		}
-		w.finalizeFailure(bgCtx, in, fmt.Errorf("embed: %w", err))
+		w.finalizeFailure(finalizeCtx, in, fmt.Errorf("embed: %w", err))
 		return
 	}
 
@@ -259,7 +298,7 @@ func (w *Worker) processIntent(ctx context.Context, in sqlitestore.OutboxIntent)
 	// corruption, REQ-EMB-002).
 	expectedDims := w.embeddings.Dimensions()
 	if len(vec) == 0 {
-		w.finalizeFailure(bgCtx, in, fmt.Errorf("embed: model %q returned empty vector", w.embeddings.Model()))
+		w.finalizeFailure(finalizeCtx, in, fmt.Errorf("embed: model %q returned empty vector", w.embeddings.Model()))
 		return
 	}
 	if len(vec) != expectedDims {
@@ -267,27 +306,27 @@ func (w *Worker) processIntent(ctx context.Context, in sqlitestore.OutboxIntent)
 			Field:   "embedding",
 			Message: fmt.Sprintf("dimension mismatch: model %q declares %d dims but produced %d", w.embeddings.Model(), expectedDims, len(vec)),
 		}
-		w.finalizeFailure(bgCtx, in, cause)
+		w.finalizeFailure(finalizeCtx, in, cause)
 		return
 	}
 
-	// 4. Upsert vector.
+	// 4. Upsert vector (runCtx-bounded).
 	if err := w.vectors.StoreEmbedding(ctx, in.ObservationID, vec, w.embeddings.Model()); err != nil {
 		if ctx.Err() != nil {
 			return // leave leased; recovery handles on restart
 		}
-		w.finalizeFailure(bgCtx, in, fmt.Errorf("store embedding: %w", err))
+		w.finalizeFailure(finalizeCtx, in, fmt.Errorf("store embedding: %w", err))
 		return
 	}
 
-	// 5. Update index_state namespace tracking (coverage/parity).
+	// 5. Update index_state namespace tracking (coverage/parity) — finalize-bounded.
 	namespace := w.embeddings.Model() + ":" + strconv.Itoa(expectedDims)
-	if err := w.outbox.UpdateIndexState(bgCtx, namespace, 1.0, 1); err != nil {
+	if err := w.outbox.UpdateIndexState(finalizeCtx, namespace, 1.0, 1); err != nil {
 		log.Printf("embedding worker: update index_state for namespace %q: %v", namespace, err)
 	}
 
-	// 6. Mark complete.
-	if err := w.outbox.MarkComplete(bgCtx, in.ID); err != nil {
+	// 6. Mark complete — finalize-bounded outcome.
+	if err := w.outbox.MarkComplete(finalizeCtx, in.ID); err != nil {
 		log.Printf("embedding worker: mark complete for intent %d: %v", in.ID, err)
 	}
 }

@@ -186,12 +186,26 @@ func TestSaveWithEmbedIntent_OutboxNil_StandaloneSave(t *testing.T) {
 	}
 }
 
-// --- SaveWithEmbedIntent: saturation fail-closed ---
+// --- SaveWithEmbedIntent: saturation fail-closed (authoritative = worker) ---
 
-func TestSaveWithEmbedIntent_SaturationFailClosed(t *testing.T) {
+// TestSaveWithEmbedIntent_SaturationFailClosed_ViaWorker proves the save path
+// consults the worker's authoritative saturation state (Worker.IsSaturated,
+// backed by WorkerConfig.MaxBacklog) — NOT a duplicated bundle-side threshold.
+// With the worker reporting saturation, the save fails-closed: the transaction
+// rolls back and no observation or intent is persisted.
+func TestSaveWithEmbedIntent_SaturationFailClosed_ViaWorker(t *testing.T) {
 	db := setupEmbedIntentDB(t)
 	stores := buildEmbedStores(db)
-	stores.MaxEmbedBacklog = 2
+	// Authoritative saturation source: the worker's config (MaxBacklog=2),
+	// consulted via Worker.IsSaturated by SaveWithEmbedIntent. Note: stores
+	// carries NO bundle-side backlog field — the worker is the single source.
+	stores.Worker = embedding.NewWorker(
+		stores.Outbox,
+		stores.Observations,
+		stores.Embeddings,
+		sqlitestore.NewVectorStore(db),
+		embedding.WorkerConfig{MaxBacklog: 2},
+	)
 
 	// Fill the outbox with 3 pending intents (exceeds MaxBacklog=2).
 	for i := int64(1); i <= 3; i++ {
@@ -215,6 +229,29 @@ func TestSaveWithEmbedIntent_SaturationFailClosed(t *testing.T) {
 	_ = db.QueryRow(`SELECT count(*) FROM observations`).Scan(&count)
 	if count != 0 {
 		t.Fatalf("observation saved despite saturation: count=%d", count)
+	}
+}
+
+// TestSaveWithEmbedIntent_NoWorker_NoSaturationCheck_Proceeds proves
+// zero-worker behavior is preserved: when the authoritative worker is absent
+// (Worker == nil) but the outbox + UnitOfWork are wired, the save proceeds
+// WITHOUT a saturation check. In production the worker and outbox are always
+// paired, so this path is test-only wiring — but it must remain a clean
+// standalone outbox save, never a fail-closed on a missing worker.
+func TestSaveWithEmbedIntent_NoWorker_NoSaturationCheck_Proceeds(t *testing.T) {
+	db := setupEmbedIntentDB(t)
+	stores := buildEmbedStores(db) // Worker intentionally nil
+
+	ctx := context.Background()
+	obs := newTestObs()
+	if err := bundle.SaveWithEmbedIntent(ctx, stores, obs); err != nil {
+		t.Fatalf("SaveWithEmbedIntent with no worker: %v", err)
+	}
+	if obs.ID == 0 {
+		t.Fatal("observation ID not populated")
+	}
+	if count := outboxIntentCount(t, db); count != 1 {
+		t.Fatalf("expected 1 outbox intent (no worker, no saturation gate), got %d", count)
 	}
 }
 
