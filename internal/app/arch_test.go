@@ -14,6 +14,12 @@
 // TEST FAILS and blocks the build. The gate is non-negotiable per REQ-FOUND-001
 // error scenario: "caller adopts seam in its introduction wave → gate fails."
 //
+// WAVE EVOLUTION: the seam-adoption gate (TestNoSeamAdoptionInW1) is PER-ROOT
+// and evolves with each wave. W2 ADOPTS TxParticipant + UnitOfWork in
+// internal/store (REQ-TX-001 cross-store atomic save). Storage,
+// VectorIndex, and EmbeddingProvider remain deferred to W8/W11/W12 and are
+// forbidden everywhere outside domain. See forbiddenSeamsForRoot.
+//
 // All import analysis is PROGRAMMATIC via the go toolchain: go/build resolves
 // each package's declared imports (authoritative; grep is intentionally NOT
 // used for import analysis), and go/ast scans source for seam-type adoption.
@@ -85,14 +91,35 @@ var forbiddenExternalDeps = []string{
 	"github.com/qdrant",      // Qdrant vector client
 }
 
-// seamTypes are the W1-introduced ports whose adoption is deferred to dependent
-// waves. ZERO non-test references are permitted outside the domain package in W1.
+// seamTypes are the W1-introduced ports. Each scan-root has a per-root
+// forbidden subset. W2 ADOPTS TxParticipant + UnitOfWork in internal/store
+// (REQ-TX-001 cross-store atomic save); those two are no longer forbidden for
+// store packages. Storage, VectorIndex, and EmbeddingProvider remain deferred
+// to W8/W11/W12 and are forbidden everywhere outside domain.
 var seamTypes = map[string]bool{
 	"Storage":           true,
 	"TxParticipant":     true,
 	"UnitOfWork":        true,
 	"VectorIndex":       true,
 	"EmbeddingProvider": true,
+}
+
+// forbiddenSeamsForRoot returns the set of seam types that are STILL forbidden
+// in non-test source under the given scan-root. This evolves per wave:
+//   - W1: all 5 forbidden everywhere outside domain.
+//   - W2: TxParticipant + UnitOfWork ADOPTED in internal/store (atomic save);
+//     Storage/VectorIndex/EmbeddingProvider still forbidden everywhere.
+func forbiddenSeamsForRoot(rel string) map[string]bool {
+	if strings.HasPrefix(rel, "internal/store/") || rel == "internal/store" {
+		// W2 adoption: TxParticipant + UnitOfWork are now allowed in store.
+		return map[string]bool{
+			"Storage":           true,
+			"VectorIndex":       true,
+			"EmbeddingProvider": true,
+		}
+	}
+	// All other roots: full gate (no seam adoption yet).
+	return seamTypes
 }
 
 // forbidden returns a non-empty reason if imp is a server-track package or a
@@ -306,6 +333,8 @@ func TestNoSeamAdoptionInW1(t *testing.T) {
 
 	for _, rel := range scanRoots {
 		dir := filepath.Join(root, filepath.FromSlash(rel))
+		// Resolve the forbidden seam set for this root (evolves per wave).
+		forbiddenHere := forbiddenSeamsForRoot(rel)
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -355,11 +384,8 @@ func TestNoSeamAdoptionInW1(t *testing.T) {
 				if !ok {
 					return true
 				}
-				// NOTE: a package-level selector aliasing analysis (go/types)
-				// would be more precise, but this codebase contains no local
-				// variable named "domain", so the AST selector match is exact
-				// for qualified domain.<Seam> type references.
-				if ident.Name == domainAlias && seamTypes[sel.Sel.Name] {
+				// Check against this root's forbidden seam set (wave-evolved).
+				if ident.Name == domainAlias && forbiddenHere[sel.Sel.Name] {
 					pos := fset.Position(sel.Pos())
 					violations = append(violations, fmtViolation(path, pos.Line, domainAlias, sel.Sel.Name))
 				}

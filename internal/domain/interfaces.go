@@ -313,8 +313,47 @@ type TxParticipant interface {
 // ensuring atomic cross-store saves (ADR-02, REQ-TX-001).
 type UnitOfWork interface {
 	// Do runs fn with all participants sharing ONE logical transaction.
-	// On any participant failure, all prior work is rolled back.
+	// On any participant failure, all prior work is rolled back (REQ-TX-001).
+	// On SQLITE_BUSY, Do retries up to BusyRetryConfig.MaxRetries with capped
+	// backoff before returning a stable retryable error (REQ-TX-002).
 	Do(ctx context.Context, tctx *TenantContext, participants []TxParticipant, fn func(context.Context) error) error
+}
+
+// BusyRetryConfig bounds the SQLITE_BUSY retry behavior of a UnitOfWork
+// implementation (REQ-TX-002). A save MUST NOT block unbounded; the retry cap
+// and backoff ceiling keep latency within a measurable envelope (the envelope
+// itself is registered separately by the latency-budget task).
+type BusyRetryConfig struct {
+	// MaxRetries is the maximum number of application-level retries on a
+	// SQLITE_BUSY error after the driver-level busy_timeout has been exceeded.
+	// Default: 3. A value of 0 disables application-level retry (the driver
+	// busy_timeout is the only bound).
+	MaxRetries int
+
+	// BaseBackoff is the initial backoff duration before the first retry.
+	// Default: 5ms. Each subsequent retry multiplies the backoff by 2
+	// (exponential) up to MaxBackoff.
+	BaseBackoff time.Duration
+
+	// MaxBackoff caps the backoff duration for any single retry.
+	// Default: 50ms. This prevents a single retry from sleeping too long.
+	MaxBackoff time.Duration
+
+	// JitterFactor is the fraction of randomness added to each backoff
+	// (0.0–1.0) to decorrelate concurrent retries. Default: 0.2 (±20%).
+	JitterFactor float64
+}
+
+// DefaultBusyRetryConfig returns a BusyRetryConfig with the W2 defaults:
+// 3 retries, 5ms base backoff, 50ms cap, ±20% jitter. These keep total
+// worst-case retry latency well under the 5s driver busy_timeout.
+func DefaultBusyRetryConfig() BusyRetryConfig {
+	return BusyRetryConfig{
+		MaxRetries:   3,
+		BaseBackoff:  5 * time.Millisecond,
+		MaxBackoff:   50 * time.Millisecond,
+		JitterFactor: 0.2,
+	}
 }
 
 // Storage is the narrow port every backend (SQLite, Postgres) implements.

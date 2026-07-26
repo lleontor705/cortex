@@ -76,7 +76,20 @@ func NewStore(db *sql.DB) *Store {
 //     window, increment duplicate_count instead of creating a new one.
 //   - Sets created_at and updated_at timestamps.
 //   - Normalizes scope to "project" or "personal".
+//
+// This method opens and commits its OWN transaction (local-mode path). For
+// cross-store atomic saves, use SaveInTx within a UnitOfWork (W2.1, REQ-TX-001).
 func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		return s.saveInTx(ctx, tx, obs)
+	})
+}
+
+// saveInTx contains the core save logic (validation, normalization, insert/
+// update/dedup) running within an externally-provided transaction. It is shared
+// by Save (which wraps it in its own tx) and SaveInTx (which uses a shared tx).
+// It MUST NOT call BeginTx/Commit/Rollback — the caller owns the tx lifecycle.
+func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observation) error {
 	if err := validateObservation(obs); err != nil {
 		return err
 	}
@@ -98,75 +111,73 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 	obsSource := normalizeObservationSource(obs.Source)
 	obsConfidence := normalizeConfidence(obs.Confidence)
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		// 1. Check for topic_key upsert
-		if topicKey != "" {
-			existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
-			if err != nil && !isNoRows(err) {
-				return fmt.Errorf("memory store: find by topic key: %w", err)
-			}
-			if existingID > 0 {
-				if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
-					return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
-				}
-				// Update existing observation
-				if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
-					return fmt.Errorf("memory store: update by topic key: %w", err)
-				}
-				obs.ID = existingID
-				return s.loadObservationTx(tx, obs)
-			}
+	// 1. Check for topic_key upsert
+	if topicKey != "" {
+		existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
+		if err != nil && !isNoRows(err) {
+			return fmt.Errorf("memory store: find by topic key: %w", err)
 		}
-
-		// 2. Check for deduplication by normalized_hash
-		// Only deduplicate when the caller explicitly provides Type as "manual",
-		// which signals an intentional duplicate observation.
-		if callerType == domain.TypeManual {
-			existingID, err := s.findDuplicateObservationTx(tx, obs.Project, scope, obsType, obs.Title, normHash)
-			if err != nil && !isNoRows(err) {
-				return fmt.Errorf("memory store: find duplicate: %w", err)
+		if existingID > 0 {
+			if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
+				return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
 			}
-			if existingID > 0 {
-				// Increment duplicate_count and last_seen_at
-				if err := s.incrementDuplicateCountTx(tx, existingID); err != nil {
-					return fmt.Errorf("memory store: increment duplicate: %w", err)
-				}
-				obs.ID = existingID
-				return s.loadObservationTx(tx, obs)
+			// Update existing observation
+			if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
+				return fmt.Errorf("memory store: update by topic key: %w", err)
 			}
+			obs.ID = existingID
+			return s.loadObservationTx(tx, obs)
 		}
+	}
 
-		// 3. Insert new observation -" let SQLite set created_at/updated_at via defaults
-		result, err := tx.ExecContext(ctx, `
-			INSERT INTO observations (
-				session_id, type, title, content, project, scope, topic_key,
-				normalized_hash, revision_count, duplicate_count, last_seen_at,
-				confidence, source, tags
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), ?, ?, ?)
-		`,
-			obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
-			nullableString(topicKey), normHash,
-			obsConfidence, obsSource, tagsToJSON(obs.Tags),
-		)
-		if err != nil {
-			return fmt.Errorf("memory store: insert observation: %w", err)
+	// 2. Check for deduplication by normalized_hash
+	// Only deduplicate when the caller explicitly provides Type as "manual",
+	// which signals an intentional duplicate observation.
+	if callerType == domain.TypeManual {
+		existingID, err := s.findDuplicateObservationTx(tx, obs.Project, scope, obsType, obs.Title, normHash)
+		if err != nil && !isNoRows(err) {
+			return fmt.Errorf("memory store: find duplicate: %w", err)
 		}
-
-		id, err := result.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("memory store: get last insert id: %w", err)
+		if existingID > 0 {
+			// Increment duplicate_count and last_seen_at
+			if err := s.incrementDuplicateCountTx(tx, existingID); err != nil {
+				return fmt.Errorf("memory store: increment duplicate: %w", err)
+			}
+			obs.ID = existingID
+			return s.loadObservationTx(tx, obs)
 		}
+	}
 
-		obs.ID = id
-		obs.Scope = scope
-		obs.TopicKey = topicKey
-		obs.Type = obsType
-		obs.Source = obsSource
-		obs.Confidence = obsConfidence
+	// 3. Insert new observation — let SQLite set created_at/updated_at via defaults
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO observations (
+			session_id, type, title, content, project, scope, topic_key,
+			normalized_hash, revision_count, duplicate_count, last_seen_at,
+			confidence, source, tags
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), ?, ?, ?)
+	`,
+		obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
+		nullableString(topicKey), normHash,
+		obsConfidence, obsSource, tagsToJSON(obs.Tags),
+	)
+	if err != nil {
+		return fmt.Errorf("memory store: insert observation: %w", err)
+	}
 
-		// Reload timestamps from DB so in-memory values match stored values
-		return s.loadObservationTx(tx, obs)
-	})
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("memory store: get last insert id: %w", err)
+	}
+
+	obs.ID = id
+	obs.Scope = scope
+	obs.TopicKey = topicKey
+	obs.Type = obsType
+	obs.Source = obsSource
+	obs.Confidence = obsConfidence
+
+	// Reload timestamps from DB so in-memory values match stored values
+	return s.loadObservationTx(tx, obs)
 }
 
 // GetByID retrieves an observation by its ID.
@@ -766,7 +777,7 @@ type Stats struct {
 	ByType            map[string]int `json:"by_type"`
 }
 
-// "-"-"- Transaction Helpers "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
+// --- Transaction Helpers ------------------------------------------------------
 
 func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	// Use IMMEDIATE isolation to prevent write conflicts during topic_key upsert
@@ -788,7 +799,62 @@ func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
-// "-"-"- Transaction-Scoped Operations "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
+// DB returns the underlying *sql.DB shared by all SQLite stores. The
+// UnitOfWork (W2.1) uses this to open ONE transaction that threads through
+// every TxParticipant (ADR-02, REQ-TX-001).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
+// --- Cross-Store Transaction Seam (W2.1, REQ-TX-001) -------------------------
+//
+// The TxParticipant seam lets the Store enlist in a shared *sql.Tx owned by a
+// UnitOfWork, instead of opening its own transaction. The local-mode Save()
+// path is unchanged; the new atomic path goes through WithinTx + SaveInTx.
+
+// txKey is the context key under which WithinTx stashes the shared *sql.Tx.
+type txKey struct{}
+
+// txFromContext returns the *sql.Tx stashed by WithinTx, or nil if none is
+// active. Tx-aware Store methods (SaveInTx) use this to find the shared tx.
+func txFromContext(ctx context.Context) *sql.Tx {
+	tx, _ := ctx.Value(txKey{}).(*sql.Tx)
+	return tx
+}
+
+// WithinTx implements domain.TxParticipant. It type-asserts the handle to
+// *sql.Tx, stashes it into the context, and invokes fn within that context.
+// The fn closure can then call tx-aware Store methods (e.g. SaveInTx) that
+// read the shared tx via txFromContext.
+//
+// WithinTx does NOT begin, commit, or roll back the transaction — the
+// UnitOfWork that owns the shared tx is responsible for its lifecycle.
+func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
+	tx, ok := handle.(*sql.Tx)
+	if !ok {
+		return fmt.Errorf("sqlite store: WithinTx expected *sql.Tx handle, got %T", handle)
+	}
+	return fn(context.WithValue(ctx, txKey{}, tx))
+}
+
+// SaveInTx saves an observation using a shared transaction previously stashed
+// in the context by WithinTx. It MUST be called from within a WithinTx closure
+// (or any context that carries a txKey). It does NOT begin/commit its own
+// transaction — the UnitOfWork owns the lifecycle.
+//
+// This is the atomic-path counterpart to Save() (REQ-TX-001).
+func (s *Store) SaveInTx(ctx context.Context, obs *domain.Observation) error {
+	tx := txFromContext(ctx)
+	if tx == nil {
+		return fmt.Errorf("sqlite store: SaveInTx requires an active shared transaction (call within WithinTx)")
+	}
+	return s.saveInTx(ctx, tx, obs)
+}
+
+// Ensure Store implements domain.TxParticipant (W2.1 adoption of the W1 port).
+var _ domain.TxParticipant = (*Store)(nil)
+
+// --- Transaction-Scoped Operations -------------------------------------------
 
 func (s *Store) findObservationByTopicKeyTx(tx *sql.Tx, project, topicKey string) (int64, error) {
 	var id int64
