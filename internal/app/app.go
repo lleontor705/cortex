@@ -156,14 +156,14 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	// the outbox stays nil — the local save path is byte-for-byte unchanged.
 	if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
 		stores.Outbox = sqlitestore.NewOutboxStore(manager.DB())
-		worker := embedding.NewWorker(
+		stores.Worker = embedding.NewWorker(
 			stores.Outbox,
 			stores.Observations,
 			stores.Embeddings,
 			stores.Vectors,
 			embedding.WorkerConfig{},
 		)
-		a.workerCancel = worker.Start(ctx)
+		a.workerCancel = stores.Worker.Start(ctx)
 	}
 
 	// Start auto-archival if enabled

@@ -51,6 +51,9 @@ func TestAppOpen_ZeroEmbedding_NoOutboxNoWorker(t *testing.T) {
 	if a.workerCancel != nil {
 		t.Fatal("workerCancel should be nil in zero-embedding mode (no worker started)")
 	}
+	if a.Stores.Worker != nil {
+		t.Fatal("Stores.Worker should be nil in zero-embedding mode (no worker constructed)")
+	}
 }
 
 // TestAppLifecycle_OpenClose_NoGoroutineLeak proves Open+Close leaves no

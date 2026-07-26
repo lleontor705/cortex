@@ -260,3 +260,41 @@ func TestStubEmbeddingService_ImplementsService(t *testing.T) {
 	var _ embedding.Service = (*stubEmbeddingService)(nil)
 	var _ = fmt.Sprintf
 }
+
+// --- W4.2: Bundle.Stores exposes the worker handle (REQ-EMB-001 lifecycle) ---
+
+// TestStores_WorkerField_HoldsHandle proves the Stores bundle exposes the
+// embedding worker handle (W4.2). A Stores constructed with a Worker field set
+// retains that reference, making the worker accessible through the composition
+// root for status/health checks and future waves — not buried in App internals.
+func TestStores_WorkerField_HoldsHandle(t *testing.T) {
+	db := setupEmbedIntentDB(t)
+	worker := embedding.NewWorker(
+		sqlitestore.NewOutboxStore(db),
+		sqlitestore.NewStore(db),
+		&stubEmbeddingService{model: "test-model", dims: 768},
+		sqlitestore.NewVectorStore(db),
+		embedding.WorkerConfig{},
+	)
+	stores := &bundle.Stores{
+		Observations: sqlitestore.NewStore(db),
+		Outbox:       sqlitestore.NewOutboxStore(db),
+		Worker:       worker,
+	}
+	if stores.Worker == nil {
+		t.Fatal("Stores.Worker is nil; expected the constructed worker handle")
+	}
+	// The handle must be the exact pointer we assigned (identity, not a copy).
+	if stores.Worker != worker {
+		t.Fatal("Stores.Worker is not the same pointer assigned")
+	}
+}
+
+// TestStores_WorkerField_NilByDefault proves Stores.Worker is nil when not set
+// (zero-embedding / unwired mode). The local save path must remain unchanged.
+func TestStores_WorkerField_NilByDefault(t *testing.T) {
+	stores := &bundle.Stores{}
+	if stores.Worker != nil {
+		t.Fatal("Stores.Worker should be nil by default")
+	}
+}

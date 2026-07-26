@@ -46,6 +46,14 @@ type Stores struct {
 	// intents atomically with the observation write (REQ-EMB-002).
 	Outbox *sqlitestore.OutboxStore
 
+	// Worker is the durable embedding worker handle (ADR-04, W4.2). It is nil in
+	// zero-embedding mode or when vector search is unavailable. Exposing it on
+	// the bundle lets status, health checks, and future waves access the worker
+	// through the composition root rather than reaching into App internals. The
+	// worker's lifecycle (Start/Drain) is still owned by App; callers MUST NOT
+	// call Start on a worker returned here (it is already running).
+	Worker *embedding.Worker
+
 	// MaxEmbedBacklog is the saturation threshold for the embedding outbox. When
 	// PendingCount exceeds this, the save path fails-closed (REQ-EMB-001). A
 	// value <= 0 means use the default (1000).
