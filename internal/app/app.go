@@ -12,6 +12,7 @@ import (
 
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/database"
+	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/internal/embedding"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -39,6 +40,7 @@ type App struct {
 	Migrator       *migration.Migrator
 	Stores         *bundle.Stores
 	archivalCancel context.CancelFunc
+	workerCancel   context.CancelFunc // embedding worker drain (W4.1, REQ-EMB-001)
 }
 
 // Open loads configuration, opens the database, applies migrations, and wires stores.
@@ -118,6 +120,10 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
 	}
 
+	// Wire the UnitOfWork for atomic cross-store saves (W2.1, W4.1). Always
+	// wired — it is harmless when the outbox is not used (zero-embedding mode).
+	stores.UnitOfWork = bundle.NewSQLiteUnitOfWork(manager.DB(), domain.DefaultBusyRetryConfig())
+
 	// Wire graph store into search for temporal-aware graph expansion
 	stores.Search.Graph = stores.Graph
 
@@ -142,6 +148,22 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		DB:       manager,
 		Migrator: migrator,
 		Stores:   stores,
+	}
+
+	// Start the durable embedding worker when embeddings AND vector storage are
+	// available (ADR-04, W4.1, REQ-EMB-001). In zero-embedding mode (no provider
+	// configured, or vec extension unavailable), the worker is NOT started and
+	// the outbox stays nil — the local save path is byte-for-byte unchanged.
+	if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
+		stores.Outbox = sqlitestore.NewOutboxStore(manager.DB())
+		worker := embedding.NewWorker(
+			stores.Outbox,
+			stores.Observations,
+			stores.Embeddings,
+			stores.Vectors,
+			embedding.WorkerConfig{},
+		)
+		a.workerCancel = worker.Start(ctx)
 	}
 
 	// Start auto-archival if enabled
@@ -198,6 +220,12 @@ func (a *App) ReloadConfig() error {
 func (a *App) Close() error {
 	if a == nil {
 		return nil
+	}
+	// Drain the embedding worker BEFORE closing the DB: in-flight intents must
+	// finalize (or be left leased for crash recovery) with no goroutine touching
+	// the DB after Close (REQ-EMB-001: no detached fire-and-forget goroutines).
+	if a.workerCancel != nil {
+		a.workerCancel()
 	}
 	if a.archivalCancel != nil {
 		a.archivalCancel()
