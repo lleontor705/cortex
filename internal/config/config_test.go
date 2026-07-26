@@ -23,6 +23,9 @@ func TestLoad(t *testing.T) {
 				if cfg.Server.Name != "cortex" {
 					t.Errorf("expected server name 'cortex', got '%s'", cfg.Server.Name)
 				}
+				if cfg.Server.Version != "2.0.0" {
+					t.Errorf("expected default server version '2.0.0' (v2 line, REQ-DB-001), got '%s'", cfg.Server.Version)
+				}
 				if cfg.HTTP.Port != 7438 {
 					t.Errorf("expected HTTP port 7438, got %d", cfg.HTTP.Port)
 				}

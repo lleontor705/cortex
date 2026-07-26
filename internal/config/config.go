@@ -122,7 +122,7 @@ type LifecycleConfig struct {
 var defaults = Config{
 	Server: ServerConfig{
 		Name:    "cortex",
-		Version: "0.1.0",
+		Version: "2.0.0",
 	},
 	Database: DatabaseConfig{
 		Path:     "", // resolved dynamically by DefaultDBPath()
