@@ -9,8 +9,10 @@
 //    suite pins that the prior unbounded behavior is gone."
 //
 // The envelope is a MEASURED, DEFENSIBLE bound — not a guess. It is asserted
-// by TestP95SaveLatencyEnvelope_Registered (architecture test) and enforced by
-// TestSaturationFlood_P95WithinEnvelope (saturation-flood gate) in
+// by TestP95SaveLatencyEnvelope_Registered (architecture test). The saturation
+// test TestSaturationFlood_ResolvesBounded REPORTS the measured p95 against this
+// envelope as an informational diagnostic, while its bounded-timeout and
+// all-resolved gates enforce correctness (bounded resolution, no failures). See
 // latency_test.go.
 package bundle
 
@@ -40,6 +42,7 @@ import "time"
 //
 // REGISTRATION CONTRACT:
 //   - Positive and finite (asserted by TestP95SaveLatencyEnvelope_Registered).
-//   - Referenced by TestSaturationFlood_P95WithinEnvelope (enforced gate).
+//   - p95 reported as a diagnostic by TestSaturationFlood_ResolvesBounded
+//     (timeout/all-resolved gates enforce correctness).
 //   - Profiled by BenchmarkSaturationFlood_SaveLatency (supplementary).
 const DefaultP95SaveLatencyEnvelope = 500 * time.Millisecond
