@@ -285,7 +285,8 @@ type TenantContext struct {
 }
 
 // SearchID is a request/session-scoped identifier for retrieval feedback
-// attribution (REQ-RET-001). Replaces the shared mutable LastSearchQuery.
+// attribution (REQ-RET-001). Replaces the removed shared mutable search-query
+// field.
 type SearchID string
 
 // Tx abstracts a backend transaction. The concrete handle is exposed via

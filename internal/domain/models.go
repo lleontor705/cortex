@@ -114,6 +114,11 @@ type SearchResult struct {
 	Observation
 	Rank           float64              `json:"rank"` // Relevance score from FTS
 	ScoreBreakdown SearchScoreBreakdown `json:"score_breakdown,omitempty"`
+	// SearchID is the request-scoped identifier of the search that produced this
+	// result (REQ-RET-001). Feedback references this ID so attribution binds to
+	// the originating search, not a shared global. It replaces the removed shared
+	// mutable search-query field on the Stores bundle.
+	SearchID SearchID `json:"search_id,omitempty"`
 }
 
 // SearchScoreBreakdown explains which retrieval path produced a result.

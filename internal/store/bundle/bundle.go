@@ -58,11 +58,6 @@ type Stores struct {
 	// consults it directly — there is no duplicated bundle-side threshold.
 	Worker *embedding.Worker
 
-	// LastSearchQuery tracks the most recent search query for implicit feedback.
-	// When mem_get_observation is called after mem_search, we log the
-	// query-to-observation mapping for future Learning-to-Rank training.
-	LastSearchQuery string
-
 	// UnitOfWork coordinates atomic cross-store saves (W2.1, REQ-TX-001).
 	// It is nil until wired by the composition root (app.go); tests construct
 	// it directly via NewSQLiteUnitOfWork. When non-nil, callers that need
@@ -332,5 +327,33 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 		return stores.Outbox.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
 			return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
 		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Request-scoped feedback wiring (W5.1, REQ-RET-001)
+// ---------------------------------------------------------------------------
+
+// WireSearchFeedback connects the search store's request-scoped feedback
+// attribution to the observation store's persistence layer. After wiring,
+// search.Store.RecordFeedback persists feedback via
+// Observations.RecordSearchFeedback, attributed to the originating SearchID's
+// query — never a shared global.
+//
+// When stores, Search, or Observations is nil, this is a safe no-op (feedback
+// stays disabled rather than falling back to any shared state). When the sink
+// is not wired, RecordFeedback validates the SearchID but performs no
+// persistence (REQ-RET-001: record-against-known-SearchID only).
+//
+// This replaces the removed shared mutable search-query field, which raced
+// under concurrent searches and could misattribute feedback to whichever
+// search ran last.
+func WireSearchFeedback(stores *Stores) {
+	if stores == nil || stores.Search == nil || stores.Observations == nil {
+		return
+	}
+	observations := stores.Observations
+	stores.Search.SetFeedbackSink(func(ctx context.Context, _ domain.SearchID, query string, observationID int64, rankPosition int) error {
+		return observations.RecordSearchFeedback(ctx, query, observationID, rankPosition)
 	})
 }

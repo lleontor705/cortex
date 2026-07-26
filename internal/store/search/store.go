@@ -7,13 +7,16 @@ package search
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -32,11 +35,70 @@ type GraphEdgeProvider interface {
 type Store struct {
 	db    *sql.DB
 	Graph GraphEdgeProvider // Optional; enables temporal-aware graph expansion
+
+	// --- Request-scoped feedback attribution (REQ-RET-001) ---
+	//
+	// feedbackMu protects feedbackSessions. Each Search call generates a unique
+	// SearchID, stamps it on every result, and registers a session here. Feedback
+	// (RecordFeedback) looks up the session by SearchID so attribution binds to
+	// the originating search — never a shared global. This replaces the removed
+	// shared mutable search-query field which raced under concurrent searches.
+	feedbackMu       sync.RWMutex
+	feedbackSessions map[domain.SearchID]*searchSession
+	feedbackSink     FeedbackSink // optional; called by RecordFeedback for known IDs
+	maxSessions      int          // bounded registry size (evicts oldest when exceeded)
 }
+
+// FeedbackSink persists feedback attributed to a KNOWN, valid SearchID. The
+// store resolves the session by SearchID BEFORE invoking the sink, so the sink
+// is only ever called for sessions that exist in the registry — never for
+// unknown or expired IDs (those are safe no-ops). This is the request-scoped
+// attribution anchor (REQ-RET-001).
+//
+// The production sink (wired by bundle.WireSearchFeedback) delegates to the
+// observation store's RecordSearchFeedback using the session's query. Tests
+// inject a recording sink to assert attribution correctness.
+type FeedbackSink func(ctx context.Context, searchID domain.SearchID, query string, observationID int64, rankPosition int) error
+
+// searchSession captures the context of one search request so feedback can be
+// attributed back to it. It is bounded by the registry's maxSessions cap.
+type searchSession struct {
+	query     string         // the query that produced this search
+	resultIDs map[int64]bool // observation IDs eligible for feedback
+	createdAt time.Time      // used for oldest-first eviction
+}
+
+// defaultMaxFeedbackSessions bounds the in-memory feedback registry to prevent
+// unbounded growth. Each entry is small (query + ID set); 1024 is generous for
+// typical interleaved-search workloads while keeping memory predictable.
+const defaultMaxFeedbackSessions = 1024
 
 // NewStore creates a new search store with the given database connection.
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{
+		db:               db,
+		feedbackSessions: make(map[domain.SearchID]*searchSession),
+		maxSessions:      defaultMaxFeedbackSessions,
+	}
+}
+
+// SetFeedbackSink wires the optional feedback persistence sink. When nil (or
+// not called), RecordFeedback validates the SearchID but performs no
+// persistence — feedback is safely disabled, never falling back to a shared
+// global (REQ-RET-001).
+func (s *Store) SetFeedbackSink(sink FeedbackSink) {
+	s.feedbackMu.Lock()
+	s.feedbackSink = sink
+	s.feedbackMu.Unlock()
+}
+
+// NewSearchID generates a fresh, unique, request-scoped SearchID using
+// crypto/rand (stdlib, zero-CGO). Uniqueness does not rely on a shared mutable
+// counter, so concurrent calls cannot race or collide.
+func NewSearchID() domain.SearchID {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error on supported platforms
+	return domain.SearchID("sch_" + hex.EncodeToString(b))
 }
 
 // Search performs a full-text search with the given query and options.
@@ -47,7 +109,9 @@ func NewStore(db *sql.DB) *Store {
 //   - Snippet extraction using FTS5 snippet() function
 //   - Column weighting (content 2x title)
 //
-// Returns search results ordered by relevance (rank).
+// Returns search results ordered by relevance (rank). Every result carries a
+// request-scoped SearchID (REQ-RET-001) so feedback can be attributed to THIS
+// search rather than a shared global.
 func (s *Store) Search(ctx context.Context, query string, opts domain.SearchOptions) ([]*domain.SearchResult, error) {
 	// Validate query
 	if strings.TrimSpace(query) == "" {
@@ -63,13 +127,95 @@ func (s *Store) Search(ctx context.Context, query string, opts domain.SearchOpti
 		limit = 100
 	}
 
+	var results []*domain.SearchResult
+	var err error
 	// Check if this is a topic key lookup (contains '/')
 	if strings.Contains(query, "/") {
-		return s.searchWithTopicKey(ctx, query, opts, limit)
+		results, err = s.searchWithTopicKey(ctx, query, opts, limit)
+	} else {
+		// Enhanced keyword search with recency, importance, and topic key expansion
+		results, err = s.searchEnhanced(ctx, query, opts, limit)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	// Enhanced keyword search with recency, importance, and topic key expansion
-	return s.searchEnhanced(ctx, query, opts, limit)
+	// Request-scoped feedback attribution (REQ-RET-001): stamp a stable SearchID
+	// on every result and register the session so feedback binds to THIS search.
+	// The SearchID is generated AFTER the search completes but is stable for all
+	// results of this call. This must not race with concurrent searches — the
+	// registry is mutex-protected and the SearchID is process-unique.
+	searchID := NewSearchID()
+	for _, r := range results {
+		r.SearchID = searchID
+	}
+	s.registerSession(searchID, query, results)
+
+	return results, nil
+}
+
+// registerSession records the search context for later feedback attribution. The
+// registry is bounded: when it reaches maxSessions, the oldest session is
+// evicted. Feedback for an evicted (unknown) SearchID is a safe no-op.
+func (s *Store) registerSession(searchID domain.SearchID, query string, results []*domain.SearchResult) {
+	s.feedbackMu.Lock()
+	defer s.feedbackMu.Unlock()
+	// Bounded eviction: drop the oldest session when at capacity.
+	if len(s.feedbackSessions) >= s.maxSessions {
+		s.evictOldestLocked()
+	}
+	ids := make(map[int64]bool, len(results))
+	for _, r := range results {
+		ids[r.ID] = true
+	}
+	s.feedbackSessions[searchID] = &searchSession{
+		query:     query,
+		resultIDs: ids,
+		createdAt: time.Now(),
+	}
+}
+
+// evictOldestLocked removes the single oldest session. Caller must hold
+// feedbackMu in write mode.
+func (s *Store) evictOldestLocked() {
+	var oldestID domain.SearchID
+	var oldestTime time.Time
+	for id, session := range s.feedbackSessions {
+		if oldestID == "" || session.createdAt.Before(oldestTime) {
+			oldestID = id
+			oldestTime = session.createdAt
+		}
+	}
+	if oldestID != "" {
+		delete(s.feedbackSessions, oldestID)
+	}
+}
+
+// RecordFeedback attributes retrieval feedback to the search identified by
+// searchID. The feedback is recorded against the session's query (the
+// originating search), NOT a shared global.
+//
+// Behavior:
+//   - Known SearchID: the feedback sink (if wired) is invoked with the session's
+//     query. If no sink is wired, the SearchID is validated but no persistence
+//     occurs (feedback safely disabled).
+//   - Unknown/expired SearchID: safe no-op — returns nil, never panics, and
+//     NEVER falls back to a shared global query (REQ-RET-001).
+func (s *Store) RecordFeedback(ctx context.Context, searchID domain.SearchID, observationID int64, rankPosition int) error {
+	s.feedbackMu.RLock()
+	session, ok := s.feedbackSessions[searchID]
+	sink := s.feedbackSink
+	s.feedbackMu.RUnlock()
+
+	if !ok {
+		// Unknown or evicted SearchID: safe no-op. No global fallback, no panic.
+		return nil
+	}
+	if sink == nil {
+		// Sink not wired: SearchID validated, no persistence. Safe disable.
+		return nil
+	}
+	return sink(ctx, searchID, session.query, observationID, rankPosition)
 }
 
 // searchWithTopicKey handles searches that include topic keys.

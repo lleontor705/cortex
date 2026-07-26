@@ -127,6 +127,12 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	// Wire graph store into search for temporal-aware graph expansion
 	stores.Search.Graph = stores.Graph
 
+	// Wire request-scoped search feedback attribution (W5.1, REQ-RET-001):
+	// search.Store.RecordFeedback persists via Observations.RecordSearchFeedback,
+	// attributed to the originating SearchID. This replaces the removed shared
+	// mutable search-query field.
+	bundle.WireSearchFeedback(stores)
+
 	// Auto-start Ollama if configured
 	if cfg.Search.EmbeddingProvider == "ollama" && cfg.Search.OllamaAutoStart {
 		mgr := ollama.NewManager(cfg.Search.EmbeddingBaseURL)

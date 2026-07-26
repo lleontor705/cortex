@@ -601,9 +601,6 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("Search error: %s. Try simpler keywords.", err)
 		}
 
-		// Track last search query for implicit feedback logging
-		stores.LastSearchQuery = query
-
 		if len(results) == 0 {
 			return textResult("No memories found for: %q", query)
 		}
@@ -789,11 +786,15 @@ func handleGetObservation(stores *Stores) server.ToolHandlerFunc {
 			_ = stores.Scoring.RecordAccess(ctx, id) // best-effort
 		}
 
-		// Log search-to-observation feedback for Learning-to-Rank training.
-		if stores.LastSearchQuery != "" {
-			_ = stores.Observations.RecordSearchFeedback(ctx, stores.LastSearchQuery, id, 0)
-			stores.LastSearchQuery = "" // consume once
-		}
+		// NOTE: search-to-observation feedback is now request-scoped via a
+		// SearchID (REQ-RET-001, W5.1). The shared mutable search-query field has
+		// been removed because it raced under concurrent searches and
+		// misattributed feedback to whichever search ran last. The request-scoped
+		// feedback API lives on the search store (RecordFeedback) and is wired to
+		// the observation store via bundle.WireSearchFeedback. The MCP transport
+		// cannot yet thread a SearchID through mem_search/mem_get_observation
+		// (that lands in W6 with the cortex_* rename), so feedback at this layer
+		// is SAFELY DISABLED rather than falling back to a shared global.
 
 		projectInfo := ""
 		if obs.Project != "" {
