@@ -40,6 +40,17 @@ type Stores struct {
 	// Embeddings is the optional embedding service for vector search.
 	Embeddings embedding.Service
 
+	// Outbox is the transactional embed+upsert outbox (ADR-04, W4). It is nil
+	// in zero-embedding mode (Embeddings == nil) or when vector search is not
+	// available. When non-nil alongside UnitOfWork, the save path enqueues embed
+	// intents atomically with the observation write (REQ-EMB-002).
+	Outbox *sqlitestore.OutboxStore
+
+	// MaxEmbedBacklog is the saturation threshold for the embedding outbox. When
+	// PendingCount exceeds this, the save path fails-closed (REQ-EMB-001). A
+	// value <= 0 means use the default (1000).
+	MaxEmbedBacklog int
+
 	// LastSearchQuery tracks the most recent search query for implicit feedback.
 	// When mem_get_observation is called after mem_search, we log the
 	// query-to-observation mapping for future Learning-to-Rank training.
@@ -255,4 +266,64 @@ func computeBackoff(cfg domain.BusyRetryConfig, attempt int) time.Duration {
 		}
 	}
 	return backoff
+}
+
+// ---------------------------------------------------------------------------
+// SaveWithEmbedIntent — atomic observation + outbox intent (ADR-04, W4,
+// REQ-EMB-002)
+// ---------------------------------------------------------------------------
+
+// defaultMaxEmbedBacklog is the saturation threshold used when
+// Stores.MaxEmbedBacklog is not set.
+const defaultMaxEmbedBacklog = 1000
+
+// SaveWithEmbedIntent saves an observation. When the outbox and UnitOfWork are
+// wired (non-nil), it also enqueues an embed+upsert intent in the SAME
+// transaction as the observation write — the intent commits atomically with the
+// observation, so the embedding worker can process it asynchronously with full
+// durability (REQ-EMB-002 transactional outbox).
+//
+// When the outbox or UnitOfWork is nil (zero-embedding mode, or vector search
+// unavailable), it performs a standalone Save with NO outbox activity — the
+// zero-embedding local path is byte-for-byte unchanged (REQ-EMB-001 non-goal).
+//
+// Saturation: when the outbox backlog (PendingCount) exceeds MaxEmbedBacklog,
+// the save fails-closed — the transaction rolls back and the caller sees the
+// error. No embedding work is silently accepted under overload (REQ-EMB-001).
+func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observation) error {
+	// Zero-embedding / unwired path: standalone save, no outbox activity.
+	if stores.Outbox == nil || stores.UnitOfWork == nil {
+		return stores.Observations.Save(ctx, obs)
+	}
+
+	// Saturation check: fail-closed under overload (REQ-EMB-001).
+	maxBacklog := stores.MaxEmbedBacklog
+	if maxBacklog <= 0 {
+		maxBacklog = defaultMaxEmbedBacklog
+	}
+	count, err := stores.Outbox.PendingCount(ctx)
+	if err != nil {
+		return fmt.Errorf("bundle: check embed backlog: %w", err)
+	}
+	if count > maxBacklog {
+		return fmt.Errorf("bundle: embedding backlog saturated (%d pending > %d max)", count, maxBacklog)
+	}
+
+	// Transactional outbox: save observation + enqueue intent atomically.
+	modelInfo := ""
+	if stores.Embeddings != nil {
+		modelInfo = stores.Embeddings.Model()
+	}
+	return stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Observations, stores.Outbox}, func(txCtx context.Context) error {
+		// Participant 1: save the observation within the shared tx.
+		if err := stores.Observations.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
+			return stores.Observations.SaveInTx(c, obs)
+		}); err != nil {
+			return err
+		}
+		// Participant 2: enqueue the embed intent within the SAME shared tx.
+		return stores.Outbox.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
+			return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
+		})
+	})
 }

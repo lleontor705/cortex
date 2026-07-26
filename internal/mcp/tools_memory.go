@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/entity"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
+	"github.com/lleontor705/cortex/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -538,7 +538,12 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			Tags:       tags,
 		}
 
-		if err := stores.Observations.Save(ctx, obs); err != nil {
+		// Save observation. When the transactional outbox + UnitOfWork are wired
+		// (embedding available), an embed+upsert intent is enqueued atomically in
+		// the SAME transaction as the observation write (ADR-04, REQ-EMB-002).
+		// The legacy detached fire-and-forget goroutine is GONE — no goroutine
+		// leaks, no silent embed loss (REQ-EMB-001).
+		if err := bundle.SaveWithEmbedIntent(ctx, stores, obs); err != nil {
 			return errorResult("Failed to save: %s", err)
 		}
 
@@ -546,25 +551,6 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		if stores.Entities != nil {
 			entitySvc := entity.NewService(stores.Entities)
 			_ = entitySvc.ExtractAndSave(ctx, obs) // best-effort
-		}
-
-		// Auto-embed for vector search (best-effort, non-blocking)
-		if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				text := obs.Title + "\n" + obs.Content
-				vec, err := stores.Embeddings.Embed(bgCtx, text)
-				if err != nil {
-					log.Printf("warning: auto-embed failed for obs %d: %v", obs.ID, err)
-					return
-				}
-				if len(vec) > 0 {
-					if storeErr := stores.Vectors.StoreEmbedding(bgCtx, obs.ID, vec, stores.Embeddings.Model()); storeErr != nil {
-						log.Printf("warning: store embedding failed for obs %d: %v", obs.ID, storeErr)
-					}
-				}
-			}()
 		}
 
 		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
