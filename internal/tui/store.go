@@ -86,7 +86,7 @@ func loadStats(d *Deps) tea.Cmd {
 		return statsLoadedMsg{
 			stats: &combinedStats{
 				TotalObservations: stats.TotalObservations,
-				TotalSessions:    sessionCount,
+				TotalSessions:     sessionCount,
 				TotalEdges:        edgeCount,
 				Projects:          stats.Projects,
 				ByType:            stats.ByType,
@@ -348,30 +348,6 @@ func loadHealthData(d *Deps, project string) tea.Cmd {
 			obsCount:   obsCount,
 			candidates: candidates,
 		}
-	}
-}
-
-// ─── Delete / Unarchive Commands ──────────────────────────────────────────
-
-func deleteObservation(d *Deps, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if d == nil || d.Observations == nil {
-			return deleteObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
-		}
-		ctx := context.Background()
-		err := d.Observations.Delete(ctx, id)
-		return deleteObservationMsg{id: id, err: err}
-	}
-}
-
-func unarchiveObservation(d *Deps, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if d == nil || d.Observations == nil {
-			return unarchiveObservationMsg{id: id, err: fmt.Errorf("observations store not available")}
-		}
-		ctx := context.Background()
-		err := d.Observations.Unarchive(ctx, id)
-		return unarchiveObservationMsg{id: id, err: err}
 	}
 }
 
