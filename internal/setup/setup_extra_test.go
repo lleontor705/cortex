@@ -247,7 +247,7 @@ func TestInstallGeminiCLI_ExactContentAndProtocol(t *testing.T) {
 	if !strings.Contains(string(systemRaw), "Cortex Persistent Memory") {
 		t.Errorf("system.md missing protocol marker; got %q", systemRaw)
 	}
-	if !strings.Contains(string(systemRaw), "mem_session_summary") {
+	if !strings.Contains(string(systemRaw), "cortex_session_summary") {
 		t.Errorf("system.md missing session-summary instruction; got %q", systemRaw)
 	}
 }
@@ -309,7 +309,7 @@ func TestInstallCodex_ExactContentAndProtocol(t *testing.T) {
 	if !strings.Contains(string(compactRaw), "FIRST ACTION REQUIRED") {
 		t.Errorf("cortex-compact-prompt.md missing compaction marker; got %q", compactRaw)
 	}
-	if !strings.Contains(string(compactRaw), "mem_session_summary") {
+	if !strings.Contains(string(compactRaw), "cortex_session_summary") {
 		t.Errorf("cortex-compact-prompt.md missing session-summary step; got %q", compactRaw)
 	}
 }

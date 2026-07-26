@@ -38,16 +38,16 @@ import (
 // temporalToolNames is the canonical list of tools registered by
 // registerTemporalTools, in registration order.
 var temporalToolNames = []string{
-	"temporal_create_edge",
-	"temporal_get_edges",
-	"temporal_get_relevant",
-	"temporal_create_snapshot",
-	"temporal_record_operation",
-	"temporal_evaluate_quality",
-	"temporal_system_metrics",
-	"temporal_health_check",
-	"temporal_evolution_path",
-	"temporal_fact_state",
+	"cortex_temporal_create_edge",
+	"cortex_temporal_get_edges",
+	"cortex_temporal_get_relevant",
+	"cortex_temporal_create_snapshot",
+	"cortex_temporal_record_operation",
+	"cortex_temporal_evaluate_quality",
+	"cortex_temporal_system_metrics",
+	"cortex_temporal_health_check",
+	"cortex_temporal_evolution_path",
+	"cortex_temporal_fact_state",
 }
 
 // setupStoresWithObservability builds an in-memory Stores bundle that, unlike
@@ -701,10 +701,10 @@ func TestShouldRegister_AllowlistLogic(t *testing.T) {
 	if !shouldRegister("any_tool", nil) {
 		t.Error("nil allowlist (all tools) should register every tool")
 	}
-	if !shouldRegister("mem_save", map[string]bool{"mem_save": true}) {
+	if !shouldRegister("cortex_save", map[string]bool{"cortex_save": true}) {
 		t.Error("tool present in allowlist should register")
 	}
-	if shouldRegister("mem_save", map[string]bool{"mem_search": true}) {
+	if shouldRegister("cortex_save", map[string]bool{"cortex_search": true}) {
 		t.Error("tool absent from allowlist should not register")
 	}
 }
@@ -737,14 +737,14 @@ func TestRegisterTemporalTools_AllowlistExcludesTemporal(t *testing.T) {
 	stores := setupStoresWithObservability(t)
 	// Allowlist contains only a memory tool; every temporal tool must be excluded
 	// even though the repositories are present.
-	srv := NewServerWithTools(stores, map[string]bool{"mem_save": true})
+	srv := NewServerWithTools(stores, map[string]bool{"cortex_save": true})
 
-	if srv.GetTool("mem_save") == nil {
-		t.Error("expected mem_save to be registered under its own allowlist")
+	if srv.GetTool("cortex_save") == nil {
+		t.Error("expected cortex_save to be registered under its own allowlist")
 	}
 	for _, name := range temporalToolNames {
 		if srv.GetTool(name) != nil {
-			t.Errorf("expected temporal tool %q to NOT be registered under a mem_save-only allowlist", name)
+			t.Errorf("expected temporal tool %q to NOT be registered under a cortex_save-only allowlist", name)
 		}
 	}
 }

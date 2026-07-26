@@ -1236,7 +1236,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 				pct = float64(len(orphans)) / float64(stats.TotalObservations) * 100
 			}
 			if pct > 50 {
-				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use mem_relate to connect observations\n", len(orphans), pct)
+				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use cortex_relate to connect observations\n", len(orphans), pct)
 			} else {
 				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", len(orphans), pct)
 			}

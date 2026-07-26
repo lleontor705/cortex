@@ -16,17 +16,17 @@ import (
 
 // cortexMCPTools lists the tool permission names for Claude Code's settings.json.
 var cortexMCPTools = []string{
-	"mcp__plugin_cortex_cortex__mem_capture_passive",
-	"mcp__plugin_cortex_cortex__mem_context",
-	"mcp__plugin_cortex_cortex__mem_get_observation",
-	"mcp__plugin_cortex_cortex__mem_save",
-	"mcp__plugin_cortex_cortex__mem_save_prompt",
-	"mcp__plugin_cortex_cortex__mem_search",
-	"mcp__plugin_cortex_cortex__mem_session_end",
-	"mcp__plugin_cortex_cortex__mem_session_start",
-	"mcp__plugin_cortex_cortex__mem_session_summary",
-	"mcp__plugin_cortex_cortex__mem_suggest_topic_key",
-	"mcp__plugin_cortex_cortex__mem_update",
+	"mcp__plugin_cortex_cortex__cortex_capture_passive",
+	"mcp__plugin_cortex_cortex__cortex_context",
+	"mcp__plugin_cortex_cortex__cortex_get_observation",
+	"mcp__plugin_cortex_cortex__cortex_save",
+	"mcp__plugin_cortex_cortex__cortex_save_prompt",
+	"mcp__plugin_cortex_cortex__cortex_search",
+	"mcp__plugin_cortex_cortex__cortex_session_end",
+	"mcp__plugin_cortex_cortex__cortex_session_start",
+	"mcp__plugin_cortex_cortex__cortex_session_summary",
+	"mcp__plugin_cortex_cortex__cortex_suggest_topic_key",
+	"mcp__plugin_cortex_cortex__cortex_update",
 }
 
 // memoryProtocol is the Memory Protocol instructions injected into agents.
@@ -48,19 +48,19 @@ You have cortex memory tools. Save decisions, bugs, discoveries PROACTIVELY -- d
 - User's FIRST message references the project
 
 ### SESSION CLOSE -- before saying "done":
-Call mem_session_summary with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+Call cortex_session_summary with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 
 ### KNOWLEDGE GRAPH:
-After saving related observations, use mem_relate to create relationships.
-Use mem_graph to explore connections.
+After saving related observations, use cortex_relate to create relationships.
+Use cortex_graph to explore connections.
 `
 
 // compactPrompt is the compaction recovery instruction.
 const compactPrompt = `FIRST ACTION REQUIRED -- context was compacted. Follow these steps IN ORDER:
 
-1. Call mem_session_summary with the compacted summary above to persist it.
-2. Call mem_context to recover recent session history.
-3. Call mem_search if you need more detail on a specific topic.
+1. Call cortex_session_summary with the compacted summary above to persist it.
+2. Call cortex_context to recover recent session history.
+3. Call cortex_search if you need more detail on a specific topic.
 4. Only THEN continue working.
 
 All steps are MANDATORY. Without them, you lose context and start blind.

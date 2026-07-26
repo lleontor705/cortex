@@ -166,7 +166,7 @@ func TestHandleGetObservation_NotFound(t *testing.T) {
 	}
 }
 
-// --- mem_save_prompt -----------------------------------------------------
+// --- cortex_save_prompt -------------------------------------------------
 
 func TestHandleSavePrompt(t *testing.T) {
 	stores := setupTestStores(t)

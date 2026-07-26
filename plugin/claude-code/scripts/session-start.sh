@@ -45,12 +45,12 @@ cat <<'PROTOCOL'
 You have cortex memory tools. This protocol is MANDATORY and ALWAYS ACTIVE.
 
 ### CORE TOOLS — always available, no ToolSearch needed
-mem_save, mem_search, mem_context, mem_session_summary, mem_get_observation, mem_save_prompt
+cortex_save, cortex_search, cortex_context, cortex_session_summary, cortex_get_observation, cortex_save_prompt
 
-Use ToolSearch for other tools: mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end, mem_stats, mem_delete, mem_timeline, mem_capture_passive, mem_relate, mem_graph, mem_score, mem_archive, mem_search_hybrid
+Use ToolSearch for other tools: cortex_update, cortex_suggest_topic_key, cortex_session_start, cortex_session_end, cortex_stats, cortex_delete, cortex_timeline, cortex_capture_passive, cortex_relate, cortex_graph, cortex_score, cortex_archive, cortex_search_hybrid
 
 ### PROACTIVE SAVE — do NOT wait for user to ask
-Call `mem_save` IMMEDIATELY after ANY of these:
+Call `cortex_save` IMMEDIATELY after ANY of these:
 - Decision made (architecture, convention, workflow, tool choice)
 - Bug fixed (include root cause)
 - Convention or workflow documented/updated
@@ -61,21 +61,21 @@ Call `mem_save` IMMEDIATELY after ANY of these:
 - User confirms your recommendation ("dale", "go with that", "sounds good")
 - User rejects an approach or expresses a preference
 
-**Self-check after EVERY task**: "Did I or the user just make a decision, confirm a recommendation, express a preference, fix a bug, learn something, or establish a convention? If yes → mem_save NOW."
+**Self-check after EVERY task**: "Did I or the user just make a decision, confirm a recommendation, express a preference, fix a bug, learn something, or establish a convention? If yes → cortex_save NOW."
 
 ### KNOWLEDGE GRAPH — relate observations
-After saving related observations, use `mem_relate` to create relationships:
+After saving related observations, use `cortex_relate` to create relationships:
 - references, relates_to, follows, supersedes, contradicts
-Use `mem_graph` to explore connections from any observation.
+Use `cortex_graph` to explore connections from any observation.
 
 ### SEARCH MEMORY when:
 - User asks to recall anything
 - Starting work on something that might have been done before
 - User mentions a topic you have no context on
-- User's FIRST message references the project — call `mem_search` with keywords
+- User's FIRST message references the project — call `cortex_search` with keywords
 
 ### SESSION CLOSE — before saying "done"/"listo":
-Call `mem_session_summary` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+Call `cortex_session_summary` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 PROTOCOL
 
 # Inject memory context if available

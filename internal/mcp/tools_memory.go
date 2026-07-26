@@ -16,7 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// registerMemoryTools registers all Engram-compatible memory tools.
+// registerMemoryTools registers all Cortex memory tools in the cortex_* namespace.
 func registerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
 	registerEagerMemoryTools(srv, stores, allowlist)
 	registerDeferredMemoryTools(srv, stores, allowlist)
@@ -24,10 +24,10 @@ func registerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 
 // registerEagerMemoryTools registers the 6 tools always loaded in agent context.
 func registerEagerMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
-	// --- mem_save (eager) ---
-	if shouldRegister("mem_save", allowlist) {
+	// --- cortex_save (eager) ---
+	if shouldRegister("cortex_save", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_save",
+			mcp.NewTool("cortex_save",
 				mcp.WithTitleAnnotation("Save Memory"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -87,10 +87,10 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 		)
 	}
 
-	// --- mem_search (eager) ---
-	if shouldRegister("mem_search", allowlist) {
+	// --- cortex_search (eager) ---
+	if shouldRegister("cortex_search", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_search",
+			mcp.NewTool("cortex_search",
 				mcp.WithDescription("Search your persistent memory across all sessions. Use this to find past decisions, bugs fixed, patterns used, files changed, or any context from previous coding sessions."),
 				mcp.WithTitleAnnotation("Search Memory"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -121,10 +121,10 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 		)
 	}
 
-	// --- mem_context (eager) ---
-	if shouldRegister("mem_context", allowlist) {
+	// --- cortex_context (eager) ---
+	if shouldRegister("cortex_context", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_context",
+			mcp.NewTool("cortex_context",
 				mcp.WithDescription("Get recent memory context from previous sessions. Shows recent sessions and observations to understand what was done before."),
 				mcp.WithTitleAnnotation("Get Memory Context"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -145,10 +145,10 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 		)
 	}
 
-	// --- mem_session_summary (eager) ---
-	if shouldRegister("mem_session_summary", allowlist) {
+	// --- cortex_session_summary (eager) ---
+	if shouldRegister("cortex_session_summary", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_session_summary",
+			mcp.NewTool("cortex_session_summary",
 				mcp.WithTitleAnnotation("Save Session Summary"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -200,11 +200,11 @@ GUIDELINES:
 		)
 	}
 
-	// --- mem_get_observation (eager) ---
-	if shouldRegister("mem_get_observation", allowlist) {
+	// --- cortex_get_observation (eager) ---
+	if shouldRegister("cortex_get_observation", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_get_observation",
-				mcp.WithDescription("Get the full content of a specific observation by ID. Use when you need the complete, untruncated content of an observation found via mem_search or mem_timeline."),
+			mcp.NewTool("cortex_get_observation",
+				mcp.WithDescription("Get the full content of a specific observation by ID. Use when you need the complete, untruncated content of an observation found via cortex_search or cortex_timeline."),
 				mcp.WithTitleAnnotation("Get Observation"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -219,10 +219,10 @@ GUIDELINES:
 		)
 	}
 
-	// --- mem_save_prompt (eager) ---
-	if shouldRegister("mem_save_prompt", allowlist) {
+	// --- cortex_save_prompt (eager) ---
+	if shouldRegister("cortex_save_prompt", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_save_prompt",
+			mcp.NewTool("cortex_save_prompt",
 				mcp.WithDescription("Save a user prompt to persistent memory. Use this to record what the user asked  -- their intent, questions, and requests  -- so future sessions have context about the user's goals."),
 				mcp.WithTitleAnnotation("Save User Prompt"),
 				mcp.WithReadOnlyHintAnnotation(false),
@@ -247,10 +247,10 @@ GUIDELINES:
 
 // registerDeferredMemoryTools registers tools loaded on demand (update, delete, stats, etc.).
 func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
-	// --- mem_update (deferred) ---
-	if shouldRegister("mem_update", allowlist) {
+	// --- cortex_update (deferred) ---
+	if shouldRegister("cortex_update", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_update",
+			mcp.NewTool("cortex_update",
 				mcp.WithDescription("Update an existing observation by ID. Only provided fields are changed."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Update Memory"),
@@ -285,11 +285,11 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// --- mem_suggest_topic_key (deferred) ---
-	if shouldRegister("mem_suggest_topic_key", allowlist) {
+	// --- cortex_suggest_topic_key (deferred) ---
+	if shouldRegister("cortex_suggest_topic_key", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_suggest_topic_key",
-				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before mem_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
+			mcp.NewTool("cortex_suggest_topic_key",
+				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before cortex_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Suggest Topic Key"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -310,10 +310,10 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// --- mem_session_start (deferred) ---
-	if shouldRegister("mem_session_start", allowlist) {
+	// --- cortex_session_start (deferred) ---
+	if shouldRegister("cortex_session_start", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_session_start",
+			mcp.NewTool("cortex_session_start",
 				mcp.WithDescription("Register the start of a new coding session. Call this at the beginning of a session to track activity."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Start Session"),
@@ -337,10 +337,10 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// --- mem_session_end (deferred) ---
-	if shouldRegister("mem_session_end", allowlist) {
+	// --- cortex_session_end (deferred) ---
+	if shouldRegister("cortex_session_end", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_session_end",
+			mcp.NewTool("cortex_session_end",
 				mcp.WithDescription("Mark a coding session as completed with an optional summary."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("End Session"),
@@ -360,10 +360,10 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// --- mem_stats (deferred) ---
-	if shouldRegister("mem_stats", allowlist) {
+	// --- cortex_stats (deferred) ---
+	if shouldRegister("cortex_stats", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_stats",
+			mcp.NewTool("cortex_stats",
 				mcp.WithDescription("Show memory system statistics  -- total sessions, observations, and projects tracked."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Stats"),
@@ -376,10 +376,10 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// --- mem_delete (deferred) ---
-	if shouldRegister("mem_delete", allowlist) {
+	// --- cortex_delete (deferred) ---
+	if shouldRegister("cortex_delete", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_delete",
+			mcp.NewTool("cortex_delete",
 				mcp.WithDescription("Delete an observation by ID. Soft-delete by default; set hard_delete=true for permanent deletion."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Delete Memory"),
@@ -399,11 +399,11 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// mem_timeline (deferred)
-	if shouldRegister("mem_timeline", allowlist) {
+	// cortex_timeline (deferred)
+	if shouldRegister("cortex_timeline", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_timeline",
-				mcp.WithDescription("Show chronological context around a specific observation. Use after mem_search to drill into the timeline of events surrounding a search result. This is the progressive disclosure pattern: search first, then timeline to understand context."),
+			mcp.NewTool("cortex_timeline",
+				mcp.WithDescription("Show chronological context around a specific observation. Use after cortex_search to drill into the timeline of events surrounding a search result. This is the progressive disclosure pattern: search first, then timeline to understand context."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Timeline"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -412,7 +412,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithNumber("observation_id",
 					mcp.Required(),
-					mcp.Description("The observation ID to center the timeline on (from mem_search results)"),
+					mcp.Description("The observation ID to center the timeline on (from cortex_search results)"),
 				),
 				mcp.WithNumber("before",
 					mcp.Description("Number of observations to show before the focus (default: 5)"),
@@ -425,9 +425,9 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	if shouldRegister("mem_revision_history", allowlist) {
+	if shouldRegister("cortex_revision_history", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_revision_history",
+			mcp.NewTool("cortex_revision_history",
 				mcp.WithDescription("Show structured revision snapshots for a specific observation. Use this when you want machine-readable history for topic_key upserts and updates."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Revision History"),
@@ -447,10 +447,10 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 		)
 	}
 
-	// mem_capture_passive (deferred)
-	if shouldRegister("mem_capture_passive", allowlist) {
+	// cortex_capture_passive (deferred)
+	if shouldRegister("cortex_capture_passive", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_capture_passive",
+			mcp.NewTool("cortex_capture_passive",
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Capture Learnings"),
 				mcp.WithReadOnlyHintAnnotation(false),
@@ -628,7 +628,7 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			b.WriteString("\n")
 		}
 		if anyTruncated {
-			fmt.Fprintf(&b, "---\nResults above are previews (300 chars). To read the full content of a specific memory, call mem_get_observation(id: <ID>).\n")
+			fmt.Fprintf(&b, "---\nResults above are previews (300 chars). To read the full content of a specific memory, call cortex_get_observation(id: <ID>).\n")
 		}
 
 		return textResult("%s", b.String())
@@ -792,7 +792,7 @@ func handleGetObservation(stores *Stores) server.ToolHandlerFunc {
 		// misattributed feedback to whichever search ran last. The request-scoped
 		// feedback API lives on the search store (RecordFeedback) and is wired to
 		// the observation store via bundle.WireSearchFeedback. The MCP transport
-		// cannot yet thread a SearchID through mem_search/mem_get_observation
+		// cannot yet thread a SearchID through cortex_search/cortex_get_observation
 		// (that lands in W6 with the cortex_* rename), so feedback at this layer
 		// is SAFELY DISABLED rather than falling back to a shared global.
 

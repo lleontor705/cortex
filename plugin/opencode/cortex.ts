@@ -30,52 +30,52 @@ const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
 // Cortex's own MCP tools — don't count these as "tool calls" for session stats
 const CORTEX_TOOLS = new Set([
   // Core memory
-  "mem_search",
-  "mem_save",
-  "mem_update",
-  "mem_delete",
-  "mem_suggest_topic_key",
-  "mem_save_prompt",
-  "mem_session_summary",
-  "mem_context",
-  "mem_stats",
-  "mem_timeline",
-  "mem_get_observation",
-  "mem_session_start",
-  "mem_session_end",
-  "mem_capture_passive",
+  "cortex_search",
+  "cortex_save",
+  "cortex_update",
+  "cortex_delete",
+  "cortex_suggest_topic_key",
+  "cortex_save_prompt",
+  "cortex_session_summary",
+  "cortex_context",
+  "cortex_stats",
+  "cortex_timeline",
+  "cortex_get_observation",
+  "cortex_session_start",
+  "cortex_session_end",
+  "cortex_capture_passive",
   // Knowledge graph
-  "mem_relate",
-  "mem_graph",
-  "mem_score",
-  "mem_archive",
-  "mem_search_hybrid",
-  // Cortex v0.2.1 additions
-  "mem_revision_history",
-  "mem_merge_projects",
-  // Temporal (experimental)
-  "temporal_create_edge",
-  "temporal_get_edges",
-  "temporal_get_relevant",
-  "temporal_create_snapshot",
-  "temporal_record_operation",
-  "temporal_evaluate_quality",
-  "temporal_system_metrics",
-  "temporal_health_check",
-  "temporal_evolution_path",
-  "temporal_fact_state",
+  "cortex_relate",
+  "cortex_graph",
+  "cortex_score",
+  "cortex_archive",
+  "cortex_search_hybrid",
+  // Cortex additions
+  "cortex_revision_history",
+  "cortex_merge_projects",
+  // Temporal (advanced)
+  "cortex_temporal_create_edge",
+  "cortex_temporal_get_edges",
+  "cortex_temporal_get_relevant",
+  "cortex_temporal_create_snapshot",
+  "cortex_temporal_record_operation",
+  "cortex_temporal_evaluate_quality",
+  "cortex_temporal_system_metrics",
+  "cortex_temporal_health_check",
+  "cortex_temporal_evolution_path",
+  "cortex_temporal_fact_state",
 ])
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
 
-const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol (v0.2.1)
+const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol
 
 You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
 full-text search, revision history, and temporal tracking that survives across sessions and compactions.
 
 ### WHEN TO SAVE (mandatory — not optional)
 
-Call \`mem_save\` IMMEDIATELY after any of these:
+Call \`cortex_save\` IMMEDIATELY after any of these:
 - Bug fix completed
 - Architecture or design decision made
 - Non-obvious discovery about the codebase
@@ -83,7 +83,7 @@ Call \`mem_save\` IMMEDIATELY after any of these:
 - Pattern established (naming, structure, convention)
 - User preference or constraint learned
 
-Format for \`mem_save\`:
+Format for \`cortex_save\`:
 - **title**: Verb + what — short, searchable (e.g. "Fixed N+1 query in UserList")
 - **type**: bugfix | decision | architecture | discovery | pattern | config | learning
 - **scope**: \`project\` (default) | \`personal\`
@@ -97,22 +97,22 @@ Format for \`mem_save\`:
 Topic rules:
 - Different topics must not overwrite each other
 - Reuse the same \`topic_key\` to update an evolving topic (upsert)
-- If unsure about the key, call \`mem_suggest_topic_key\` first
-- Use \`mem_update\` when you have an exact observation ID to correct
+- If unsure about the key, call \`cortex_suggest_topic_key\` first
+- Use \`cortex_update\` when you have an exact observation ID to correct
 
 ### KNOWLEDGE GRAPH
-After saving related observations, use \`mem_relate\` to connect them:
+After saving related observations, use \`cortex_relate\` to connect them:
 - references, relates_to, follows, supersedes, contradicts
-Use \`mem_graph\` to explore connections from any observation.
-Use \`mem_score\` to check/recalculate observation importance.
+Use \`cortex_graph\` to explore connections from any observation.
+Use \`cortex_score\` to check/recalculate observation importance.
 
 ### SEARCH & RETRIEVAL
 
 When the user asks to recall something — "remember", "recall", "what did we do":
-1. First call \`mem_context\` — checks recent session history (fast)
-2. If not found, call \`mem_search\` with relevant keywords (FTS5)
-3. If still not found, try \`mem_search_hybrid\` for FTS5 + vector combined search
-4. If you find a match, use \`mem_get_observation\` for full content (search returns 300-char previews only)
+1. First call \`cortex_context\` — checks recent session history (fast)
+2. If not found, call \`cortex_search\` with relevant keywords (FTS5)
+3. If still not found, try \`cortex_search_hybrid\` for FTS5 + vector combined search
+4. If you find a match, use \`cortex_get_observation\` for full content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
@@ -120,27 +120,27 @@ Also search memory PROACTIVELY when:
 - The user's FIRST message references the project
 
 ### REVISION HISTORY & TIMELINE
-- \`mem_revision_history(observation_id)\` — see how an observation evolved across upserts
-- \`mem_timeline(observation_id, before, after)\` — chronological context around an observation
+- \`cortex_revision_history(observation_id)\` — see how an observation evolved across upserts
+- \`cortex_timeline(observation_id, before, after)\` — chronological context around an observation
 - Use these when an artifact seems stale or when auditing changes
 
 ### PROJECT HYGIENE
-- If project name fragmented: \`mem_merge_projects(from: "variant1,variant2", to: "canonical")\`
-- To archive obsolete observations: \`mem_archive(observation_id)\`
-- To permanently delete: \`mem_delete(id, hard_delete: true)\`
+- If project name fragmented: \`cortex_merge_projects(from: "variant1,variant2", to: "canonical")\`
+- To archive obsolete observations: \`cortex_archive(observation_id)\`
+- To permanently delete: \`cortex_delete(id, hard_delete: true)\`
 
 ### SESSION CLOSE PROTOCOL (mandatory)
 
 Before ending a session or saying "done":
-1. Call \`mem_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 This is NOT optional. If you skip this, the next session starts blind.
 
 ### AFTER COMPACTION
 
 If you see a message about compaction or context reset:
-1. IMMEDIATELY call \`mem_session_summary\` with the compacted summary content
-2. Then call \`mem_context\` to recover context from previous sessions
-3. Use \`mem_search_hybrid\` if more detail needed
+1. IMMEDIATELY call \`cortex_session_summary\` with the compacted summary content
+2. Then call \`cortex_context\` to recover context from previous sessions
+3. Use \`cortex_search_hybrid\` if more detail needed
 4. Only THEN continue working
 `
 
@@ -368,7 +368,7 @@ export const Cortex: Plugin = async (ctx) => {
         `CRITICAL INSTRUCTION FOR COMPACTED SUMMARY:\n` +
         `The agent has access to Cortex persistent memory via MCP tools.\n` +
         `You MUST include the following instruction at the TOP of the compacted summary:\n\n` +
-        `"FIRST ACTION REQUIRED: Call mem_session_summary with the content of this compacted summary. ` +
+        `"FIRST ACTION REQUIRED: Call cortex_session_summary with the content of this compacted summary. ` +
         `Use project: '${project}'. This preserves what was accomplished before compaction. Do this BEFORE any other work."\n\n` +
         `This is NOT optional. Without this, everything done before compaction is lost from memory.`
       )
