@@ -127,13 +127,17 @@ func (s *Store) Search(ctx context.Context, query string, opts domain.SearchOpti
 		limit = 100
 	}
 
+	// Dual-level routing (REQ-RET-002): a deterministic, observable decision that
+	// is a PURE function of the query. A '/' routes to topic-exact + keyword
+	// fusion (profileDualLevel); a plain query routes to keyword-only retrieval
+	// (profileKeyword). The profile is exposed so callers/tests can assert which
+	// strategy was selected without inspecting internals.
 	var results []*domain.SearchResult
 	var err error
-	// Check if this is a topic key lookup (contains '/')
-	if strings.Contains(query, "/") {
-		results, err = s.searchWithTopicKey(ctx, query, opts, limit)
-	} else {
-		// Enhanced keyword search with recency, importance, and topic key expansion
+	switch classifyQuery(query) {
+	case profileDualLevel:
+		results, err = s.searchDualLevel(ctx, query, opts, limit)
+	default:
 		results, err = s.searchEnhanced(ctx, query, opts, limit)
 	}
 	if err != nil {
@@ -218,31 +222,38 @@ func (s *Store) RecordFeedback(ctx context.Context, searchID domain.SearchID, ob
 	return sink(ctx, searchID, session.query, observationID, rankPosition)
 }
 
-// searchWithTopicKey handles searches that include topic keys.
-// It uses RRF fusion to combine topic key direct lookup with keyword search.
-func (s *Store) searchWithTopicKey(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
-	// Get direct topic key matches (highest priority)
-	topicResults, err := s.lookupByTopicKey(ctx, query, opts, limit)
+// searchDualLevel implements formal dual-level '/' retrieval (REQ-RET-002).
+//
+// The topic-exact retriever (lookupByTopicKey) and the keyword retriever
+// (searchKeywords) each emit a TRUE ranked list. The two lists are fused by RRF
+// (k=60) — a relevance score (BM25) is never treated as a rank input. After
+// fusion, recency (0.995^hours) and importance are applied as a FINAL
+// multiplicative re-rank over the fused candidate set; they are NOT injected as
+// pseudo-ranked-lists into RRF.
+func (s *Store) searchDualLevel(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
+	// Retriever 1: topic-exact direct lookup (true ranked list).
+	topicExact, err := s.lookupByTopicKey(ctx, query, opts, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search store: topic key lookup: %w", err)
 	}
 
-	// Get FTS5 keyword matches with recency boost
-	keywordResults, err := s.searchKeywords(ctx, query, opts, limit*3)
+	// Retriever 2: FTS5 keyword search with BM25 ranking (true ranked list). The
+	// raw BM25 score is carried on the item but is IGNORED by RRF — only the
+	// list position contributes (score-as-rank defect pin).
+	keyword, err := s.searchKeywords(ctx, query, opts, limit*3)
 	if err != nil {
 		return nil, fmt.Errorf("search store: keyword search: %w", err)
 	}
-	s.applyRecencyBoost(ctx, keywordResults)
 
-	// Get importance ranking
-	allIDs := collectIDs(topicResults, keywordResults)
-	importanceResults := s.getImportanceRanking(ctx, allIDs)
+	fusionK := resolveFusionK(opts.FusionK)
+	// RRF over exactly two explicit ranked lists.
+	fused := rrfFuse([]rankedList{
+		{name: "topic_exact", items: topicExact},
+		{name: "keyword", items: keyword},
+	}, fusionK, limit*3)
 
-	fusionK := opts.FusionK
-	if fusionK <= 0 {
-		fusionK = 60.0
-	}
-	return s.combineAllSignals(topicResults, keywordResults, nil, nil, importanceResults, fusionK, limit), nil
+	// Final multiplicative re-rank: recency * importance (never RRF inputs).
+	return s.rerankByRecencyImportance(ctx, fused, limit), nil
 }
 
 // lookupByTopicKey performs a direct lookup by topic key.
@@ -580,112 +591,172 @@ func previewContent(query, content string, maxLength int) string {
 
 // --- Enhanced Search Pipeline ---
 
-// searchEnhanced combines FTS5 keyword search with recency decay, importance
-// ranking, topic key expansion, graph neighborhood expansion, and pseudo-relevance
-// feedback using multi-signal RRF fusion.
+// searchEnhanced combines FTS5 keyword search with topic key expansion,
+// pseudo-relevance feedback, and graph neighborhood expansion using
+// multi-signal RRF fusion. Recency and importance are applied as a FINAL
+// multiplicative re-rank after RRF — they are NEVER injected as
+// pseudo-ranked-lists into RRF (REQ-RET-002).
 func (s *Store) searchEnhanced(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
-	// 1. Get FTS5 keyword results (fetch extra candidates for re-ranking)
+	// Retriever 1: FTS5 keyword results (true ranked list; fetch extra candidates).
 	keywordResults, err := s.searchKeywords(ctx, query, opts, limit*3)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Pseudo-Relevance Feedback: extract distinctive terms from top results
-	//    and run a second FTS5 query to improve recall.
+	// Retriever 2: Pseudo-Relevance Feedback — extract distinctive terms from
+	// top results and run a second FTS5 query to improve recall (true ranked list).
 	prfResults := s.pseudoRelevanceFeedback(ctx, query, keywordResults, opts, limit)
 
-	// 3. Get topic key expansion results (LIKE matching)
+	// Retriever 3: topic key expansion (LIKE matching) — true ranked list.
 	topicExpResults, err := s.searchByTopicKeyExpansion(ctx, query, opts, limit)
 	if err != nil {
 		log.Printf("search: topic key expansion error (non-fatal): %v", err)
 		topicExpResults = nil
 	}
 
-	// 4. Apply recency boost to keyword results
-	s.applyRecencyBoost(ctx, keywordResults)
-
-	// 5. Graph neighborhood expansion: boost observations connected to top results
+	// Retriever 4 (optional): graph neighborhood expansion — true ranked list.
 	var graphResults []*domain.SearchResult
 	if opts.GraphExpand && len(keywordResults) > 0 {
 		graphResults = s.graphNeighborExpansion(ctx, keywordResults, opts, limit)
 	}
 
-	// 6. Get importance ranking for all candidate IDs
-	allIDs := collectIDs(keywordResults, topicExpResults, prfResults, graphResults)
-	importanceResults := s.getImportanceRanking(ctx, allIDs)
+	fusionK := resolveFusionK(opts.FusionK)
+	// RRF operates exclusively over TRUE ranked lists. Recency and importance
+	// are NOT among them (they are applied after, multiplicatively).
+	fused := rrfFuse([]rankedList{
+		{name: "keyword", items: keywordResults},
+		{name: "topic_expansion", items: topicExpResults},
+		{name: "prf", items: prfResults},
+		{name: "graph", items: graphResults},
+	}, fusionK, limit*3)
 
-	// 7. Combine all signals via RRF
-	fusionK := opts.FusionK
-	if fusionK <= 0 {
-		fusionK = 60.0
-	}
-	combined := s.combineAllSignals(keywordResults, topicExpResults, prfResults, graphResults, importanceResults, fusionK, limit)
-
-	return combined, nil
+	// Final multiplicative re-rank: recency (0.995^hours) * importance.
+	return s.rerankByRecencyImportance(ctx, fused, limit), nil
 }
 
-// applyRecencyBoost adjusts BM25 rank by recency decay (Stanford Generative Agents).
-// Formula: adjustedRank = bm25Rank * (1 + 0.995^hoursSinceAccess)
-func (s *Store) applyRecencyBoost(ctx context.Context, results []*domain.SearchResult) {
-	if len(results) == 0 {
-		return
+// resolveFusionK returns the RRF smoothing constant, defaulting to the standard
+// k=60 when the caller did not configure one.
+func resolveFusionK(configured float64) float64 {
+	if configured > 0 {
+		return configured
+	}
+	return rrfConstant
+}
+
+// recencyFactor computes the recency decay multiplier 0.995^hours where hours is
+// the age of the observation in hours since its timestamp (REQ-RET-002). A
+// recently-touched observation gets a factor near 1.0; an old one decays toward
+// 0. Negative ages (future timestamps) are clamped to 0 so the factor never
+// exceeds 1.0. This is a FINAL multiplicative re-rank input, NEVER an RRF input.
+func recencyFactor(hours float64) float64 {
+	if hours < 0 {
+		hours = 0
+	}
+	return math.Pow(0.995, hours)
+}
+
+// importanceFactor computes the importance multiplier applied as a FINAL
+// multiplicative re-rank. It is neutral (1.0) when no importance data exists or
+// the score is 0; otherwise (1 + score) — a monotonic boost around 1.0 that
+// never zeroes a legitimate match. This is NEVER an RRF input (REQ-RET-002).
+func importanceFactor(score float64, found bool) float64 {
+	if !found {
+		return 1.0
+	}
+	return 1.0 + score
+}
+
+// rerankByRecencyImportance applies recency (0.995^hours from the observation's
+// timestamp) and importance as a FINAL multiplicative re-rank over the
+// RRF-fused candidate set. NEITHER signal is fed into RRF as a
+// pseudo-ranked-list (REQ-RET-002). The fused RRF score (candidate.Rank) is
+// multiplied by recency*importance; results are re-sorted by the product
+// (ties broken by ID ascending for determinism) and trimmed to limit.
+func (s *Store) rerankByRecencyImportance(ctx context.Context, candidates []*domain.SearchResult, limit int) []*domain.SearchResult {
+	if len(candidates) == 0 {
+		return candidates
 	}
 
-	// Collect IDs for batch query
-	placeholders := make([]string, len(results))
-	args := make([]any, len(results))
-	idIndex := make(map[int64]int)
-	for i, r := range results {
+	// Fetch importance scores once for the whole candidate set.
+	ids := make([]int64, 0, len(candidates))
+	for _, c := range candidates {
+		ids = append(ids, c.ID)
+	}
+	importance := s.fetchImportanceScores(ctx, ids)
+
+	now := time.Now()
+	for _, c := range candidates {
+		rrf := c.Rank // RRF fusion score produced by rrfFuse
+
+		// Recency from the observation's own timestamp (zero timestamp -> neutral).
+		var hours float64
+		if !c.UpdatedAt.IsZero() {
+			hours = now.Sub(c.UpdatedAt).Hours()
+		}
+		recency := recencyFactor(hours)
+
+		score, found := importance[c.ID]
+		imp := importanceFactor(score, found)
+
+		finalScore := rrf * recency * imp
+
+		bd := c.ScoreBreakdown
+		bd.RecencyBoost = recency
+		if found {
+			bd.ImportanceRank = score
+		}
+		bd.FusionScore = rrf
+		bd.Strategy = "enhanced"
+		c.ScoreBreakdown = bd
+		c.Rank = finalScore
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Rank != candidates[j].Rank {
+			return candidates[i].Rank > candidates[j].Rank
+		}
+		return candidates[i].ID < candidates[j].ID // deterministic tie-break
+	})
+
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+// fetchImportanceScores returns a map of observation_id -> importance score for
+// the given IDs. Missing rows are simply absent from the map (callers treat
+// absence as neutral). Failures are non-fatal (skip importance re-rank).
+func (s *Store) fetchImportanceScores(ctx context.Context, ids []int64) map[int64]float64 {
+	out := make(map[int64]float64, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
 		placeholders[i] = "?"
-		args[i] = r.ID
-		idIndex[r.ID] = i
+		args[i] = id
 	}
-
 	query := fmt.Sprintf(`
-		SELECT observation_id, last_accessed
+		SELECT observation_id, score
 		FROM importance_scores
 		WHERE observation_id IN (%s)
 	`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return // non-fatal: skip recency boost
+		return out // non-fatal
 	}
 	defer func() { _ = rows.Close() }()
-
-	now := time.Now()
 	for rows.Next() {
 		var obsID int64
-		var lastAccessed sql.NullString
-		if err := rows.Scan(&obsID, &lastAccessed); err != nil {
-			continue
+		var score float64
+		if err := rows.Scan(&obsID, &score); err == nil {
+			out[obsID] = score
 		}
-		idx, ok := idIndex[obsID]
-		if !ok {
-			continue
-		}
-
-		var hoursSince float64
-		if lastAccessed.Valid {
-			t := parseSearchTime(lastAccessed.String)
-			if !t.IsZero() {
-				hoursSince = now.Sub(t).Hours()
-			}
-		}
-		if hoursSince < 0 {
-			hoursSince = 0
-		}
-
-		// Decay: 0.995^hours -- recently accessed = ~1.0, 30 days ago = ~0.03
-		recency := math.Pow(0.995, hoursSince)
-		results[idx].Rank *= (1.0 + recency)
-		results[idx].ScoreBreakdown.RecencyBoost = recency
 	}
-
-	// Re-sort by adjusted rank
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Rank < results[j].Rank // BM25 ranks are negative (lower = better)
-	})
+	return out
 }
 
 // searchByTopicKeyExpansion finds observations whose topic_key contains query terms.
@@ -749,50 +820,6 @@ func (s *Store) searchByTopicKeyExpansion(ctx context.Context, query string, opt
 	}
 
 	return results, rows.Err()
-}
-
-// getImportanceRanking returns search results ordered by importance score.
-func (s *Store) getImportanceRanking(ctx context.Context, ids []int64) []*domain.SearchResult {
-	if len(ids) == 0 {
-		return nil
-	}
-
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(`
-		SELECT s.observation_id, s.score
-		FROM importance_scores s
-		WHERE s.observation_id IN (%s)
-		ORDER BY s.score DESC
-	`, strings.Join(placeholders, ","))
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil // non-fatal
-	}
-	defer func() { _ = rows.Close() }()
-
-	var results []*domain.SearchResult
-	for rows.Next() {
-		var obsID int64
-		var score float64
-		if err := rows.Scan(&obsID, &score); err != nil {
-			continue
-		}
-		results = append(results, &domain.SearchResult{
-			Observation: domain.Observation{ID: obsID},
-			Rank:        score,
-			ScoreBreakdown: domain.SearchScoreBreakdown{
-				ImportanceRank: score,
-			},
-		})
-	}
-	return results
 }
 
 // --- Pseudo-Relevance Feedback (PRF) ---
@@ -1016,82 +1043,123 @@ func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain
 	return results
 }
 
-// --- Multi-Signal Fusion ---
+// --- Dual-Level Routing & Ranked-List RRF Fusion (REQ-RET-002) ---
 
-// combineAllSignals combines all search signals using configurable RRF.
-func (s *Store) combineAllSignals(keyword, topicExp, prf, graph, importance []*domain.SearchResult, fusionK float64, limit int) []*domain.SearchResult {
-	scores := make(map[int64]float64)
-	observations := make(map[int64]*domain.SearchResult)
-	breakdowns := make(map[int64]domain.SearchScoreBreakdown)
+// searchProfile names a retrieval routing strategy. It is selected by
+// classifyQuery, a pure function of the query, so the routing decision is
+// deterministic and observable/testable.
+type searchProfile string
 
-	addSignal := func(results []*domain.SearchResult, signalName string) {
-		for rank, r := range results {
+const (
+	// profileKeyword: a plain query (no '/') routes to keyword/global retrieval.
+	profileKeyword searchProfile = "keyword"
+	// profileDualLevel: a query containing '/' routes to topic-exact + keyword
+	// fusion (two explicit ranked lists fused by RRF).
+	profileDualLevel searchProfile = "dual_level"
+)
+
+// classifyQuery is the deterministic dual-level router (REQ-RET-002). A query
+// whose trimmed form contains '/' is routed to topic-exact+keyword fusion;
+// otherwise it routes to keyword-only retrieval. It is a PURE function of the
+// query — no I/O — so tests can assert the routing decision directly.
+func classifyQuery(query string) searchProfile {
+	if strings.Contains(strings.TrimSpace(query), "/") {
+		return profileDualLevel
+	}
+	return profileKeyword
+}
+
+// rrfConstant is the Reciprocal Rank Fusion smoothing constant (k=60, the
+// standard value). RRF scores a candidate by its POSITION in each input list:
+// score = sum over lists of 1/(k + rank). A raw relevance SCORE (BM25/FTS5) MUST
+// NEVER be used as a rank input — only the 1-based position contributes
+// (score-as-rank defect pin, REQ-RET-002).
+const rrfConstant = 60.0
+
+// rankedList is a named, ordered list of candidates from ONE retriever. Only
+// the ORDER (position) is meaningful to RRF; per-item Rank/score values are
+// IGNORED by fusion. Each retriever (keyword, topic-exact, topic-expansion,
+// PRF, graph) produces one such list. Recency and importance do NOT produce
+// ranked lists — they are final multiplicative re-rank inputs.
+type rankedList struct {
+	name  string
+	items []*domain.SearchResult
+}
+
+// rrfFuse performs Reciprocal Rank Fusion (k) over one or more TRUE ranked
+// lists. It is a PURE function: only the position of each candidate within its
+// list contributes; raw scores (BM25/FTS5) are never treated as ranks
+// (score-as-rank defect pin, REQ-RET-002). Returns the union of candidates,
+// each stamped with its RRF fusion score in both Rank and ScoreBreakdown
+// .FusionScore, ordered DESC by fusion score (ties broken by ID ascending for
+// determinism). Breakdown flags (KeywordBM25, TopicKeyExact, TopicKeyExpand)
+// are merged across all lists an item appears in.
+func rrfFuse(lists []rankedList, k float64, limit int) []*domain.SearchResult {
+	type acc struct {
+		obs       *domain.SearchResult
+		fusion    float64
+		breakdown domain.SearchScoreBreakdown
+	}
+	scores := make(map[int64]*acc)
+
+	for _, list := range lists {
+		for i, r := range list.items {
 			id := r.ID
-			scores[id] += 1.0 / (fusionK + float64(rank+1))
-			if _, exists := observations[id]; !exists {
-				observations[id] = r
+			// 1-based rank position; the ONLY thing RRF consumes (score-as-rank pin).
+			contribution := 1.0 / (k + float64(i+1))
+
+			a, ok := scores[id]
+			if !ok {
+				a = &acc{obs: r}
+				// Seed breakdown from the first observation of this candidate.
+				a.breakdown = r.ScoreBreakdown
+				scores[id] = a
 			}
-			bd := breakdowns[id]
-			switch signalName {
-			case "keyword":
-				if r.ScoreBreakdown.KeywordBM25 != 0 {
-					bd.KeywordBM25 = r.ScoreBreakdown.KeywordBM25
-				}
-				if r.ScoreBreakdown.RecencyBoost != 0 {
-					bd.RecencyBoost = r.ScoreBreakdown.RecencyBoost
-				}
-				if r.ScoreBreakdown.TopicKeyExact {
-					bd.TopicKeyExact = true
-				}
-			case "topic_expansion":
+			a.fusion += contribution
+
+			// Merge breakdown flags/scores from every list membership.
+			bd := a.breakdown
+			if r.ScoreBreakdown.KeywordBM25 != 0 {
+				bd.KeywordBM25 = r.ScoreBreakdown.KeywordBM25
+			}
+			if r.ScoreBreakdown.RecencyBoost != 0 {
+				bd.RecencyBoost = r.ScoreBreakdown.RecencyBoost
+			}
+			if r.ScoreBreakdown.TopicKeyExact {
+				bd.TopicKeyExact = true
+			}
+			if r.ScoreBreakdown.TopicKeyExpand {
 				bd.TopicKeyExpand = true
-			case "importance":
+			}
+			if r.ScoreBreakdown.ImportanceRank != 0 {
 				bd.ImportanceRank = r.ScoreBreakdown.ImportanceRank
 			}
-			breakdowns[id] = bd
+			a.breakdown = bd
 		}
 	}
 
-	addSignal(keyword, "keyword")
-	addSignal(topicExp, "topic_expansion")
-	addSignal(prf, "keyword") // PRF results share keyword characteristics
-	addSignal(graph, "graph")
-	addSignal(importance, "importance")
-
-	// Build combined results
-	combined := make([]*domain.SearchResult, 0, len(observations))
-	for id, obs := range observations {
-		bd := breakdowns[id]
+	combined := make([]*domain.SearchResult, 0, len(scores))
+	for _, a := range scores {
+		bd := a.breakdown
 		bd.Strategy = "enhanced"
-		bd.FusionScore = scores[id]
-		obs.Rank = scores[id]
+		bd.FusionScore = a.fusion
+		obs := a.obs
+		obs.Rank = a.fusion
 		obs.ScoreBreakdown = bd
 		combined = append(combined, obs)
 	}
 
 	sort.Slice(combined, func(i, j int) bool {
-		return combined[i].Rank > combined[j].Rank
+		if combined[i].Rank != combined[j].Rank {
+			return combined[i].Rank > combined[j].Rank
+		}
+		return combined[i].ID < combined[j].ID // deterministic tie-break
 	})
 
-	if len(combined) > limit {
+	if limit > 0 && len(combined) > limit {
 		combined = combined[:limit]
 	}
 	return combined
-}
-
-// collectIDs gathers unique observation IDs from multiple result sets.
-func collectIDs(sets ...[]*domain.SearchResult) []int64 {
-	seen := make(map[int64]bool)
-	var ids []int64
-	for _, set := range sets {
-		for _, r := range set {
-			if !seen[r.ID] {
-				seen[r.ID] = true
-				ids = append(ids, r.ID)
-			}
-		}
-	}
-	return ids
 }
 
 // extractSearchTerms extracts clean search terms from a query string.
