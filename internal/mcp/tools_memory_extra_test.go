@@ -70,15 +70,16 @@ func TestHandleContext_Populated(t *testing.T) {
 
 // --- mem_session_summary -------------------------------------------------
 
-// TestHandleSessionSummary_KnownDefect_TypeRejected characterizes a KNOWN
-// PRODUCTION DEFECT (see issues_found in the apply contract / issue #46):
-// handleSessionSummary saves with Type "session_summary", which is NOT in the
-// observation store's allowed type set
-// (manual, tool_use, decision, bugfix, pattern, config, discovery, learning).
-// As a result mem_session_summary currently ALWAYS fails to persist and returns
-// an error result. This test pins current behavior so the eventual fix is forced
-// to update it; it is not asserting intended behavior.
-func TestHandleSessionSummary_KnownDefect_TypeRejected(t *testing.T) {
+// TestHandleSessionSummary_PersistsSessionSummaryType verifies the FIXED
+// behavior: handleSessionSummary saves with Type "session_summary", which is
+// now part of the observation store's allowed type set. The save MUST succeed
+// (IsError=false) and a database row with Type "session_summary" MUST persist.
+//
+// Previously this was a known production defect: "session_summary" was rejected
+// by the validation switch, so mem_session_summary always failed to persist.
+// (SDD change cortex-v2-independent-platform, W1.1 type-registry fix; specs
+// REQ-FOUND-002 and REQ-MCPH-001.)
+func TestHandleSessionSummary_PersistsSessionSummaryType(t *testing.T) {
 	stores := setupTestStores(t)
 
 	result := callTool(t, handleSessionSummary(stores), map[string]interface{}{
@@ -87,25 +88,27 @@ func TestHandleSessionSummary_KnownDefect_TypeRejected(t *testing.T) {
 	})
 	text := resultText(result)
 
-	if !result.IsError {
-		t.Fatalf("KNOWN DEFECT: expected IsError because 'session_summary' type is rejected, got success %q", text)
+	// FIX: the session_summary type is now accepted, so the save succeeds.
+	if result.IsError {
+		t.Fatalf("expected success (session_summary is a valid type), got IsError %q", text)
 	}
-	if !strings.Contains(text, "Failed to save session summary") {
-		t.Errorf("expected failure message, got %q", text)
-	}
-	if !strings.Contains(text, "type must be one of") {
-		t.Errorf("expected type-validation rejection, got %q", text)
+	if !strings.Contains(text, "Session summary saved") {
+		t.Errorf("expected 'Session summary saved' confirmation, got %q", text)
 	}
 
-	// Database effect: nothing was persisted.
+	// Database effect: exactly one session_summary observation persisted.
 	list, err := stores.Observations.List(context.Background(), domain.ObservationFilter{Project: "demo"})
 	if err != nil {
 		t.Fatalf("list observations: %v", err)
 	}
+	var count int
 	for _, o := range list {
 		if o.Type == "session_summary" {
-			t.Error("KNOWN DEFECT: no session_summary observation should exist while the bug is present")
+			count++
 		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 session_summary observation persisted, got %d", count)
 	}
 }
 
@@ -502,15 +505,24 @@ func TestHandleCapturePassive_EmptyContent(t *testing.T) {
 	}
 }
 
-// TestHandleCapturePassive_ExtractsButKnownDefectDoesNotPersist characterizes a
-// KNOWN PRODUCTION DEFECT (see issues_found in the apply contract / issue #46):
-// handleCapturePassive saves each learning with Type "passive", which is NOT in
-// the observation store's allowed type set, so every Save is rejected. Worse,
-// the handler swallows the Save error and counts it as a "duplicate", reporting
-// saved=0 while presenting a success result. The extraction logic itself is
-// correct (extracted=2); only persistence is broken. This test pins current
-// behavior; it is not asserting intended behavior.
-func TestHandleCapturePassive_ExtractsButKnownDefectDoesNotPersist(t *testing.T) {
+// TestHandleCapturePassive_PersistsPassiveType verifies the type-registry fix
+// through the capture-passive handler path: handleCapturePassive saves each
+// learning with Type "passive", which is now part of the observation store's
+// allowed type set, so every extracted learning persists.
+//
+// NOTE on scope (important): this test passes an explicit valid source ("auto")
+// so it isolates the TYPE-registry fix (W1.1 / REQ-FOUND-002, REQ-MCPH-001).
+// The handler's DEFAULT source "mcp-passive" is NOT in the allowed source set
+// (manual, ai, auto, import); that source-registry defect is SEPARATE from the
+// type switch and is OUT OF SCOPE for W1.1 (it belongs to the source registry /
+// REQ-MCPH-002 error-swallowing work). Before the type fix, the type-rejection
+// fired first (type validated before source) and masked the source defect; now
+// that passive is accepted, a valid source is required to observe persistence
+// through this handler. The store-level test below proves both new types
+// persist unconditionally regardless of source defaults.
+//
+// (SDD change cortex-v2-independent-platform, W1.1 type-registry fix.)
+func TestHandleCapturePassive_PersistsPassiveType(t *testing.T) {
 	stores := setupTestStores(t)
 
 	content := "## Key Learnings:\n" +
@@ -520,6 +532,9 @@ func TestHandleCapturePassive_ExtractsButKnownDefectDoesNotPersist(t *testing.T)
 	result := callTool(t, handleCapturePassive(stores), map[string]interface{}{
 		"content": content,
 		"project": "demo",
+		// Explicit valid source isolates the TYPE fix from the separate
+		// default-source ("mcp-passive") defect (see note above).
+		"source": "auto",
 	})
 	text := resultText(result)
 
@@ -530,20 +545,114 @@ func TestHandleCapturePassive_ExtractsButKnownDefectDoesNotPersist(t *testing.T)
 	if !strings.Contains(text, "extracted=2") {
 		t.Errorf("expected extracted=2 (extraction works), got %q", text)
 	}
-	// KNOWN DEFECT: nothing is actually persisted (saved=0, masked as duplicates).
-	if !strings.Contains(text, "saved=0") {
-		t.Errorf("KNOWN DEFECT: expected saved=0 because 'passive' type is rejected, got %q", text)
+	// FIX: both learnings now persist (saved=2) because 'passive' is accepted.
+	if !strings.Contains(text, "saved=2") {
+		t.Errorf("expected saved=2 (passive type is now accepted), got %q", text)
 	}
 
+	// Database effect: two passive observations persisted.
 	list, err := stores.Observations.List(context.Background(), domain.ObservationFilter{Project: "demo"})
 	if err != nil {
 		t.Fatalf("list observations: %v", err)
 	}
+	var count int
 	for _, o := range list {
 		if o.Type == "passive" {
-			t.Error("KNOWN DEFECT: no passive observation should exist while the bug is present")
+			count++
 		}
 	}
+	if count != 2 {
+		t.Fatalf("expected 2 passive observations persisted, got %d", count)
+	}
+}
+
+// TestStore_NewTypesAccepted_BogusTypeRejected is the criterion-3 regression
+// test for the type-registry fix (REQ-FOUND-002). It pins three invariants at
+// the store layer:
+//
+//  1. The newly-accepted types (session_summary, passive) Save successfully and
+//     return the REAL outcome (nil error), never a masked type-rejection.
+//  2. A genuinely invalid type is STILL rejected with a ValidationError whose
+//     message is "type must be one of ...". This proves the switch boundary is
+//     correct and the registry was not made over-permissive.
+//  3. Real persistence failures cannot be masked as type-rejections:
+//     validateObservation() is a pure pre-check that runs BEFORE any DB access,
+//     so it returns a ValidationError ONLY for actual type violations. A real
+//     DB error (e.g. database locked) originates from the transaction path
+//     (memory store: insert observation: %w) and is structurally incapable of
+//     being turned into a "type must be one of" error by the validation switch.
+//
+// (SDD change cortex-v2-independent-platform, W1.1 type-registry fix.)
+func TestStore_NewTypesAccepted_BogusTypeRejected(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "reg-sess", "demo")
+
+	// Each newly-accepted type must save successfully and persist a row.
+	for _, tc := range []struct {
+		name, typ string
+	}{
+		{"session_summary", domain.TypeSessionSummary},
+		{"passive", domain.TypePassive},
+	} {
+		t.Run(tc.name+"_persists", func(t *testing.T) {
+			obs := &domain.Observation{
+				SessionID: "reg-sess",
+				Type:      tc.typ,
+				Title:     "Reg " + tc.name,
+				Content:   "Regression content for " + tc.name,
+				Project:   "demo",
+				Scope:     domain.ScopeProject,
+			}
+			// Valid new type: MUST NOT be masked as a type-rejection. The save
+			// returns the real outcome (nil on success).
+			if err := stores.Observations.Save(context.Background(), obs); err != nil {
+				t.Fatalf("expected %q to be accepted, got masked/rejected error: %v", tc.typ, err)
+			}
+			if obs.ID == 0 {
+				t.Fatalf("expected a persisted row (nonzero ID) for %q", tc.typ)
+			}
+
+			// Database effect: the row exists with the exact type stored.
+			got, err := stores.Observations.GetByID(context.Background(), obs.ID)
+			if err != nil {
+				t.Fatalf("get observation: %v", err)
+			}
+			if got.Type != tc.typ {
+				t.Errorf("expected stored type %q, got %q", tc.typ, got.Type)
+			}
+		})
+	}
+
+	// A genuinely invalid type MUST still be rejected by the validation switch.
+	// This is the negative control proving the registry is not over-permissive.
+	t.Run("bogus_type_rejected_with_validation_error", func(t *testing.T) {
+		obs := &domain.Observation{
+			SessionID: "reg-sess",
+			Type:      "totally-bogus-type",
+			Title:     "Should Not Persist",
+			Content:   "This must be rejected by the validation switch",
+			Project:   "demo",
+			Scope:     domain.ScopeProject,
+		}
+		err := stores.Observations.Save(context.Background(), obs)
+		if err == nil {
+			t.Fatal("expected a ValidationError for a bogus type, got nil")
+		}
+		// The real type-rejection error surfaces verbatim — not masked.
+		if !strings.Contains(err.Error(), "type must be one of") {
+			t.Fatalf("expected 'type must be one of' rejection, got %q", err.Error())
+		}
+		// No row may have been persisted for the bogus type.
+		list, lerr := stores.Observations.List(context.Background(), domain.ObservationFilter{Project: "demo"})
+		if lerr != nil {
+			t.Fatalf("list observations: %v", lerr)
+		}
+		for _, o := range list {
+			if o.Type == "totally-bogus-type" {
+				t.Error("a bogus-type observation must not be persisted")
+			}
+		}
+	})
 }
 
 func TestHandleCapturePassive_SpanishHeaderExtracts(t *testing.T) {

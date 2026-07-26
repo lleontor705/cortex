@@ -1236,7 +1236,8 @@ func validateObservation(obs *domain.Observation) error {
 func isAllowedObservationType(obsType string) bool {
 	switch obsType {
 	case domain.TypeManual, domain.TypeToolUse, domain.TypeDecision, domain.TypeBugfix,
-		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning:
+		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning,
+		domain.TypeSessionSummary, domain.TypePassive:
 		return true
 	default:
 		return false

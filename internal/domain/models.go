@@ -129,14 +129,16 @@ type SearchScoreBreakdown struct {
 
 // Observation types - common values for the Type field
 const (
-	TypeManual    = "manual"
-	TypeToolUse   = "tool_use"
-	TypeDecision  = "decision"
-	TypeBugfix    = "bugfix"
-	TypePattern   = "pattern"
-	TypeConfig    = "config"
-	TypeDiscovery = "discovery"
-	TypeLearning  = "learning"
+	TypeManual         = "manual"
+	TypeToolUse        = "tool_use"
+	TypeDecision       = "decision"
+	TypeBugfix         = "bugfix"
+	TypePattern        = "pattern"
+	TypeConfig         = "config"
+	TypeDiscovery      = "discovery"
+	TypeLearning       = "learning"
+	TypeSessionSummary = "session_summary"
+	TypePassive        = "passive"
 )
 
 // Scope types - common values for the Scope field
