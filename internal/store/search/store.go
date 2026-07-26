@@ -9,9 +9,11 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"math"
 	"sort"
@@ -245,44 +247,28 @@ func (s *Store) searchDualLevel(ctx context.Context, query string, opts domain.S
 		return nil, fmt.Errorf("search store: keyword search: %w", err)
 	}
 
-	fusionK := resolveFusionK(opts.FusionK)
-	// RRF over exactly two explicit ranked lists.
-	fused := rrfFuse([]rankedList{
+	// Unified assembly path (REQ-RET-002 W5.3): fuse -> revalidate vs SQLite ->
+	// multiplicative re-rank (stable-ID tie-break) -> deterministic pagination.
+	return s.assembleResults(ctx, []rankedList{
 		{name: "topic_exact", items: topicExact},
 		{name: "keyword", items: keyword},
-	}, fusionK, limit*3)
-
-	// Final multiplicative re-rank: recency * importance (never RRF inputs).
-	return s.rerankByRecencyImportance(ctx, fused, limit), nil
+	}, query, opts, limit), nil
 }
 
 // lookupByTopicKey performs a direct lookup by topic key.
 // This returns observations where the topic_key matches the query exactly.
 func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
+	filterFrag, filterArgs := applyFilterClauses(opts)
 	baseQuery := `
 		SELECT 
 			o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
-			o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
+			o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at,
+			-1000.0 as rank
 		FROM observations o
 		WHERE o.topic_key = ? AND o.deleted_at IS NULL
-	`
-	args := []any{query}
-
-	// Apply filters
-	if opts.Type != "" {
-		baseQuery += " AND o.type = ?"
-		args = append(args, opts.Type)
-	}
-	if opts.Project != "" {
-		baseQuery += " AND o.project = ?"
-		args = append(args, opts.Project)
-	}
-	if opts.Scope != "" {
-		baseQuery += " AND o.scope = ?"
-		args = append(args, normalizeScope(opts.Scope))
-	}
-
-	baseQuery += " ORDER BY o.updated_at DESC LIMIT ?"
+	` + filterFrag + `
+		ORDER BY o.updated_at DESC, o.id LIMIT ?`
+	args := append([]any{query}, filterArgs...)
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
@@ -293,7 +279,7 @@ func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.
 
 	var results []*domain.SearchResult
 	for rows.Next() {
-		result, err := s.scanSearchResult(rows, -1000) // High priority for exact topic match
+		result, err := s.scanSearchResult(rows) // High priority for exact topic match
 		if err != nil {
 			return nil, err
 		}
@@ -318,6 +304,7 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 	// Sanitize query for FTS5
 	ftsQuery := sanitizeFTS(query)
 
+	filterFrag, filterArgs := applyFilterClauses(opts)
 	// Build the search query with BM25 ranking and column weighting
 	// BM25 weights: content=2.0 (higher priority), title=1.0, others=0.5
 	// The bm25() function with weights: (table, col1_weight, col2_weight, ...)
@@ -330,24 +317,9 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 		FROM observations_fts fts
 		JOIN observations o ON o.id = fts.rowid
 		WHERE observations_fts MATCH ? AND o.deleted_at IS NULL
-	`
-	args := []any{ftsQuery}
-
-	// Apply filters
-	if opts.Type != "" {
-		baseQuery += " AND o.type = ?"
-		args = append(args, opts.Type)
-	}
-	if opts.Project != "" {
-		baseQuery += " AND o.project = ?"
-		args = append(args, opts.Project)
-	}
-	if opts.Scope != "" {
-		baseQuery += " AND o.scope = ?"
-		args = append(args, normalizeScope(opts.Scope))
-	}
-
-	baseQuery += " ORDER BY rank LIMIT ?"
+	` + filterFrag + `
+		ORDER BY rank, o.id LIMIT ?`
+	args := append([]any{ftsQuery}, filterArgs...)
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
@@ -358,15 +330,15 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 
 	var results []*domain.SearchResult
 	for rows.Next() {
-		var rank float64
-		result, err := s.scanSearchResultWithRank(rows, &rank)
+		result, err := s.scanSearchResult(rows)
 		if err != nil {
 			return nil, err
 		}
-		result.Rank = rank
+		// Preserve the raw BM25 on the breakdown (ignored by RRF; only list
+		// position contributes — score-as-rank defect pin).
 		result.ScoreBreakdown = domain.SearchScoreBreakdown{
 			Strategy:    "keyword",
-			KeywordBM25: rank,
+			KeywordBM25: result.Rank,
 		}
 		result.Content = previewContent(query, result.Content, 300)
 		results = append(results, result)
@@ -412,17 +384,23 @@ func (s *Store) GetSnippet(ctx context.Context, query string, content string, ma
 	return snippet, nil
 }
 
-// scanSearchResult scans a row into a SearchResult with a fixed rank.
-func (s *Store) scanSearchResult(rows *sql.Rows, rank float64) (*domain.SearchResult, error) {
+// scanSearchResult is the SINGLE unified row scanner (REQ-RET-002 helper
+// unification). Every retrieval query selects the same 14-column shape ending
+// in a `rank` column (keyword: BM25; topic/graph/PRF: a fixed priority). The
+// raw rank is carried on the item but is IGNORED by RRF — only list POSITION
+// contributes (score-as-rank defect pin). This replaces the prior duplicate
+// scanSearchResult/scanSearchResultWithRank pair.
+func (s *Store) scanSearchResult(rows *sql.Rows) (*domain.SearchResult, error) {
 	var result domain.SearchResult
 	var createdAtStr, updatedAtStr string
 	var topicKey, source, tagsJSON sql.NullString
+	var rank float64
 
 	err := rows.Scan(
 		&result.ID, &result.Title, &result.Content, &result.Type,
 		&result.Project, &result.Scope, &result.SessionID, &topicKey,
 		&result.Confidence, &source, &tagsJSON,
-		&createdAtStr, &updatedAtStr,
+		&createdAtStr, &updatedAtStr, &rank,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search store: scan result: %w", err)
@@ -442,33 +420,28 @@ func (s *Store) scanSearchResult(rows *sql.Rows, rank float64) (*domain.SearchRe
 	return &result, nil
 }
 
-// scanSearchResultWithRank scans a row into a SearchResult including the rank.
-func (s *Store) scanSearchResultWithRank(rows *sql.Rows, rank *float64) (*domain.SearchResult, error) {
-	var result domain.SearchResult
-	var createdAtStr, updatedAtStr string
-	var topicKey, source, tagsJSON sql.NullString
-
-	err := rows.Scan(
-		&result.ID, &result.Title, &result.Content, &result.Type,
-		&result.Project, &result.Scope, &result.SessionID, &topicKey,
-		&result.Confidence, &source, &tagsJSON,
-		&createdAtStr, &updatedAtStr, rank,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("search store: scan result with rank: %w", err)
+// applyFilterClauses is the SINGLE unified filter-fragment builder
+// (REQ-RET-002 helper unification). It emits the WHERE-clause fragments for the
+// type/project/scope filters in a FIXED order (type, project, scope) with a
+// leading " AND " on each fragment, plus the bound args. Every retrieval path
+// routes its filter application through this helper so the filter semantics can
+// never drift between retrievers.
+func applyFilterClauses(opts domain.SearchOptions) (string, []any) {
+	var frag strings.Builder
+	var args []any
+	if opts.Type != "" {
+		frag.WriteString(" AND o.type = ?")
+		args = append(args, opts.Type)
 	}
-
-	if topicKey.Valid {
-		result.TopicKey = topicKey.String
+	if opts.Project != "" {
+		frag.WriteString(" AND o.project = ?")
+		args = append(args, opts.Project)
 	}
-	result.Source = source.String
-	if tagsJSON.Valid {
-		_ = json.Unmarshal([]byte(tagsJSON.String), &result.Tags)
+	if opts.Scope != "" {
+		frag.WriteString(" AND o.scope = ?")
+		args = append(args, normalizeScope(opts.Scope))
 	}
-	result.CreatedAt = parseSearchTime(createdAtStr)
-	result.UpdatedAt = parseSearchTime(updatedAtStr)
-
-	return &result, nil
+	return frag.String(), args
 }
 
 // sanitizeFTS sanitizes a query string for FTS5 full-text search.
@@ -620,18 +593,14 @@ func (s *Store) searchEnhanced(ctx context.Context, query string, opts domain.Se
 		graphResults = s.graphNeighborExpansion(ctx, keywordResults, opts, limit)
 	}
 
-	fusionK := resolveFusionK(opts.FusionK)
-	// RRF operates exclusively over TRUE ranked lists. Recency and importance
-	// are NOT among them (they are applied after, multiplicatively).
-	fused := rrfFuse([]rankedList{
+	// Unified assembly path (REQ-RET-002 W5.3): fuse -> revalidate vs SQLite ->
+	// multiplicative re-rank (stable-ID tie-break) -> deterministic pagination.
+	return s.assembleResults(ctx, []rankedList{
 		{name: "keyword", items: keywordResults},
 		{name: "topic_expansion", items: topicExpResults},
 		{name: "prf", items: prfResults},
 		{name: "graph", items: graphResults},
-	}, fusionK, limit*3)
-
-	// Final multiplicative re-rank: recency (0.995^hours) * importance.
-	return s.rerankByRecencyImportance(ctx, fused, limit), nil
+	}, query, opts, limit), nil
 }
 
 // resolveFusionK returns the RRF smoothing constant, defaulting to the standard
@@ -759,6 +728,231 @@ func (s *Store) fetchImportanceScores(ctx context.Context, ids []int64) map[int6
 	return out
 }
 
+// --- Unified Retrieval Assembly (REQ-RET-002: W5.3 helper unification) ---
+//
+// assembleResults is the SINGLE unified retrieval result-assembly path. Both
+// routing profiles (searchDualLevel, searchEnhanced) funnel their ranked lists
+// through it so there is exactly ONE execution / result-assembly /
+// response-formatting path. It preserves the W5.2 contract (RRF over true
+// ranked lists + final multiplicative re-rank) and the W5.1 SearchID stamp
+// (applied by the caller Search()). The pipeline is:
+//
+//  1. rrfFuse: fuse TRUE ranked lists (position-only; k=60).
+//  2. revalidateCandidates: drop phantom/soft-deleted candidates against SQLite.
+//  3. rerankByRecencyImportance: final multiplicative re-rank with a stable-ID
+//     tie-break (deterministic).
+//  4. applyPagination: deterministic, opaque, context-bound cursor pagination.
+func (s *Store) assembleResults(ctx context.Context, lists []rankedList, query string, opts domain.SearchOptions, limit int) []*domain.SearchResult {
+	k := resolveFusionK(opts.FusionK)
+	pool := limit * 3
+	if pool < limit {
+		pool = limit
+	}
+	fused := rrfFuse(lists, k, pool)
+	validated := s.revalidateCandidates(ctx, fused)
+	reranked := s.rerankByRecencyImportance(ctx, validated, pool)
+	return s.applyPagination(reranked, query, opts, limit)
+}
+
+// revalidateCandidates confirms each fused candidate still exists and is not
+// soft-deleted in the live SQLite store, returning only live candidates in
+// their original order. This eliminates phantom/stale results that entered the
+// ranked set before a concurrent delete (REQ-RET-002 revalidation requirement).
+//
+// Note: at this layer an observation is "live" when deleted_at IS NULL (the
+// observations table has no separate archived_at column here; archival maps to
+// soft-delete). The revalidation is a correctness belt-and-suspenders over the
+// per-retriever deleted_at filters, closing the window between ranking and
+// return.
+func (s *Store) revalidateCandidates(ctx context.Context, candidates []*domain.SearchResult) []*domain.SearchResult {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	ids := make([]int64, 0, len(candidates))
+	for _, c := range candidates {
+		ids = append(ids, c.ID)
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT id FROM observations
+		WHERE id IN (%s) AND deleted_at IS NULL
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		// Non-fatal: if revalidation cannot run, return the candidates as-is
+		// rather than failing the whole search. The per-retriever filters still
+		// apply; revalidation is an additional guarantee, not the only one.
+		return candidates
+	}
+	live := make(map[int64]bool, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			live[id] = true
+		}
+	}
+	_ = rows.Close()
+
+	out := make([]*domain.SearchResult, 0, len(candidates))
+	for _, c := range candidates {
+		if live[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// applyPagination applies deterministic, opaque, context-bound pagination
+// (REQ-RET-002). When opts.Cursor is empty, it returns the first `limit` entries
+// of the already-deterministically-sorted slice. When opts.Cursor is present it
+// is decoded and its context hash is compared to the active filter context; a
+// match resumes strictly AFTER the encoded resume point, a mismatch (or corrupt
+// cursor) is treated as a fresh page 0 — a cursor from one query/filter can
+// NEVER leak results into another. When more results remain, the last returned
+// result carries an opaque NextCursor bound to the current context.
+func (s *Store) applyPagination(reranked []*domain.SearchResult, query string, opts domain.SearchOptions, limit int) []*domain.SearchResult {
+	if len(reranked) == 0 {
+		return reranked
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	wantCtx := cursorContextHash(query, opts)
+	start := 0
+	if opts.Cursor != "" {
+		if p, ok := decodeCursor(opts.Cursor); ok && p.Context == wantCtx {
+			// Resume strictly AFTER the encoded stable ID. The final order is a
+			// stable total order (rank DESC, ID asc) whose relative ordering is
+			// time-invariant for fixed data: recency is a per-item multiplier
+			// whose RATIO between any two fixed observations is constant (both
+			// scale by 0.995^Δ as now advances), so locating the resume item by
+			// its stable ID is drift-free and deterministic across calls. Rank
+			// is carried in the cursor for diagnostics only, never used for
+			// resume (a stale absolute rank would drift the boundary).
+			resumeAt := -1
+			for i, r := range reranked {
+				if r.ID == p.ID {
+					resumeAt = i
+					break
+				}
+			}
+			if resumeAt < 0 {
+				// Resume ID absent from the current set (deleted, or a different
+				// candidate pool): treat as fresh page 0 rather than guessing.
+				start = 0
+			} else {
+				start = resumeAt + 1
+			}
+			// A cursor whose context matches but whose resume point is past the
+			// end yields an empty page (no more results).
+			if start >= len(reranked) {
+				return []*domain.SearchResult{}
+			}
+		}
+		// Mismatched or corrupt cursor: treat as fresh page 0 (start stays 0).
+	}
+	end := start + limit
+	if end > len(reranked) {
+		end = len(reranked)
+	}
+	page := reranked[start:end]
+
+	// Emit an opaque next cursor on the last result when more results remain.
+	if end < len(reranked) && len(page) > 0 {
+		last := page[len(page)-1]
+		if next, err := encodeCursor(cursorPayload{
+			Context: wantCtx,
+			Rank:    last.Rank,
+			ID:      last.ID,
+			Version: cursorVersion,
+		}); err == nil {
+			last.NextCursor = next
+		}
+	}
+	return page
+}
+
+// --- Opaque, context-bound pagination cursor (REQ-RET-002) ---
+//
+// LOCAL MODE constraint: the cursor binds to query + project + scope + type + a
+// local-mode stable identity. There is NO tenant/principal/grant yet (W11/W13).
+// The binding is forward-compatible: cursorContextHash produces an opaque hash
+// that W11/W13 can extend to include principal+grant without changing the cursor
+// wire format. Cursor encoding uses only stdlib (hash/fnv, encoding/base64) —
+// no Postgres/authz dependencies — keeping local zero-CGO/zero-LLM intact.
+//
+// A cursor is OPAQUE (base64 of versioned JSON), never a secret. It carries the
+// resume rank + stable ID plus the context hash that binds it.
+
+// cursorVersion is the wire-format version of the opaque cursor. Bumping it lets
+// future waves evolve the payload while rejecting cross-version cursors safely.
+const cursorVersion = 1
+
+// localModeIdentity is the LOCAL MODE stable identity bound into the cursor
+// context. W11/W13 will add a resolved Principal/grant; until then this constant
+// anchors the context hash so cursors are scoped to local mode. It MUST NOT be
+// client-supplied.
+const localModeIdentity = "cortex-local-mode"
+
+// cursorPayload is the internal, non-secret content of an opaque cursor.
+type cursorPayload struct {
+	Context string  `json:"c"` // opaque hash binding the active filter context
+	Rank    float64 `json:"r"` // final score at the page boundary (resume rank)
+	ID      int64   `json:"i"` // observation ID at the boundary (stable tie-break key)
+	Version int     `json:"v"` // wire-format version
+}
+
+// cursorContextHash returns an opaque, stable hash binding the cursor to the
+// active filter context. The same (query, opts) always yields the same hash;
+// any change to query/project/scope/type (or the local-mode identity) yields a
+// different hash, so a cursor decoded against a different context is rejected.
+func cursorContextHash(query string, opts domain.SearchOptions) string {
+	h := fnv.New64a()
+	// Delimiters prevent ambiguity (e.g., "a"+"b" vs "ab"). hash.Hash writers
+	// never return an error; the discarded return satisfies errcheck.
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s", query, opts.Project, opts.Scope, opts.Type, localModeIdentity)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// encodeCursor produces an opaque, versioned, base64-encoded cursor. It is not
+// encrypted and carries no secret; opacity only prevents callers from depending
+// on the internal structure.
+func encodeCursor(p cursorPayload) (string, error) {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// decodeCursor reverses encodeCursor. It returns ok=false for any malformed,
+// truncated, or wrong-version input so callers can treat such values as "no
+// cursor" (fresh page) rather than erroring.
+func decodeCursor(raw string) (cursorPayload, bool) {
+	if raw == "" {
+		return cursorPayload{}, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return cursorPayload{}, false
+	}
+	var p cursorPayload
+	if err := json.Unmarshal(b, &p); err != nil {
+		return cursorPayload{}, false
+	}
+	if p.Version != cursorVersion {
+		return cursorPayload{}, false
+	}
+	return p, true
+}
+
 // searchByTopicKeyExpansion finds observations whose topic_key contains query terms.
 func (s *Store) searchByTopicKeyExpansion(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
 	terms := extractSearchTerms(query)
@@ -780,23 +974,16 @@ func (s *Store) searchByTopicKeyExpansion(ctx context.Context, query string, opt
 		return nil, nil
 	}
 
+	filterFrag, filterArgs := applyFilterClauses(opts)
 	baseQuery := fmt.Sprintf(`
 		SELECT o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
-		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at,
+		       -500.0 as rank
 		FROM observations o
 		WHERE (%s) AND o.topic_key IS NOT NULL AND o.topic_key != '' AND o.deleted_at IS NULL
-	`, strings.Join(conditions, " OR "))
-
-	if opts.Project != "" {
-		baseQuery += " AND o.project = ?"
-		args = append(args, opts.Project)
-	}
-	if opts.Scope != "" {
-		baseQuery += " AND o.scope = ?"
-		args = append(args, normalizeScope(opts.Scope))
-	}
-
-	baseQuery += " ORDER BY o.updated_at DESC LIMIT ?"
+	`+filterFrag+`
+		ORDER BY o.updated_at DESC, o.id LIMIT ?`, strings.Join(conditions, " OR "))
+	args = append(args, filterArgs...)
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
@@ -807,7 +994,7 @@ func (s *Store) searchByTopicKeyExpansion(ctx context.Context, query string, opt
 
 	var results []*domain.SearchResult
 	for rows.Next() {
-		result, err := s.scanSearchResult(rows, -500) // Priority between topic exact (-1000) and keyword
+		result, err := s.scanSearchResult(rows) // Priority between topic exact (-1000) and keyword
 		if err != nil {
 			return nil, err
 		}
@@ -1000,27 +1187,27 @@ func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain
 		args[i] = id
 	}
 
-	projectFilter := ""
-	if opts.Project != "" {
-		projectFilter = " AND o.project = ?"
-		args = append(args, opts.Project)
-	}
+	filterFrag, filterArgs := applyFilterClauses(opts)
 
 	// When searching as-of a date, exclude observations created after that date
 	temporalFilter := ""
 	if opts.AsOf != nil {
 		temporalFilter = " AND o.created_at <= ?"
-		args = append(args, opts.AsOf.UTC().Format(time.RFC3339))
 	}
 
 	query := fmt.Sprintf(`
 		SELECT o.id, o.title, o.content, o.type, o.project, o.scope, o.session_id,
-		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at
+		       o.topic_key, o.confidence, o.source, o.tags, o.created_at, o.updated_at,
+		       -200.0 as rank
 		FROM observations o
 		WHERE o.id IN (%s) AND o.deleted_at IS NULL%s%s
-		ORDER BY o.updated_at DESC
+		ORDER BY o.updated_at DESC, o.id
 		LIMIT ?
-	`, strings.Join(placeholders, ","), projectFilter, temporalFilter)
+	`, strings.Join(placeholders, ","), filterFrag, temporalFilter)
+	args = append(args, filterArgs...)
+	if opts.AsOf != nil {
+		args = append(args, opts.AsOf.UTC().Format(time.RFC3339))
+	}
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1031,7 +1218,7 @@ func (s *Store) graphNeighborExpansion(ctx context.Context, topResults []*domain
 
 	var results []*domain.SearchResult
 	for rows.Next() {
-		result, err := s.scanSearchResult(rows, -200)
+		result, err := s.scanSearchResult(rows)
 		if err != nil {
 			continue
 		}

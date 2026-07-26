@@ -107,6 +107,13 @@ type SearchOptions struct {
 	FusionK     float64    `json:"fusion_k,omitempty"`      // RRF constant (default 60, lower = favor top ranks)
 	GraphExpand bool       `json:"graph_expand,omitempty"`   // Boost graph neighbors of top results
 	AsOf        *time.Time `json:"as_of,omitempty"`          // Temporal point-in-time filter for graph expansion
+	// Cursor is an opaque pagination cursor (REQ-RET-002). When set, the search
+	// store resumes AFTER the encoded resume point. The cursor is bound to the
+	// active filter context (query+project+scope+type+local identity); a cursor
+	// from a different context is rejected and treated as a fresh page 0. This is
+	// a storage-layer seam; the MCP/HTTP envelope is unified in W6. Local-mode
+	// only: no tenant/principal/grant binding yet (W11/W13).
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // SearchResult represents a search result with relevance ranking.
@@ -119,6 +126,12 @@ type SearchResult struct {
 	// the originating search, not a shared global. It replaces the removed shared
 	// mutable search-query field on the Stores bundle.
 	SearchID SearchID `json:"search_id,omitempty"`
+	// NextCursor is the opaque cursor for the following page. It is set ONLY on
+	// the LAST result of a page when more results may exist; absent otherwise.
+	// It is a storage-layer seam (REQ-RET-002): the unified response envelope at
+	// the MCP/HTTP layer is introduced in W6. Opaque + context-bound, never a
+	// secret.
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // SearchScoreBreakdown explains which retrieval path produced a result.
