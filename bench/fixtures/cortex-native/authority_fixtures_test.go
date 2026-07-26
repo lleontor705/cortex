@@ -183,7 +183,11 @@ func readAuthorityFixtures(t *testing.T, path string) []authorityFixture {
 	if err != nil {
 		t.Fatalf("open authority fixtures: %v", err)
 	}
-	defer file.Close()
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close authority fixtures: %v", err)
+		}
+	})
 
 	var fixtures []authorityFixture
 	scanner := bufio.NewScanner(file)

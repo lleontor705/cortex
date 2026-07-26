@@ -132,7 +132,11 @@ func loadCollisionFixtures(t *testing.T, path string) ([]fixtureRecord, []fixtur
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}
-	defer file.Close()
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close collision fixtures: %v", err)
+		}
+	})
 
 	var records []fixtureRecord
 	var queries []fixtureQuery

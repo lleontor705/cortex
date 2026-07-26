@@ -148,8 +148,12 @@ func NewFreshBenchStores(ctx context.Context, dbDir string) (*common.BenchStores
 	}
 
 	dbPath := filepath.Join(dbDir, "cortex.db")
-	os.Setenv("CORTEX_DATABASE_PATH", dbPath)
-	os.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+	if err := os.Setenv("CORTEX_DATABASE_PATH", dbPath); err != nil {
+		return nil, fmt.Errorf("set CORTEX_DATABASE_PATH: %w", err)
+	}
+	if err := os.Setenv("CORTEX_DATABASE_IN_MEMORY", "false"); err != nil {
+		return nil, fmt.Errorf("set CORTEX_DATABASE_IN_MEMORY: %w", err)
+	}
 
 	app, err := app.Open(ctx, app.Options{InMemory: false})
 	if err != nil {

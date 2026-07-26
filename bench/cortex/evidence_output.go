@@ -39,7 +39,7 @@ func RefuseExternalProviders() error {
 
 // WriteEvidenceOutput validates and stages all evidence artifacts before one
 // directory rename makes the complete output visible to readers.
-func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.EvidenceReport, run common.IndependentRun) error {
+func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.EvidenceReport, run common.IndependentRun) (err error) {
 	if strings.TrimSpace(outputDir) == "" {
 		return fmt.Errorf("evidence output directory is required")
 	}
@@ -70,7 +70,11 @@ func WriteEvidenceOutput(outputDir string, raw BaselineRun, report common.Eviden
 	if err != nil {
 		return fmt.Errorf("create evidence staging directory: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer func() {
+		if removeErr := os.RemoveAll(staging); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove evidence staging directory: %w", removeErr))
+		}
+	}()
 
 	if err := os.WriteFile(filepath.Join(staging, "raw.json"), rawJSON, 0o600); err != nil {
 		return fmt.Errorf("write staged raw evidence: %w", err)

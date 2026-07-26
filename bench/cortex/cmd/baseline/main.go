@@ -429,11 +429,11 @@ func readJSON(path string, target any) error {
 	return nil
 }
 
-func writeNewFile(path string, contents []byte) error {
+func writeNewFile(path string, contents []byte) (err error) {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("output path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -443,8 +443,12 @@ func writeNewFile(path string, contents []byte) error {
 		}
 		return err
 	}
-	defer file.Close()
-	if _, err := file.Write(contents); err != nil {
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close new file: %w", closeErr)
+		}
+	}()
+	if _, err = file.Write(contents); err != nil {
 		return err
 	}
 	return file.Sync()

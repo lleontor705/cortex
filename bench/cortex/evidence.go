@@ -2,6 +2,7 @@ package cortex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 
 // RunEvidence composes identity validation, fresh ingestion, the production
 // runner, resource capture, report construction, and atomic output publishing.
-func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.IndependentRun, error) {
+func RunEvidence(ctx context.Context, request EvidenceRunRequest) (run common.IndependentRun, err error) {
 	if err := RefuseExternalProviders(); err != nil {
 		return common.IndependentRun{}, err
 	}
@@ -34,13 +35,21 @@ func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.Indepe
 	if err != nil {
 		return common.IndependentRun{}, fmt.Errorf("create evidence work directory: %w", err)
 	}
-	defer os.RemoveAll(workDir)
+	defer func() {
+		if removeErr := os.RemoveAll(workDir); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove evidence work directory: %w", removeErr))
+		}
+	}()
 
 	stores, err := NewFreshBenchStores(ctx, workDir)
 	if err != nil {
 		return common.IndependentRun{}, err
 	}
-	defer stores.Close()
+	defer func() {
+		if closeErr := stores.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close bench stores: %w", closeErr))
+		}
+	}()
 
 	stableIDs, err := IngestEvidenceCorpus(ctx, stores, request.Corpus)
 	if err != nil {
@@ -66,7 +75,7 @@ func RunEvidence(ctx context.Context, request EvidenceRunRequest) (common.Indepe
 		return common.IndependentRun{}, err
 	}
 	resources := orchestrated.Resources
-	run := common.IndependentRun{
+	run = common.IndependentRun{
 		RunID:                request.RunID,
 		Seed:                 request.Seed,
 		BinarySHA256:         request.Identity.BinarySHA256,

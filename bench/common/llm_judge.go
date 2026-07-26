@@ -395,10 +395,8 @@ func stripCodeFence(s string) string {
 	if idx := strings.IndexByte(s, '\n'); idx > 0 {
 		s = s[idx+1:]
 	}
-	// Drop trailing ``` if present
-	if strings.HasSuffix(s, "```") {
-		s = s[:len(s)-3]
-	}
+	// Drop trailing ``` if present.
+	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
 }
 
