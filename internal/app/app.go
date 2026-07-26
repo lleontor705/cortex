@@ -52,6 +52,15 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	if opts.InMemory || cfg.Database.InMemory {
 		dbCfg = database.InMemoryConfig()
 	} else {
+		// READ-ONLY COMPATIBILITY PROBE (W3.2, REQ-DB-002): inspect the
+		// configured database file STRICTLY READ-ONLY before any
+		// write-capable open or pragma. Old Cortex v1, Engram, corrupt,
+		// ambiguous, or partially-initialized databases are refused without
+		// mutation (byte-identical SHA-256, no WAL/journal sidecar, no
+		// replacement database). A fresh or cortex-v2-compatible path proceeds.
+		if _, err := migration.ProbeCompatibility(ctx, cfg.Database.Path); err != nil {
+			return nil, fmt.Errorf("app: %w", err)
+		}
 		// Ensure parent directory exists for the database file
 		if dir := filepath.Dir(cfg.Database.Path); dir != "." {
 			if err := os.MkdirAll(dir, 0700); err != nil {
@@ -69,14 +78,30 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
-	migrator, err := migration.NewMigrator(manager.DB(), migrationsDir())
+	// Apply the v2 schema baseline (consolidated final-state schema of v1
+	// 001-014 plus v2 corrections, recorded in cortex_meta). On a fresh target
+	// this creates the full schema in one transaction; on an existing cortex-v2
+	// database it is an idempotent no-op. Incompatible databases were already
+	// refused read-only by the probe above. The v1 migrator (001-014) is RETIRED
+	// on the v2 line and MUST NOT drive startup schema (ADR-03, REQ-DB-001).
+	baseline, err := migration.NewV2Baseline()
 	if err != nil {
 		_ = manager.Close()
 		return nil, err
 	}
-	if err := migrator.Up(ctx); err != nil {
+	if err := baseline.Apply(ctx, manager.DB()); err != nil {
 		_ = manager.Close()
-		return nil, fmt.Errorf("app: apply migrations: %w", err)
+		return nil, fmt.Errorf("app: apply v2 schema baseline: %w", err)
+	}
+
+	// The migrator remains available for the CLI `migrate status/up/down`
+	// commands. It is v2-aware: on a cortex-v2 database it treats v1 001-014 as
+	// retired (Up is a no-op; Status reports them consolidated into the v2
+	// baseline). It does NOT drive startup schema — the baseline above does.
+	migrator, err := migration.NewMigrator(manager.DB(), migrationsDir())
+	if err != nil {
+		_ = manager.Close()
+		return nil, err
 	}
 
 	stores := &bundle.Stores{

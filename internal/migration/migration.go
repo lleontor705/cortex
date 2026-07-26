@@ -109,7 +109,17 @@ func (m *Migrator) Register(migration Migration) {
 
 // Up applies all pending migrations.
 // Migrations are applied in version order (lowest to highest).
+//
+// v2-aware (W3, REQ-DB-001): on a cortex-v2 database the v1 migrations 001-014
+// are RETIRED — they are consolidated into the v2 baseline applied by the app
+// bootstrap. Running them here would conflict ("table already exists"), so on a
+// v2 database Up is an idempotent no-op. On a non-v2 database Up behaves as
+// before (legacy v1 line).
 func (m *Migrator) Up(ctx context.Context) error {
+	if m.isV2Database() {
+		// v1 001-014 are retired on the v2 line; the v2 baseline is authoritative.
+		return nil
+	}
 	migrations, err := m.getPendingMigrations()
 	if err != nil {
 		return fmt.Errorf("migration: get pending migrations: %w", err)
@@ -172,6 +182,11 @@ func (m *Migrator) Down(ctx context.Context, version int) error {
 }
 
 // Status returns the status of all migrations (both applied and pending).
+//
+// v2-aware (W3, REQ-DB-001): on a cortex-v2 database the v1 migrations 001-014
+// are consolidated into the v2 baseline, so they are reported as applied (the
+// schema they define is present). On a non-v2 database, status reflects the
+// _migrations tracking table as before.
 func (m *Migrator) Status(ctx context.Context) ([]MigrationStatus, error) {
 	// Get all migrations (from registry and disk)
 	allMigrations, err := m.getAllMigrations()
@@ -179,17 +194,21 @@ func (m *Migrator) Status(ctx context.Context) ([]MigrationStatus, error) {
 		return nil, fmt.Errorf("migration: get all migrations: %w", err)
 	}
 
+	// On a v2 database, v1 001-014 are consolidated into the baseline.
+	consolidated := m.isV2Database()
+
 	// Build status list
 	var statuses []MigrationStatus
 	for _, migration := range allMigrations {
+		applied := m.applied[migration.Version] || consolidated
 		status := MigrationStatus{
 			Version: migration.Version,
 			Name:    migration.Name,
-			Applied: m.applied[migration.Version],
+			Applied: applied,
 		}
 
-		// Get applied_at timestamp if migration was applied
-		if status.Applied {
+		// Get applied_at timestamp if migration was applied via the tracker.
+		if m.applied[migration.Version] {
 			var appliedAt string
 			err := m.db.QueryRow(
 				"SELECT applied_at FROM _migrations WHERE version = ?",
@@ -463,6 +482,22 @@ func (m *Migrator) Version() int {
 		}
 	}
 	return maxVersion
+}
+
+// isV2Database reports whether the managed database carries a cortex-v2 schema
+// identity (cortex_meta.schema_family == "cortex-v2"). On a v2 database the v1
+// migrations 001-014 are retired (consolidated into the v2 baseline), so the
+// migrator treats them as already applied and refuses to re-run them. Returns
+// false on any error (table missing, no row) or when the database is not a
+// cortex-v2 database — i.e. it is conservative for pre-v2/foreign databases,
+// preserving the legacy v1 behavior there.
+func (m *Migrator) isV2Database() bool {
+	var family string
+	err := m.db.QueryRow(`SELECT value FROM cortex_meta WHERE key = 'schema_family'`).Scan(&family)
+	if err != nil {
+		return false
+	}
+	return family == SchemaFamilyCortexV2
 }
 
 // sanitizeMigrationName removes special characters from migration names.
