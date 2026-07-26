@@ -133,6 +133,12 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if !strings.Contains(ciText, "go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline") {
 		t.Error("CI baseline validation must use the direct offline Go command")
 	}
+	if !strings.Contains(ciText, "  race-detector:") {
+		t.Error("CI must define a race-detector job")
+	}
+	if !strings.Contains(ciText, "go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp") {
+		t.Error("CI must include a race detector gate over concurrent store packages (search, bundle, mcp)")
+	}
 
 	protocol, err := os.ReadFile(filepath.Join(repositoryRoot, "bench", "evidence", "cortex-native", "v1", "protocol.json"))
 	if err != nil {
