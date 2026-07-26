@@ -5,6 +5,7 @@ package bundle
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 // Stores bundles all store dependencies needed by MCP, HTTP, and CLI.
@@ -97,10 +99,19 @@ func NewSQLiteUnitOfWork(db *sql.DB, cfg domain.BusyRetryConfig) *SQLiteUnitOfWo
 // state is committed. On SQLITE_BUSY, Do retries up to MaxRetries with capped
 // backoff before returning a stable retryable error.
 //
-// The participants slice is accepted for API completeness and future
-// instrumentation; fn is responsible for enlisting each participant via
-// participant.WithinTx(ctx, TxHandle(ctx), work).
-func (u *SQLiteUnitOfWork) Do(ctx context.Context, _ *domain.TenantContext, _ []domain.TxParticipant, fn func(context.Context) error) error {
+// The participants slice is validated before fn runs: every entry must be
+// non-nil. A nil entry is a programming error (the caller declared a
+// participant but passed nil). This gives the parameter meaning without
+// changing the enlistment model: fn is still responsible for enlisting each
+// participant via participant.WithinTx(ctx, TxHandle(ctx), work). The shared
+// *sql.Tx ensures all participant writes commit or roll back atomically.
+func (u *SQLiteUnitOfWork) Do(ctx context.Context, _ *domain.TenantContext, participants []domain.TxParticipant, fn func(context.Context) error) error {
+	// Validate declared participants: a nil entry is a programming error.
+	for i, p := range participants {
+		if p == nil {
+			return fmt.Errorf("unitOfWork: participant at index %d is nil (programming error)", i)
+		}
+	}
 	return retryOnBusy(ctx, u.cfg, func() error {
 		// Open ONE shared transaction on the shared *sql.DB.
 		tx, err := u.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -113,8 +124,8 @@ func (u *SQLiteUnitOfWork) Do(ctx context.Context, _ *domain.TenantContext, _ []
 
 		// Run the caller's work (which enlists participants within the shared tx).
 		if err := fn(enlistedCtx); err != nil {
-			// Explicit reverse-order rollback: with a single shared *sql.Tx,
-			// Rollback undoes ALL participant writes atomically.
+			// Shared transaction rolled back atomically — all participant writes
+			// undone in one Rollback() (single *sql.Tx, no per-participant ordering).
 			_ = tx.Rollback()
 			return err
 		}
@@ -136,23 +147,51 @@ var _ domain.UnitOfWork = (*SQLiteUnitOfWork)(nil)
 // BUSY retry + detection (REQ-TX-002)
 // ---------------------------------------------------------------------------
 
+// SQLite primary result codes (stable C-API constants, never change across
+// SQLite versions). Used for typed-error detection via errors.As.
+const (
+	sqliteResultBusy   = 5 // SQLITE_BUSY
+	sqliteResultLocked = 6 // SQLITE_LOCKED
+)
+
 // busyErrorSubstrings are the lowercase substrings that identify a SQLite
-// SQLITE_BUSY / "database is locked" condition from the modernc.org/sqlite
-// pure-Go driver (which reports these as string-based errors, not typed).
+// SQLITE_BUSY / SQLITE_LOCKED condition. This is the FALLBACK detection path,
+// used only when the error is not a typed *sqlite.Error (e.g., wrapped or
+// re-formatted by an intermediary layer). Each entry corresponds to a genuine
+// BUSY/LOCKED indicator — NEVER to SQLITE_CANTOPEN (code 14, "unable to open
+// database file"), which is a non-retryable configuration error.
 var busyErrorSubstrings = []string{
 	"sqlite_busy",
-	"sqlcode 6",   // SQLITE_BUSY result code
+	"sqlite_locked",
+	"sqlcode 5", // SQLITE_BUSY result code
+	"sqlcode 6", // SQLITE_LOCKED result code
 	"database is locked",
-	"unable to open database file", // rare: lock contention on journal
+	"database table is locked",
 }
 
-// IsSQLiteBusy reports whether err represents a SQLITE_BUSY / "database is
-// locked" condition. This is the stable, retryable signal callers check after
+// IsSQLiteBusy reports whether err represents a SQLITE_BUSY / SQLITE_LOCKED
+// condition. This is the stable, retryable signal callers check after
 // UnitOfWork.Do returns an error (REQ-TX-002 edge scenario).
+//
+// Detection uses two paths:
+//  1. PRIMARY: typed detection via errors.As against *sqlite.Error. If the
+//     error carries a typed code, the primary code (lower 8 bits, handling
+//     extended result codes) is compared against SQLITE_BUSY (5) and
+//     SQLITE_LOCKED (6). This is robust against driver message-format changes.
+//  2. FALLBACK: case-insensitive substring matching against
+//     busyErrorSubstrings, for errors that are not typed *sqlite.Error.
 func IsSQLiteBusy(err error) bool {
 	if err == nil {
 		return false
 	}
+	// PRIMARY: typed detection.
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		// Extended result codes carry the primary code in the lower 8 bits.
+		primary := sqliteErr.Code() & 0xFF
+		return primary == sqliteResultBusy || primary == sqliteResultLocked
+	}
+	// FALLBACK: string matching.
 	msg := strings.ToLower(err.Error())
 	for _, sub := range busyErrorSubstrings {
 		if strings.Contains(msg, sub) {
