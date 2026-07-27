@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/vector/conformance"
 )
 
 // integrationConfig resolves host/port from env (defaults localhost:6334).
@@ -269,4 +270,24 @@ func TestIntegration_Qdrant_Capabilities(t *testing.T) {
 	if caps.Filters != "PreFilter" {
 		t.Errorf("Filters = %q, want PreFilter", caps.Filters)
 	}
+}
+
+// TestIntegration_Qdrant_ConformanceSuite runs the SHARED conformance suite
+// against a live Qdrant server (REQ-VEC-002 parity). This is the cross-adapter
+// parity assertion: identical fixtures must produce the same eligible candidate
+// set across sqlite_blob, qdrant, and pgvector. Each sub-test constructs a
+// FRESH adapter with an ISOLATED collection so there is no cross-test state.
+func TestIntegration_Qdrant_ConformanceSuite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	// The conformance model uses ModelName="conformance-model". The Qdrant
+	// adapter is configured with ModelName to enforce namespace isolation, so
+	// the factory MUST use the same model name the fixtures declare.
+	conformance.RunSuite(t, func(t *testing.T, dim int, model domain.ModelInfo) (domain.VectorIndex, error) {
+		cfg := integrationConfig(t, "conf-"+model.Name+"-"+model.Version)
+		cfg.Dimension = dim
+		cfg.ModelName = model.Name
+		return newIntegrationAdapter(t, cfg), nil
+	})
 }

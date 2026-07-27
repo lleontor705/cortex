@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/vector/conformance"
 )
 
 // schemaCounter ensures each test gets a unique schema name.
@@ -502,4 +503,29 @@ func queryIndexDefinition(t *testing.T, ctx context.Context, a *Adapter) string 
 		}
 	}
 	return def
+}
+
+// TestIntegration_Pgvector_ConformanceSuite runs the SHARED conformance suite
+// against a live PostgreSQL+pgvector server (REQ-VEC-002 parity). This is the
+// cross-adapter parity assertion: identical fixtures must produce the same
+// eligible candidate set across sqlite_blob, qdrant, and pgvector. Each
+// sub-test constructs a FRESH adapter with an ISOLATED schema so there is no
+// cross-test state.
+func TestIntegration_Pgvector_ConformanceSuite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	conformance.RunSuite(t, func(t *testing.T, dim int, model domain.ModelInfo) (domain.VectorIndex, error) {
+		cfg := integrationConfig(t)
+		cfg.Dimension = dim
+		cfg.ModelName = model.Name
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		a, err := New(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { _ = a.Close() })
+		return a, nil
+	})
 }
