@@ -41,6 +41,7 @@ type Config struct {
 	Search    SearchConfig    `yaml:"search" mapstructure:"search"`
 	Memory    MemoryConfig    `yaml:"memory" mapstructure:"memory"`
 	Lifecycle LifecycleConfig `yaml:"lifecycle" mapstructure:"lifecycle"`
+	Vector    VectorConfig    `yaml:"vector" mapstructure:"vector"`
 
 	// LoadedFrom is the path of the config file that was loaded.
 	// Used by Save() and ReloadConfig() to always use the same file.
@@ -118,6 +119,38 @@ type LifecycleConfig struct {
 	ArchiveCheckInterval string `yaml:"archive_check_interval" mapstructure:"archive_check_interval"`
 }
 
+// VectorConfig holds external vector index adapter configuration.
+//
+// This is DATA-ONLY: no adapter client is imported here (config.go stays
+// local-track, zero-CGO, no external vector dependency). The local
+// composition path (internal/app) wires the sqlite_blob adapter (the
+// zero-CGO default) regardless of Provider. Provider selection happens
+// ONLY in the server/external composition path, which is permitted to
+// import the external adapter packages (ADR-05, REQ-VEC-001/002). When
+// Provider is empty or "sqlite_blob", no external adapter is constructed
+// and the local zero-CGO default is preserved.
+type VectorConfig struct {
+	Provider string       `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "none"
+	Qdrant   QdrantConfig `yaml:"qdrant" mapstructure:"qdrant"`
+}
+
+// QdrantConfig holds connection parameters for the Qdrant external vector
+// adapter (internal/vector/qdrant). It is consumed ONLY by the server/
+// external composition path. All fields are plain data types so config.go
+// never imports the qdrant client (ADR-01 dependency direction, REQ-FOUND-001).
+// The APIKey is passed to the gRPC client and MUST NEVER be logged or
+// surfaced in error messages (REQ-CP-002 token storage / no plaintext).
+type QdrantConfig struct {
+	Host         string `yaml:"host" mapstructure:"host"`                   // gRPC host (default localhost)
+	Port         int    `yaml:"port" mapstructure:"port"`                   // gRPC port (default 6334)
+	Collection   string `yaml:"collection" mapstructure:"collection"`       // collection name (default cortex)
+	Dimension    int    `yaml:"dimension" mapstructure:"dimension"`         // expected vector dimension (collection vector size)
+	APIKey       string `yaml:"api_key" mapstructure:"api_key"`             // optional API key (never logged)
+	UseTLS       bool   `yaml:"use_tls" mapstructure:"use_tls"`             // TLS for gRPC (default false)
+	MaxBatchSize int    `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
+	MaxRetries   uint   `yaml:"max_retries" mapstructure:"max_retries"`     // transient gRPC retries (default 3)
+}
+
 // Default configuration values
 var defaults = Config{
 	Server: ServerConfig{
@@ -166,6 +199,17 @@ var defaults = Config{
 	Lifecycle: LifecycleConfig{
 		EnableAutoArchive:    true,
 		ArchiveCheckInterval: "1h",
+	},
+	Vector: VectorConfig{
+		Provider: "", // unset => sqlite_blob zero-CGO default (local path)
+		Qdrant: QdrantConfig{
+			Host:         "localhost",
+			Port:         6334,
+			Collection:   "cortex",
+			Dimension:    0, // resolved from embedding model at adapter construction
+			MaxBatchSize: 256,
+			MaxRetries:   3,
+		},
 	},
 }
 
@@ -272,6 +316,16 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("lifecycle.enable_auto_archive", defaults.Lifecycle.EnableAutoArchive)
 	v.SetDefault("lifecycle.archive_check_interval", defaults.Lifecycle.ArchiveCheckInterval)
+
+	v.SetDefault("vector.provider", defaults.Vector.Provider)
+	v.SetDefault("vector.qdrant.host", defaults.Vector.Qdrant.Host)
+	v.SetDefault("vector.qdrant.port", defaults.Vector.Qdrant.Port)
+	v.SetDefault("vector.qdrant.collection", defaults.Vector.Qdrant.Collection)
+	v.SetDefault("vector.qdrant.dimension", defaults.Vector.Qdrant.Dimension)
+	v.SetDefault("vector.qdrant.api_key", defaults.Vector.Qdrant.APIKey)
+	v.SetDefault("vector.qdrant.use_tls", defaults.Vector.Qdrant.UseTLS)
+	v.SetDefault("vector.qdrant.max_batch_size", defaults.Vector.Qdrant.MaxBatchSize)
+	v.SetDefault("vector.qdrant.max_retries", defaults.Vector.Qdrant.MaxRetries)
 }
 
 // validate checks if the configuration values are valid
