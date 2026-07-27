@@ -91,6 +91,10 @@ var serverTrackSubpkgs = []string{
 	"/internal/vector/pgvector",
 	"/internal/projection/obsidian",
 	"/internal/identity", // server identity layer; local uses domain.Principal
+	// W8.4: the server-track VectorIndex factory. Local composition wires
+	// sqlite_blob directly and MUST NOT reach for the factory (which is the
+	// only place that imports the external adapter packages).
+	"/internal/server/external",
 }
 
 // forbiddenExternalDeps are third-party import path prefixes that drag in
@@ -241,6 +245,9 @@ func TestForbiddenImportDetector(t *testing.T) {
 		modulePath + "/internal/vector/pgvector",
 		modulePath + "/internal/vector/qdrant/sub",
 		modulePath + "/internal/projection/obsidian",
+		// W8.4: the server-track VectorIndex factory.
+		modulePath + "/internal/server/external",
+		modulePath + "/internal/server/external/sub",
 		"github.com/jackc/pgx/v5",
 		"golang.org/x/oauth2",
 		"golang.org/x/oauth2/jose",
