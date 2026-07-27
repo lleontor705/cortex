@@ -623,6 +623,15 @@ func TestGapReindexVectorStoreUnavailable(t *testing.T) {
 	// any Embed() call.
 	setGapEnvWithProvider(t, "ollama")
 	code, _, errB := run(t, "cortex", "reindex")
+	if testVectorsEnabled {
+		// Under cortex_vectors the vector store IS available. With a fresh
+		// DB (no observations) there is nothing to embed, so reindex exits
+		// 0 without contacting the network.
+		if code != 0 {
+			t.Fatalf("reindex code = %d, want 0 (vector store available, empty DB): stderr=%q", code, errB)
+		}
+		return
+	}
 	if code != 1 {
 		t.Fatalf("reindex code = %d, want 1 (vector store unavailable)", code)
 	}

@@ -649,12 +649,18 @@ func TestExtraRunDoctorFreshDB(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("doctor code = %d, stderr = %q", code, errB)
 	}
+	// The vector-store status line depends on the build tag: the stub
+	// (default) reports disabled, the cortex_vectors build reports enabled.
+	vectorStatus := "[WARN] Vector store: disabled"
+	if testVectorsEnabled {
+		vectorStatus = "[OK]   Vector store: enabled"
+	}
 	for _, want := range []string{
 		"Cortex Doctor",
 		"[OK]   Database:",
 		"[OK]   FTS5 search:",
 		"[OK]   Knowledge graph:",
-		"[WARN] Vector store: disabled",
+		vectorStatus,
 		"[WARN] Embeddings: not configured",
 		"All checks passed.",
 	} {

@@ -3,7 +3,7 @@
 // Embeddings enable semantic search: instead of matching keywords,
 // search by meaning. The service supports multiple backends:
 //   - ollama: Local Ollama server (default: nomic-embed-text, 768 dims)
-//   - openai: OpenAI API (text-embedding-3-small, 384 dims)
+//   - openai: OpenAI API (text-embedding-3-small, 1536 dims)
 //   - none: Disabled (default)
 //
 // HTTP client lifecycle: each backend holds a single reusable *http.Client

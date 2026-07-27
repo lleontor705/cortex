@@ -10,7 +10,7 @@ import (
 // TestSerializeEmbedding tests the embedding serialization/deserialization.
 func TestSerializeEmbedding(t *testing.T) {
 	t.Run("serialize and deserialize preserves values", func(t *testing.T) {
-		original := make([]float32, EmbeddingDimension)
+		original := make([]float32, DefaultEmbeddingDimension)
 		for i := range original {
 			original[i] = float32(i) * 0.001
 		}
@@ -20,8 +20,8 @@ func TestSerializeEmbedding(t *testing.T) {
 			t.Fatalf("serialize failed: %v", err)
 		}
 
-		if len(data) != EmbeddingDimension*4 {
-			t.Errorf("expected %d bytes, got %d", EmbeddingDimension*4, len(data))
+		if len(data) != DefaultEmbeddingDimension*4 {
+			t.Errorf("expected %d bytes, got %d", DefaultEmbeddingDimension*4, len(data))
 		}
 
 		recovered, err := deserializeEmbedding(data)
@@ -172,7 +172,7 @@ func TestComputeCosineSimilarity(t *testing.T) {
 
 // TestEmbeddingDimension tests that the constant is set correctly.
 func TestEmbeddingDimension(t *testing.T) {
-	if EmbeddingDimension != 384 {
-		t.Errorf("EmbeddingDimension should be 384, got %d", EmbeddingDimension)
+	if DefaultEmbeddingDimension != 768 {
+		t.Errorf("DefaultEmbeddingDimension should be 768, got %d", DefaultEmbeddingDimension)
 	}
 }
