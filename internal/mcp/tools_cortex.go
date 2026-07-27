@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/lleontor705/cortex/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
+	"github.com/lleontor705/cortex/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -407,12 +407,12 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 					},
 				}
 				vecCandidates, vecErr := stores.Vectors.Search(ctx, vecQuery)
-				if vecErr == nil && len(vecCandidates) > 0 {
-					vecResults := revalidateCandidates(ctx, stores.Observations, vecCandidates)
-					if len(vecResults) > 0 {
-						ftsResults = fuseResults(ftsResults, vecResults, limit)
-					}
+			if vecErr == nil && len(vecCandidates) > 0 {
+				vecResults := retrieval.RevalidateCandidates(ctx, stores.Observations, vecCandidates)
+				if len(vecResults) > 0 {
+					ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
 				}
+			}
 			}
 		}
 
@@ -431,91 +431,9 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			sb.WriteString("\n")
 		}
 
-		return textResult("%s", sb.String())
-	}
-}
-
-// revalidateCandidates converts lightweight VectorCandidate results (ID+score)
-// into full VectorSearchResult entries by looking up the observation data from
-// the store. This bridges the W8 VectorIndex port (which returns only IDs) to
-// the existing fuse logic (which needs full observation data). Candidates
-// whose observation cannot be loaded (deleted, missing) are dropped — the same
-// revalidation discipline W5.3 applies to retrieval candidates.
-func revalidateCandidates(ctx context.Context, obs observationByID, candidates []domain.VectorCandidate) []*domain.VectorSearchResult {
-	results := make([]*domain.VectorSearchResult, 0, len(candidates))
-	for _, c := range candidates {
-		o, err := obs.GetByID(ctx, c.ID)
-		if err != nil || o == nil {
-			continue // soft-deleted or missing: drop
-		}
-		results = append(results, &domain.VectorSearchResult{
-			Observation: *o,
-			Similarity:  c.Score,
-		})
-	}
-	return results
-}
-
-// observationByID is the subset of the observation store needed for candidate
-// revalidation. *sqlite.Store satisfies this structurally.
-type observationByID interface {
-	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
-}
-
-// fuseResults combines FTS5 and vector search results using Reciprocal Rank Fusion (k=60).
-func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, limit int) []*domain.SearchResult {
-	const k = 60.0
-
-	type scored struct {
-		result *domain.SearchResult
-		score  float64
-	}
-
-	scoreMap := make(map[int64]*scored)
-
-	// Score FTS5 results
-	for rank, r := range ftsResults {
-		scoreMap[r.ID] = &scored{
-			result: r,
-			score:  1.0 / (k + float64(rank+1)),
-		}
-	}
-
-	// Add vector result scores
-	for rank, vr := range vecResults {
-		rrf := 1.0 / (k + float64(rank+1))
-		if existing, ok := scoreMap[vr.ID]; ok {
-			existing.score += rrf
-		} else {
-			scoreMap[vr.ID] = &scored{
-				result: &domain.SearchResult{
-					Observation: vr.Observation,
-					Rank:        vr.Similarity,
-				},
-				score: rrf,
-			}
-		}
-	}
-
-	// Sort by RRF score
-	sorted := make([]*scored, 0, len(scoreMap))
-	for _, s := range scoreMap {
-		sorted = append(sorted, s)
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].score > sorted[j].score
-	})
-
-	results := make([]*domain.SearchResult, 0, limit)
-	for i, s := range sorted {
-		if i >= limit {
-			break
-		}
-		results = append(results, s.result)
-	}
-
-	return results
-}
+ 		return textResult("%s", sb.String())
+ 	}
+ }
 
 func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

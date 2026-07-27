@@ -17,6 +17,7 @@ import (
 	"github.com/lleontor705/cortex/bench/common"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/embedding" //nolint:all
+	"github.com/lleontor705/cortex/internal/retrieval"
 )
 
 // categoryNames maps LOCOMO numeric categories to names.
@@ -272,80 +273,15 @@ func hybridSearch(ctx context.Context, stores *common.BenchStores, query, projec
 				},
 			})
 			if vecErr == nil && len(vecCandidates) > 0 {
-				vecResults := revalidateCandidates(ctx, stores.App.Stores.Observations, vecCandidates)
+				vecResults := retrieval.RevalidateCandidates(ctx, stores.App.Stores.Observations, vecCandidates)
 				if len(vecResults) > 0 {
-					ftsResults = fuseResults(ftsResults, vecResults, 10)
+					ftsResults = retrieval.FuseResults(ftsResults, vecResults, 10)
 				}
 			}
 		}
 	}
-
-	return ftsResults, nil
-}
-
-// revalidateCandidates converts lightweight VectorCandidate results into full
-// VectorSearchResult entries by looking up observation data (W8.1: VectorIndex
-// returns ID+score; full observation data is revalidated against the store).
-func revalidateCandidates(ctx context.Context, obs observationByID, candidates []domain.VectorCandidate) []*domain.VectorSearchResult {
-	results := make([]*domain.VectorSearchResult, 0, len(candidates))
-	for _, c := range candidates {
-		o, err := obs.GetByID(ctx, c.ID)
-		if err != nil || o == nil {
-			continue
-		}
-		results = append(results, &domain.VectorSearchResult{
-			Observation: *o,
-			Similarity:  c.Score,
-		})
-	}
-	return results
-}
-
-// observationByID is the observation-store subset for candidate revalidation.
-type observationByID interface {
-	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
-}
-
-// fuseResults combines FTS5 and vector results using Reciprocal Rank Fusion.
-func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, limit int) []*domain.SearchResult {
-	const k = 60.0
-
-	type scored struct {
-		result *domain.SearchResult
-		score  float64
-	}
-
-	scoreMap := make(map[int64]*scored)
-	for rank, r := range ftsResults {
-		scoreMap[r.ID] = &scored{result: r, score: 1.0 / (k + float64(rank+1))}
-	}
-
-	for rank, vr := range vecResults {
-		rrf := 1.0 / (k + float64(rank+1))
-		if existing, ok := scoreMap[vr.ID]; ok {
-			existing.score += rrf
-		} else {
-			scoreMap[vr.ID] = &scored{
-				result: &domain.SearchResult{Observation: vr.Observation, Rank: vr.Similarity},
-				score:  rrf,
-			}
-		}
-	}
-
-	sorted := make([]*scored, 0, len(scoreMap))
-	for _, s := range scoreMap {
-		sorted = append(sorted, s)
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
-
-	results := make([]*domain.SearchResult, 0, limit)
-	for i, s := range sorted {
-		if i >= limit {
-			break
-		}
-		results = append(results, s.result)
-	}
-	return results
+ 
+ 	return ftsResults, nil
 }
 
 // parseObservations extracts observation texts from the raw JSON structure.
