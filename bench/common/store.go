@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/lleontor705/cortex/internal/app"
@@ -43,8 +44,16 @@ func NewBenchStoresWithEmbeddings(cfg embedding.Config) (*BenchStores, error) {
 	return bs, nil
 }
 
-// Close cleans up the benchmark database.
+// Close cleans up the benchmark database and embedding service idle HTTP
+// connections. The embedding backend (if configured) implements io.Closer;
+// type-asserting here reaps its Transport's persistConn goroutines without
+// bloating the embedding.Service interface.
 func (bs *BenchStores) Close() error {
+	if bs.Embedder != nil {
+		if closer, ok := bs.Embedder.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
 	return bs.App.Close()
 }
 

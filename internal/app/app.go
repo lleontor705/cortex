@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -240,6 +241,16 @@ func (a *App) Close() error {
 	}
 	if a.archivalCancel != nil {
 		a.archivalCancel()
+	}
+	// Close the embedding service's idle HTTP connections so the Transport's
+	// persistConn goroutines are reaped (Task A: no HTTP keepalive goroutine
+	// leak). The concrete embedding backends (*ollamaService, *openAIService)
+	// implement io.Closer; test fakes and the nil case do not. Type-asserting
+	// here avoids bloating the embedding.Service interface with Close().
+	if a.Stores != nil && a.Stores.Embeddings != nil {
+		if closer, ok := a.Stores.Embeddings.(io.Closer); ok {
+			_ = closer.Close()
+		}
 	}
 	if a.DB == nil {
 		return nil
