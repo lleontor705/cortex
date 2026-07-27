@@ -543,7 +543,15 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		// the SAME transaction as the observation write (ADR-04, REQ-EMB-002).
 		// The legacy detached fire-and-forget goroutine is GONE — no goroutine
 		// leaks, no silent embed loss (REQ-EMB-001).
+		//
+		// Dedup classification (REQ-MCPH-002): a ClassDedupSkipped outcome is
+		// NOT an error — the observation was recognized as a duplicate and its
+		// duplicate_count was incremented. The response reports success so
+		// the agent doesn't see a failure for an intentional re-save.
 		if err := bundle.SaveWithEmbedIntent(ctx, stores, obs); err != nil {
+			if domain.IsClass(err, domain.ClassDedupSkipped) {
+				return textResult("Memory saved: %q (%s) [duplicate skipped]", title, typ)
+			}
 			return errorResult("Failed to save: %s", err)
 		}
 
@@ -1211,13 +1219,14 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if source == "" {
-			source = "mcp-passive"
+			source = domain.SourceAuto
 		}
 
 		learnings := extractLearnings(content)
 		extracted := len(learnings)
 		saved := 0
 		duplicates := 0
+		failures := 0
 
 		for _, learning := range learnings {
 			title := truncate(learning, 60)
@@ -1235,19 +1244,27 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 
 			err := stores.Observations.Save(ctx, obs)
 			if err != nil {
-				// Treat save errors as duplicates (dedup by topic_key)
-				duplicates++
+				if domain.IsClass(err, domain.ClassDedupSkipped) {
+					// Intentional dedup skip — not an error (REQ-MCPH-002).
+					duplicates++
+					continue
+				}
+				// Real failure — surface it, do NOT swallow as dedup.
+				// A database-locked error or validation failure must be
+				// distinguishable from an intentional duplicate skip.
+				failures++
 				continue
 			}
 			saved++
 		}
-		duplicates += extracted - saved - duplicates
-		if duplicates < 0 {
-			duplicates = 0
+
+		if failures > 0 {
+			return errorResult("Passive capture partial: extracted=%d saved=%d duplicates=%d failed=%d",
+				extracted, saved, duplicates, failures)
 		}
 
-		return textResult("Passive capture complete: extracted=%d saved=%d duplicates=%d",
-			extracted, saved, duplicates)
+		return textResult("Passive capture complete: extracted=%d saved=%d duplicates=%d failed=%d",
+			extracted, saved, duplicates, failures)
 	}
 }
 

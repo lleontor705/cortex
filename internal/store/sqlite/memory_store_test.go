@@ -499,8 +499,11 @@ func TestStore_Save_Deduplication(t *testing.T) {
 	}
 
 	err = store.Save(ctx, obs2)
-	if err != nil {
-		t.Fatalf("Save() second error = %v", err)
+	if err == nil {
+		t.Fatal("Save() second: expected ClassDedupSkipped, got nil")
+	}
+	if !domain.IsClass(err, domain.ClassDedupSkipped) {
+		t.Fatalf("Save() second error = %v, want ClassDedupSkipped", err)
 	}
 
 	// Should have same ID (duplicate detected)
@@ -551,8 +554,11 @@ func TestStore_Save_DeduplicationNormalizesContent(t *testing.T) {
 	}
 
 	err = store.Save(ctx, obs2)
-	if err != nil {
-		t.Fatalf("Save() second error = %v", err)
+	if err == nil {
+		t.Fatal("Save() second: expected ClassDedupSkipped, got nil")
+	}
+	if !domain.IsClass(err, domain.ClassDedupSkipped) {
+		t.Fatalf("Save() second error = %v, want ClassDedupSkipped", err)
 	}
 
 	// Should have same ID (duplicate detected after normalization)

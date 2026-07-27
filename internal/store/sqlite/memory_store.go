@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,14 @@ import (
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+// errDedupSkipped is a private sentinel returned by saveInTx when a duplicate
+// manual observation is detected and its duplicate_count was incremented.
+// Save and SaveInTx intercept this sentinel, commit the transaction (so the
+// increment persists), and convert it to domain.NewDedupSkipped so callers
+// can classify the outcome via errors.As(domain.ValidationError{}).
+// (REQ-FOUND-003, REQ-MCPH-002)
+var errDedupSkipped = errors.New("dedup skipped")
 
 // sqliteDatetimeFormat is the format used by SQLite's datetime() function.
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"
@@ -77,12 +86,40 @@ func NewStore(db *sql.DB) *Store {
 //   - Sets created_at and updated_at timestamps.
 //   - Normalizes scope to "project" or "personal".
 //
+// Dedup classification (REQ-FOUND-003, REQ-MCPH-002): when a TypeManual save
+// hits the normalized_hash dedup path, Save returns a
+// domain.NewDedupSkipped error (IsClass(err, ClassDedupSkipped) == true).
+// Callers can use errors.As / domain.IsClass to distinguish an intentional
+// dedup skip from a real persistence failure.
+//
 // This method opens and commits its OWN transaction (local-mode path). For
 // cross-store atomic saves, use SaveInTx within a UnitOfWork (W2.1, REQ-TX-001).
 func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		return s.saveInTx(ctx, tx, obs)
-	})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("memory store: begin transaction: %w", err)
+	}
+
+	err = s.saveInTx(ctx, tx, obs)
+	if err != nil {
+		if errors.Is(err, errDedupSkipped) {
+			// Dedup path: the duplicate_count increment and load already
+			// happened within this tx. Commit so the increment persists,
+			// then return a ClassDedupSkipped classification so callers can
+			// distinguish dedup from real failures (REQ-MCPH-002).
+			if commitErr := tx.Commit(); commitErr != nil {
+				return fmt.Errorf("memory store: commit dedup: %w", commitErr)
+			}
+			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		}
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory store: commit transaction: %w", err)
+	}
+	return nil
 }
 
 // saveInTx contains the core save logic (validation, normalization, insert/
@@ -144,7 +181,12 @@ func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observatio
 				return fmt.Errorf("memory store: increment duplicate: %w", err)
 			}
 			obs.ID = existingID
-			return s.loadObservationTx(tx, obs)
+			if err := s.loadObservationTx(tx, obs); err != nil {
+				return fmt.Errorf("memory store: load after dedup: %w", err)
+			}
+			// Signal dedup to Save/SaveInTx so they commit the tx and convert
+			// to domain.NewDedupSkipped for caller classification.
+			return errDedupSkipped
 		}
 	}
 
@@ -842,13 +884,25 @@ func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Contex
 // (or any context that carries a txKey). It does NOT begin/commit its own
 // transaction — the UnitOfWork owns the lifecycle.
 //
+// Dedup classification (REQ-MCPH-002): when saveInTx signals a dedup skip via
+// the errDedupSkipped sentinel, SaveInTx converts it to
+// domain.NewDedupSkipped so callers (e.g. SaveWithEmbedIntent) can classify
+// the outcome via errors.As. The shared transaction's commit/rollback is
+// owned by the UnitOfWork — SaveInTx only signals, it does not commit.
+//
 // This is the atomic-path counterpart to Save() (REQ-TX-001).
 func (s *Store) SaveInTx(ctx context.Context, obs *domain.Observation) error {
 	tx := txFromContext(ctx)
 	if tx == nil {
 		return fmt.Errorf("sqlite store: SaveInTx requires an active shared transaction (call within WithinTx)")
 	}
-	return s.saveInTx(ctx, tx, obs)
+	if err := s.saveInTx(ctx, tx, obs); err != nil {
+		if errors.Is(err, errDedupSkipped) {
+			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		}
+		return err
+	}
+	return nil
 }
 
 // Ensure Store implements domain.TxParticipant (W2.1 adoption of the W1 port).
@@ -1271,7 +1325,7 @@ func validateObservation(obs *domain.Observation) error {
 	if obs.Type != "" && !isAllowedObservationType(normalizeObservationType(obs.Type)) {
 		return &domain.ValidationError{
 			Field:   "type",
-			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning",
+			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning, session_summary, passive",
 		}
 	}
 

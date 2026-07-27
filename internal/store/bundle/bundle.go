@@ -312,15 +312,27 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 	}
 
 	// Transactional outbox: save observation + enqueue intent atomically.
+	// When SaveInTx signals a dedup skip (ClassDedupSkipped), the outbox
+	// enqueue is SKIPPED (no new observation to embed) and the dedup increment
+	// commits within the shared tx (REQ-MCPH-002). The caller receives
+	// domain.NewDedupSkipped so it can classify the outcome.
 	modelInfo := ""
 	if stores.Embeddings != nil {
 		modelInfo = stores.Embeddings.Model()
 	}
-	return stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Observations, stores.Outbox}, func(txCtx context.Context) error {
+	var wasDedup bool
+	err := stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Observations, stores.Outbox}, func(txCtx context.Context) error {
 		// Participant 1: save the observation within the shared tx.
 		if err := stores.Observations.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
 			return stores.Observations.SaveInTx(c, obs)
 		}); err != nil {
+			if domain.IsClass(err, domain.ClassDedupSkipped) {
+				// Dedup: the duplicate_count increment already happened in
+				// the shared tx. Return nil so the tx COMMITS (preserving
+				// the increment). Skip the outbox (no new observation).
+				wasDedup = true
+				return nil
+			}
 			return err
 		}
 		// Participant 2: enqueue the embed intent within the SAME shared tx.
@@ -328,6 +340,13 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 			return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
 		})
 	})
+	if err != nil {
+		return err
+	}
+	if wasDedup {
+		return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
