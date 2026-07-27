@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,6 +50,9 @@ func integrationConfig(t *testing.T) AdapterConfig {
 		Dimension:          4,
 		ModelName:          "integration-model",
 		IndexType:          "hnsw",
+		HNSWM:              16,
+		HNSWEfConstruction: 64,
+		IVFFlatLists:       100,
 		MaxBatchSize:       100,
 		Timeout:            15 * time.Second,
 		MaxConns:           5,
@@ -335,4 +339,167 @@ func TestIntegration_Pgvector_UpsertOnConflict(t *testing.T) {
 			t.Error("point 300 found with project=first; ON CONFLICT should have updated to second")
 		}
 	}
+}
+
+// TestIntegration_Pgvector_UpsertOnConflictRefreshesUpdatedAt verifies that a
+// re-upsert (ON CONFLICT DO UPDATE) refreshes the updated_at timestamp to NOW().
+// The updated_at column must advance after a second upsert of the same ID.
+func TestIntegration_Pgvector_UpsertOnConflictRefreshesUpdatedAt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	cfg := integrationConfig(t)
+	a := newIntegrationAdapter(t, cfg)
+	ctx := context.Background()
+
+	// First upsert.
+	p1 := domain.VectorPoint{
+		ID:        400,
+		Vector:    []float32{1.0, 0.0, 0.0, 0.0},
+		ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4},
+	}
+	if err := a.Upsert(ctx, []domain.VectorPoint{p1}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	firstUpdatedAt := queryUpdatedAt(t, ctx, a, 400)
+	if firstUpdatedAt.IsZero() {
+		t.Fatal("expected non-zero updated_at after first upsert")
+	}
+
+	// Sleep to ensure the timestamp advances past microsecond resolution.
+	time.Sleep(1100 * time.Millisecond)
+
+	// Re-upsert same ID with different vector (triggers ON CONFLICT path).
+	p2 := domain.VectorPoint{
+		ID:        400,
+		Vector:    []float32{0.0, 1.0, 0.0, 0.0},
+		ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4},
+	}
+	if err := a.Upsert(ctx, []domain.VectorPoint{p2}); err != nil {
+		t.Fatalf("re-upsert (ON CONFLICT): %v", err)
+	}
+	secondUpdatedAt := queryUpdatedAt(t, ctx, a, 400)
+	if secondUpdatedAt.IsZero() {
+		t.Fatal("expected non-zero updated_at after re-upsert")
+	}
+	if !secondUpdatedAt.After(firstUpdatedAt) {
+		t.Errorf("updated_at was NOT refreshed: first=%s second=%s", firstUpdatedAt, secondUpdatedAt)
+	}
+}
+
+// queryUpdatedAt reads the updated_at column for a given observation ID via a
+// direct parameterized query on the adapter's DB.
+func queryUpdatedAt(t *testing.T, ctx context.Context, a *Adapter, id int64) time.Time {
+	t.Helper()
+	sql := fmt.Sprintf("SELECT updated_at FROM %s WHERE id = $1", a.qualifiedTable)
+	rows, err := a.db.Query(ctx, sql, id)
+	if err != nil {
+		t.Fatalf("query updated_at: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("no row for id %d", id)
+	}
+	var ts time.Time
+	if err := rows.Scan(&ts); err != nil {
+		t.Fatalf("scan updated_at: %v", err)
+	}
+	return ts
+}
+
+// TestIntegration_Pgvector_HNSWIndexWithTypedOptions verifies the adapter boots
+// successfully with custom HNSW typed index tuning (m, ef_construction). If the
+// DDL emitted invalid WITH options, bootstrap would fail.
+func TestIntegration_Pgvector_HNSWIndexWithTypedOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	cfg := integrationConfig(t)
+	cfg.IndexType = "hnsw"
+	cfg.HNSWM = 24
+	cfg.HNSWEfConstruction = 96
+	a := newIntegrationAdapter(t, cfg)
+	ctx := context.Background()
+
+	// Upsert + Search proves the index and table are usable.
+	p := domain.VectorPoint{
+		ID:        500,
+		Vector:    []float32{1.0, 0.0, 0.0, 0.0},
+		ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4},
+	}
+	if err := a.Upsert(ctx, []domain.VectorPoint{p}); err != nil {
+		t.Fatalf("upsert with HNSW options: %v", err)
+	}
+	results, err := a.Search(ctx, domain.VectorQuery{
+		Vector: []float32{1.0, 0.0, 0.0, 0.0},
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("search with HNSW options: %v", err)
+	}
+	if len(results) == 0 || results[0].ID != 500 {
+		t.Errorf("expected point 500, got %v", results)
+	}
+
+	// Verify the index exists and uses HNSW.
+	idxDef := queryIndexDefinition(t, ctx, a)
+	if !strings.Contains(idxDef, "hnsw") {
+		t.Errorf("index definition should mention hnsw: %s", idxDef)
+	}
+	// PostgreSQL catalogs integer options with single quotes (m='24').
+	if !strings.Contains(idxDef, "m='24'") || !strings.Contains(idxDef, "ef_construction='96'") {
+		t.Errorf("index definition should contain typed options m='24' ef_construction='96': %s", idxDef)
+	}
+}
+
+// TestIntegration_Pgvector_IVFFlatIndexWithTypedOptions verifies the adapter
+// boots successfully with IVFFlat typed index tuning (lists).
+func TestIntegration_Pgvector_IVFFlatIndexWithTypedOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+	cfg := integrationConfig(t)
+	cfg.IndexType = "ivfflat"
+	cfg.IVFFlatLists = 50
+	a := newIntegrationAdapter(t, cfg)
+	ctx := context.Background()
+
+	// IVFFlat requires data to build; insert a few points so the index is usable.
+	points := []domain.VectorPoint{
+		{ID: 600, Vector: []float32{1.0, 0.0, 0.0, 0.0}, ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4}},
+		{ID: 601, Vector: []float32{0.0, 1.0, 0.0, 0.0}, ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4}},
+		{ID: 602, Vector: []float32{0.0, 0.0, 1.0, 0.0}, ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4}},
+	}
+	if err := a.Upsert(ctx, points); err != nil {
+		t.Fatalf("upsert with IVFFlat options: %v", err)
+	}
+
+	// Verify the index exists and uses IVFFlat with lists=50.
+	idxDef := queryIndexDefinition(t, ctx, a)
+	if !strings.Contains(idxDef, "ivfflat") {
+		t.Errorf("index definition should mention ivfflat: %s", idxDef)
+	}
+	// PostgreSQL catalogs integer options with single quotes (lists='50').
+	if !strings.Contains(idxDef, "lists='50'") {
+		t.Errorf("index definition should contain typed option lists='50': %s", idxDef)
+	}
+}
+
+// queryIndexDefinition reads the index definition from pg_indexes for the
+// adapter's table, returning the CREATE INDEX statement text.
+func queryIndexDefinition(t *testing.T, ctx context.Context, a *Adapter) string {
+	t.Helper()
+	sql := `SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2`
+	rows, err := a.db.Query(ctx, sql, a.schema, a.table)
+	if err != nil {
+		t.Fatalf("query index definition: %v", err)
+	}
+	defer rows.Close()
+	var def string
+	for rows.Next() {
+		if err := rows.Scan(&def); err != nil {
+			t.Fatalf("scan indexdef: %v", err)
+		}
+	}
+	return def
 }

@@ -924,12 +924,17 @@ func TestRedactDSN_ReplacesPassword(t *testing.T) {
 	}
 }
 
-// --- schema statements test ------------------------------------------------
+// --- schema statements tests -------------------------------------------------
 
 // TestSchemaStatements_ContainsExtensionAndTable verifies the DDL includes
-// CREATE EXTENSION, CREATE SCHEMA, CREATE TABLE, and CREATE INDEX.
+// CREATE EXTENSION, CREATE SCHEMA, CREATE TABLE, and CREATE INDEX. The index
+// uses HNSW with typed (m, ef_construction) options.
 func TestSchemaStatements_ContainsExtensionAndTable(t *testing.T) {
-	stmts := schemaStatements("cortex_vector", "embeddings", 384, "hnsw", "")
+	stmts := schemaStatements("cortex_vector", "embeddings", 384, indexTuning{
+		IndexType:          "hnsw",
+		HNSWM:              16,
+		HNSWEfConstruction: 64,
+	})
 	if len(stmts) != 4 {
 		t.Fatalf("expected 4 statements, got %d", len(stmts))
 	}
@@ -956,11 +961,164 @@ func TestSchemaStatements_ContainsExtensionAndTable(t *testing.T) {
 	}
 }
 
-// TestSchemaStatements_IVFFlat verifies IVFFlat index type.
-func TestSchemaStatements_IVFFlat(t *testing.T) {
-	stmts := schemaStatements("s", "t", 128, "ivfflat", "")
-	if !strings.Contains(stmts[3], "USING ivfflat") {
-		t.Errorf("stmt[3] should use ivfflat: %s", stmts[3])
+// TestSchemaStatements_HNSWEmitsTypedOptions verifies the HNSW DDL emits
+// validated integer WITH (m = N, ef_construction = N), never raw SQL.
+func TestSchemaStatements_HNSWEmitsTypedOptions(t *testing.T) {
+	stmts := schemaStatements("s", "t", 128, indexTuning{
+		IndexType:          "hnsw",
+		HNSWM:              32,
+		HNSWEfConstruction: 128,
+	})
+	idx := stmts[3]
+	if !strings.Contains(idx, "WITH (m = 32, ef_construction = 128)") {
+		t.Errorf("HNSW DDL should emit typed WITH options, got: %s", idx)
+	}
+	// No IVFFlat-specific option should appear.
+	if strings.Contains(idx, "lists") {
+		t.Errorf("HNSW DDL should NOT contain ivfflat lists option: %s", idx)
+	}
+}
+
+// TestSchemaStatements_IVFFlatEmitsTypedOptions verifies IVFFlat DDL emits
+// validated integer WITH (lists = N).
+func TestSchemaStatements_IVFFlatEmitsTypedOptions(t *testing.T) {
+	stmts := schemaStatements("s", "t", 128, indexTuning{
+		IndexType:    "ivfflat",
+		IVFFlatLists: 200,
+	})
+	idx := stmts[3]
+	if !strings.Contains(idx, "USING ivfflat") {
+		t.Errorf("stmt[3] should use ivfflat: %s", idx)
+	}
+	if !strings.Contains(idx, "WITH (lists = 200)") {
+		t.Errorf("IVFFlat DDL should emit typed WITH (lists = 200), got: %s", idx)
+	}
+	// No HNSW-specific options should appear.
+	if strings.Contains(idx, "m =") || strings.Contains(idx, "ef_construction") {
+		t.Errorf("IVFFlat DDL should NOT contain HNSW options: %s", idx)
+	}
+}
+
+// TestSchemaStatements_NoRawSQLSurface verifies the DDL builder accepts only
+// typed integers — there is no string parameter that could carry arbitrary SQL.
+// This is a compile-time contract: schemaStatements takes an indexTuning struct
+// of integers, so this test documents that invariant.
+func TestSchemaStatements_NoRawSQLSurface(t *testing.T) {
+	// indexTuning has no string field for options — only typed integers.
+	tuning := indexTuning{
+		IndexType:          "hnsw",
+		HNSWM:              16,
+		HNSWEfConstruction: 64,
+		IVFFlatLists:       100,
+	}
+	stmts := schemaStatements("s", "t", 4, tuning)
+	idx := stmts[3]
+	// The only string content in the index DDL is the validated op class and
+	// the integer options. Verify no semicolon (no statement injection vector).
+	if strings.Contains(idx, ";") {
+		t.Errorf("index DDL should not contain semicolon (injection vector): %s", idx)
+	}
+}
+
+// --- index tuning validation tests -------------------------------------------
+
+// TestValidateAdapterConfig_RejectsBadIndexTuning verifies out-of-range index
+// tuning values are rejected at adapter construction.
+func TestValidateAdapterConfig_RejectsBadIndexTuning(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  AdapterConfig
+		err  string
+	}{
+		{
+			name: "hnsw_m below min",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, HNSWM: 1},
+			err:  "hnsw_m",
+		},
+		{
+			name: "hnsw_m above max",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, HNSWM: 200},
+			err:  "hnsw_m",
+		},
+		{
+			name: "hnsw_ef_construction below min",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, HNSWEfConstruction: -1},
+			err:  "hnsw_ef_construction",
+		},
+		{
+			name: "hnsw_ef_construction above max",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, HNSWEfConstruction: 5000},
+			err:  "hnsw_ef_construction",
+		},
+		{
+			name: "ivfflat_lists below min",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, IVFFlatLists: -1},
+			err:  "ivfflat_lists",
+		},
+		{
+			name: "ivfflat_lists above max",
+			cfg:  AdapterConfig{DSN: "x", Dimension: 4, IVFFlatLists: 100000},
+			err:  "ivfflat_lists",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAdapterConfig(&tt.cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.err)
+			}
+			if !strings.Contains(err.Error(), tt.err) {
+				t.Errorf("error should contain %q, got: %v", tt.err, err)
+			}
+		})
+	}
+}
+
+// TestValidateAdapterConfig_AppliesIndexTuningDefaults verifies zero values
+// normalize to pgvector-recommended defaults.
+func TestValidateAdapterConfig_AppliesIndexTuningDefaults(t *testing.T) {
+	cfg := AdapterConfig{DSN: "postgres://localhost/db", Dimension: 4}
+	if err := validateAdapterConfig(&cfg); err != nil {
+		t.Fatalf("validateAdapterConfig: %v", err)
+	}
+	if cfg.HNSWM != 16 {
+		t.Errorf("default HNSWM = %d, want 16", cfg.HNSWM)
+	}
+	if cfg.HNSWEfConstruction != 64 {
+		t.Errorf("default HNSWEfConstruction = %d, want 64", cfg.HNSWEfConstruction)
+	}
+	if cfg.IVFFlatLists != 100 {
+		t.Errorf("default IVFFlatLists = %d, want 100", cfg.IVFFlatLists)
+	}
+}
+
+// --- ON CONFLICT updated_at test ---------------------------------------------
+
+// TestAdapter_Upsert_OnConflictSetsUpdatedAt verifies the upsert SQL sets
+// updated_at = NOW() so re-upserts refresh the timestamp.
+func TestAdapter_Upsert_OnConflictSetsUpdatedAt(t *testing.T) {
+	db := &fakeDB{}
+	a := newTestAdapter(t, db)
+
+	if err := a.Upsert(context.Background(), validPoints()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	var upsertExecs []execCall
+	for _, c := range db.execCalls {
+		if strings.Contains(c.sql, "INSERT INTO") {
+			upsertExecs = append(upsertExecs, c)
+		}
+	}
+	if len(upsertExecs) == 0 {
+		t.Fatal("expected at least 1 INSERT exec call")
+	}
+	sql := upsertExecs[0].sql
+	if !strings.Contains(sql, "updated_at = NOW()") {
+		t.Errorf("upsert SQL should set updated_at = NOW() on conflict: %s", sql)
+	}
+	if !strings.Contains(sql, "ON CONFLICT (id) DO UPDATE") {
+		t.Errorf("upsert SQL should use ON CONFLICT: %s", sql)
 	}
 }
 

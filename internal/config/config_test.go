@@ -472,6 +472,9 @@ func validPgvectorConfig() PGVectorConfig {
 		Table:              "embeddings",
 		Dimension:          384,
 		IndexType:          "hnsw",
+		HNSWM:              16,
+		HNSWEfConstruction: 64,
+		IVFFlatLists:       100,
 		MaxBatchSize:       256,
 		Timeout:            30 * time.Second,
 		MaxConns:           10,
@@ -637,6 +640,36 @@ func TestValidate_PgvectorFields(t *testing.T) {
 			modify:  func(p *PGVectorConfig) { p.StatementTimeoutMs = 0 },
 			wantErr: "statement_timeout_ms",
 		},
+		{
+			name:    "hnsw_m below min",
+			modify:  func(p *PGVectorConfig) { p.HNSWM = 1 },
+			wantErr: "hnsw_m",
+		},
+		{
+			name:    "hnsw_m above max",
+			modify:  func(p *PGVectorConfig) { p.HNSWM = 200 },
+			wantErr: "hnsw_m",
+		},
+		{
+			name:    "hnsw_ef_construction below min",
+			modify:  func(p *PGVectorConfig) { p.HNSWEfConstruction = -1 },
+			wantErr: "hnsw_ef_construction",
+		},
+		{
+			name:    "hnsw_ef_construction above max",
+			modify:  func(p *PGVectorConfig) { p.HNSWEfConstruction = 5000 },
+			wantErr: "hnsw_ef_construction",
+		},
+		{
+			name:    "ivfflat_lists below min",
+			modify:  func(p *PGVectorConfig) { p.IVFFlatLists = -1 },
+			wantErr: "ivfflat_lists",
+		},
+		{
+			name:    "ivfflat_lists above max",
+			modify:  func(p *PGVectorConfig) { p.IVFFlatLists = 100000 },
+			wantErr: "ivfflat_lists",
+		},
 	}
 
 	for _, tt := range tests {
@@ -677,6 +710,31 @@ func TestValidate_PgvectorValidIVFFlat(t *testing.T) {
 	cfg.Vector.Pgvector = p
 	if err := validate(cfg); err != nil {
 		t.Errorf("ivfflat index type should be valid: %v", err)
+	}
+}
+
+// TestValidate_PgvectorIndexTuningDefaults verifies that zero/zero/zero index
+// tuning values are normalized to sensible pgvector defaults (not rejected).
+func TestValidate_PgvectorIndexTuningDefaults(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "pgvector"
+	p := validPgvectorConfig()
+	p.HNSWM = 0
+	p.HNSWEfConstruction = 0
+	p.IVFFlatLists = 0
+	cfg.Vector.Pgvector = p
+	if err := validate(cfg); err != nil {
+		t.Fatalf("zero index tuning should default, got error: %v", err)
+	}
+	got := cfg.Vector.Pgvector
+	if got.HNSWM != 16 {
+		t.Errorf("default HNSWM = %d, want 16", got.HNSWM)
+	}
+	if got.HNSWEfConstruction != 64 {
+		t.Errorf("default HNSWEfConstruction = %d, want 64", got.HNSWEfConstruction)
+	}
+	if got.IVFFlatLists != 100 {
+		t.Errorf("default IVFFlatLists = %d, want 100", got.IVFFlatLists)
 	}
 }
 

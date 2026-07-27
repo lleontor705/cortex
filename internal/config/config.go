@@ -172,6 +172,9 @@ type PGVectorConfig struct {
 	Table              string        `yaml:"table" mapstructure:"table"`                          // table name (default embeddings)
 	Dimension          int           `yaml:"dimension" mapstructure:"dimension"`                  // expected vector dimension
 	IndexType          string        `yaml:"index_type" mapstructure:"index_type"`                // hnsw or ivfflat (default hnsw)
+	HNSWM              int           `yaml:"hnsw_m" mapstructure:"hnsw_m"`                        // HNSW max connections per node (default 16, range 2-100)
+	HNSWEfConstruction int           `yaml:"hnsw_ef_construction" mapstructure:"hnsw_ef_construction"` // HNSW dynamic candidate list size for build (default 64, range 1-1000)
+	IVFFlatLists       int           `yaml:"ivfflat_lists" mapstructure:"ivfflat_lists"`          // IVFFlat number of inverted lists (default 100, range 1-50000)
 	MaxBatchSize       int           `yaml:"max_batch_size" mapstructure:"max_batch_size"`        // upsert batch ceiling (default 256)
 	Timeout            time.Duration `yaml:"timeout" mapstructure:"timeout"`                      // per-operation timeout (default 30s)
 	MaxConns           int32         `yaml:"max_conns" mapstructure:"max_conns"`                  // pool max connections (default 10)
@@ -243,6 +246,9 @@ var defaults = Config{
 			Table:              "embeddings",
 			Dimension:          0, // resolved from embedding model at adapter construction
 			IndexType:          "hnsw",
+			HNSWM:              16,
+			HNSWEfConstruction: 64,
+			IVFFlatLists:       100,
 			MaxBatchSize:       256,
 			Timeout:            30 * time.Second,
 			MaxConns:           10,
@@ -371,6 +377,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vector.pgvector.table", defaults.Vector.Pgvector.Table)
 	v.SetDefault("vector.pgvector.dimension", defaults.Vector.Pgvector.Dimension)
 	v.SetDefault("vector.pgvector.index_type", defaults.Vector.Pgvector.IndexType)
+	v.SetDefault("vector.pgvector.hnsw_m", defaults.Vector.Pgvector.HNSWM)
+	v.SetDefault("vector.pgvector.hnsw_ef_construction", defaults.Vector.Pgvector.HNSWEfConstruction)
+	v.SetDefault("vector.pgvector.ivfflat_lists", defaults.Vector.Pgvector.IVFFlatLists)
 	v.SetDefault("vector.pgvector.max_batch_size", defaults.Vector.Pgvector.MaxBatchSize)
 	v.SetDefault("vector.pgvector.timeout", defaults.Vector.Pgvector.Timeout)
 	v.SetDefault("vector.pgvector.max_conns", defaults.Vector.Pgvector.MaxConns)
@@ -544,7 +553,9 @@ func validateQdrant(q *QdrantConfig) error {
 
 // validatePgvector validates the PGVectorConfig connection parameters. All
 // ranges are checked with clear errors. The DSN password is intentionally never
-// referenced in any error string (REQ-CP-002).
+// referenced in any error string (REQ-CP-002). Index tuning fields are typed
+// integers (never raw SQL); zero values normalize to pgvector-recommended
+// defaults and out-of-range explicit values are rejected.
 func validatePgvector(p *PGVectorConfig) error {
 	if p.DSN == "" {
 		return fmt.Errorf("invalid vector.pgvector.dsn: must not be empty")
@@ -560,6 +571,25 @@ func validatePgvector(p *PGVectorConfig) error {
 	}
 	if p.IndexType != "hnsw" && p.IndexType != "ivfflat" {
 		return fmt.Errorf("invalid vector.pgvector.index_type: %q (valid: hnsw, ivfflat)", p.IndexType)
+	}
+	// Index tuning: zero → default; explicit out-of-range rejected.
+	if p.HNSWM == 0 {
+		p.HNSWM = 16
+	}
+	if p.HNSWM < 2 || p.HNSWM > 100 {
+		return fmt.Errorf("invalid vector.pgvector.hnsw_m: %d (must be 2-100)", p.HNSWM)
+	}
+	if p.HNSWEfConstruction == 0 {
+		p.HNSWEfConstruction = 64
+	}
+	if p.HNSWEfConstruction < 1 || p.HNSWEfConstruction > 1000 {
+		return fmt.Errorf("invalid vector.pgvector.hnsw_ef_construction: %d (must be 1-1000)", p.HNSWEfConstruction)
+	}
+	if p.IVFFlatLists == 0 {
+		p.IVFFlatLists = 100
+	}
+	if p.IVFFlatLists < 1 || p.IVFFlatLists > 50000 {
+		return fmt.Errorf("invalid vector.pgvector.ivfflat_lists: %d (must be 1-50000)", p.IVFFlatLists)
 	}
 	if p.MaxBatchSize <= 0 {
 		return fmt.Errorf("invalid vector.pgvector.max_batch_size: %d (must be >= 1)", p.MaxBatchSize)

@@ -62,6 +62,15 @@ const defaultTimeout = 30 * time.Second
 // each transaction (server-side query kill).
 const defaultStatementTimeoutMs = 5000
 
+// Index tuning defaults — pgvector-recommended values. These mirror
+// config.PGVectorConfig defaults so the adapter is self-consistent when
+// constructed directly (New/NewWithDB) without going through config validation.
+const (
+	defaultHNSWM              = 16
+	defaultHNSWEfConstruction = 64
+	defaultIVFFlatLists       = 100
+)
+
 // identifierRe matches safe PostgreSQL identifiers (schema/table/index names).
 // Only lowercase letters, digits, and underscores, starting with a letter or
 // underscore. This prevents SQL injection via identifier interpolation.
@@ -90,7 +99,8 @@ type pgvectorDB interface {
 // AdapterConfig holds the parameters to construct a pgvector Adapter. It
 // mirrors config.PGVectorConfig but is declared here so the adapter package is
 // self-contained (the server composition path maps config.PGVectorConfig →
-// AdapterConfig).
+// AdapterConfig). Index tuning uses typed validated integers — there is NO raw
+// SQL string surface for index options (prevents injection via DDL).
 type AdapterConfig struct {
 	DSN                string        // PostgreSQL connection string
 	Schema             string        // schema name (default cortex_vector)
@@ -98,7 +108,9 @@ type AdapterConfig struct {
 	Dimension          int           // expected vector dimension
 	ModelName          string        // model name for namespace enforcement (empty = skip)
 	IndexType          string        // hnsw or ivfflat (default hnsw)
-	IndexOptions       string        // additional index options (e.g. WITH (lists = 100))
+	HNSWM              int           // HNSW max connections per node (default 16, range 2-100)
+	HNSWEfConstruction int           // HNSW dynamic candidate list for build (default 64, range 1-1000)
+	IVFFlatLists       int           // IVFFlat number of inverted lists (default 100, range 1-50000)
 	MaxBatchSize       int           // upsert batch ceiling (default 256)
 	Timeout            time.Duration // per-operation timeout (default 30s)
 	MaxConns           int32         // pool max connections (default 10)
@@ -108,20 +120,23 @@ type AdapterConfig struct {
 // Adapter implements domain.VectorIndex over a PostgreSQL database with the
 // pgvector extension via the pgx pure-Go driver.
 type Adapter struct {
-	db                pgvectorDB
-	schema            string
-	table             string
-	qualifiedTable    string // schema.table
-	dimension         int
-	modelName         string
-	indexType         string
-	maxBatchSize      int
-	timeout           time.Duration
-	statementTimeout  int
-	password          string // extracted from DSN for redaction (never logged)
-	ownDB             bool   // Close should close the underlying pool (factory-built)
-	created           bool   // schema/table/index have been verified this session
-	caps              domain.Capabilities
+	db                  pgvectorDB
+	schema              string
+	table               string
+	qualifiedTable      string // schema.table
+	dimension           int
+	modelName           string
+	indexType           string
+	hnswM               int
+	hnswEfConstruction  int
+	ivfflatLists        int
+	maxBatchSize        int
+	timeout             time.Duration
+	statementTimeout    int
+	password            string // extracted from DSN for redaction (never logged)
+	ownDB               bool   // Close should close the underlying pool (factory-built)
+	created             bool   // schema/table/index have been verified this session
+	caps                domain.Capabilities
 }
 
 // New constructs a pgvector Adapter with a real pgxpool connection pool. The
@@ -164,20 +179,23 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	}
 
 	return &Adapter{
-		db:               &poolDB{pool: pool},
-		schema:           cfg.Schema,
-		table:            cfg.Table,
-		qualifiedTable:   cfg.Schema + "." + cfg.Table,
-		dimension:        cfg.Dimension,
-		modelName:        cfg.ModelName,
-		indexType:        cfg.IndexType,
-		maxBatchSize:     cfg.MaxBatchSize,
-		timeout:          cfg.Timeout,
-		statementTimeout: cfg.StatementTimeoutMs,
-		password:         password,
-		ownDB:            true,
-		created:          true, // schema already bootstrapped above
-		caps:             defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
+		db:                 &poolDB{pool: pool},
+		schema:             cfg.Schema,
+		table:              cfg.Table,
+		qualifiedTable:     cfg.Schema + "." + cfg.Table,
+		dimension:          cfg.Dimension,
+		modelName:          cfg.ModelName,
+		indexType:          cfg.IndexType,
+		hnswM:              cfg.HNSWM,
+		hnswEfConstruction: cfg.HNSWEfConstruction,
+		ivfflatLists:       cfg.IVFFlatLists,
+		maxBatchSize:       cfg.MaxBatchSize,
+		timeout:            cfg.Timeout,
+		statementTimeout:   cfg.StatementTimeoutMs,
+		password:           password,
+		ownDB:              true,
+		created:            true, // schema already bootstrapped above
+		caps:               defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
 	}, nil
 }
 
@@ -189,19 +207,22 @@ func NewWithDB(db pgvectorDB, cfg AdapterConfig) (*Adapter, error) {
 		return nil, err
 	}
 	return &Adapter{
-		db:               db,
-		schema:           cfg.Schema,
-		table:            cfg.Table,
-		qualifiedTable:   cfg.Schema + "." + cfg.Table,
-		dimension:        cfg.Dimension,
-		modelName:        cfg.ModelName,
-		indexType:        cfg.IndexType,
-		maxBatchSize:     cfg.MaxBatchSize,
-		timeout:          cfg.Timeout,
-		statementTimeout: cfg.StatementTimeoutMs,
-		password:         extractPassword(cfg.DSN),
-		ownDB:            false,
-		caps:             defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
+		db:                 db,
+		schema:             cfg.Schema,
+		table:              cfg.Table,
+		qualifiedTable:     cfg.Schema + "." + cfg.Table,
+		dimension:          cfg.Dimension,
+		modelName:          cfg.ModelName,
+		indexType:          cfg.IndexType,
+		hnswM:              cfg.HNSWM,
+		hnswEfConstruction: cfg.HNSWEfConstruction,
+		ivfflatLists:       cfg.IVFFlatLists,
+		maxBatchSize:       cfg.MaxBatchSize,
+		timeout:            cfg.Timeout,
+		statementTimeout:   cfg.StatementTimeoutMs,
+		password:           extractPassword(cfg.DSN),
+		ownDB:              false,
+		caps:               defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
 	}, nil
 }
 
@@ -230,6 +251,26 @@ func validateAdapterConfig(cfg *AdapterConfig) error {
 	}
 	if cfg.IndexType != "hnsw" && cfg.IndexType != "ivfflat" {
 		return fmt.Errorf("pgvector: index_type must be hnsw or ivfflat, got %q", cfg.IndexType)
+	}
+	// Index tuning: zero → default; explicit out-of-range rejected. These are
+	// typed integers only — never raw SQL — so DDL emission is injection-safe.
+	if cfg.HNSWM == 0 {
+		cfg.HNSWM = defaultHNSWM
+	}
+	if cfg.HNSWM < 2 || cfg.HNSWM > 100 {
+		return fmt.Errorf("pgvector: hnsw_m must be 2-100, got %d", cfg.HNSWM)
+	}
+	if cfg.HNSWEfConstruction == 0 {
+		cfg.HNSWEfConstruction = defaultHNSWEfConstruction
+	}
+	if cfg.HNSWEfConstruction < 1 || cfg.HNSWEfConstruction > 1000 {
+		return fmt.Errorf("pgvector: hnsw_ef_construction must be 1-1000, got %d", cfg.HNSWEfConstruction)
+	}
+	if cfg.IVFFlatLists == 0 {
+		cfg.IVFFlatLists = defaultIVFFlatLists
+	}
+	if cfg.IVFFlatLists < 1 || cfg.IVFFlatLists > 50000 {
+		return fmt.Errorf("pgvector: ivfflat_lists must be 1-50000, got %d", cfg.IVFFlatLists)
 	}
 	if cfg.MaxBatchSize <= 0 {
 		cfg.MaxBatchSize = 256
@@ -341,7 +382,8 @@ func (a *Adapter) validatePoint(p domain.VectorPoint) error {
 
 // upsertSQL builds the parameterized INSERT ... ON CONFLICT statement. The
 // table name is interpolated (validated safe identifier); all values use $N
-// placeholders.
+// placeholders. On conflict the updated_at timestamp is refreshed to NOW() so
+// re-upserts keep the row's modification time current.
 func (a *Adapter) upsertSQL() string {
 	return fmt.Sprintf(
 		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, scope, tenant_id, source, type)
@@ -355,7 +397,8 @@ ON CONFLICT (id) DO UPDATE SET
     scope = EXCLUDED.scope,
     tenant_id = EXCLUDED.tenant_id,
     source = EXCLUDED.source,
-    type = EXCLUDED.type`,
+    type = EXCLUDED.type,
+    updated_at = NOW()`,
 		a.qualifiedTable,
 	)
 }
@@ -522,7 +565,12 @@ func (a *Adapter) ensureSchema(ctx context.Context) error {
 	defer cancel()
 	// For NewWithDB, we use Exec directly (no raw connection available).
 	// The schema/table/index creation is idempotent.
-	stmts := schemaStatements(a.schema, a.table, a.dimension, a.indexType, a.indexOptions())
+	stmts := schemaStatements(a.schema, a.table, a.dimension, indexTuning{
+		IndexType:          a.indexType,
+		HNSWM:              a.hnswM,
+		HNSWEfConstruction: a.hnswEfConstruction,
+		IVFFlatLists:       a.ivfflatLists,
+	})
 	for _, stmt := range stmts {
 		if _, err := a.db.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("pgvector: ensure schema: %w", a.redact(err))
@@ -530,12 +578,6 @@ func (a *Adapter) ensureSchema(ctx context.Context) error {
 	}
 	a.created = true
 	return nil
-}
-
-// indexOptions returns the index creation options string. Empty for HNSW
-// (default), or WITH (lists = N) for IVFFlat.
-func (a *Adapter) indexOptions() string {
-	return ""
 }
 
 // withTimeout returns a context with the adapter's configured timeout if the
@@ -609,29 +651,45 @@ func (t *poolTx) Rollback(ctx context.Context) error {
 // Schema bootstrap helpers
 // ---------------------------------------------------------------------------
 
+// indexTuning holds the validated, typed index construction parameters. These
+// are integers only — never user-provided strings — so DDL emission cannot
+// introduce SQL injection via the WITH (...) clause.
+type indexTuning struct {
+	IndexType          string // hnsw | ivfflat
+	HNSWM              int    // HNSW max connections per node
+	HNSWEfConstruction int    // HNSW dynamic candidate list for build
+	IVFFlatLists       int    // IVFFlat number of inverted lists
+}
+
 // schemaStatements returns the idempotent DDL statements for schema/table/index
 // creation. Identifiers are pre-validated safe; values use string interpolation
-// only for the dimension integer (adapter-controlled, not user input).
-func schemaStatements(schema, table string, dimension int, indexType, indexOptions string) []string {
+// only for the dimension integer (adapter-controlled, not user input). The
+// index WITH (...) options are emitted from typed integers only — there is no
+// raw SQL string surface. The adapter is cosine-only (DistanceMetrics declares
+// only cosine), so the op class is always vector_cosine_ops — no redundant
+// switch over index type.
+func schemaStatements(schema, table string, dimension int, t indexTuning) []string {
 	qualified := schema + "." + table
 	indexName := table + "_embedding_idx"
 
-	// vector_cosine_ops for cosine distance (<=> operator).
-	var indexOpClass string
-	switch indexType {
+	// Cosine distance only (adapter declares cosine-only capabilities). The
+	// op class is always vector_cosine_ops regardless of index type.
+	const opClass = "vector_cosine_ops"
+
+	// Emit typed integer WITH options per index type. Only validated integers
+	// are interpolated; there is no string from user input in the DDL.
+	var options string
+	switch t.IndexType {
 	case "ivfflat":
-		indexOpClass = "vector_cosine_ops"
+		options = fmt.Sprintf("WITH (lists = %d)", t.IVFFlatLists)
 	default: // hnsw
-		indexOpClass = "vector_cosine_ops"
+		options = fmt.Sprintf("WITH (m = %d, ef_construction = %d)", t.HNSWM, t.HNSWEfConstruction)
 	}
 
 	indexSQL := fmt.Sprintf(
-		`CREATE INDEX IF NOT EXISTS %s ON %s USING %s (embedding %s)`,
-		indexName, qualified, indexType, indexOpClass,
+		`CREATE INDEX IF NOT EXISTS %s ON %s USING %s (embedding %s) %s`,
+		indexName, qualified, t.IndexType, opClass, options,
 	)
-	if indexOptions != "" {
-		indexSQL += " " + indexOptions
-	}
 
 	return []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
@@ -657,7 +715,12 @@ func schemaStatements(schema, table string, dimension int, indexType, indexOptio
 
 // bootstrapSchema runs the schema/table/index DDL on a raw pgx.Conn.
 func bootstrapSchema(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) error {
-	stmts := schemaStatements(cfg.Schema, cfg.Table, cfg.Dimension, cfg.IndexType, cfg.IndexOptions)
+	stmts := schemaStatements(cfg.Schema, cfg.Table, cfg.Dimension, indexTuning{
+		IndexType:          cfg.IndexType,
+		HNSWM:              cfg.HNSWM,
+		HNSWEfConstruction: cfg.HNSWEfConstruction,
+		IVFFlatLists:       cfg.IVFFlatLists,
+	})
 	for _, stmt := range stmts {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return err
