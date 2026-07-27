@@ -105,6 +105,164 @@ func TestRetrievalBaselineDocumentationContract(t *testing.T) {
 			t.Errorf("benchmark documentation contains %s; remove it or replace it with explicitly scoped evidence", claim.name)
 		}
 	}
+
+	// REQ-LEG-001: also block Engram vendor/parity claims in benchmark docs.
+	for _, claim := range []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{name: "100% API-compatible claim", pattern: regexp.MustCompile(`(?i)100%\s+API[- ]compatible`)},
+		{name: "built-on-Engram claim", pattern: regexp.MustCompile(`(?i)built (?:on|upon)\b.{0,30}engram`)},
+		{name: "Engram vendor URL", pattern: regexp.MustCompile(`(?i)Gentleman-Programming/engram`)},
+	} {
+		if claim.pattern.MatchString(benchmarkText) {
+			t.Errorf("benchmark documentation contains %s; Engram compatibility surface must be removed", claim.name)
+		}
+	}
+}
+
+// TestEngramCompatibilitySurfaceRemoved enforces REQ-LEG-001 (W7): the repository
+// MUST be free of ACTIVE Engram compatibility surface — no importer, no CLI
+// migration flag, no parity claim, no compatibility framing in code/scripts/llms.
+//
+// The following references are NOT compatibility surface and are allowlisted:
+//   - docs/BENCHMARKS.md: external research citation (spec REQ-LEG-001 scenario 1)
+//   - internal/migration/preflight*.go, internal/migration/v2.go, internal/app/app.go:
+//     W3 read-only refusal probe that DETECTS and REFUSES old Engram databases
+//     (REQ-DB-002). Naming "Engram" in a refusal error message is operator-facing
+//     diagnostics, not compatibility surface.
+//   - internal/mcp/cortex_namespace_test.go: enforcement test that asserts
+//     serverInstructions do NOT carry Engram framing (REQ-MCPH-003).
+//   - review/, docs/research/: historical/research artifacts.
+//
+// Broader release docs (README.md, AGENTS.md, CLAUDE.md, docs/*.md) are owned by
+// W18 (REQ-REL-001) and are excluded from this W7-scoped contract.
+func TestEngramCompatibilitySurfaceRemoved(t *testing.T) {
+	t.Parallel()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve documentation test location")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(currentFile))
+
+	// REQ-LEG-001: these files MUST be deleted.
+	mustNotExist := []string{
+		"internal/migration/engram_import.go",
+		"scripts/migrate-from-engram.sh",
+	}
+	for _, rel := range mustNotExist {
+		abs := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		if _, err := os.Stat(abs); !os.IsNotExist(err) {
+			t.Errorf("REQ-LEG-001: %s must be deleted (W7 Engram removal)", rel)
+		}
+	}
+
+	// Active Engram compatibility surface patterns. These MUST NOT appear in any
+	// source, script, plugin, or llms file.
+	surfacePatterns := []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{name: "--from-engram CLI flag", pattern: regexp.MustCompile(`(?i)--from-engram`)},
+		{name: "Engram-compatible framing", pattern: regexp.MustCompile(`(?i)engram[- ]compatible`)},
+		{name: "100% API-compatible with Engram", pattern: regexp.MustCompile(`(?i)(?:100%\s+)?API[- ]compatible.{0,30}engram`)},
+		{name: "built-on-Engram foundation", pattern: regexp.MustCompile(`(?i)built (?:on|upon)\b.{0,30}engram`)},
+		{name: "Migrating from Engram hint", pattern: regexp.MustCompile(`(?i)migrating from engram`)},
+		{name: "migrate-from-engram script ref", pattern: regexp.MustCompile(`migrate-from-engram`)},
+		{name: "ImportFromEngram symbol", pattern: regexp.MustCompile(`ImportFromEngram`)},
+		{name: "EngramImport type", pattern: regexp.MustCompile(`EngramImport`)},
+	}
+
+	// Paths where Engram references are legitimate (refusal probe, enforcement,
+	// research citation). Uses forward-slash relative paths from repoRoot.
+	isAllowlisted := func(rel string) bool {
+		rel = filepath.ToSlash(rel)
+		exact := map[string]bool{
+			"docs/BENCHMARKS.md":                         true,
+			"internal/migration/preflight.go":            true,
+			"internal/migration/preflight_test.go":       true,
+			"internal/migration/v2.go":                   true,
+			"internal/app/app.go":                        true,
+			"bench/documentation_contract_test.go":       true,
+			"internal/mcp/cortex_namespace_test.go":      true,
+		}
+		if exact[rel] {
+			return true
+		}
+		prefixes := []string{
+			"review/",      // historical review artifacts
+			"docs/research/", // research artifacts
+			".git/",        // VCS metadata
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(rel, p) {
+				return true
+			}
+		}
+		// W18-owned broader release docs (REQ-REL-001 owns the full sweep).
+		w18Docs := map[string]bool{
+			"README.md":               true,
+			"AGENTS.md":               true,
+			"CLAUDE.md":               true,
+			"docs/COMPARISON.md":      true,
+			"docs/RECOMMENDATIONS.md": true,
+			"docs/ARCHITECTURE.md":    true,
+			"docs/AGENT-SETUP.md":     true,
+			"docs/INSTALLATION.md":    true,
+			"docs/PLUGINS.md":         true,
+		}
+		return w18Docs[rel]
+	}
+
+	// File extensions to scan for active surface.
+	scanExt := map[string]bool{
+		".go":  true,
+		".sh":  true,
+		".ts":  true,
+		".txt": true,
+		".md":  true,
+		".json": true,
+	}
+
+	walkErr := filepath.Walk(repoRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == ".git" || name == "vendor" || name == "node_modules" || name == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if isAllowlisted(rel) {
+			return nil
+		}
+		ext := filepath.Ext(rel)
+		if !scanExt[ext] {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		text := string(data)
+		for _, sp := range surfacePatterns {
+			if sp.pattern.MatchString(text) {
+				t.Errorf("REQ-LEG-001: %s contains %s — active Engram compatibility surface must be removed", rel, sp.name)
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk repository: %v", walkErr)
+	}
 }
 
 func TestBaselineWorkflowContract(t *testing.T) {
