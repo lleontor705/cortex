@@ -1,6 +1,6 @@
 // Package common — LLM-as-Judge evaluator (Ollama-only).
 //
-// This file replaces the legacy Engram-compatible cloud-provider judge
+// This file replaces the legacy cloud-provider judge
 // (OpenAI / Anthropic) with a strict Ollama-only implementation. The
 // rewrite closes all 10 gaps catalogued in the G1 spike
 // (docs/q1-2026/spikes/g1-judge-model.md §6):
@@ -45,7 +45,7 @@ import (
 //
 // Callers (bench/locomo, bench/longmemeval, bench/dmr) treat this as an
 // opaque pointer — they only check `cfg != nil` — so adding new fields is
-// safe. The legacy Provider/APIKey fields from the Engram-compatible
+// safe. The legacy Provider/APIKey fields from the prior cloud-provider
 // implementation are intentionally absent: this judge MUST NOT call any
 // cloud provider.
 type JudgeConfig struct {

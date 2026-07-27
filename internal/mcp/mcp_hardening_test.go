@@ -14,7 +14,7 @@ package mcp
 //  4. handleSave treats a dedup skip (ClassDedupSkipped) as success, not error
 //     (REQ-MCPH-002 / REQ-FOUND-003).
 //  5. Server instructions and tool descriptions are Cortex-native with no
-//     Engram framing (REQ-MCPH-003).
+//     legacy-compatibility framing (REQ-MCPH-003).
 
 import (
 	"context"

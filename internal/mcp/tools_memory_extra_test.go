@@ -1,6 +1,6 @@
 package mcp
 
-// Behavioral characterization tests for Engram-compatible memory MCP handlers
+// Behavioral characterization tests for memory MCP handlers
 // that are not already covered by tools_test.go or integration_test.go.
 //
 // This file is part of SDD change coverage-70-and-lint (task 1.3 G2). It only

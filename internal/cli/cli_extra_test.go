@@ -495,12 +495,6 @@ func TestExtraRunImportValidation(t *testing.T) {
 			t.Fatalf("import json missing path code=%d stderr=%q", code, errB)
 		}
 	})
-	t.Run("from-engram missing path exit1", func(t *testing.T) {
-		code, _, errB := run(t, "cortex", "import", "--from-engram")
-		if code != 1 || !strings.Contains(errB, "--path is required for --from-engram") {
-			t.Fatalf("import engram missing path code=%d stderr=%q", code, errB)
-		}
-	})
 }
 
 func TestExtraRunImportFromJSONErrors(t *testing.T) {

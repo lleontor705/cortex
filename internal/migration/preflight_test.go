@@ -64,8 +64,8 @@ func buildV1DBAt(t *testing.T, path string) {
 
 // buildEngramDBAt creates an Engram-era database at path: the core Cortex
 // tables (sessions/observations/user_prompts) but NEITHER _migrations NOR
-// cortex_meta. This mirrors the real Engram fixture (see cli createEngramFixtureDB)
-// and is the signature the probe must refuse as "Engram database".
+// cortex_meta. This self-contained fixture captures the legacy schema signature
+// that the probe must refuse as an "Engram database".
 func buildEngramDBAt(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

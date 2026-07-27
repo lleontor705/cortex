@@ -17,7 +17,6 @@ import (
 	"github.com/lleontor705/cortex/internal/ollama"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
-	"github.com/lleontor705/cortex/internal/migration"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/lleontor705/cortex/internal/setup"
 	cortsync "github.com/lleontor705/cortex/internal/sync"
@@ -122,7 +121,6 @@ Commands:
   context [project]      Show recent memory context
   stats                  Show memory statistics
   setup [agent]          Install agent integration
-  import --from-engram   Import data from an Engram database
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
   sync                   Sync memories via git-friendly chunks
@@ -640,54 +638,17 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 
 func runImport(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		writeln(stderr, "usage: cortex import --from-engram --path PATH\n       cortex import --from-json --path FILE")
+		writeln(stderr, "usage: cortex import --from-json --path FILE")
 		return 1
 	}
 
 	switch args[0] {
-	case "--from-engram":
-		return importFromEngram(args[1:], stdout, stderr)
 	case "--from-json":
 		return importFromJSON(args[1:], stdout, stderr)
 	default:
-		writef(stderr, "unknown import source: %s (use --from-engram or --from-json)\n", args[0])
+		writef(stderr, "unknown import source: %s (use --from-json)\n", args[0])
 		return 1
 	}
-}
-
-func importFromEngram(args []string, stdout, stderr io.Writer) int {
-	path := ""
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--path" && i+1 < len(args) {
-			path = args[i+1]
-			i++
-		}
-	}
-	if path == "" {
-		writeln(stderr, "cortex: --path is required for --from-engram")
-		return 1
-	}
-
-	a, err := openApp()
-	if err != nil {
-		writef(stderr, "cortex: %v\n", err)
-		return 1
-	}
-	defer func() { _ = a.Close() }()
-
-	result, err := migration.ImportFromEngram(context.Background(), path, migration.EngramImportTarget{
-		Observations: a.Stores.Observations,
-		Sessions:     a.Stores.Sessions,
-		Prompts:      a.Stores.Prompts,
-	})
-	if err != nil {
-		writef(stderr, "cortex: %v\n", err)
-		return 1
-	}
-
-	writef(stdout, "Imported from Engram\n  Sessions:     %d\n  Observations: %d\n  Prompts:      %d\n",
-		result.Sessions, result.Observations, result.Prompts)
-	return 0
 }
 
 func importFromJSON(args []string, stdout, stderr io.Writer) int {

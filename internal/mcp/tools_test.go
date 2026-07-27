@@ -200,7 +200,7 @@ func resultText(result *mcp.CallToolResult) string {
 	return ""
 }
 
-// --- Engram-compatible tool tests -------------------------------------------
+// --- memory tool tests -----------------------------------------------------
 
 func TestHandleSave(t *testing.T) {
 	stores := setupTestStores(t)
