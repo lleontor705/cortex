@@ -146,3 +146,162 @@ func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 
 	return results
 }
+
+// ---------------------------------------------------------------------------
+// SearchVectors — capability-driven vector search (W8.4, REQ-VEC-001/002)
+//
+// SearchVectors is the retrieval-engine entry point that SELECTS STRATEGY from
+// the configured VectorIndex's declared Capabilities (ADR-05, REQ-VEC-001
+// happy path). It is the single function every consumer (MCP, bench, CLI)
+// SHOULD call instead of reaching for idx.Search directly, so the strategy
+// selection is centralized and consistent.
+//
+// Strategy selection (driven by Capabilities.Filters):
+//
+//   - PreFilter (e.g. Qdrant): the adapter applies filters server-side at index
+//     scan time (Must conditions). The engine TRUSTS the adapter's filtered
+//     results. It passes the query as-is (no pool expansion) and does NOT
+//     re-apply filters in-engine. Revalidation still runs (soft-delete drop).
+//
+//   - PostFilter (e.g. sqlite_blob, pgvector): the adapter applies filters via
+//     WHERE clauses AFTER the ANN scan. PostFilter is less precise (the ANN
+//     may return candidates that the filter then removes, reducing recall).
+//     The engine expands the retrieval POOL (limit * PostFilterPoolMultiplier)
+//     to give in-engine filtering headroom, then RE-APPLIES the filters in-
+//     engine as a safety net against silent filter drops (REQ-VEC-002).
+//
+//   - none / empty: the adapter does NO filtering. The engine retrieves a
+//     larger pool and applies ALL filtering in-engine.
+//
+// In-engine filter re-application (the safety net) matches the revalidated
+// observation's fields (Project, Scope) against the VectorQuery filter map.
+// This is the "filter never silently dropped" guarantee: even if a PostFilter
+// adapter returns candidates that don't match the declared filter, the engine
+// removes them before returning to the caller.
+// ---------------------------------------------------------------------------
+
+// PostFilterPoolMultiplier is the factor by which the retrieval pool is
+// expanded when the adapter declares PostFilter or none. A multiplier of 3
+// gives in-engine filtering enough headroom to recover candidates the adapter's
+// post-filter removed while keeping the pool bounded. This is a heuristic; the
+// engine truncates to the requested limit after in-engine filtering.
+const PostFilterPoolMultiplier = 3
+
+// SearchVectors executes a vector similarity search with capability-driven
+// strategy selection. It reads idx.Capabilities, selects the appropriate
+// filter strategy, retrieves candidates, revalidates them against the live
+// observation store, applies in-engine filter safety-net when needed, and
+// truncates to the requested limit.
+//
+// Returns full VectorSearchResult entries (observation + similarity score).
+// Soft-deleted, missing, or filter-mismatched candidates are dropped.
+func SearchVectors(ctx context.Context, idx domain.VectorIndex, q domain.VectorQuery, obs ObservationLookup) ([]*domain.VectorSearchResult, error) {
+	if idx == nil {
+		return nil, nil
+	}
+
+	// Read declared capabilities to select the strategy.
+	caps, capsErr := idx.Capabilities(ctx)
+
+	// Determine whether to trust adapter filters (PreFilter) or re-apply
+	// in-engine (PostFilter / none / unknown). On Capabilities error, treat
+	// as PostFilter (defensive: re-apply filters in-engine).
+	trustAdapter := false
+	poolMultiplier := 1
+	if capsErr == nil && caps.Filters == "PreFilter" {
+		trustAdapter = true
+	} else {
+		// PostFilter, none, empty, or Capabilities error: expand pool and
+		// re-apply filters in-engine.
+		poolMultiplier = PostFilterPoolMultiplier
+	}
+
+	// Expand the pool for non-PreFilter strategies so in-engine filtering has
+	// headroom after the adapter's less-precise post-filter.
+	poolQ := q
+	if !trustAdapter && q.Limit > 0 {
+		poolQ.Limit = q.Limit * poolMultiplier
+	}
+
+	candidates, err := idx.Search(ctx, poolQ)
+	if err != nil {
+		return nil, err
+	}
+
+	// Revalidate: load full observations, drop soft-deleted/missing.
+	results := RevalidateCandidates(ctx, obs, candidates)
+
+	// In-engine filter safety net for non-PreFilter strategies. This is the
+	// "filter never silently dropped" guarantee (REQ-VEC-002).
+	if !trustAdapter && q.Filters != nil {
+		results = applyFiltersInEngine(results, q.Filters)
+	}
+
+	// Truncate to the requested limit AFTER in-engine filtering.
+	if q.Limit > 0 && len(results) > q.Limit {
+		results = results[:q.Limit]
+	}
+
+	return results, nil
+}
+
+// applyFiltersInEngine re-applies the VectorQuery filter map against the
+// revalidated observations' fields. A result that does not match EVERY
+// declared string filter is dropped. This is the safety net for PostFilter and
+// none-filter adapters where the adapter may silently drop or imprecisely
+// apply filters.
+//
+// Recognized filter keys (matched against the corresponding Observation field):
+//
+//	"project" → Observation.Project
+//	"scope"   → Observation.Scope
+//	"type"    → Observation.Type
+//	"source"  → Observation.Source
+//
+// Unknown keys are ignored (filter-transparent) — applying them would require
+// a schema the observation model does not expose. The recognized set covers
+// every filter the MCP/HTTP surface declares.
+func applyFiltersInEngine(results []*domain.VectorSearchResult, filters map[string]any) []*domain.VectorSearchResult {
+	if len(filters) == 0 {
+		return results
+	}
+	filtered := make([]*domain.VectorSearchResult, 0, len(results))
+	for _, r := range results {
+		if matchesFilters(r.Observation, filters) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// matchesFilters reports whether the observation matches every recognized
+// string filter in the map. An empty filter value in the map is treated as
+// "not set" and does not constrain.
+func matchesFilters(obs domain.Observation, filters map[string]any) bool {
+	for key, val := range filters {
+		s, ok := val.(string)
+		if !ok || s == "" {
+			continue // not a string filter or empty — skip
+		}
+		switch key {
+		case "project":
+			if obs.Project != s {
+				return false
+			}
+		case "scope":
+			if obs.Scope != s {
+				return false
+			}
+		case "type":
+			if obs.Type != s {
+				return false
+			}
+		case "source":
+			if obs.Source != s {
+				return false
+			}
+			// Unknown keys: ignore (filter-transparent).
+		}
+	}
+	return true
+}

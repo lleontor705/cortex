@@ -395,25 +395,28 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 				}
 			}
 
-			if len(queryVec) > 0 {
-				searchMode = "hybrid (FTS5 + vector)"
-				vecQuery := domain.VectorQuery{
-					Vector:    queryVec,
-					Limit:     limit,
-					Threshold: 0.3,
-					Filters: map[string]any{
-						"project": project,
-						"scope":   scope,
-					},
-				}
-				vecCandidates, vecErr := stores.Vectors.Search(ctx, vecQuery)
-				if vecErr == nil && len(vecCandidates) > 0 {
-					vecResults := retrieval.RevalidateCandidates(ctx, stores.Observations, vecCandidates)
-					if len(vecResults) > 0 {
-						ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
-					}
-				}
+		if len(queryVec) > 0 {
+			searchMode = "hybrid (FTS5 + vector)"
+			vecQuery := domain.VectorQuery{
+				Vector:    queryVec,
+				Limit:     limit,
+				Threshold: 0.3,
+				Filters: map[string]any{
+					"project": project,
+					"scope":   scope,
+				},
 			}
+			// W8.4: use the capability-driven SearchVectors entry point.
+			// The engine reads VectorIndex.Capabilities and selects
+			// PreFilter (trust adapter) vs PostFilter (pool expansion +
+			// in-engine safety net). This replaces the manual Search +
+			// RevalidateCandidates + filter-drop-prone path with the
+			// centralized strategy selector (REQ-VEC-001/002).
+			vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
+			if vecErr == nil && len(vecResults) > 0 {
+				ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
+			}
+		}
 		}
 
 		if len(ftsResults) == 0 {
