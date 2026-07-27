@@ -137,8 +137,9 @@ type LifecycleConfig struct {
 // another provider; the server composition path is responsible for rejecting
 // an unimplemented-but-scoped provider at wiring time.
 type VectorConfig struct {
-	Provider string       `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "pgvector" | "none"
-	Qdrant   QdrantConfig `yaml:"qdrant" mapstructure:"qdrant"`
+	Provider string         `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "pgvector" | "none"
+	Qdrant   QdrantConfig   `yaml:"qdrant" mapstructure:"qdrant"`
+	Pgvector PGVectorConfig `yaml:"pgvector" mapstructure:"pgvector"`
 }
 
 // QdrantConfig holds connection parameters for the Qdrant external vector
@@ -157,6 +158,24 @@ type QdrantConfig struct {
 	MaxBatchSize int           `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
 	MaxRetries   uint          `yaml:"max_retries" mapstructure:"max_retries"`     // transient gRPC retries (default 3)
 	Timeout      time.Duration `yaml:"timeout" mapstructure:"timeout"`             // per-operation gRPC timeout (default 30s)
+}
+
+// PGVectorConfig holds connection parameters for the pgvector external vector
+// adapter (internal/vector/pgvector). It is consumed ONLY by the server/
+// external composition path. All fields are plain data types so config.go
+// never imports the pgx driver (ADR-01 dependency direction, REQ-FOUND-001).
+// The DSN may contain a password; it MUST NEVER be logged or surfaced in
+// error messages (REQ-CP-002 token storage / no plaintext).
+type PGVectorConfig struct {
+	DSN                string        `yaml:"dsn" mapstructure:"dsn"`                              // PostgreSQL connection string
+	Schema             string        `yaml:"schema" mapstructure:"schema"`                        // schema name (default cortex_vector)
+	Table              string        `yaml:"table" mapstructure:"table"`                          // table name (default embeddings)
+	Dimension          int           `yaml:"dimension" mapstructure:"dimension"`                  // expected vector dimension
+	IndexType          string        `yaml:"index_type" mapstructure:"index_type"`                // hnsw or ivfflat (default hnsw)
+	MaxBatchSize       int           `yaml:"max_batch_size" mapstructure:"max_batch_size"`        // upsert batch ceiling (default 256)
+	Timeout            time.Duration `yaml:"timeout" mapstructure:"timeout"`                      // per-operation timeout (default 30s)
+	MaxConns           int32         `yaml:"max_conns" mapstructure:"max_conns"`                  // pool max connections (default 10)
+	StatementTimeoutMs int           `yaml:"statement_timeout_ms" mapstructure:"statement_timeout_ms"` // PostgreSQL statement_timeout in ms (default 5000)
 }
 
 // Default configuration values
@@ -218,6 +237,16 @@ var defaults = Config{
 			MaxBatchSize: 256,
 			MaxRetries:   3,
 			Timeout:      30 * time.Second,
+		},
+		Pgvector: PGVectorConfig{
+			Schema:             "cortex_vector",
+			Table:              "embeddings",
+			Dimension:          0, // resolved from embedding model at adapter construction
+			IndexType:          "hnsw",
+			MaxBatchSize:       256,
+			Timeout:            30 * time.Second,
+			MaxConns:           10,
+			StatementTimeoutMs: 5000,
 		},
 	},
 }
@@ -336,6 +365,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vector.qdrant.max_batch_size", defaults.Vector.Qdrant.MaxBatchSize)
 	v.SetDefault("vector.qdrant.max_retries", defaults.Vector.Qdrant.MaxRetries)
 	v.SetDefault("vector.qdrant.timeout", defaults.Vector.Qdrant.Timeout)
+
+	v.SetDefault("vector.pgvector.dsn", defaults.Vector.Pgvector.DSN)
+	v.SetDefault("vector.pgvector.schema", defaults.Vector.Pgvector.Schema)
+	v.SetDefault("vector.pgvector.table", defaults.Vector.Pgvector.Table)
+	v.SetDefault("vector.pgvector.dimension", defaults.Vector.Pgvector.Dimension)
+	v.SetDefault("vector.pgvector.index_type", defaults.Vector.Pgvector.IndexType)
+	v.SetDefault("vector.pgvector.max_batch_size", defaults.Vector.Pgvector.MaxBatchSize)
+	v.SetDefault("vector.pgvector.timeout", defaults.Vector.Pgvector.Timeout)
+	v.SetDefault("vector.pgvector.max_conns", defaults.Vector.Pgvector.MaxConns)
+	v.SetDefault("vector.pgvector.statement_timeout_ms", defaults.Vector.Pgvector.StatementTimeoutMs)
 }
 
 // validate checks if the configuration values are valid
@@ -469,6 +508,9 @@ func validateVector(v *VectorConfig) error {
 	if v.Provider == "qdrant" {
 		return validateQdrant(&v.Qdrant)
 	}
+	if v.Provider == "pgvector" {
+		return validatePgvector(&v.Pgvector)
+	}
 	return nil
 }
 
@@ -496,6 +538,40 @@ func validateQdrant(q *QdrantConfig) error {
 	}
 	if q.Timeout <= 0 {
 		return fmt.Errorf("invalid vector.qdrant.timeout: %s (must be > 0)", q.Timeout)
+	}
+	return nil
+}
+
+// validatePgvector validates the PGVectorConfig connection parameters. All
+// ranges are checked with clear errors. The DSN password is intentionally never
+// referenced in any error string (REQ-CP-002).
+func validatePgvector(p *PGVectorConfig) error {
+	if p.DSN == "" {
+		return fmt.Errorf("invalid vector.pgvector.dsn: must not be empty")
+	}
+	if p.Schema == "" {
+		return fmt.Errorf("invalid vector.pgvector.schema: must not be empty")
+	}
+	if p.Table == "" {
+		return fmt.Errorf("invalid vector.pgvector.table: must not be empty")
+	}
+	if p.Dimension <= 0 {
+		return fmt.Errorf("invalid vector.pgvector.dimension: %d (must be > 0)", p.Dimension)
+	}
+	if p.IndexType != "hnsw" && p.IndexType != "ivfflat" {
+		return fmt.Errorf("invalid vector.pgvector.index_type: %q (valid: hnsw, ivfflat)", p.IndexType)
+	}
+	if p.MaxBatchSize <= 0 {
+		return fmt.Errorf("invalid vector.pgvector.max_batch_size: %d (must be >= 1)", p.MaxBatchSize)
+	}
+	if p.Timeout <= 0 {
+		return fmt.Errorf("invalid vector.pgvector.timeout: %s (must be > 0)", p.Timeout)
+	}
+	if p.MaxConns < 0 {
+		return fmt.Errorf("invalid vector.pgvector.max_conns: %d (must be >= 0)", p.MaxConns)
+	}
+	if p.StatementTimeoutMs <= 0 {
+		return fmt.Errorf("invalid vector.pgvector.statement_timeout_ms: %d (must be > 0)", p.StatementTimeoutMs)
 	}
 	return nil
 }
@@ -550,6 +626,7 @@ func ClearEnvVar(key string) error {
 func (c *Config) String() string {
 	vec := c.Vector
 	vec.Qdrant.APIKey = "" // hard redaction: no plaintext secret in String()
+	vec.Pgvector.DSN = redactDSNPassword(vec.Pgvector.DSN) // redact password from DSN
 	return fmt.Sprintf(
 		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
 		c.Server, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
@@ -564,6 +641,39 @@ func ensureDefaultConfig(cfg *Config) error {
 		return nil // file already exists
 	}
 	return Save(cfg, path)
+}
+
+// redactDSNPassword replaces the password component of a PostgreSQL DSN with
+// ***REDACTED***. Supports both URL format (postgres://user:pass@host/db) and
+// key=value format (host=localhost password=pass). Returns the original string
+// if no password is found. Used by Config.String() so DSNs never leak secrets
+// in logs or debug output (REQ-CP-002).
+func redactDSNPassword(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	// URL format: postgres://user:password@host
+	if strings.Contains(dsn, "://") {
+		atIdx := strings.LastIndex(dsn, "@")
+		schemeEnd := strings.Index(dsn, "://")
+		if atIdx > schemeEnd {
+			creds := dsn[schemeEnd+3 : atIdx]
+			if colonIdx := strings.Index(creds, ":"); colonIdx >= 0 {
+				return dsn[:schemeEnd+3+colonIdx+1] + "***REDACTED***" + dsn[atIdx:]
+			}
+		}
+	}
+	// Key=value format: password=value
+	if idx := strings.Index(dsn, "password="); idx >= 0 {
+		start := idx + len("password=")
+		rest := dsn[start:]
+		end := strings.IndexAny(rest, " \t")
+		if end < 0 {
+			return dsn[:start] + "***REDACTED***"
+		}
+		return dsn[:start] + "***REDACTED***" + rest[end:]
+	}
+	return dsn
 }
 
 // Save writes the configuration to the specified path.

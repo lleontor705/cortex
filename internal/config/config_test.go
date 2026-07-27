@@ -427,6 +427,10 @@ func TestValidate_VectorProviderEnum(t *testing.T) {
 		if p == "qdrant" {
 			cfg.Vector.Qdrant = validQdrantConfig()
 		}
+		// pgvector requires full PGVectorConfig to be valid; set a valid one.
+		if p == "pgvector" {
+			cfg.Vector.Pgvector = validPgvectorConfig()
+		}
 		if err := validate(cfg); err != nil {
 			t.Errorf("provider %q should be valid, got error: %v", p, err)
 		}
@@ -457,6 +461,21 @@ func validQdrantConfig() QdrantConfig {
 		MaxBatchSize: 256,
 		MaxRetries:   3,
 		Timeout:      30 * time.Second,
+	}
+}
+
+// validPgvectorConfig returns a PGVectorConfig that passes validation on its own.
+func validPgvectorConfig() PGVectorConfig {
+	return PGVectorConfig{
+		DSN:                "postgres://user:pass@localhost:5432/cortex",
+		Schema:             "cortex_vector",
+		Table:              "embeddings",
+		Dimension:          384,
+		IndexType:          "hnsw",
+		MaxBatchSize:       256,
+		Timeout:            30 * time.Second,
+		MaxConns:           10,
+		StatementTimeoutMs: 5000,
 	}
 }
 
@@ -552,6 +571,178 @@ func TestValidate_QdrantNotCheckedForOtherProviders(t *testing.T) {
 	cfg.Vector.Qdrant = QdrantConfig{Dimension: 0, MaxBatchSize: 0} // would fail qdrant checks
 	if err := validate(cfg); err != nil {
 		t.Errorf("default provider should not trigger qdrant field checks: %v", err)
+	}
+}
+
+// TestValidate_PgvectorFields verifies all PGVectorConfig fields are validated
+// with clear errors when provider is "pgvector".
+func TestValidate_PgvectorFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*PGVectorConfig)
+		wantErr string
+	}{
+		{
+			name:    "dsn empty",
+			modify:  func(p *PGVectorConfig) { p.DSN = "" },
+			wantErr: "dsn",
+		},
+		{
+			name:    "schema empty",
+			modify:  func(p *PGVectorConfig) { p.Schema = "" },
+			wantErr: "schema",
+		},
+		{
+			name:    "table empty",
+			modify:  func(p *PGVectorConfig) { p.Table = "" },
+			wantErr: "table",
+		},
+		{
+			name:    "dimension zero",
+			modify:  func(p *PGVectorConfig) { p.Dimension = 0 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "dimension negative",
+			modify:  func(p *PGVectorConfig) { p.Dimension = -8 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "invalid index type",
+			modify:  func(p *PGVectorConfig) { p.IndexType = "bogus" },
+			wantErr: "index_type",
+		},
+		{
+			name:    "batch size zero",
+			modify:  func(p *PGVectorConfig) { p.MaxBatchSize = 0 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "timeout zero",
+			modify:  func(p *PGVectorConfig) { p.Timeout = 0 },
+			wantErr: "timeout",
+		},
+		{
+			name:    "timeout negative",
+			modify:  func(p *PGVectorConfig) { p.Timeout = -1 * time.Second },
+			wantErr: "timeout",
+		},
+		{
+			name:    "max_conns negative",
+			modify:  func(p *PGVectorConfig) { p.MaxConns = -1 },
+			wantErr: "max_conns",
+		},
+		{
+			name:    "statement_timeout_ms zero",
+			modify:  func(p *PGVectorConfig) { p.StatementTimeoutMs = 0 },
+			wantErr: "statement_timeout_ms",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseline()
+			cfg.Vector.Provider = "pgvector"
+			p := validPgvectorConfig()
+			tt.modify(&p)
+			cfg.Vector.Pgvector = p
+			err := validate(cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error should contain %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestValidate_PgvectorNotCheckedForOtherProviders verifies pgvector-specific
+// field validation is NOT enforced when provider is not "pgvector".
+func TestValidate_PgvectorNotCheckedForOtherProviders(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "" // default local path
+	cfg.Vector.Pgvector = PGVectorConfig{DSN: "", Dimension: 0} // would fail pgvector checks
+	if err := validate(cfg); err != nil {
+		t.Errorf("default provider should not trigger pgvector field checks: %v", err)
+	}
+}
+
+// TestValidate_PgvectorValidIVFFlat verifies ivfflat is a valid index type.
+func TestValidate_PgvectorValidIVFFlat(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "pgvector"
+	p := validPgvectorConfig()
+	p.IndexType = "ivfflat"
+	cfg.Vector.Pgvector = p
+	if err := validate(cfg); err != nil {
+		t.Errorf("ivfflat index type should be valid: %v", err)
+	}
+}
+
+// TestConfig_String_NeverLeaksPgvectorDSN verifies the DSN password NEVER
+// appears in Config.String() (REQ-CP-002).
+func TestConfig_String_NeverLeaksPgvectorDSN(t *testing.T) {
+	const secret = "pg-super-secret-do-not-leak"
+	cfg := validBaseline()
+	cfg.Vector.Pgvector = PGVectorConfig{
+		DSN: "postgres://user:" + secret + "@localhost:5432/cortex",
+	}
+	s := cfg.String()
+	if strings.Contains(s, secret) {
+		t.Errorf("DSN password LEAKED into Config.String(): %s", s)
+	}
+	if !strings.Contains(s, "***REDACTED***") {
+		t.Errorf("expected redaction placeholder in String(): %s", s)
+	}
+}
+
+// TestRedactDSNPassword verifies password redaction for both DSN formats.
+func TestRedactDSNPassword(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{
+			name: "URL format",
+			dsn:  "postgres://user:secretpass@localhost:5432/db",
+			want: "***REDACTED***",
+		},
+		{
+			name: "key=value format",
+			dsn:  "host=localhost password=kvpsecret dbname=test",
+			want: "***REDACTED***",
+		},
+		{
+			name: "no password URL",
+			dsn:  "postgres://localhost:5432/db",
+			want: "",
+		},
+		{
+			name: "empty DSN",
+			dsn:  "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := redactDSNPassword(tt.dsn)
+			if tt.want == "" {
+				// No redaction expected; verify no password leaked if any was present.
+				if strings.Contains(out, "secretpass") || strings.Contains(out, "kvpsecret") {
+					t.Errorf("password leaked: %s", out)
+				}
+			} else {
+				if !strings.Contains(out, tt.want) {
+					t.Errorf("expected %q in redacted DSN, got: %s", tt.want, out)
+				}
+			}
+			// Original password must never appear in output.
+			if strings.Contains(out, "secretpass") || strings.Contains(out, "kvpsecret") {
+				t.Errorf("password still present after redaction: %s", out)
+			}
+		})
 	}
 }
 
