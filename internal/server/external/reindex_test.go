@@ -70,10 +70,10 @@ func (s *fakeReindexSource) GetEmbedding(_ context.Context, id int64) ([]float32
 
 // fakeEmbeddingProvider generates deterministic vectors for re-embedding.
 type fakeEmbeddingProvider struct {
-	dim     int
-	model   string
-	err     error
-	calls   int
+	dim   int
+	model string
+	err   error
+	calls int
 }
 
 func (p *fakeEmbeddingProvider) Embed(_ context.Context, texts []string) ([][]float32, domain.ModelInfo, error) {
@@ -119,7 +119,7 @@ func (t *reindexTarget) Search(_ context.Context, _ domain.VectorQuery) ([]domai
 	return nil, nil
 }
 func (t *reindexTarget) Delete(_ context.Context, _ []int64) error { return nil }
-func (t *reindexTarget) Close() error                               { return nil }
+func (t *reindexTarget) Close() error                              { return nil }
 func (t *reindexTarget) Health(_ context.Context) domain.Health {
 	return domain.Health{Status: domain.StatusHealthy}
 }
@@ -266,7 +266,7 @@ func TestReindex_BatchChunking(t *testing.T) {
 	// Track upsert call count via a wrapper.
 	calls := 0
 	target := &countingTarget{
-		inner:   &reindexTarget{},
+		inner:    &reindexTarget{},
 		onUpsert: func() { calls++ },
 	}
 	_, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 2})
@@ -293,9 +293,11 @@ func (c *countingTarget) Upsert(ctx context.Context, points []domain.VectorPoint
 func (c *countingTarget) Search(ctx context.Context, q domain.VectorQuery) ([]domain.VectorCandidate, error) {
 	return c.inner.Search(ctx, q)
 }
-func (c *countingTarget) Delete(ctx context.Context, ids []int64) error  { return c.inner.Delete(ctx, ids) }
-func (c *countingTarget) Close() error                                   { return c.inner.Close() }
-func (c *countingTarget) Health(ctx context.Context) domain.Health       { return c.inner.Health(ctx) }
+func (c *countingTarget) Delete(ctx context.Context, ids []int64) error {
+	return c.inner.Delete(ctx, ids)
+}
+func (c *countingTarget) Close() error                             { return c.inner.Close() }
+func (c *countingTarget) Health(ctx context.Context) domain.Health { return c.inner.Health(ctx) }
 func (c *countingTarget) Capabilities(ctx context.Context) (domain.Capabilities, error) {
 	return c.inner.Capabilities(ctx)
 }

@@ -321,8 +321,8 @@ func (f *fakeVectorIndex) Search(_ context.Context, q domain.VectorQuery) ([]dom
 	return f.candidates[:end], nil
 }
 
-func (f *fakeVectorIndex) Delete(_ context.Context, _ []int64) error    { return nil }
-func (f *fakeVectorIndex) Close() error                                 { return nil }
+func (f *fakeVectorIndex) Delete(_ context.Context, _ []int64) error { return nil }
+func (f *fakeVectorIndex) Close() error                              { return nil }
 
 func (f *fakeVectorIndex) Health(_ context.Context) domain.Health {
 	if f.health.Status != "" {

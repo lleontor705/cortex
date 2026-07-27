@@ -16,19 +16,19 @@ import (
 
 // healthProbeIndex is a VectorIndex with controllable Health.
 type healthProbeIndex struct {
-	id      string
-	health  domain.Health
-	caps    domain.Capabilities
+	id     string
+	health domain.Health
+	caps   domain.Capabilities
 }
 
-func (h *healthProbeIndex) ID() string                                      { return h.id }
+func (h *healthProbeIndex) ID() string                                             { return h.id }
 func (h *healthProbeIndex) Upsert(_ context.Context, _ []domain.VectorPoint) error { return nil }
 func (h *healthProbeIndex) Search(_ context.Context, _ domain.VectorQuery) ([]domain.VectorCandidate, error) {
 	return nil, nil
 }
-func (h *healthProbeIndex) Delete(_ context.Context, _ []int64) error  { return nil }
-func (h *healthProbeIndex) Close() error                                 { return nil }
-func (h *healthProbeIndex) Health(_ context.Context) domain.Health      { return h.health }
+func (h *healthProbeIndex) Delete(_ context.Context, _ []int64) error { return nil }
+func (h *healthProbeIndex) Close() error                              { return nil }
+func (h *healthProbeIndex) Health(_ context.Context) domain.Health    { return h.health }
 func (h *healthProbeIndex) Capabilities(_ context.Context) (domain.Capabilities, error) {
 	return h.caps, nil
 }

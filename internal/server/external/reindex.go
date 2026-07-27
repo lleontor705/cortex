@@ -95,11 +95,11 @@ type ReindexProgress struct {
 
 // ReindexResult is the final outcome of a Reindex run.
 type ReindexResult struct {
-	Total     int // total observations examined
-	Upserted  int // vectors successfully upserted
+	Total      int // total observations examined
+	Upserted   int // vectors successfully upserted
 	ReEmbedded int // vectors regenerated via EmbeddingProvider
-	Skipped   int // observations skipped (no vector available)
-	Batches   int // number of Upsert calls made to the target
+	Skipped    int // observations skipped (no vector available)
+	Batches    int // number of Upsert calls made to the target
 }
 
 // Reindex replays observations from src into target, copying existing

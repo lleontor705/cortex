@@ -5,14 +5,14 @@
 // configures an external provider (qdrant, pgvector), Cortex MUST NOT silently
 // substitute sqlite_blob when that provider is unhealthy. Doing so would:
 //
-//   1. Serve STALE results from a different index (the external index may have
-//      a different vector set, different model version, or be ahead/behind the
-//      local store).
-//   2. Violate the no-dual-source-of-truth invariant (ADR-05): SQLite is the
-//      authoritative observation store, but the EXTERNAL index is the
-//      authoritative VECTOR store for the configured deployment. Switching
-//      indices silently changes which vectors answer a query.
-//   3. Mask a configuration or operational problem the operator needs to see.
+//  1. Serve STALE results from a different index (the external index may have
+//     a different vector set, different model version, or be ahead/behind the
+//     local store).
+//  2. Violate the no-dual-source-of-truth invariant (ADR-05): SQLite is the
+//     authoritative observation store, but the EXTERNAL index is the
+//     authoritative VECTOR store for the configured deployment. Switching
+//     indices silently changes which vectors answer a query.
+//  3. Mask a configuration or operational problem the operator needs to see.
 //
 // Instead, ResolveProviderHealth reports the REAL health (degraded/unhealthy)
 // of the configured provider, and SelectForSearch returns the configured

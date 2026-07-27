@@ -101,9 +101,9 @@ var serverTrackSubpkgs = []string{
 // server-only infrastructure. A local package importing any of these violates
 // the zero-dependency local invariant.
 var forbiddenExternalDeps = []string{
-	"github.com/jackc/pgx",      // Postgres driver
-	"golang.org/x/oauth2",      // OIDC/OAuth resource server
-	"github.com/qdrant",        // Qdrant vector client
+	"github.com/jackc/pgx",            // Postgres driver
+	"golang.org/x/oauth2",             // OIDC/OAuth resource server
+	"github.com/qdrant",               // Qdrant vector client
 	"github.com/pgvector/pgvector-go", // pgvector Go types (server-track)
 }
 
