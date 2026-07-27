@@ -150,21 +150,21 @@ func (w *Worker) setBackoffFn(fn func(attempt int) time.Duration) {
 //
 //   - runCtx      bounds leasing, hydration, embedding, and upsert work.
 //   - finalizeCtx bounds outcome-recording operations (MarkComplete/MarkFailed/
-//                 DeadLetter/UpdateIndexState).
+//     DeadLetter/UpdateIndexState).
 //
 // The stop func executes three phases:
 //  1. STOP  — cancel runCtx: no new leases; in-flight embed/upsert abort and the
-//             intent is left leased for crash-recovery on next startup.
+//     intent is left leased for crash-recovery on next startup.
 //  2. JOIN  — wait for all worker goroutines to exit, bounded by DrainTimeout.
-//             finalizeCtx is still alive, so outcomes of in-flight intents are
-//             recorded normally (no silent loss on a graceful drain).
+//     finalizeCtx is still alive, so outcomes of in-flight intents are
+//     recorded normally (no silent loss on a graceful drain).
 //  3. CANCEL FINALIZE — unconditionally cancel finalizeCtx. After this returns,
-//             no goroutine can complete a finalize DB write:
-//               • joined goroutines have already exited;
-//               • a goroutine still unwinding an in-flight finalize observes
-//                 ctx.Done and the ExecContext aborts BEFORE touching the DB;
-//               • a goroutine stuck in an embed/upsert (runCtx already cancelled)
-//                 cannot reach finalize; its intent remains leased → recovery.
+//     no goroutine can complete a finalize DB write:
+//     • joined goroutines have already exited;
+//     • a goroutine still unwinding an in-flight finalize observes
+//     ctx.Done and the ExecContext aborts BEFORE touching the DB;
+//     • a goroutine stuck in an embed/upsert (runCtx already cancelled)
+//     cannot reach finalize; its intent remains leased → recovery.
 //
 // Therefore DB.Close MUST be called only after this stop func returns — and when
 // it does, no goroutine is touching or can touch the DB (no write-after-close,

@@ -13,8 +13,8 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
 
-	_ "modernc.org/sqlite"
 	"go.uber.org/goleak"
+	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -421,10 +421,10 @@ type blockingFinalizeOutbox struct {
 
 func newBlockingFinalizeOutbox(seeded []sqlitestore.OutboxIntent) *blockingFinalizeOutbox {
 	return &blockingFinalizeOutbox{
-		seeded:            seeded,
+		seeded:             seeded,
 		markCompleteCalled: make(chan struct{}),
 		markCompleteDone:   make(chan struct{}),
-		proceed:           make(chan struct{}),
+		proceed:            make(chan struct{}),
 	}
 }
 
@@ -589,12 +589,12 @@ type countOutbox struct {
 func (c *countOutbox) Lease(context.Context, int) ([]sqlitestore.OutboxIntent, error) {
 	return nil, nil
 }
-func (c *countOutbox) MarkComplete(context.Context, int64) error             { return nil }
+func (c *countOutbox) MarkComplete(context.Context, int64) error { return nil }
 func (c *countOutbox) MarkFailed(context.Context, int64, error, time.Time) error {
 	return nil
 }
-func (c *countOutbox) DeadLetter(context.Context, int64, error) error        { return nil }
-func (c *countOutbox) RecoverPending(context.Context) error                  { return nil }
+func (c *countOutbox) DeadLetter(context.Context, int64, error) error { return nil }
+func (c *countOutbox) RecoverPending(context.Context) error           { return nil }
 func (c *countOutbox) UpdateIndexState(context.Context, string, float64, int) error {
 	return nil
 }
@@ -606,10 +606,10 @@ func (c *countOutbox) PendingCount(context.Context) (int, error) { return c.coun
 // NOT saturated; count == MaxBacklog+1 IS saturated.
 func TestWorker_IsSaturated_ThresholdBoundary(t *testing.T) {
 	tests := []struct {
-		name      string
+		name       string
 		maxBacklog int
-		count     int
-		want      bool
+		count      int
+		want       bool
 	}{
 		{"empty not saturated", 5, 0, false},
 		{"at threshold not saturated", 5, 5, false},

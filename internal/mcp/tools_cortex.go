@@ -407,12 +407,12 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 					},
 				}
 				vecCandidates, vecErr := stores.Vectors.Search(ctx, vecQuery)
-			if vecErr == nil && len(vecCandidates) > 0 {
-				vecResults := retrieval.RevalidateCandidates(ctx, stores.Observations, vecCandidates)
-				if len(vecResults) > 0 {
-					ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
+				if vecErr == nil && len(vecCandidates) > 0 {
+					vecResults := retrieval.RevalidateCandidates(ctx, stores.Observations, vecCandidates)
+					if len(vecResults) > 0 {
+						ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
+					}
 				}
-			}
 			}
 		}
 
@@ -431,9 +431,9 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			sb.WriteString("\n")
 		}
 
- 		return textResult("%s", sb.String())
- 	}
- }
+		return textResult("%s", sb.String())
+	}
+}
 
 func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

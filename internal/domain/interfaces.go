@@ -233,20 +233,20 @@ type TemporalSnapshotRepository interface {
 
 // SystemMetrics represents aggregated system metrics.
 type SystemMetrics struct {
-	SessionID         string          `json:"session_id"`
-	TimeRange         *TimeRange      `json:"time_range"`
-	TotalOperations   int             `json:"total_operations"`
-	SuccessfulOps     int             `json:"successful_ops"`
-	FailedOps         int             `json:"failed_ops"`
-	AvgDurationMs     float64         `json:"avg_duration_ms"`
-	TotalMemoryUsage  int64           `json:"total_memory_usage"`
-	TotalObservations int             `json:"total_observations"`
-	TotalEdges        int             `json:"total_edges"`
-	AvgQueryComplexity float64         `json:"avg_query_complexity"`
-	AvgConfidence     float64         `json:"avg_confidence"`
-	EvaluatedAt       time.Time       `json:"evaluated_at"`
-	OperationBreakdown map[string]int  `json:"operation_breakdown"`
-	TopSlowOperations []string        `json:"top_slow_operations"`
+	SessionID          string         `json:"session_id"`
+	TimeRange          *TimeRange     `json:"time_range"`
+	TotalOperations    int            `json:"total_operations"`
+	SuccessfulOps      int            `json:"successful_ops"`
+	FailedOps          int            `json:"failed_ops"`
+	AvgDurationMs      float64        `json:"avg_duration_ms"`
+	TotalMemoryUsage   int64          `json:"total_memory_usage"`
+	TotalObservations  int            `json:"total_observations"`
+	TotalEdges         int            `json:"total_edges"`
+	AvgQueryComplexity float64        `json:"avg_query_complexity"`
+	AvgConfidence      float64        `json:"avg_confidence"`
+	EvaluatedAt        time.Time      `json:"evaluated_at"`
+	OperationBreakdown map[string]int `json:"operation_breakdown"`
+	TopSlowOperations  []string       `json:"top_slow_operations"`
 }
 
 // TimeRange represents a time range with start and end.
@@ -257,12 +257,12 @@ type TimeRange struct {
 
 // HealthCheck represents system health status.
 type HealthCheck struct {
-	Status           string    `json:"status"`           // healthy, degraded, critical
+	Status           string    `json:"status"` // healthy, degraded, critical
 	CheckTime        time.Time `json:"check_time"`
 	TotalOperations  int       `json:"total_operations"`
 	FailedOperations int       `json:"failed_operations"`
 	SlowOperations   int       `json:"slow_operations"`
-	AvgDurationMs   float64   `json:"avg_duration_ms"`
+	AvgDurationMs    float64   `json:"avg_duration_ms"`
 	Message          string    `json:"message"`
 }
 
@@ -279,9 +279,9 @@ type HealthCheck struct {
 // In local mode this is nil; in server mode it is resolved from the
 // authenticated Principal (NEVER from client input — ADR-06/ADR-07).
 type TenantContext struct {
-	TenantID      string
-	WorkspaceID   string
-	OwnerSubject  string
+	TenantID     string
+	WorkspaceID  string
+	OwnerSubject string
 }
 
 // SearchID is a request/session-scoped identifier for retrieval feedback
@@ -373,12 +373,12 @@ type Storage interface {
 // verified credential (ADR-08).
 type Principal struct {
 	Subject      string
-	Type         string   // user, service_account, agent
+	Type         string // user, service_account, agent
 	OrgID        string
 	WorkspaceIDs []string
 	Roles        []string
 	Scopes       []string
-	AuthMethod   string   // oidc, client_credentials, api_key, static
+	AuthMethod   string // oidc, client_credentials, api_key, static
 	GrantDigest  string
 }
 
@@ -386,10 +386,10 @@ type Principal struct {
 // Used for model-version namespacing to prevent dimension-mismatch
 // corruption (ADR-05, REQ-VEC-001).
 type ModelInfo struct {
-	Name        string
-	Dimension   int
-	Version     string
-	Normalized  bool
+	Name       string
+	Dimension  int
+	Version    string
+	Normalized bool
 }
 
 // Health is the lightweight health status returned by Storage, VectorIndex,

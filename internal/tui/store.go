@@ -471,13 +471,13 @@ func startReindexCmd(d *Deps) tea.Cmd {
 				continue
 			}
 			if storeErr := d.App.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
-			ID:     o.ID,
-			Vector: vec,
-			ModelInfo: domain.ModelInfo{
-				Name:      d.App.Stores.Embeddings.Model(),
-				Dimension: d.App.Stores.Embeddings.Dimensions(),
-			},
-		}}); storeErr != nil {
+				ID:     o.ID,
+				Vector: vec,
+				ModelInfo: domain.ModelInfo{
+					Name:      d.App.Stores.Embeddings.Model(),
+					Dimension: d.App.Stores.Embeddings.Dimensions(),
+				},
+			}}); storeErr != nil {
 				errCount++
 				continue
 			}

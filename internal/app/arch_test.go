@@ -27,10 +27,10 @@
 // ---------------------------------------------------------------------------
 // EVIDENCE (recorded 2026-07-26 against HEAD cb4b0f3, W1.1–W1.4 green):
 //
-//   $ CGO_ENABLED=0 go build ./cmd/cortex               -> PASS (exit 0)
-//   $ CGO_ENABLED=0 go test -count=1 ./...              -> PASS (44 pkgs)
-//   $ go test ./internal/domain/... ./internal/store/... -> PASS
-//   $ go test -count=1 ./...                            -> PASS, coverage 70.9%
+//	$ CGO_ENABLED=0 go build ./cmd/cortex               -> PASS (exit 0)
+//	$ CGO_ENABLED=0 go test -count=1 ./...              -> PASS (44 pkgs)
+//	$ go test ./internal/domain/... ./internal/store/... -> PASS
+//	$ go test -count=1 ./...                            -> PASS, coverage 70.9%
 //
 // These are confirmed by the TestZeroCgoLocalBuild and TestPortsCompileInIsolation
 // tests below (which execute the build live) plus the import/seam scans that
@@ -39,8 +39,10 @@
 //
 // KNOWN YELLOW NOTE — duplicate Principal surface (NOT fixed in W1.5; design
 // owner decision): W1.2 introduced internal/identity/principal.go which declares
-//   type Principal = domain.Principal   // type ALIAS, not a distinct type
-//   type TenantContext = domain.TenantContext
+//
+//	type Principal = domain.Principal   // type ALIAS, not a distinct type
+//	type TenantContext = domain.TenantContext
+//
 // So identity.Principal IS domain.Principal (same type), re-exported with
 // constructors for the server identity layer. For this gate, internal/identity
 // is treated as a SERVER-TRACK package: local composition MUST use
@@ -95,9 +97,9 @@ var serverTrackSubpkgs = []string{
 // server-only infrastructure. A local package importing any of these violates
 // the zero-dependency local invariant.
 var forbiddenExternalDeps = []string{
-	"github.com/jackc/pgx",   // Postgres driver
-	"golang.org/x/oauth2",    // OIDC/OAuth resource server
-	"github.com/qdrant",      // Qdrant vector client
+	"github.com/jackc/pgx", // Postgres driver
+	"golang.org/x/oauth2",  // OIDC/OAuth resource server
+	"github.com/qdrant",    // Qdrant vector client
 }
 
 // forbiddenSeamsForRoot returns the set of seam types that are STILL forbidden
@@ -539,8 +541,8 @@ func TestNoConcreteVectorStoreImportInConsumers(t *testing.T) {
 	// TestBundleVectorsFieldIsInterface) and scans for direct VectorStore
 	// type references in non-test consumer source via go/ast.
 	allowedConcreteRoots := map[string]bool{
-		"internal/store/sqlite":           true,
-		"internal/vector/sqlite_blob":     true,
+		"internal/store/sqlite":       true,
+		"internal/vector/sqlite_blob": true,
 	}
 
 	scanRoots := []string{

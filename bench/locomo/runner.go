@@ -31,18 +31,18 @@ var categoryNames = map[int]string{
 
 // Conversation represents a LOCOMO conversation sample.
 type Conversation struct {
-	SampleID     string                       `json:"sample_id"`
-	Conversation ConversationData             `json:"conversation"`
-	QA           []QA                         `json:"qa"`
-	Observation  json.RawMessage `json:"observation"` // Complex nested structure, parsed manually
+	SampleID     string           `json:"sample_id"`
+	Conversation ConversationData `json:"conversation"`
+	QA           []QA             `json:"qa"`
+	Observation  json.RawMessage  `json:"observation"` // Complex nested structure, parsed manually
 }
 
 // ConversationData holds the dialogue sessions and metadata.
 type ConversationData struct {
-	SpeakerA string              `json:"speaker_a"`
-	SpeakerB string              `json:"speaker_b"`
-	Sessions map[string][]Turn   // Parsed from session_N keys
-	Dates    map[string]string   // Parsed from session_N_date_time keys
+	SpeakerA string            `json:"speaker_a"`
+	SpeakerB string            `json:"speaker_b"`
+	Sessions map[string][]Turn // Parsed from session_N keys
+	Dates    map[string]string // Parsed from session_N_date_time keys
 }
 
 // Turn represents a single dialogue turn.
@@ -106,11 +106,11 @@ func (cd *ConversationData) UnmarshalJSON(data []byte) error {
 
 // Config controls the benchmark run.
 type Config struct {
-	DataPath      string
-	Limit         int // Max questions (0 = all)
-	JudgeCfg      *common.JudgeConfig
-	GraphBoost    bool
-	EmbeddingCfg  *embedding.Config // If set, enables vector search
+	DataPath     string
+	Limit        int // Max questions (0 = all)
+	JudgeCfg     *common.JudgeConfig
+	GraphBoost   bool
+	EmbeddingCfg *embedding.Config // If set, enables vector search
 }
 
 // Run executes the LOCOMO benchmark against Cortex.
@@ -280,8 +280,8 @@ func hybridSearch(ctx context.Context, stores *common.BenchStores, query, projec
 			}
 		}
 	}
- 
- 	return ftsResults, nil
+
+	return ftsResults, nil
 }
 
 // parseObservations extracts observation texts from the raw JSON structure.

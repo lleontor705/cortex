@@ -13,8 +13,8 @@ import (
 
 // BenchStores wraps a Cortex app instance for benchmark evaluation.
 type BenchStores struct {
-	App       *app.App
-	Embedder  embedding.Service
+	App      *app.App
+	Embedder embedding.Service
 }
 
 // NewBenchStores creates an in-memory Cortex instance for benchmarking.

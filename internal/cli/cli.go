@@ -12,17 +12,17 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/ollama"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
+	"github.com/lleontor705/cortex/internal/ollama"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/lleontor705/cortex/internal/setup"
 	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/tui"
 	"github.com/lleontor705/cortex/internal/update"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mark3labs/mcp-go/server"
 )
 
