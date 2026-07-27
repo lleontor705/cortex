@@ -162,6 +162,43 @@ func TestTemporalProfileExists(t *testing.T) {
 	}
 }
 
+// cortex_search_temporal is a point-in-time search tool that is NOT a member of
+// the cortex_temporal_* family but, per design (server.go ProfileTemporal), MUST
+// live in the temporal profile and MUST NOT appear in ordinary agent or admin
+// discovery. These assertions pin that membership explicitly so that removing
+// it from the temporal profile or misassigning it to agent/admin is caught.
+const searchTemporalTool = "cortex_search_temporal"
+
+// TestSearchTemporalInTemporalProfile asserts that cortex_search_temporal IS a
+// member of the temporal profile (REQ-MCP-002). It lives alongside the
+// cortex_temporal_* tools even though its name does not carry the temporal_
+// suffix, because point-in-time search belongs with temporal tooling.
+func TestSearchTemporalInTemporalProfile(t *testing.T) {
+	temporalProfile, ok := Profiles["temporal"]
+	if !ok {
+		t.Fatal("temporal profile NOT defined — cortex_search_temporal must be in a separate profile, not ordinary agent discovery (REQ-MCP-002)")
+	}
+	if !temporalProfile[searchTemporalTool] {
+		t.Errorf("temporal profile MISSING %q — point-in-time search belongs with temporal tools, not ordinary agent (REQ-MCP-002)", searchTemporalTool)
+	}
+}
+
+// TestSearchTemporalAbsentFromOrdinaryAgent asserts that cortex_search_temporal
+// does NOT appear in the ordinary agent profile (REQ-MCP-002).
+func TestSearchTemporalAbsentFromOrdinaryAgent(t *testing.T) {
+	if ProfileAgent[searchTemporalTool] {
+		t.Errorf("%q found in ordinary agent profile — temporal search must NOT appear in ordinary agent discovery (REQ-MCP-002)", searchTemporalTool)
+	}
+}
+
+// TestSearchTemporalAbsentFromAdmin asserts that cortex_search_temporal does NOT
+// appear in the admin profile (REQ-MCP-002).
+func TestSearchTemporalAbsentFromAdmin(t *testing.T) {
+	if ProfileAdmin[searchTemporalTool] {
+		t.Errorf("%q found in admin profile — temporal search belongs in the temporal profile only (REQ-MCP-002)", searchTemporalTool)
+	}
+}
+
 // TestTemporalToolsAbsentFromOrdinaryAgent asserts that temporal tools do NOT
 // appear in the ordinary agent profile (REQ-MCP-002).
 func TestTemporalToolsAbsentFromOrdinaryAgent(t *testing.T) {
