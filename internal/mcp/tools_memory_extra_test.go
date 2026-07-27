@@ -21,7 +21,7 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
-// --- mem_context ---------------------------------------------------------
+// --- cortex_context ------------------------------------------------------
 
 func TestHandleContext_EmptyStore(t *testing.T) {
 	stores := setupTestStores(t)
@@ -68,7 +68,7 @@ func TestHandleContext_Populated(t *testing.T) {
 	}
 }
 
-// --- mem_session_summary -------------------------------------------------
+// --- cortex_session_summary ----------------------------------------------
 
 // TestHandleSessionSummary_PersistsSessionSummaryType verifies the FIXED
 // behavior: handleSessionSummary saves with Type "session_summary", which is
@@ -76,7 +76,7 @@ func TestHandleContext_Populated(t *testing.T) {
 // (IsError=false) and a database row with Type "session_summary" MUST persist.
 //
 // Previously this was a known production defect: "session_summary" was rejected
-// by the validation switch, so mem_session_summary always failed to persist.
+// by the validation switch, so cortex_session_summary always failed to persist.
 // (SDD change cortex-v2-independent-platform, W1.1 type-registry fix; specs
 // REQ-FOUND-002 and REQ-MCPH-001.)
 func TestHandleSessionSummary_PersistsSessionSummaryType(t *testing.T) {
@@ -112,7 +112,7 @@ func TestHandleSessionSummary_PersistsSessionSummaryType(t *testing.T) {
 	}
 }
 
-// --- mem_get_observation -------------------------------------------------
+// --- cortex_get_observation ----------------------------------------------
 
 func TestHandleGetObservation_Success(t *testing.T) {
 	stores := setupTestStores(t)
@@ -195,7 +195,7 @@ func TestHandleSavePrompt(t *testing.T) {
 	}
 }
 
-// --- mem_update ----------------------------------------------------------
+// --- cortex_update -------------------------------------------------------
 
 func TestHandleUpdate_Success(t *testing.T) {
 	stores := setupTestStores(t)
@@ -272,7 +272,7 @@ func TestHandleUpdate_NotFound(t *testing.T) {
 	}
 }
 
-// --- mem_suggest_topic_key -----------------------------------------------
+// --- cortex_suggest_topic_key --------------------------------------------
 
 func TestHandleSuggestTopicKey(t *testing.T) {
 	cases := []struct {
@@ -330,7 +330,7 @@ func TestHandleSuggestTopicKey(t *testing.T) {
 	}
 }
 
-// --- mem_session_start / mem_session_end ---------------------------------
+// --- cortex_session_start / cortex_session_end ---------------------------
 
 func TestHandleSessionStart(t *testing.T) {
 	stores := setupTestStores(t)
@@ -417,7 +417,7 @@ func TestHandleSessionEnd_NotFound(t *testing.T) {
 	}
 }
 
-// --- mem_stats -----------------------------------------------------------
+// --- cortex_stats --------------------------------------------------------
 
 func TestHandleStats(t *testing.T) {
 	stores := setupTestStores(t)
@@ -434,7 +434,7 @@ func TestHandleStats(t *testing.T) {
 	}
 }
 
-// --- mem_timeline / mem_revision_history (edge cases) --------------------
+// --- cortex_timeline / cortex_revision_history (edge cases) --------------
 
 func TestHandleTimeline_MissingID(t *testing.T) {
 	stores := setupTestStores(t)
@@ -489,7 +489,7 @@ func TestHandleRevisionHistory_NoHistory(t *testing.T) {
 	}
 }
 
-// --- mem_capture_passive (extraction + cleaning) -------------------------
+// --- cortex_capture_passive (extraction + cleaning) ----------------------
 
 func TestHandleCapturePassive_EmptyContent(t *testing.T) {
 	stores := setupTestStores(t)
@@ -510,18 +510,15 @@ func TestHandleCapturePassive_EmptyContent(t *testing.T) {
 // learning with Type "passive", which is now part of the observation store's
 // allowed type set, so every extracted learning persists.
 //
-// NOTE on scope (important): this test passes an explicit valid source ("auto")
-// so it isolates the TYPE-registry fix (W1.1 / REQ-FOUND-002, REQ-MCPH-001).
-// The handler's DEFAULT source "mcp-passive" is NOT in the allowed source set
-// (manual, ai, auto, import); that source-registry defect is SEPARATE from the
-// type switch and is OUT OF SCOPE for W1.1 (it belongs to the source registry /
-// REQ-MCPH-002 error-swallowing work). Before the type fix, the type-rejection
-// fired first (type validated before source) and masked the source defect; now
-// that passive is accepted, a valid source is required to observe persistence
-// through this handler. The store-level test below proves both new types
-// persist unconditionally regardless of source defaults.
+// This test passes an explicit valid source ("auto"). The handler's DEFAULT
+// source was previously the invalid "mcp-passive" (not in the allowed source
+// set), but W6.2 fixed the default to domain.SourceAuto ("auto"). The
+// explicit source here is redundant now that the default is valid, but kept
+// for historical clarity. The store-level test below proves both new types
+// persist unconditionally.
 //
-// (SDD change cortex-v2-independent-platform, W1.1 type-registry fix.)
+// (SDD change cortex-v2-independent-platform, W1.1 type-registry fix + W6.2
+// source-default fix.)
 func TestHandleCapturePassive_PersistsPassiveType(t *testing.T) {
 	stores := setupTestStores(t)
 
@@ -532,8 +529,7 @@ func TestHandleCapturePassive_PersistsPassiveType(t *testing.T) {
 	result := callTool(t, handleCapturePassive(stores), map[string]interface{}{
 		"content": content,
 		"project": "demo",
-		// Explicit valid source isolates the TYPE fix from the separate
-		// default-source ("mcp-passive") defect (see note above).
+		// Explicit valid source (redundant since W6.2 default is also "auto").
 		"source": "auto",
 	})
 	text := resultText(result)
@@ -692,10 +688,10 @@ func TestHandleCapturePassive_NoLearningsSection(t *testing.T) {
 	}
 }
 
-// Direct unit tests for the pure extraction/cleaning helpers. These are
-// decoupled from the persistence defect above and give honest coverage of the
-// learning-extraction behavior (English/Spanish headers, numbered vs bullet
-// fallback, markdown stripping, and the minimum-length/word gate).
+// Direct unit tests for the pure extraction/cleaning helpers are decoupled from
+// the persistence regression coverage above and directly cover extraction
+// behavior (English/Spanish headers, numbered vs bullet fallback, markdown
+// stripping, and the minimum-length/word gate).
 
 func TestExtractLearnings(t *testing.T) {
 	cases := []struct {
