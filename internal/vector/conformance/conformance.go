@@ -18,6 +18,11 @@
 // RunSuite with a factory that builds a real adapter (Docker-backed for
 // external providers, or in-memory for sqlite_blob under cortex_vectors).
 //
+// The suite uses 64-dimensional fixtures (DefaultFixtures), the minimum
+// dimension accepted by sqlite_blob's enabled store (MinEmbeddingDimension).
+// External adapters (qdrant, pgvector) accept arbitrary dimensions, so all
+// three adapters share the SAME fixtures — the parity assertion is real.
+//
 // LOCAL-TRACK BOUNDARY: this package imports ONLY internal/domain. It never
 // imports any concrete adapter, so it compiles in the zero-CGO local build.
 // Adapters import THIS package (not the other way around), preserving the
@@ -48,12 +53,17 @@ type Fixtures struct {
 	Points []domain.VectorPoint
 }
 
-// DefaultFixtures returns a small, deterministic 4-dimensional fixture set
-// suitable for all adapters. 4 dimensions is the minimum that produces
-// non-degenerate cosine similarity rankings across 5 points. Every adapter
-// integration test uses this fixture set so the parity assertion is real.
+// DefaultFixtures returns a deterministic 64-dimensional fixture set suitable
+// for ALL adapters including sqlite_blob. 64 is the MinEmbeddingDimension
+// accepted by the enabled sqlite_blob store (internal/store/sqlite); external
+// adapters (qdrant, pgvector) accept arbitrary dimensions. Using the SAME
+// dimension across all adapters is what makes the parity assertion real.
+//
+// The cosine similarity structure is identical to a 4-dim set (points differ
+// only in the first few axes; the rest are zero), so the rankings are
+// non-degenerate and deterministic across all adapters.
 func DefaultFixtures() Fixtures {
-	dim := 4
+	dim := 64 // sqlite_blob MinEmbeddingDimension-compatible.
 	model := domain.ModelInfo{
 		Name:       "conformance-model",
 		Dimension:  dim,
@@ -61,11 +71,11 @@ func DefaultFixtures() Fixtures {
 		Normalized: true,
 	}
 	pts := []domain.VectorPoint{
-		{ID: 1, Vector: []float32{1.0, 0.0, 0.0, 0.0}, ModelInfo: model},
-		{ID: 2, Vector: []float32{0.9, 0.1, 0.0, 0.0}, ModelInfo: model},
-		{ID: 3, Vector: []float32{0.0, 1.0, 0.0, 0.0}, ModelInfo: model},
-		{ID: 4, Vector: []float32{0.0, 0.0, 1.0, 0.0}, ModelInfo: model},
-		{ID: 5, Vector: []float32{0.0, 0.0, 0.0, 1.0}, ModelInfo: model},
+		{ID: 1, Vector: vecAt(dim, 0, 1.0), ModelInfo: model},
+		{ID: 2, Vector: vecAt2(dim, 0, 0.9, 1, 0.1), ModelInfo: model},
+		{ID: 3, Vector: vecAt(dim, 1, 1.0), ModelInfo: model},
+		{ID: 4, Vector: vecAt(dim, 2, 1.0), ModelInfo: model},
+		{ID: 5, Vector: vecAt(dim, 3, 1.0), ModelInfo: model},
 	}
 	for i := range pts {
 		pts[i].Metadata = map[string]any{
@@ -75,6 +85,24 @@ func DefaultFixtures() Fixtures {
 		}
 	}
 	return Fixtures{Dimension: dim, Model: model, Points: pts}
+}
+
+// vecAt returns a dim-dimensional vector with val at position idx and 0
+// elsewhere. Used to build orthogonal fixture vectors along a single axis.
+func vecAt(dim, idx int, val float32) []float32 {
+	v := make([]float32, dim)
+	v[idx] = val
+	return v
+}
+
+// vecAt2 returns a dim-dimensional vector with val1 at idx1 and val2 at idx2.
+// Used to build the near-neighbor fixture (point 2: 0.9 along axis 0 + 0.1
+// along axis 1 → cosine ≈ 0.994 to point 1).
+func vecAt2(dim, idx1 int, val1 float32, idx2 int, val2 float32) []float32 {
+	v := make([]float32, dim)
+	v[idx1] = val1
+	v[idx2] = val2
+	return v
 }
 
 // Factory constructs a fresh, isolated domain.VectorIndex for one test case.
@@ -254,9 +282,12 @@ func assertUpsertSearchRoundTrip(t *testing.T, idx domain.VectorIndex, fix Fixtu
 func assertDimensionMismatchRejected(t *testing.T, idx domain.VectorIndex, fix Fixtures) {
 	t.Helper()
 	ctx := context.Background()
+	// Construct a vector with dim+1 elements declaring dim dimensions.
+	badVec := make([]float32, fix.Dimension+1)
+	badVec[0] = 1.0
 	bad := domain.VectorPoint{
 		ID:     999,
-		Vector: []float32{1.0, 0.0, 0.0, 0.0, 0.0}, // 5 dims, expected 4
+		Vector: badVec, // dim+1 elements, expected dim
 		ModelInfo: domain.ModelInfo{
 			Name:      fix.Model.Name,
 			Dimension: fix.Dimension,
@@ -273,7 +304,7 @@ func assertDimensionMismatchRejected(t *testing.T, idx domain.VectorIndex, fix F
 	}
 	// Verify the mismatched point was NOT stored: search must not return ID 999.
 	results, _ := idx.Search(ctx, domain.VectorQuery{
-		Vector: []float32{1.0, 0.0, 0.0, 0.0, 0.0},
+		Vector: badVec,
 		Limit:  10,
 	})
 	for _, r := range results {
