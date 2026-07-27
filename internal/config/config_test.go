@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -391,6 +393,209 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+// validBaseline is a Config that passes validate() unchanged. Vector-specific
+// tests clone it and mutate only the field under test.
+func validBaseline() *Config {
+	return &Config{
+		Server: ServerConfig{Name: "test", Version: "1.0"},
+		Database: DatabaseConfig{
+			Path:     "test.db",
+			InMemory: false,
+			Pragma: PragmaConfig{
+				JournalMode: "WAL",
+				Synchronous: "NORMAL",
+				TempStore:   "MEMORY",
+			},
+		},
+		HTTP:      HTTPConfig{Enabled: true, Port: 7438},
+		Logging:   LoggingConfig{Level: "info", Format: "json"},
+		Search:    SearchConfig{DefaultLimit: 20, MaxLimit: 100, FTS5: true, FusionK: 60},
+		Memory:    MemoryConfig{MaxObservationLength: 50000, DedupeWindow: "15m", AutoArchiveDays: 90, DecayHalfLifeDays: 30, MinArchiveScore: 0.1},
+		Lifecycle: LifecycleConfig{EnableAutoArchive: true, ArchiveCheckInterval: "1h"},
+	}
+}
+
+// TestValidate_VectorProviderEnum verifies the vector provider is restricted to
+// the scoped enum set, and that an unknown provider is rejected with a clear
+// error (no silent fallback to the default).
+func TestValidate_VectorProviderEnum(t *testing.T) {
+	validProviders := []string{"", "sqlite_blob", "qdrant", "pgvector", "none"}
+	for _, p := range validProviders {
+		cfg := validBaseline()
+		cfg.Vector.Provider = p
+		// qdrant requires full QdrantConfig to be valid; set a valid one.
+		if p == "qdrant" {
+			cfg.Vector.Qdrant = validQdrantConfig()
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("provider %q should be valid, got error: %v", p, err)
+		}
+	}
+
+	unknownProviders := []string{"redis", "pinecone", "weaviate", "milvus", "QDRANT", "SQLite_Blob"}
+	for _, p := range unknownProviders {
+		cfg := validBaseline()
+		cfg.Vector.Provider = p
+		err := validate(cfg)
+		if err == nil {
+			t.Errorf("provider %q should be REJECTED (unknown provider, no silent fallback)", p)
+			continue
+		}
+		if !strings.Contains(err.Error(), "provider") {
+			t.Errorf("provider %q error should mention 'provider', got: %v", p, err)
+		}
+	}
+}
+
+// validQdrantConfig returns a QdrantConfig that passes validation on its own.
+func validQdrantConfig() QdrantConfig {
+	return QdrantConfig{
+		Host:         "localhost",
+		Port:         6334,
+		Collection:   "cortex",
+		Dimension:    384,
+		MaxBatchSize: 256,
+		MaxRetries:   3,
+		Timeout:      30 * time.Second,
+	}
+}
+
+// TestValidate_QdrantFields verifies all QdrantConfig fields are validated with
+// clear errors when provider is "qdrant".
+func TestValidate_QdrantFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*QdrantConfig)
+		wantErr string // substring expected in error
+	}{
+		{
+			name:    "port too low",
+			modify:  func(q *QdrantConfig) { q.Port = 0 },
+			wantErr: "port",
+		},
+		{
+			name:    "port too high",
+			modify:  func(q *QdrantConfig) { q.Port = 70000 },
+			wantErr: "port",
+		},
+		{
+			name:    "dimension zero",
+			modify:  func(q *QdrantConfig) { q.Dimension = 0 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "dimension negative",
+			modify:  func(q *QdrantConfig) { q.Dimension = -8 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "batch size zero",
+			modify:  func(q *QdrantConfig) { q.MaxBatchSize = 0 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "batch size negative",
+			modify:  func(q *QdrantConfig) { q.MaxBatchSize = -5 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "retries exceed max",
+			modify:  func(q *QdrantConfig) { q.MaxRetries = 11 },
+			wantErr: "max_retries",
+		},
+		{
+			name:    "timeout zero",
+			modify:  func(q *QdrantConfig) { q.Timeout = 0 },
+			wantErr: "timeout",
+		},
+		{
+			name:    "timeout negative",
+			modify:  func(q *QdrantConfig) { q.Timeout = -1 * time.Second },
+			wantErr: "timeout",
+		},
+		{
+			name:    "collection empty",
+			modify:  func(q *QdrantConfig) { q.Collection = "" },
+			wantErr: "collection",
+		},
+		{
+			name:    "host empty",
+			modify:  func(q *QdrantConfig) { q.Host = "" },
+			wantErr: "host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseline()
+			cfg.Vector.Provider = "qdrant"
+			q := validQdrantConfig()
+			tt.modify(&q)
+			cfg.Vector.Qdrant = q
+			err := validate(cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error should contain %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestValidate_QdrantNotCheckedForOtherProviders verifies qdrant-specific field
+// validation is NOT enforced when provider is not "qdrant" (e.g. empty default
+// with dimension 0 must still pass — dimension is resolved at adapter build).
+func TestValidate_QdrantNotCheckedForOtherProviders(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "" // default local path
+	cfg.Vector.Qdrant = QdrantConfig{Dimension: 0, MaxBatchSize: 0} // would fail qdrant checks
+	if err := validate(cfg); err != nil {
+		t.Errorf("default provider should not trigger qdrant field checks: %v", err)
+	}
+}
+
+// TestConfig_String_NeverLeaksAPIKey verifies the API key NEVER appears in the
+// Config.String() representation, even when a non-empty key is configured
+// (REQ-CP-002 token storage / no plaintext secrets).
+func TestConfig_String_NeverLeaksAPIKey(t *testing.T) {
+	const secret = "sk-leak-guard-do-not-print"
+	cfg := validBaseline()
+	cfg.Vector.Qdrant.APIKey = secret
+	s := cfg.String()
+	if strings.Contains(s, secret) {
+		t.Errorf("API key LEAKED into Config.String(): %s", s)
+	}
+	// String() must still be non-empty and useful (other sections present).
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+// TestValidate_ErrorNeverContainsAPIKey verifies validation errors NEVER echo
+// the API key, regardless of which field triggers the error (REQ-CP-002).
+func TestValidate_ErrorNeverContainsAPIKey(t *testing.T) {
+	const secret = "sk-validation-guard-xyz"
+	tests := []func(*Config){
+		func(c *Config) { c.Vector.Provider = "qdrant"; c.Vector.Qdrant = validQdrantConfig(); c.Vector.Qdrant.Port = 99999 },
+		func(c *Config) { c.Vector.Provider = "bogus" },
+		func(c *Config) { c.Logging.Level = "nope" },
+	}
+	for i, mutate := range tests {
+		cfg := validBaseline()
+		cfg.Vector.Qdrant.APIKey = secret
+		mutate(cfg)
+		err := validate(cfg)
+		if err == nil {
+			t.Errorf("case %d: expected validation error, got nil", i)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("case %d: API key LEAKED into validation error: %s", i, err.Error())
+		}
+	}
+}
+
 // Helper function to clear all CORTEX environment variables
 func clearEnvVars(t *testing.T) {
 	t.Helper()
@@ -424,14 +629,9 @@ func clearEnvVars(t *testing.T) {
 // Helper function to check if string contains all substrings
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
-		if !contains(s, sub) {
+		if !strings.Contains(s, sub) {
 			return false
 		}
 	}
 	return true
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr ||
-		len(s) > len(substr) && contains(s[1:], substr)
 }

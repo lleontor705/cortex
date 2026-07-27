@@ -28,6 +28,8 @@ package qdrant
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -122,7 +124,7 @@ func newTestAdapter(t *testing.T, fc *fakeClient) *Adapter {
 		dimension:    4,
 		modelName:    "test-model",
 		maxBatchSize: 256,
-		caps: defaultCapabilities(4),
+		caps: defaultCapabilities(4, 256),
 	}
 }
 
@@ -186,6 +188,38 @@ func TestAdapter_Capabilities_DeclaresFullSet(t *testing.T) {
 	}
 	if caps.MaxBatchSize <= 0 {
 		t.Errorf("MaxBatchSize = %d, want > 0", caps.MaxBatchSize)
+	}
+}
+
+// TestAdapter_Capabilities_MaxBatchSizeReflectsConfig is the regression test for
+// a defect where Capabilities().MaxBatchSize always reported the hardcoded
+// default (256) instead of the configured/normalized batch size. The adapter
+// MUST report the actual batch ceiling it uses for chunking so capability-driven
+// callers plan their batches correctly (ADR-05, REQ-VEC-001).
+func TestAdapter_Capabilities_MaxBatchSizeReflectsConfig(t *testing.T) {
+	// NewWithClient: explicit MaxBatchSize propagates to Capabilities.
+	a := NewWithClient(&fakeClient{collectionExists: true}, AdapterConfig{
+		Collection:   "cortex_test",
+		Dimension:    4,
+		MaxBatchSize: 100,
+	})
+	caps, err := a.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if caps.MaxBatchSize != 100 {
+		t.Errorf("MaxBatchSize = %d, want 100 (configured value)", caps.MaxBatchSize)
+	}
+	// The configured batch also governs actual chunking.
+	if a.maxBatchSize != 100 {
+		t.Errorf("adapter.maxBatchSize = %d, want 100", a.maxBatchSize)
+	}
+
+	// Default (<=0) normalizes to 256.
+	aDefault := NewWithClient(&fakeClient{}, AdapterConfig{Collection: "x", Dimension: 4})
+	capsDefault, _ := aDefault.Capabilities(context.Background())
+	if capsDefault.MaxBatchSize != 256 {
+		t.Errorf("default MaxBatchSize = %d, want 256", capsDefault.MaxBatchSize)
 	}
 }
 
@@ -565,7 +599,7 @@ func TestAdapter_NoSecretsInErrors(t *testing.T) {
 		modelName:    "test-model",
 		maxBatchSize: 256,
 		apiKey:       secret,
-		caps:         defaultCapabilities(4),
+		caps:         defaultCapabilities(4, 256),
 	}
 	points := []domain.VectorPoint{{
 		ID: 1, Vector: []float32{0.1, 0.2, 0.3, 0.4},
@@ -575,12 +609,38 @@ func TestAdapter_NoSecretsInErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if contains(err.Error(), secret) {
+	if strings.Contains(err.Error(), secret) {
 		t.Errorf("API key LEAKED into error message: %s", err.Error())
 	}
 }
 
 // --- helpers ---------------------------------------------------------------
+
+// TestRedactWith_ReplacesAllOccurrences pins the secret-scrubbing behavior used
+// by the adapter's redact path. The key MUST be replaced everywhere it appears
+// (REQ-CP-002), including multiple occurrences in a single message.
+func TestRedactWith_ReplacesAllOccurrences(t *testing.T) {
+	const secret = "sk-secret-123"
+	err := fmt.Errorf("echo %s and again %s trailer", secret, secret)
+	out := redactWith(err, secret)
+	if strings.Contains(out.Error(), secret) {
+		t.Errorf("secret still present after redact: %s", out.Error())
+	}
+	if !strings.Contains(out.Error(), "***REDACTED***") {
+		t.Errorf("expected placeholder in redacted message: %s", out.Error())
+	}
+	if c := strings.Count(out.Error(), "***REDACTED***"); c != 2 {
+		t.Errorf("expected 2 placeholders, got %d: %s", c, out.Error())
+	}
+	// Empty secret or nil error → passthrough.
+	if redactWith(nil, secret) != nil {
+		t.Error("nil error should pass through unchanged")
+	}
+	plainErr := errors.New("no secret here")
+	if got := redactWith(plainErr, ""); got != plainErr {
+		t.Error("empty secret should pass through unchanged")
+	}
+}
 
 // payloadString extracts a string payload value from a Qdrant PointStruct.
 func payloadString(p *qdrant.PointStruct, key string) string {

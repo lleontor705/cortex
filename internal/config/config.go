@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -129,8 +130,14 @@ type LifecycleConfig struct {
 // import the external adapter packages (ADR-05, REQ-VEC-001/002). When
 // Provider is empty or "sqlite_blob", no external adapter is constructed
 // and the local zero-CGO default is preserved.
+//
+// Provider is an enum: "" | "sqlite_blob" (default) | "qdrant" | "pgvector"
+// | "none". "pgvector" is a SCOPED provider (recognized by validation) but
+// is NOT yet implemented — selecting it does not silently fall back to
+// another provider; the server composition path is responsible for rejecting
+// an unimplemented-but-scoped provider at wiring time.
 type VectorConfig struct {
-	Provider string       `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "none"
+	Provider string       `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "pgvector" | "none"
 	Qdrant   QdrantConfig `yaml:"qdrant" mapstructure:"qdrant"`
 }
 
@@ -141,14 +148,15 @@ type VectorConfig struct {
 // The APIKey is passed to the gRPC client and MUST NEVER be logged or
 // surfaced in error messages (REQ-CP-002 token storage / no plaintext).
 type QdrantConfig struct {
-	Host         string `yaml:"host" mapstructure:"host"`                   // gRPC host (default localhost)
-	Port         int    `yaml:"port" mapstructure:"port"`                   // gRPC port (default 6334)
-	Collection   string `yaml:"collection" mapstructure:"collection"`       // collection name (default cortex)
-	Dimension    int    `yaml:"dimension" mapstructure:"dimension"`         // expected vector dimension (collection vector size)
-	APIKey       string `yaml:"api_key" mapstructure:"api_key"`             // optional API key (never logged)
-	UseTLS       bool   `yaml:"use_tls" mapstructure:"use_tls"`             // TLS for gRPC (default false)
-	MaxBatchSize int    `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
-	MaxRetries   uint   `yaml:"max_retries" mapstructure:"max_retries"`     // transient gRPC retries (default 3)
+	Host         string        `yaml:"host" mapstructure:"host"`                   // gRPC host (default localhost)
+	Port         int           `yaml:"port" mapstructure:"port"`                   // gRPC port (default 6334)
+	Collection   string        `yaml:"collection" mapstructure:"collection"`       // collection name (default cortex)
+	Dimension    int           `yaml:"dimension" mapstructure:"dimension"`         // expected vector dimension (collection vector size)
+	APIKey       string        `yaml:"api_key" mapstructure:"api_key"`             // optional API key (never logged)
+	UseTLS       bool          `yaml:"use_tls" mapstructure:"use_tls"`             // TLS for gRPC (default false)
+	MaxBatchSize int           `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
+	MaxRetries   uint          `yaml:"max_retries" mapstructure:"max_retries"`     // transient gRPC retries (default 3)
+	Timeout      time.Duration `yaml:"timeout" mapstructure:"timeout"`             // per-operation gRPC timeout (default 30s)
 }
 
 // Default configuration values
@@ -209,6 +217,7 @@ var defaults = Config{
 			Dimension:    0, // resolved from embedding model at adapter construction
 			MaxBatchSize: 256,
 			MaxRetries:   3,
+			Timeout:      30 * time.Second,
 		},
 	},
 }
@@ -326,6 +335,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vector.qdrant.use_tls", defaults.Vector.Qdrant.UseTLS)
 	v.SetDefault("vector.qdrant.max_batch_size", defaults.Vector.Qdrant.MaxBatchSize)
 	v.SetDefault("vector.qdrant.max_retries", defaults.Vector.Qdrant.MaxRetries)
+	v.SetDefault("vector.qdrant.timeout", defaults.Vector.Qdrant.Timeout)
 }
 
 // validate checks if the configuration values are valid
@@ -425,6 +435,68 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("invalid memory.min_archive_score: %.2f (must be between 0.0 and 5.0)", cfg.Memory.MinArchiveScore)
 	}
 
+	// Validate vector provider + adapter config.
+	if err := validateVector(&cfg.Vector); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validVectorProviders is the scoped enum of recognized vector providers. An
+// empty string means "use the local sqlite_blob zero-CGO default" (no external
+// adapter). "pgvector" is scoped (recognized) but NOT yet implemented — it
+// passes config validation; the server composition path rejects wiring it.
+var validVectorProviders = map[string]bool{
+	"":            true,
+	"sqlite_blob": true,
+	"qdrant":      true,
+	"pgvector":    true,
+	"none":        true,
+}
+
+// validateVector validates the vector provider enum and, when qdrant is the
+// selected provider, the full QdrantConfig. Validation errors NEVER echo the
+// API key (REQ-CP-002). An unknown provider is rejected — there is NO silent
+// fallback to the default.
+func validateVector(v *VectorConfig) error {
+	if !validVectorProviders[v.Provider] {
+		return fmt.Errorf(
+			"invalid vector.provider: %q (valid: \"\", sqlite_blob, qdrant, pgvector, none)",
+			v.Provider,
+		)
+	}
+	if v.Provider == "qdrant" {
+		return validateQdrant(&v.Qdrant)
+	}
+	return nil
+}
+
+// validateQdrant validates the QdrantConfig connection parameters. All ranges
+// are checked with clear errors. The API key is intentionally never referenced
+// in any error string.
+func validateQdrant(q *QdrantConfig) error {
+	if q.Host == "" {
+		return fmt.Errorf("invalid vector.qdrant.host: must not be empty")
+	}
+	if q.Port < 1 || q.Port > 65535 {
+		return fmt.Errorf("invalid vector.qdrant.port: %d (must be 1-65535)", q.Port)
+	}
+	if q.Collection == "" {
+		return fmt.Errorf("invalid vector.qdrant.collection: must not be empty")
+	}
+	if q.Dimension <= 0 {
+		return fmt.Errorf("invalid vector.qdrant.dimension: %d (must be > 0)", q.Dimension)
+	}
+	if q.MaxBatchSize <= 0 {
+		return fmt.Errorf("invalid vector.qdrant.max_batch_size: %d (must be >= 1)", q.MaxBatchSize)
+	}
+	if q.MaxRetries > 10 {
+		return fmt.Errorf("invalid vector.qdrant.max_retries: %d (must be 0-10)", q.MaxRetries)
+	}
+	if q.Timeout <= 0 {
+		return fmt.Errorf("invalid vector.qdrant.timeout: %s (must be > 0)", q.Timeout)
+	}
 	return nil
 }
 
@@ -471,11 +543,16 @@ func ClearEnvVar(key string) error {
 	return os.Unsetenv(GetEnvVarName(key))
 }
 
-// String returns a string representation of the configuration (for debugging)
+// String returns a string representation of the configuration (for debugging).
+// The Vector.Qdrant.APIKey is NEVER included: secrets must not surface in logs
+// or debug output (REQ-CP-002). Vector is rendered with the key blanked so the
+// representation stays useful without leaking credentials.
 func (c *Config) String() string {
+	vec := c.Vector
+	vec.Qdrant.APIKey = "" // hard redaction: no plaintext secret in String()
 	return fmt.Sprintf(
-		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v}",
-		c.Server, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle,
+		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
+		c.Server, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
 	)
 }
 

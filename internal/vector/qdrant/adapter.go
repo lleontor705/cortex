@@ -27,6 +27,7 @@ package qdrant
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -148,7 +149,7 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		apiKey:       cfg.APIKey,
 		timeout:      timeout,
 		ownClient:    true,
-		caps:         defaultCapabilities(cfg.Dimension),
+		caps:         defaultCapabilities(cfg.Dimension, maxBatch),
 	}, nil
 }
 
@@ -174,7 +175,7 @@ func NewWithClient(client qdrantClient, cfg AdapterConfig) *Adapter {
 		apiKey:       cfg.APIKey,
 		timeout:      timeout,
 		ownClient:    false,
-		caps:         defaultCapabilities(cfg.Dimension),
+		caps:         defaultCapabilities(cfg.Dimension, maxBatch),
 	}
 }
 
@@ -184,8 +185,11 @@ func NewWithClient(client qdrantClient, cfg AdapterConfig) *Adapter {
 // a dense candidate source (the retrieval engine owns RRF fusion), so Hybrid is
 // declared as "engine" — the adapter does NOT do native fusion; it provides
 // dense candidates for the engine to fuse.
-func defaultCapabilities(dimension int) domain.Capabilities {
-	maxBatch := 256
+//
+// maxBatch is the NORMALIZED configured batch ceiling (already defaulted). It is
+// threaded through here so Capabilities().MaxBatchSize reports the SAME value
+// the adapter uses for chunking upserts — never a stale hardcoded constant.
+func defaultCapabilities(dimension, maxBatch int) domain.Capabilities {
 	return domain.Capabilities{
 		IndexType:       adapterID,
 		DistanceMetrics: []string{"cosine"},
@@ -445,39 +449,10 @@ func redactWith(err error, secret string) error {
 		return err
 	}
 	msg := err.Error()
-	if contains(msg, secret) {
-		return fmt.Errorf("%s", scrub(msg, secret))
+	if strings.Contains(msg, secret) {
+		return fmt.Errorf("%s", strings.ReplaceAll(msg, secret, "***REDACTED***"))
 	}
 	return err
-}
-
-// scrub replaces every occurrence of secret in msg with a fixed placeholder.
-func scrub(msg, secret string) string {
-	out := make([]byte, 0, len(msg))
-	i := 0
-	for i < len(msg) {
-		if i+len(secret) <= len(msg) && msg[i:i+len(secret)] == secret {
-			out = append(out, []byte("***REDACTED***")...)
-			i += len(secret)
-		} else {
-			out = append(out, msg[i])
-			i++
-		}
-	}
-	return string(out)
-}
-
-// contains reports whether s contains substr.
-func contains(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // Ensure the Adapter implements domain.VectorIndex (W8.2, REQ-VEC-001).

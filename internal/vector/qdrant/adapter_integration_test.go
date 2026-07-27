@@ -18,7 +18,9 @@ package qdrant
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -26,6 +28,8 @@ import (
 )
 
 // integrationConfig resolves host/port from env (defaults localhost:6334).
+// Both CORTEX_QDRANT_HOST and CORTEX_QDRANT_PORT are honored so CI can point
+// the suite at an arbitrary Qdrant instance.
 func integrationConfig(t *testing.T, suffix string) AdapterConfig {
 	t.Helper()
 	host := os.Getenv("CORTEX_QDRANT_HOST")
@@ -34,8 +38,14 @@ func integrationConfig(t *testing.T, suffix string) AdapterConfig {
 	}
 	port := 6334
 	if p := os.Getenv("CORTEX_QDRANT_PORT"); p != "" {
-		// keep simple: only override via env when explicitly set
-		_ = p
+		parsed, err := strconv.Atoi(p)
+		if err != nil {
+			t.Fatalf("CORTEX_QDRANT_PORT %q is not a valid integer: %v", p, err)
+		}
+		if parsed < 1 || parsed > 65535 {
+			t.Fatalf("CORTEX_QDRANT_PORT %d is out of range (1-65535)", parsed)
+		}
+		port = parsed
 	}
 	return AdapterConfig{
 		Host:         host,
@@ -149,43 +159,81 @@ func TestIntegration_Qdrant_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestIntegration_Qdrant_DimensionMismatchServerRejected verifies the Qdrant
-// server itself rejects a vector whose dimension differs from the collection's
-// configured size — defense in depth alongside the client-side fail-closed.
-func TestIntegration_Qdrant_DimensionMismatchServerRejected(t *testing.T) {
+// TestIntegration_Qdrant_DimensionMismatchRejectedClientSide verifies that a
+// vector whose dimension does not match the adapter's declared dimension is
+// REJECTED on the client side BEFORE any server mutation (no point reaches
+// Qdrant). This is the REQ-VEC-001 dim-mismatch corruption pin exercised
+// against a live server: the collection is seeded with one valid point, then a
+// wrong-dimension upsert is attempted and must fail without adding any points.
+//
+// The earlier (misleading) version of this test claimed to assert server-side
+// rejection but could not actually reach the server — the client-side check
+// catches the mismatch first. This rewrite is honest: it asserts the
+// client-side rejection AND proves zero server mutation (only the seed point
+// survives in the collection after the rejected attempt).
+func TestIntegration_Qdrant_DimensionMismatchRejectedClientSide(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	cfg := integrationConfig(t, "dimmmatch")
-	cfg.ModelName = "" // disable client-side namespace check to reach the server
+	cfg := integrationConfig(t, "dimreject")
 	a := newIntegrationAdapter(t, cfg)
 	ctx := context.Background()
 
-	// Create the collection with dimension 4 (via first valid upsert).
-	valid := domain.VectorPoint{
-		ID: 1, Vector: []float32{1, 0, 0, 0},
-		ModelInfo: domain.ModelInfo{Name: "m", Dimension: 4},
+	// Seed: one valid 4-dim point establishes the collection.
+	seed := domain.VectorPoint{
+		ID:     100,
+		Vector: []float32{1.0, 0.0, 0.0, 0.0},
+		ModelInfo: domain.ModelInfo{
+			Name:      "integration-model",
+			Dimension: 4,
+		},
 	}
-	if err := a.Upsert(ctx, []domain.VectorPoint{valid}); err != nil {
+	if err := a.Upsert(ctx, []domain.VectorPoint{seed}); err != nil {
 		t.Fatalf("seed upsert: %v", err)
 	}
 
-	// Now bypass client-side dim check by lying about ModelInfo.Dimension.
-	// The adapter's a.dimension=4 enforces collection dim; to reach the server
-	// we construct a point whose declared dimension matches (4) but whose
-	// actual vector length is 3. The adapter's validatePoint checks
-	// len(Vector)==dim, so we must make len match the declared dim. Instead,
-	// test that the COLLECTION dimension (4) rejects a wrong-sized vector by
-	// using a second adapter that expects a different dimension — which would
-	// be caught client-side. The server-side rejection is already covered by
-	// the collection having size=4; this test documents that path.
-	//
-	// The definitive client-side fail-closed is covered by the unit test
-	// TestAdapter_Upsert_DimensionMismatchRejected. Here we confirm the live
-	// collection was created with the right size.
-	health := a.Health(ctx)
-	if health.Status != domain.StatusHealthy {
-		t.Errorf("Health = %q (%s); want healthy after successful operations", health.Status, health.Message)
+	// Attempt: a 3-dim vector whose ModelInfo.Dimension LIES as 4. The adapter's
+	// validatePoint checks len(Vector)==dim, so this is rejected client-side.
+	bad := domain.VectorPoint{
+		ID:     200,
+		Vector: []float32{0.5, 0.5, 0.5}, // 3-dim, but declares Dimension: 4
+		ModelInfo: domain.ModelInfo{
+			Name:      "integration-model",
+			Dimension: 4,
+		},
+	}
+	err := a.Upsert(ctx, []domain.VectorPoint{bad})
+	if err == nil {
+		t.Fatal("expected dimension-mismatch error for 3-dim vector, got nil")
+	}
+	if !domain.IsDimensionMismatch(err) {
+		t.Fatalf("expected ErrDimensionMismatch, got: %v", err)
+	}
+	var dme *domain.DimensionMismatchError
+	if !errors.As(err, &dme) {
+		t.Fatalf("error is not a *DimensionMismatchError: %T", err)
+	}
+	if dme.Expected != 4 || dme.Actual != 3 {
+		t.Errorf("mismatch fields: Expected=%d Actual=%d, want 4/3", dme.Expected, dme.Actual)
+	}
+
+	// Zero-mutation proof: search the collection — ONLY the seed (id 100)
+	// should exist. The rejected point (id 200) must never have reached the
+	// server.
+	results, err := a.Search(ctx, domain.VectorQuery{
+		Vector: []float32{1.0, 0.0, 0.0, 0.0},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("search after rejected upsert: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == 200 {
+			t.Error("rejected point id 200 found in collection; client-side rejection failed to prevent server mutation")
+		}
+	}
+	if len(results) == 0 {
+		t.Error("expected the seed point to still be present, got empty search")
 	}
 }
 
