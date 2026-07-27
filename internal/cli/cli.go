@@ -1052,7 +1052,7 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if a.Stores.Vectors == nil || !a.Stores.Vectors.IsAvailable() {
+	if a.Stores.Vectors == nil || !domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
 		writef(stderr, "cortex: vector store not available.\nBuild with: go build -tags cortex_vectors ./cmd/cortex\n")
 		return 1
 	}
@@ -1117,7 +1117,14 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 			errors++
 			continue
 		}
-		if storeErr := a.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, a.Stores.Embeddings.Model()); storeErr != nil {
+		if storeErr := a.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
+			ID:     o.ID,
+			Vector: vec,
+			ModelInfo: domain.ModelInfo{
+				Name:      a.Stores.Embeddings.Model(),
+				Dimension: a.Stores.Embeddings.Dimensions(),
+			},
+		}}); storeErr != nil {
 			errors++
 			continue
 		}
@@ -1175,7 +1182,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 	}
 
 	// 4. Vector store
-	if a.Stores.Vectors != nil && a.Stores.Vectors.IsAvailable() {
+	if domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
 		writef(stdout, "  [OK]   Vector store: enabled\n")
 	} else {
 		writef(stdout, "  [WARN] Vector store: disabled (build with -tags cortex_vectors)\n")

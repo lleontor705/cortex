@@ -58,10 +58,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/store/bundle"
 )
 
 // modulePath is the Go module path declared in go.mod.
@@ -77,7 +81,12 @@ var serverTrackSubpkgs = []string{
 	"/internal/authz",
 	"/internal/audit",
 	"/internal/quota",
-	"/internal/vector", // whole tree: qdrant, pgvector, ...
+	// W8.1 evolution: the blanket "/internal/vector" ban is replaced with
+	// specific EXTERNAL adapter paths. The sqlite_blob adapter is LOCAL track
+	// (zero-CGO default, ADR-05) and MUST be importable by local composition.
+	// Only the external (network-service) adapters remain server-track.
+	"/internal/vector/qdrant",
+	"/internal/vector/pgvector",
 	"/internal/projection/obsidian",
 	"/internal/identity", // server identity layer; local uses domain.Principal
 }
@@ -91,35 +100,21 @@ var forbiddenExternalDeps = []string{
 	"github.com/qdrant",      // Qdrant vector client
 }
 
-// seamTypes are the W1-introduced ports. Each scan-root has a per-root
-// forbidden subset. W2 ADOPTS TxParticipant + UnitOfWork in internal/store
-// (REQ-TX-001 cross-store atomic save); those two are no longer forbidden for
-// store packages. Storage, VectorIndex, and EmbeddingProvider remain deferred
-// to W8/W11/W12 and are forbidden everywhere outside domain.
-var seamTypes = map[string]bool{
-	"Storage":           true,
-	"TxParticipant":     true,
-	"UnitOfWork":        true,
-	"VectorIndex":       true,
-	"EmbeddingProvider": true,
-}
-
 // forbiddenSeamsForRoot returns the set of seam types that are STILL forbidden
 // in non-test source under the given scan-root. This evolves per wave:
 //   - W1: all 5 forbidden everywhere outside domain.
-//   - W2: TxParticipant + UnitOfWork ADOPTED in internal/store (atomic save);
-//     Storage/VectorIndex/EmbeddingProvider still forbidden everywhere.
+//   - W2: TxParticipant + UnitOfWork ADOPTED in internal/store (atomic save).
+//   - W8: VectorIndex ADOPTED across local composition (bundle field is now
+//     domain.VectorIndex; sqlite_blob adapter implements it; consumers use it).
+//     Storage (W11) and EmbeddingProvider (W12) remain deferred.
 func forbiddenSeamsForRoot(rel string) map[string]bool {
-	if strings.HasPrefix(rel, "internal/store/") || rel == "internal/store" {
-		// W2 adoption: TxParticipant + UnitOfWork are now allowed in store.
-		return map[string]bool{
-			"Storage":           true,
-			"VectorIndex":       true,
-			"EmbeddingProvider": true,
-		}
+	// W2+W8 adoption: only Storage and EmbeddingProvider remain forbidden
+	// everywhere outside domain. TxParticipant, UnitOfWork (W2), and
+	// VectorIndex (W8) are all adopted.
+	return map[string]bool{
+		"Storage":           true,
+		"EmbeddingProvider": true,
 	}
-	// All other roots: full gate (no seam adoption yet).
-	return seamTypes
 }
 
 // forbidden returns a non-empty reason if imp is a server-track package or a
@@ -238,9 +233,10 @@ func TestForbiddenImportDetector(t *testing.T) {
 		modulePath + "/internal/audit",
 		modulePath + "/internal/quota",
 		modulePath + "/internal/store/postgres",
-		modulePath + "/internal/vector",
+		// W8.1: external vector adapters remain server-track.
 		modulePath + "/internal/vector/qdrant",
 		modulePath + "/internal/vector/pgvector",
+		modulePath + "/internal/vector/qdrant/sub",
 		modulePath + "/internal/projection/obsidian",
 		"github.com/jackc/pgx/v5",
 		"golang.org/x/oauth2",
@@ -258,6 +254,9 @@ func TestForbiddenImportDetector(t *testing.T) {
 		modulePath + "/internal/store/sqlite",
 		modulePath + "/internal/app",
 		modulePath + "/internal/platform",
+		// W8.1: sqlite_blob is LOCAL track (zero-CGO default adapter).
+		modulePath + "/internal/vector/sqlite_blob",
+		modulePath + "/internal/vector/sqlite_blob/adapter",
 		"context",
 		"time",
 		"github.com/lleontor705/cortex/internal/store/bundle",
@@ -479,4 +478,126 @@ func itoa(n int) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// ---------------------------------------------------------------------------
+// W8.1 ARCHITECTURE GATE: no concrete VectorStore escapes the bundle
+// (REQ-VEC-001, ADR-05)
+//
+// bundle.Stores.Vectors MUST be the domain.VectorIndex interface, not the
+// concrete *sqlite.VectorStore. This is the single highest-leverage change of
+// the vector modernization (#1070 §5): it unblocks every future adapter
+// (qdrant, pgvector) without touching MCP/HTTP/CLI/TUI. If a future change
+// reverts the field to the concrete type, this test fails and blocks the build.
+// ---------------------------------------------------------------------------
+
+// TestBundleVectorsFieldIsInterface uses reflection to prove at runtime that
+// the Vectors field of bundle.Stores is an interface type assignable to
+// domain.VectorIndex. A concrete pointer type (e.g. *sqlite.VectorStore) would
+// have Kind == reflect.Ptr, failing this gate.
+func TestBundleVectorsFieldIsInterface(t *testing.T) {
+	storesType := reflect.TypeOf(bundle.Stores{})
+	field, ok := storesType.FieldByName("Vectors")
+	if !ok {
+		t.Fatal("bundle.Stores has no field named Vectors")
+	}
+	if field.Type.Kind() != reflect.Interface {
+		t.Fatalf("bundle.Stores.Vectors must be an interface type (domain.VectorIndex); "+
+			"got %s (Kind=%s). A concrete type here blocks every vector adapter "+
+			"(REQ-VEC-001, ADR-05, #1070 §5).", field.Type, field.Type.Kind())
+	}
+
+	// Verify the interface is assignable from domain.VectorIndex (same type).
+	vectorIndexType := reflect.TypeOf((*domain.VectorIndex)(nil)).Elem()
+	if field.Type != vectorIndexType {
+		t.Fatalf("bundle.Stores.Vectors type = %s, want domain.VectorIndex (%s)",
+			field.Type, vectorIndexType)
+	}
+}
+
+// TestNoConcreteVectorStoreImportInConsumers scans non-test source in the
+// consumer packages (mcp, cli, tui, bench, app, store/bundle) for imports of
+// the concrete sqlite.VectorStore. The concrete type MUST NOT escape the
+// adapter boundary (internal/vector/sqlite_blob) and the store package
+// (internal/store/sqlite). Only the adapter and the store package itself may
+// reference the concrete type; every consumer depends on domain.VectorIndex.
+//
+// This uses go/build import analysis (authoritative; grep is NOT used for
+// import analysis).
+func TestNoConcreteVectorStoreImportInConsumers(t *testing.T) {
+	root := moduleRoot(t)
+
+	// Packages ALLOWED to import sqlite (and thus touch the concrete type):
+	//   - internal/store/sqlite itself (the engine)
+	//   - internal/vector/sqlite_blob (the adapter that wraps it)
+	//   - internal/store/bundle (test wiring references it in _test.go, but
+	//     production code uses the interface)
+	// Everything else MUST NOT import the concrete sqlite package for vector
+	// purposes. Note: many packages legitimately import sqlite for OTHER
+	// stores (Store, OutboxStore, etc.) — we cannot ban the import wholesale.
+	// Instead this test asserts the INTERFACE field type (covered by
+	// TestBundleVectorsFieldIsInterface) and scans for direct VectorStore
+	// type references in non-test consumer source via go/ast.
+	allowedConcreteRoots := map[string]bool{
+		"internal/store/sqlite":           true,
+		"internal/vector/sqlite_blob":     true,
+	}
+
+	scanRoots := []string{
+		"internal/mcp",
+		"internal/cli",
+		"internal/tui",
+		"internal/app",
+		"internal/store/bundle",
+		"internal/embedding",
+		"bench",
+	}
+
+	ctx := build.Default
+	ctx.CgoEnabled = false
+
+	violations := 0
+	for _, rel := range scanRoots {
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			fset := token.NewFileSet()
+			file, perr := parser.ParseFile(fset, path, nil, 0)
+			if perr != nil {
+				return nil
+			}
+			// Look for any selector expression ending in ".VectorStore" — a
+			// direct reference to the concrete type outside the adapter/store.
+			ast.Inspect(file, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				if sel.Sel.Name == "VectorStore" {
+					rel, _ := filepath.Rel(root, path)
+					rel = filepath.ToSlash(rel)
+					if !allowedConcreteRoots[filepath.Dir(rel)] {
+						t.Errorf("CONCRETE ESCAPE: %s references concrete .VectorStore — consumers must use domain.VectorIndex (REQ-VEC-001, ADR-05)", rel)
+						violations++
+					}
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			t.Logf("walk %s: %v", rel, err)
+		}
+	}
+	if violations > 0 {
+		t.Fatalf("found %d concrete VectorStore references outside adapter/store boundary", violations)
+	}
 }

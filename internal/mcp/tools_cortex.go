@@ -381,8 +381,9 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		searchMode := "FTS5"
 
-		// Vector search (when available)
-		if stores.Vectors != nil && stores.Vectors.IsAvailable() {
+		// Vector search (when available). W8.1: stores.Vectors is a
+		// domain.VectorIndex; availability is checked via Health.
+		if domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
 			var queryVec []float32
 
 			// Prefer generating a real query embedding via the embedding service
@@ -396,16 +397,21 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 			if len(queryVec) > 0 {
 				searchMode = "hybrid (FTS5 + vector)"
-				vecOpts := domain.VectorSearchOptions{
-					Embedding: queryVec,
+				vecQuery := domain.VectorQuery{
+					Vector:    queryVec,
 					Limit:     limit,
 					Threshold: 0.3,
-					Project:   project,
-					Scope:     scope,
+					Filters: map[string]any{
+						"project": project,
+						"scope":   scope,
+					},
 				}
-				vecResults, vecErr := stores.Vectors.SearchByVector(ctx, vecOpts)
-				if vecErr == nil && len(vecResults) > 0 {
-					ftsResults = fuseResults(ftsResults, vecResults, limit)
+				vecCandidates, vecErr := stores.Vectors.Search(ctx, vecQuery)
+				if vecErr == nil && len(vecCandidates) > 0 {
+					vecResults := revalidateCandidates(ctx, stores.Observations, vecCandidates)
+					if len(vecResults) > 0 {
+						ftsResults = fuseResults(ftsResults, vecResults, limit)
+					}
 				}
 			}
 		}
@@ -427,6 +433,33 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		return textResult("%s", sb.String())
 	}
+}
+
+// revalidateCandidates converts lightweight VectorCandidate results (ID+score)
+// into full VectorSearchResult entries by looking up the observation data from
+// the store. This bridges the W8 VectorIndex port (which returns only IDs) to
+// the existing fuse logic (which needs full observation data). Candidates
+// whose observation cannot be loaded (deleted, missing) are dropped — the same
+// revalidation discipline W5.3 applies to retrieval candidates.
+func revalidateCandidates(ctx context.Context, obs observationByID, candidates []domain.VectorCandidate) []*domain.VectorSearchResult {
+	results := make([]*domain.VectorSearchResult, 0, len(candidates))
+	for _, c := range candidates {
+		o, err := obs.GetByID(ctx, c.ID)
+		if err != nil || o == nil {
+			continue // soft-deleted or missing: drop
+		}
+		results = append(results, &domain.VectorSearchResult{
+			Observation: *o,
+			Similarity:  c.Score,
+		})
+	}
+	return results
+}
+
+// observationByID is the subset of the observation store needed for candidate
+// revalidation. *sqlite.Store satisfies this structurally.
+type observationByID interface {
+	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
 }
 
 // fuseResults combines FTS5 and vector search results using Reciprocal Rank Fusion (k=60).

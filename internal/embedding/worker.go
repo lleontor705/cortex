@@ -44,9 +44,12 @@ type observationReader interface {
 	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
 }
 
-// vectorWriter stores an embedding vector for an observation.
+// vectorWriter stores an embedding vector for an observation via the
+// domain.VectorIndex port (W8 adoption of ADR-05). The worker upserts a
+// single-point batch per intent; the model-version namespace on the
+// VectorPoint lets the adapter enforce dimension consistency (REQ-VEC-001).
 type vectorWriter interface {
-	StoreEmbedding(ctx context.Context, observationID int64, embedding []float32, model string) error
+	Upsert(ctx context.Context, points []domain.VectorPoint) error
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +121,11 @@ type Worker struct {
 	backoffFn  func(attempt int) time.Duration
 }
 
-// NewWorker creates an embedding worker. The concrete *sqlitestore.OutboxStore,
-// *sqlitestore.Store, and *sqlitestore.VectorStore satisfy the interface
-// parameters structurally (ADR-04: depend on existing concrete stores, NOT the
-// domain ports — that's W8 scope).
+// NewWorker creates an embedding worker. The concrete *sqlitestore.OutboxStore
+// and *sqlitestore.Store satisfy the interface parameters structurally; the
+// vectors parameter accepts any domain.VectorIndex implementation (the
+// sqlite_blob adapter is the W8 default, ADR-05). The worker depends on the
+// domain port, not the concrete vector store.
 func NewWorker(outbox outboxQueue, obs observationReader, embeddings Service, vectors vectorWriter, cfg WorkerConfig) *Worker {
 	return &Worker{
 		outbox:     outbox,
@@ -310,8 +314,18 @@ func (w *Worker) processIntent(ctx, finalizeCtx context.Context, in sqlitestore.
 		return
 	}
 
-	// 4. Upsert vector (runCtx-bounded).
-	if err := w.vectors.StoreEmbedding(ctx, in.ObservationID, vec, w.embeddings.Model()); err != nil {
+	// 4. Upsert vector via the VectorIndex port (runCtx-bounded). The
+	// model-version namespace on the VectorPoint lets the adapter enforce
+	// dimension consistency (REQ-VEC-001 dim-mismatch corruption pin).
+	point := domain.VectorPoint{
+		ID:     in.ObservationID,
+		Vector: vec,
+		ModelInfo: domain.ModelInfo{
+			Name:      w.embeddings.Model(),
+			Dimension: expectedDims,
+		},
+	}
+	if err := w.vectors.Upsert(ctx, []domain.VectorPoint{point}); err != nil {
 		if ctx.Err() != nil {
 			return // leave leased; recovery handles on restart
 		}

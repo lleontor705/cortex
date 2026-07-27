@@ -16,6 +16,7 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
@@ -131,7 +132,7 @@ func setupTestStores(t *testing.T) *Stores {
 		Prompts:           prompt.NewStore(db),
 		Graph:             graphstore.NewStore(db),
 		Scoring:           scoringstore.NewStore(db),
-		Vectors:           sqlitestore.NewVectorStore(db),
+		Vectors:           sqlite_blob.New(db),
 		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(db),
 	}
 }

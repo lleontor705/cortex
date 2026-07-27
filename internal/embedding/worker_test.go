@@ -120,7 +120,8 @@ func (f *fakeEmbeddingService) Embed(_ context.Context, text string) ([]float32,
 func (f *fakeEmbeddingService) Dimensions() int { return f.dims }
 func (f *fakeEmbeddingService) Model() string   { return f.model }
 
-// fakeVectorWriter records upserts and can be configured to fail.
+// fakeVectorWriter records upserts and can be configured to fail. Implements
+// the worker's vectorWriter interface (domain.VectorIndex subset: Upsert).
 type fakeVectorWriter struct {
 	mu      sync.Mutex
 	upserts map[int64][]float32
@@ -131,15 +132,17 @@ func newFakeVectorWriter() *fakeVectorWriter {
 	return &fakeVectorWriter{upserts: make(map[int64][]float32)}
 }
 
-func (f *fakeVectorWriter) StoreEmbedding(_ context.Context, observationID int64, embedding []float32, _ string) error {
+func (f *fakeVectorWriter) Upsert(_ context.Context, points []domain.VectorPoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return f.failErr
 	}
-	cp := make([]float32, len(embedding))
-	copy(cp, embedding)
-	f.upserts[observationID] = cp
+	for _, p := range points {
+		cp := make([]float32, len(p.Vector))
+		copy(cp, p.Vector)
+		f.upserts[p.ID] = cp
+	}
 	return nil
 }
 

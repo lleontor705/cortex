@@ -31,7 +31,7 @@ type Stores struct {
 	Prompts           *prompt.Store
 	Graph             *graphstore.Store
 	Scoring           *scoringstore.Store
-	Vectors           *sqlitestore.VectorStore
+	Vectors           domain.VectorIndex
 	TemporalSnapshots *sqlitestore.TemporalSnapshotRepository
 	Entities          *entitystore.Store
 	Metrics           *sqlitestore.MetricsRepository

@@ -25,6 +25,7 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
 )
 
 // Options controls how the application is opened.
@@ -113,7 +114,7 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		Prompts:           prompt.NewStore(manager.DB()),
 		Graph:             graphstore.NewStore(manager.DB()),
 		Scoring:           scoringstore.NewStore(manager.DB()),
-		Vectors:           sqlitestore.NewVectorStore(manager.DB()),
+		Vectors:           sqlite_blob.New(manager.DB()),
 		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(manager.DB()),
 		Entities:          entitystore.NewStore(manager.DB()),
 		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
@@ -160,7 +161,11 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	// available (ADR-04, W4.1, REQ-EMB-001). In zero-embedding mode (no provider
 	// configured, or vec extension unavailable), the worker is NOT started and
 	// the outbox stays nil — the local save path is byte-for-byte unchanged.
-	if stores.Embeddings != nil && stores.Vectors != nil && stores.Vectors.IsAvailable() {
+	//
+	// W8.1: stores.Vectors is now a domain.VectorIndex (the sqlite_blob adapter).
+	// Availability is checked via Health (the adapter reports degraded when the
+	// cortex_vectors tag is not set, preserving the exact zero-CGO default).
+	if stores.Embeddings != nil && domain.IsVectorIndexHealthy(context.Background(), stores.Vectors) {
 		stores.Outbox = sqlitestore.NewOutboxStore(manager.DB())
 		stores.Worker = embedding.NewWorker(
 			stores.Outbox,

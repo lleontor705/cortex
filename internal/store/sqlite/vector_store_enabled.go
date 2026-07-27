@@ -21,18 +21,13 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
-// DefaultEmbeddingDimension is the default dimension for embeddings.
-// Common dimensions: 384 (MiniLM), 768 (nomic-embed-text), 1536 (OpenAI).
-const DefaultEmbeddingDimension = 768
-
-// MinEmbeddingDimension and MaxEmbeddingDimension set valid bounds.
-const (
-	MinEmbeddingDimension = 64
-	MaxEmbeddingDimension = 4096
-)
-
 // VectorStore implements the vector similarity search store.
 // This is the full implementation used when cortex_vectors build tag is enabled.
+//
+// Embedding dimension bounds (DefaultEmbeddingDimension,
+// MinEmbeddingDimension, MaxEmbeddingDimension) are declared in
+// vector_constants.go (build-tag-agnostic) so the sqlite_blob adapter can
+// reference them under both builds.
 type VectorStore struct {
 	db *sql.DB
 }

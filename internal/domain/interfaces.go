@@ -458,3 +458,25 @@ type VectorCandidate struct {
 	Score      float64
 	Provenance string // adapter that produced this candidate
 }
+
+// IsVectorIndexHealthy reports whether idx is non-nil and reports a healthy
+// status. It is the W8 replacement for the legacy VectorRepository.IsAvailable()
+// bool: consumers gate expensive work (embedding generation, reindex loops) on
+// this check before calling Upsert/Search. A nil index or a degraded/unhealthy
+// adapter returns false (REQ-VEC-001 zero-CGO default: the sqlite_blob stub
+// reports unhealthy and operations return ErrVectorSearchDisabled).
+func IsVectorIndexHealthy(ctx context.Context, idx VectorIndex) bool {
+	if idx == nil {
+		return false
+	}
+	return idx.Health(ctx).Status == StatusHealthy
+}
+
+// Health status constants used by Storage, VectorIndex, and EmbeddingProvider
+// ports. Keeping them as typed constants (not magic strings) lets adapters and
+// consumers compare deterministically.
+const (
+	StatusHealthy   = "healthy"
+	StatusDegraded  = "degraded"
+	StatusUnhealthy = "unhealthy"
+)

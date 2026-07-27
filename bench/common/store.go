@@ -75,12 +75,20 @@ func (bs *BenchStores) IngestSession(ctx context.Context, sessionID, project str
 			return fmt.Errorf("bench: save observation %d: %w", i, err)
 		}
 
-		// Auto-embed if embeddings are enabled
-		if bs.Embedder != nil && bs.App.Stores.Vectors != nil && bs.App.Stores.Vectors.IsAvailable() {
+		// Auto-embed if embeddings are enabled. W8.1: stores.Vectors is a
+		// domain.VectorIndex; availability is checked via Health.
+		if bs.Embedder != nil && domain.IsVectorIndexHealthy(ctx, bs.App.Stores.Vectors) {
 			text := observations[i].Title + "\n" + observations[i].Content
 			vec, embErr := bs.Embedder.Embed(ctx, text)
 			if embErr == nil && len(vec) > 0 {
-				_ = bs.App.Stores.Vectors.StoreEmbedding(ctx, observations[i].ID, vec, bs.Embedder.Model())
+				_ = bs.App.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
+					ID:     observations[i].ID,
+					Vector: vec,
+					ModelInfo: domain.ModelInfo{
+						Name:      bs.Embedder.Model(),
+						Dimension: bs.Embedder.Dimensions(),
+					},
+				}})
 			}
 		}
 	}

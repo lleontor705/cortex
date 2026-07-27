@@ -452,7 +452,7 @@ func startReindexCmd(d *Deps) tea.Cmd {
 		if d.App.Stores.Embeddings == nil {
 			return reindexProgressMsg{done: true, err: fmt.Errorf("no embedding provider configured")}
 		}
-		if d.App.Stores.Vectors == nil || !d.App.Stores.Vectors.IsAvailable() {
+		if d.App.Stores.Vectors == nil || !domain.IsVectorIndexHealthy(context.Background(), d.App.Stores.Vectors) {
 			return reindexProgressMsg{done: true, err: fmt.Errorf("vector store not available (build with -tags cortex_vectors)")}
 		}
 
@@ -470,7 +470,14 @@ func startReindexCmd(d *Deps) tea.Cmd {
 				errCount++
 				continue
 			}
-			if storeErr := d.App.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, d.App.Stores.Embeddings.Model()); storeErr != nil {
+			if storeErr := d.App.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
+			ID:     o.ID,
+			Vector: vec,
+			ModelInfo: domain.ModelInfo{
+				Name:      d.App.Stores.Embeddings.Model(),
+				Dimension: d.App.Stores.Embeddings.Dimensions(),
+			},
+		}}); storeErr != nil {
 				errCount++
 				continue
 			}

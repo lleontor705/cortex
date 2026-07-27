@@ -20,11 +20,13 @@ Thumbs.db
 # Go
 vendor/
 
-# Coverage profiles (go test -coverprofile / go tool cover)
+# Coverage profiles (go test -coverprofile / go tool cover).
+# The broad /coverage* pattern catches ad-hoc names like coverage-w8,
+# coverage.html, etc. without listing each typo individually.
 /cover
-/coverage
+/cover.*
+/coverage*
 *.prof
-coverage*.out
 
 # Claude local settings
 .claude/settings.local.json

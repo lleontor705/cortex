@@ -258,24 +258,52 @@ func hybridSearch(ctx context.Context, stores *common.BenchStores, query, projec
 		return nil, err
 	}
 
-	// Vector search (when embeddings are available)
-	if stores.Embedder != nil && stores.App.Stores.Vectors != nil && stores.App.Stores.Vectors.IsAvailable() {
+	// Vector search (when embeddings are available). W8.1: stores.Vectors is a
+	// domain.VectorIndex; availability is checked via Health.
+	if stores.Embedder != nil && domain.IsVectorIndexHealthy(ctx, stores.App.Stores.Vectors) {
 		queryVec := stores.EmbedQuery(ctx, query)
 		if len(queryVec) > 0 {
-			vecResults, vecErr := stores.App.Stores.Vectors.SearchByVector(ctx, domain.VectorSearchOptions{
-				Embedding: queryVec,
+			vecCandidates, vecErr := stores.App.Stores.Vectors.Search(ctx, domain.VectorQuery{
+				Vector:    queryVec,
 				Limit:     10,
 				Threshold: 0.2,
-				Project:   project,
+				Filters: map[string]any{
+					"project": project,
+				},
 			})
-			if vecErr == nil && len(vecResults) > 0 {
-				// RRF fusion
-				ftsResults = fuseResults(ftsResults, vecResults, 10)
+			if vecErr == nil && len(vecCandidates) > 0 {
+				vecResults := revalidateCandidates(ctx, stores.App.Stores.Observations, vecCandidates)
+				if len(vecResults) > 0 {
+					ftsResults = fuseResults(ftsResults, vecResults, 10)
+				}
 			}
 		}
 	}
 
 	return ftsResults, nil
+}
+
+// revalidateCandidates converts lightweight VectorCandidate results into full
+// VectorSearchResult entries by looking up observation data (W8.1: VectorIndex
+// returns ID+score; full observation data is revalidated against the store).
+func revalidateCandidates(ctx context.Context, obs observationByID, candidates []domain.VectorCandidate) []*domain.VectorSearchResult {
+	results := make([]*domain.VectorSearchResult, 0, len(candidates))
+	for _, c := range candidates {
+		o, err := obs.GetByID(ctx, c.ID)
+		if err != nil || o == nil {
+			continue
+		}
+		results = append(results, &domain.VectorSearchResult{
+			Observation: *o,
+			Similarity:  c.Score,
+		})
+	}
+	return results
+}
+
+// observationByID is the observation-store subset for candidate revalidation.
+type observationByID interface {
+	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
 }
 
 // fuseResults combines FTS5 and vector results using Reciprocal Rank Fusion.

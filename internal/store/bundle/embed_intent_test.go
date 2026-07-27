@@ -10,6 +10,7 @@ import (
 	"github.com/lleontor705/cortex/internal/embedding"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
 
 	_ "modernc.org/sqlite"
 )
@@ -203,7 +204,7 @@ func TestSaveWithEmbedIntent_SaturationFailClosed_ViaWorker(t *testing.T) {
 		stores.Outbox,
 		stores.Observations,
 		stores.Embeddings,
-		sqlitestore.NewVectorStore(db),
+		sqlite_blob.New(db),
 		embedding.WorkerConfig{MaxBacklog: 2},
 	)
 
@@ -310,7 +311,7 @@ func TestStores_WorkerField_HoldsHandle(t *testing.T) {
 		sqlitestore.NewOutboxStore(db),
 		sqlitestore.NewStore(db),
 		&stubEmbeddingService{model: "test-model", dims: 768},
-		sqlitestore.NewVectorStore(db),
+		sqlite_blob.New(db),
 		embedding.WorkerConfig{},
 	)
 	stores := &bundle.Stores{

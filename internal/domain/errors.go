@@ -37,7 +37,61 @@ var (
 
 	// ErrInvalidEmbedding indicates an invalid embedding vector.
 	ErrInvalidEmbedding = errors.New("invalid embedding vector")
+
+	// ErrDimensionMismatch indicates a vector whose dimension does not match
+	// the declared model namespace. REQ-VEC-001 error scenario: mismatched
+	// vectors MUST be rejected (not scored 0 and stored) to prevent
+	// dimension-mismatch corruption. The legacy cosine path logged a warning
+	// and returned 0 — this sentinel pins the corrected, fail-closed behavior.
+	ErrDimensionMismatch = errors.New("vector dimension mismatch")
+
+	// ErrNamespaceMismatch indicates a vector whose model/version namespace
+	// differs from the index namespace. REQ-VEC-001: model-version namespace
+	// prevents dimension-mismatch corruption; a cross-namespace upsert is
+	// rejected rather than silently overwriting.
+	ErrNamespaceMismatch = errors.New("vector model namespace mismatch")
 )
+
+// DimensionMismatchError wraps ErrDimensionMismatch with the expected and
+// actual dimensions plus the offending namespace. It is the structured form
+// returned by VectorIndex adapters when an upsert violates the model-version
+// namespace invariant (REQ-VEC-001).
+type DimensionMismatchError struct {
+	Expected  int    // ModelInfo.Dimension declared on the point (or index namespace)
+	Actual    int    // len(Vector) observed
+	Namespace string // model:version namespace (may be empty)
+}
+
+// Error renders the mismatch with enough context to diagnose the cause.
+func (e *DimensionMismatchError) Error() string {
+	ns := ""
+	if e.Namespace != "" {
+		ns = " (namespace: " + e.Namespace + ")"
+	}
+	return fmt.Sprintf("vector dimension mismatch: expected %d, got %d%s", e.Expected, e.Actual, ns)
+}
+
+// Unwrap returns ErrDimensionMismatch so errors.Is(err, ErrDimensionMismatch)
+// works for every adapter's mismatch rejection.
+func (e *DimensionMismatchError) Unwrap() error {
+	return ErrDimensionMismatch
+}
+
+// NewDimensionMismatchError constructs a structured DimensionMismatchError.
+func NewDimensionMismatchError(expected, actual int, namespace string) *DimensionMismatchError {
+	return &DimensionMismatchError{Expected: expected, Actual: actual, Namespace: namespace}
+}
+
+// IsDimensionMismatch reports whether err is a dimension-mismatch rejection.
+// Adapters use this to classify upsert failures as non-retryable (the vector
+// itself is wrong, not a transient backend issue).
+func IsDimensionMismatch(err error) bool {
+	var dme *DimensionMismatchError
+	if errors.As(err, &dme) {
+		return true
+	}
+	return errors.Is(err, ErrDimensionMismatch)
+}
 
 // NotFoundError wraps ErrNotFound with context about what was not found.
 type NotFoundError struct {
