@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
@@ -97,9 +98,11 @@ func Extract(obs *domain.Observation) []*domain.EntityLink {
 		}
 		seen[key] = true
 		links = append(links, &domain.EntityLink{
-			ObservationID: obs.ID,
-			EntityType:    entityType,
-			EntityValue:   value,
+			ObservationID:   obs.ID,
+			EntityType:      entityType,
+			EntityValue:     value,
+			NormalizedValue: Normalize(entityType, value),
+			Provenance:      "deterministic-regex",
 		})
 	}
 
@@ -193,6 +196,20 @@ func Extract(obs *domain.Observation) []*domain.EntityLink {
 	}
 
 	return links
+}
+
+// Normalize returns a deterministic canonical key. It deliberately performs
+// no fuzzy/LLM matching: lower-casing, Unicode space folding and punctuation
+// removal are safe, repeatable operations suitable for blocking and dedup.
+func Normalize(entityType, value string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range v {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '/' || r == ':' || r == '@' || r == '.' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return entityType + ":" + b.String()
 }
 
 // isSQLKeyword returns true for SQL keywords that are not table names.

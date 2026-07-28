@@ -203,6 +203,10 @@ CREATE TABLE edges (
     valid_from     TEXT,
     invalid_at     TEXT,
     valid_until    TEXT,  -- v2: bi-temporal close on supersede (Graphiti pattern)
+    tx_from        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tx_until       TEXT,
+    tenant_id      TEXT,
+    workspace_id   TEXT,
     evolution_id   INTEGER,
     evolution_type TEXT NOT NULL DEFAULT 'original',
     fact_state     TEXT NOT NULL DEFAULT 'current',
@@ -222,6 +226,8 @@ CREATE INDEX idx_edges_evolution_id  ON edges(evolution_id);
 CREATE INDEX idx_edges_validity      ON edges(invalid_at);
 -- v2: partial index for current-state fact queries (excludes closed valid_until).
 CREATE INDEX idx_edges_valid         ON edges(from_obs_id) WHERE valid_until IS NULL;
+CREATE INDEX idx_edges_temporal      ON edges(valid_from, valid_until, tx_from, tx_until);
+CREATE INDEX idx_edges_tenant        ON edges(tenant_id, workspace_id);
 
 -- ===========================================================================
 -- 5. Importance scoring
@@ -271,6 +277,8 @@ CREATE TABLE entity_links (
     observation_id INTEGER NOT NULL,
     entity_type    TEXT NOT NULL,
     entity_value   TEXT NOT NULL,
+    normalized_value TEXT NOT NULL DEFAULT '',
+    provenance     TEXT NOT NULL DEFAULT 'deterministic',
     created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
 );
@@ -279,6 +287,7 @@ CREATE INDEX idx_entity_obs    ON entity_links(observation_id);
 CREATE INDEX idx_entity_type   ON entity_links(entity_type);
 CREATE INDEX idx_entity_value  ON entity_links(entity_value);
 CREATE UNIQUE INDEX idx_entity_unique ON entity_links(observation_id, entity_type, entity_value);
+CREATE INDEX idx_entity_block ON entity_links(entity_type, normalized_value);
 
 -- ===========================================================================
 -- 8. Observability (metrics, quality_metrics, temporal_snapshots)

@@ -22,11 +22,33 @@ const sqliteDatetimeFormat = "2006-01-02 15:04:05"
 // Store implements the SQLite graph store.
 type Store struct {
 	db *sql.DB
+	v2 bool
 }
+
+// v2TemporalSchema detects the clean v2 graph schema without coupling the
+// store to a particular backend implementation.
+func (s *Store) v2TemporalSchema(ctx context.Context) bool {
+	return s.v2
+}
+
+type graphTxKey struct{}
+
+// WithinTx enlists the graph store in a shared SQLite UnitOfWork transaction.
+func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
+	tx, ok := handle.(*sql.Tx)
+	if !ok {
+		return fmt.Errorf("graph store: WithinTx expected *sql.Tx handle, got %T", handle)
+	}
+	return fn(context.WithValue(ctx, graphTxKey{}, tx))
+}
+
+func graphTx(ctx context.Context) *sql.Tx { tx, _ := ctx.Value(graphTxKey{}).(*sql.Tx); return tx }
 
 // NewStore creates a new graph store with the given database connection.
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	var ddl string
+	_ = db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='edges'`).Scan(&ddl)
+	return &Store{db: db, v2: strings.Contains(ddl, "tx_from")}
 }
 
 // CreateEdge creates a relationship between two observations.
@@ -39,13 +61,36 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 		}
 	}
 
-	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, source, reasoning, valid_from, invalid_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight,
-		edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning),
-		nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt),
-	)
+	tx := graphTx(ctx)
+	var result sql.Result
+	var err error
+	if s.v2TemporalSchema(ctx) {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		validFrom := nullableTime(edge.ValidFrom)
+		if validFrom == nil {
+			validFrom = now
+		}
+		q := `INSERT INTO edges (from_obs_id,to_obs_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tenant_id,workspace_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+		if tx != nil {
+			result, err = tx.ExecContext(ctx, q, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), validFrom, nullableTime(edge.InvalidAt), nullableTime(edge.ValidUntil), now, nullableString(edge.TenantID), nullableString(edge.WorkspaceID))
+		} else {
+			result, err = s.db.ExecContext(ctx, q, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), validFrom, nullableTime(edge.InvalidAt), nullableTime(edge.ValidUntil), now, nullableString(edge.TenantID), nullableString(edge.WorkspaceID))
+		}
+		if err == nil && (edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts) {
+			state := "deprecated"
+			if edge.RelationType == domain.RelationSupersedes {
+				state = "superseded"
+			}
+			update := `UPDATE edges SET valid_until=?, tx_until=?, fact_state=?, evolution_type=?, change_reason=COALESCE(?,change_reason) WHERE to_obs_id=? AND valid_until IS NULL AND fact_state NOT IN ('deprecated','superseded') AND id<>last_insert_rowid()`
+			if tx != nil {
+				_, err = tx.ExecContext(ctx, update, now, now, state, edge.RelationType, nullableString(edge.ChangeReason), edge.ToObsID)
+			} else {
+				_, err = s.db.ExecContext(ctx, update, now, now, state, edge.RelationType, nullableString(edge.ChangeReason), edge.ToObsID)
+			}
+		}
+	} else {
+		result, err = s.db.ExecContext(ctx, `INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, source, reasoning, valid_from, invalid_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt))
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return domain.ErrAlreadyExists
@@ -65,9 +110,129 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 	return nil
 }
 
+// CreateEdgeInTx is the explicit atomic-save seam; the transaction is supplied
+// by WithinTx and therefore predecessor closure and successor insert cannot
+// commit independently.
+func (s *Store) CreateEdgeInTx(ctx context.Context, edge *domain.Edge) error {
+	return s.CreateEdge(ctx, edge)
+}
+
+// CurrentEdges returns current facts only. Historical, deprecated and
+// superseded edges remain queryable through GetEdge/EvolutionChain.
+func (s *Store) CurrentEdges(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
+	if !s.v2TemporalSchema(ctx) {
+		return s.GetEdgesForObservation(ctx, obsID)
+	}
+	return s.queryTemporalEdges(ctx, `(from_obs_id=? OR to_obs_id=?) AND valid_until IS NULL AND invalid_at IS NULL AND fact_state NOT IN ('deprecated','superseded')`, obsID, obsID)
+}
+
+// EdgesAsOf reconstructs a graph at a valid-time and system-time point.
+func (s *Store) EdgesAsOf(ctx context.Context, obsID int64, validAt, systemAt time.Time) ([]*domain.Edge, error) {
+	if !s.v2TemporalSchema(ctx) {
+		return s.GetEdgesValidAt(ctx, obsID, validAt)
+	}
+	v, st := validAt.UTC().Format(time.RFC3339Nano), systemAt.UTC().Format(time.RFC3339Nano)
+	return s.queryTemporalEdges(ctx, `(from_obs_id=? OR to_obs_id=?) AND (valid_from IS NULL OR valid_from<=?) AND (valid_until IS NULL OR valid_until>?) AND tx_from<=? AND (tx_until IS NULL OR tx_until>?)`, obsID, obsID, v, v, st, st)
+}
+
+// GetRelatedScoped performs bounded bidirectional traversal with cycle safety
+// and tenant/workspace/project isolation. The visited set is maintained by the
+// recursive CTE's UNION (not UNION ALL), so cycles cannot grow without bound.
+func (s *Store) GetRelatedScoped(ctx context.Context, obsID int64, opts domain.GraphTraversalOptions) ([]*domain.Observation, error) {
+	depth := opts.Depth
+	if depth <= 0 {
+		depth = 1
+	}
+	if depth > 10 {
+		depth = 10
+	}
+	budget := opts.MaxVisited
+	if budget <= 0 {
+		budget = 1000
+	}
+	if budget > 10000 {
+		budget = 10000
+	}
+	if !s.v2TemporalSchema(ctx) {
+		return s.GetRelated(ctx, obsID, depth)
+	}
+	q := `WITH RECURSIVE walk(id,lvl) AS (SELECT ?,0 UNION SELECT CASE WHEN e.from_obs_id=walk.id THEN e.to_obs_id ELSE e.from_obs_id END,walk.lvl+1 FROM edges e JOIN walk ON (e.from_obs_id=walk.id OR e.to_obs_id=walk.id) JOIN observations so ON so.id=e.from_obs_id JOIN observations tobs ON tobs.id=e.to_obs_id WHERE walk.lvl<? AND e.valid_until IS NULL AND e.invalid_at IS NULL AND e.fact_state NOT IN ('deprecated','superseded') AND (?='' OR e.tenant_id=?) AND (?='' OR e.workspace_id=?) LIMIT ?) SELECT DISTINCT o.id,o.title,o.content,o.type,o.project,o.scope,o.session_id,COALESCE(o.topic_key,''),COALESCE(o.confidence,1),COALESCE(o.source,'manual'),COALESCE(o.tags,''),o.created_at,o.updated_at FROM observations o JOIN walk ON walk.id=o.id WHERE o.id<>? AND o.deleted_at IS NULL AND (?='' OR o.project=?) AND (?='' OR o.tenant_id=?) AND (?='' OR o.workspace_id=?) ORDER BY walk.lvl,o.created_at DESC`
+	args := []any{obsID, depth, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID, budget, obsID, opts.Project, opts.Project, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("graph: scoped traversal: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*domain.Observation
+	for rows.Next() {
+		o := &domain.Observation{}
+		var tags, ca, ua string
+		if err := rows.Scan(&o.ID, &o.Title, &o.Content, &o.Type, &o.Project, &o.Scope, &o.SessionID, &o.TopicKey, &o.Confidence, &o.Source, &tags, &ca, &ua); err != nil {
+			return nil, err
+		}
+		o.CreatedAt, _ = parseAnyTime(ca)
+		o.UpdatedAt, _ = parseAnyTime(ua)
+		if tags != "" {
+			_ = json.Unmarshal([]byte(tags), &o.Tags)
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryTemporalEdges(ctx context.Context, where string, args ...any) ([]*domain.Edge, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,from_obs_id,to_obs_id,relation_type,weight,confidence,COALESCE(source,''),COALESCE(reasoning,''),valid_from,invalid_at,valid_until,tx_from,tx_until,created_at,evolution_id,COALESCE(evolution_type,'original'),COALESCE(fact_state,'current'),COALESCE(change_reason,''),COALESCE(tenant_id,''),COALESCE(workspace_id,'') FROM edges WHERE `+where+` ORDER BY created_at DESC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("graph: temporal query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*domain.Edge
+	for rows.Next() {
+		e := &domain.Edge{}
+		var vf, ia, vu, tf, tu, ca sql.NullString
+		var ev sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.Weight, &e.Confidence, &e.Source, &e.Reasoning, &vf, &ia, &vu, &tf, &tu, &ca, &ev, &e.EvolutionType, &e.FactState, &e.ChangeReason, &e.TenantID, &e.WorkspaceID); err != nil {
+			return nil, err
+		}
+		e.ValidFrom = parseNullableTime(vf)
+		e.InvalidAt = parseNullableTime(ia)
+		e.ValidUntil = parseNullableTime(vu)
+		e.TxFrom = parseNullableTime(tf)
+		e.TxUntil = parseNullableTime(tu)
+		if ev.Valid {
+			e.EvolutionID = &ev.Int64
+		}
+		e.CreatedAt, _ = parseAnyTime(ca.String)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func parseNullableTime(v sql.NullString) *time.Time {
+	if !v.Valid || v.String == "" {
+		return nil
+	}
+	t, err := parseAnyTime(v.String)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+func parseAnyTime(v string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, sqliteDatetimeFormat} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid time %q", v)
+}
+
 // GetRelated retrieves observations related to the given observation ID,
 // up to the specified depth using a recursive CTE.
 func (s *Store) GetRelated(ctx context.Context, obsID int64, depth int) ([]*domain.Observation, error) {
+	if s.v2TemporalSchema(ctx) {
+		return s.GetRelatedScoped(ctx, obsID, domain.GraphTraversalOptions{Depth: depth})
+	}
 	if depth <= 0 {
 		depth = 1
 	}
@@ -396,3 +561,4 @@ func (s *Store) UpdateEdge(ctx context.Context, edge *domain.Edge) error {
 
 // Ensure Store implements domain.GraphRepository.
 var _ domain.GraphRepository = (*Store)(nil)
+var _ domain.TxParticipant = (*Store)(nil)
