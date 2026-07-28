@@ -437,6 +437,61 @@ func TestExportRejectsCaseInsensitiveCollisionAndPreservesSource(t *testing.T) {
 	}
 }
 
+func TestCanonicalPathKeyModelsCrossPlatformCollisions(t *testing.T) {
+	cases := []struct {
+		name  string
+		left  string
+		right string
+		want  bool
+	}{
+		{name: "case", left: "cortex/projects/Note.md", right: "CORTEX\\Projects\\NOTE.MD", want: true},
+		{name: "unicode composed", left: "café.md", right: "cafe\u0301.md", want: true},
+		{name: "windows trailing dot and space", left: "note.md", right: "note.md. ", want: true},
+		{name: "windows reserved device extension", left: "CON.md", right: "con.txt", want: true},
+		{name: "distinct", left: "note-a.md", right: "note-b.md", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canonicalPathKey(tc.left) == canonicalPathKey(tc.right); got != tc.want {
+				t.Fatalf("canonical collision=%v, want %v (%q, %q)", got, tc.want, tc.left, tc.right)
+			}
+		})
+	}
+}
+
+func TestExportCanonicalCollisionTableOnLinuxFilesystem(t *testing.T) {
+	cases := []struct {
+		name      string
+		title     string
+		existing  string
+		wantError bool
+	}{
+		{name: "case fold", title: "Note", existing: "NOTE-" + idHash("1") + ".md", wantError: true},
+		{name: "unicode normalization", title: "Café", existing: "cafe\u0301-" + idHash("1") + ".md", wantError: true},
+		{name: "unrelated file", title: "Note", existing: "another-note.md", wantError: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "cortex", "projects", "p", "observations")
+			if err := os.MkdirAll(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, tc.existing), []byte("user file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			o := &domain.Observation{ID: 1, Title: tc.title, Project: "p", UpdatedAt: time.Now()}
+			_, err := NewWriter(fakeObs{[]*domain.Observation{o}}, nil, nil, nil).Export(context.Background(), Options{Vault: dir})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+			if tc.wantError && !strings.Contains(err.Error(), "case-insensitive") {
+				t.Fatalf("got %v, want explicit case-insensitive collision", err)
+			}
+		})
+	}
+}
+
 func TestExportGoldenBytesAndOutsideVaultProtection(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

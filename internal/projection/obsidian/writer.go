@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -133,18 +135,38 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 		}
 		byID[id] = p
 	}
+	allFiles, err := findVaultFiles(w.fs, vault)
+	if err != nil {
+		return result, err
+	}
 	changes := map[string][]byte{}
 	next := syncState{Version: 1, ExportedAt: prior.ExportedAt, Files: map[string]stateFile{}}
 	if next.ExportedAt.IsZero() {
 		next.ExportedAt = w.clock()
 	}
-	for _, o := range visible {
+	ids := make([]int64, 0, len(visible))
+	for id := range visible {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	staged := map[string]string{}
+	for _, id := range ids {
+		o := visible[id]
 		id := fmt.Sprintf("%d", o.ID)
 		target := filepath.Join(vault, projectFolder(o.Project), "observations", safeSlug(o.Title)+"-"+idHash(id)+".md")
-		for existing := range paths {
-			if filepath.Clean(existing) != filepath.Clean(target) && strings.EqualFold(existing, target) {
-				return result, fmt.Errorf("obsidian: case-insensitive filename collision between %s and %s", existing, target)
+		key := canonicalPathKey(target)
+		if other, ok := staged[key]; ok && filepath.Clean(other) != filepath.Clean(target) {
+			return result, fmt.Errorf("obsidian: case-insensitive filename collision between %s and %s", other, target)
+		}
+		staged[key] = target
+		for _, existing := range allFiles[key] {
+			if filepath.Clean(existing) == filepath.Clean(target) {
+				continue
 			}
+			if owner, ok := byID[id]; ok && canonicalPathKey(owner) == key {
+				continue
+			}
+			return result, fmt.Errorf("obsidian: case-insensitive filename collision between %s and %s", existing, target)
 		}
 		if old, ok := byID[id]; ok && filepath.Clean(old) != filepath.Clean(target) {
 			b, e := w.fs.ReadFile(old)
@@ -367,6 +389,68 @@ func findCortexFiles(f fileSystem, vault string) (map[string]string, error) {
 		return out, nil
 	}
 	return out, e
+}
+
+// canonicalPathKey defines the path identity used by the projection, rather
+// than delegating collision behavior to the host filesystem. It models the
+// case-folding, Unicode normalization, separators, trailing-name rules, and
+// device names that can make two paths aliases on a supported vault host.
+func canonicalPathKey(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = pathpkg.Clean(name)
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		part = strings.TrimRight(part, " .")
+		if isWindowsDeviceName(part) {
+			part = "#device:" + strings.ToUpper(strings.TrimSuffix(part, filepath.Ext(part)))
+		}
+		parts[i] = cases.Fold().String(norm.NFC.String(part))
+	}
+	return strings.Join(parts, "/")
+}
+
+func isWindowsDeviceName(name string) bool {
+	base := name
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.TrimRight(base, " .")
+	upper := strings.ToUpper(base)
+	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" {
+		return true
+	}
+	return len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9'
+}
+
+func findVaultFiles(f fileSystem, vault string) (map[string][]string, error) {
+	out := map[string][]string{}
+	err := filepath.WalkDir(vault, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == vault {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if _, err := f.Lstat(path); err != nil {
+			return err
+		}
+		key := canonicalPathKey(path)
+		out[key] = append(out[key], path)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	for key := range out {
+		sort.Strings(out[key])
+	}
+	return out, err
 }
 func commitTransaction(f fileSystem, vault string, changes map[string][]byte) (err error) {
 	stage, e := f.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
