@@ -15,13 +15,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"golang.org/x/text/unicode/norm"
 )
 
 type Options struct {
-	Vault           string
-	Project         string
+	Vault, Project  string
 	IncludePersonal bool
 }
 type Result struct {
@@ -33,10 +34,12 @@ type Writer struct {
 	graph        domain.GraphRepository
 	entities     domain.EntityRepository
 	scoring      domain.ScoringRepository
+	clock        func() time.Time
+	fs           fileSystem
 }
 
-func NewWriter(observations domain.ObservationRepository, graph domain.GraphRepository, entities domain.EntityRepository, scoring domain.ScoringRepository) *Writer {
-	return &Writer{observations: observations, graph: graph, entities: entities, scoring: scoring}
+func NewWriter(o domain.ObservationRepository, g domain.GraphRepository, e domain.EntityRepository, s domain.ScoringRepository) *Writer {
+	return &Writer{observations: o, graph: g, entities: e, scoring: s, clock: func() time.Time { return time.Now().UTC() }, fs: osFS{}}
 }
 
 type syncState struct {
@@ -50,7 +53,31 @@ type stateFile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Export writes only Cortex-owned notes. Existing user-edited notes are never overwritten.
+type fileSystem interface {
+	Lstat(string) (os.FileInfo, error)
+	Stat(string) (os.FileInfo, error)
+	ReadFile(string) ([]byte, error)
+	WriteFile(string, []byte, fs.FileMode) error
+	MkdirAll(string, fs.FileMode) error
+	MkdirTemp(string, string) (string, error)
+	Rename(string, string) error
+	Remove(string) error
+	RemoveAll(string) error
+	Open(string) (*os.File, error)
+}
+type osFS struct{}
+
+func (osFS) Lstat(p string) (os.FileInfo, error)               { return os.Lstat(p) }
+func (osFS) Stat(p string) (os.FileInfo, error)                { return os.Stat(p) }
+func (osFS) ReadFile(p string) ([]byte, error)                 { return os.ReadFile(p) }
+func (osFS) WriteFile(p string, b []byte, m fs.FileMode) error { return os.WriteFile(p, b, m) }
+func (osFS) MkdirAll(p string, m fs.FileMode) error            { return os.MkdirAll(p, m) }
+func (osFS) MkdirTemp(d, p string) (string, error)             { return os.MkdirTemp(d, p) }
+func (osFS) Rename(a, b string) error                          { return os.Rename(a, b) }
+func (osFS) Remove(p string) error                             { return os.Remove(p) }
+func (osFS) RemoveAll(p string) error                          { return os.RemoveAll(p) }
+func (osFS) Open(p string) (*os.File, error)                   { return os.Open(p) }
+
 func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 	var result Result
 	vault, err := safeVault(opts.Vault)
@@ -60,119 +87,118 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 	if w == nil || w.observations == nil {
 		return result, errors.New("obsidian: observation repository is required")
 	}
-	filter := domain.ObservationFilter{Project: opts.Project, Limit: 100000, IncludeArchived: true}
-	obs, err := w.observations.List(ctx, filter)
+	if w.clock == nil {
+		w.clock = func() time.Time { return time.Now().UTC() }
+	}
+	if w.fs == nil {
+		w.fs = osFS{}
+	}
+	obs, err := w.observations.List(ctx, domain.ObservationFilter{Project: opts.Project, Limit: 100000, IncludeArchived: true})
 	if err != nil {
 		return result, fmt.Errorf("obsidian: list observations: %w", err)
+	}
+	sort.Slice(obs, func(i, j int) bool { return obs[i].ID < obs[j].ID })
+	visible := map[int64]*domain.Observation{}
+	for _, o := range obs {
+		if o == nil {
+			continue
+		}
+		private := strings.EqualFold(o.Scope, domain.ScopePersonal) || strings.EqualFold(o.Scope, "private")
+		if private && !opts.IncludePersonal {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("excluded personal observation #%d (use --include-personal to export)", o.ID))
+			continue
+		}
+		if _, ok := visible[o.ID]; ok {
+			return result, fmt.Errorf("obsidian: duplicate cortex_id %d", o.ID)
+		}
+		visible[o.ID] = o
 	}
 	if opts.IncludePersonal {
 		result.Warnings = append(result.Warnings, "including personal/private observations by explicit opt-in")
 	}
-	sort.Slice(obs, func(i, j int) bool { return obs[i].ID < obs[j].ID })
-	state := loadState(filepath.Join(vault, ".cortex-sync-state.json"))
-	if state.Files == nil {
-		state.Files = map[string]stateFile{}
-	}
-	visible := make(map[int64]*domain.Observation, len(obs))
-	for _, o := range obs {
-		private := o != nil && (strings.EqualFold(o.Scope, domain.ScopePersonal) || strings.EqualFold(o.Scope, "private"))
-		if o == nil || (private && !opts.IncludePersonal) {
-			if private {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("excluded personal observation #%d (use --include-personal to export)", o.ID))
-			}
-			continue
-		}
-		visible[o.ID] = o
-	}
-	paths, err := findCortexFiles(vault)
+	statePath := filepath.Join(vault, ".cortex-sync-state.json")
+	prior, priorBytes := loadState(w.fs, statePath)
+	paths, err := findCortexFiles(w.fs, vault)
 	if err != nil {
 		return result, err
 	}
 	byID := map[string]string{}
 	for p, id := range paths {
+		if old, ok := byID[id]; ok {
+			return result, fmt.Errorf("obsidian: duplicate cortex_id %s in %s and %s", id, old, p)
+		}
 		byID[id] = p
 	}
-	stage, err := os.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
-	if err != nil {
-		if err := os.MkdirAll(filepath.Join(vault, ".cortex-staging"), 0700); err != nil {
-			return result, err
-		}
-		stage, err = os.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
-		if err != nil {
-			return result, err
-		}
+	changes := map[string][]byte{}
+	next := syncState{Version: 1, ExportedAt: prior.ExportedAt, Files: map[string]stateFile{}}
+	if next.ExportedAt.IsZero() {
+		next.ExportedAt = w.clock()
 	}
-	defer func() { _ = os.RemoveAll(stage) }()
-	now := time.Now().UTC()
-	next := syncState{Version: 1, ExportedAt: now, Files: map[string]stateFile{}}
 	for _, o := range visible {
 		id := fmt.Sprintf("%d", o.ID)
 		target := filepath.Join(vault, projectFolder(o.Project), "observations", safeSlug(o.Title)+"-"+idHash(id)+".md")
-		if old, ok := byID[id]; ok && old != target {
-			if _, exists := os.Stat(target); errors.Is(exists, os.ErrNotExist) {
-				if err := os.Rename(old, target); err != nil {
-					result.Warnings = append(result.Warnings, fmt.Sprintf("could not rename %s: %v", old, err))
-					target = old
-				}
-				if target != old {
-					byID[id] = target
-				}
+		if old, ok := byID[id]; ok && filepath.Clean(old) != filepath.Clean(target) {
+			b, e := w.fs.ReadFile(old)
+			if e != nil {
+				return result, e
 			}
+			if prior.Files[id].Hash == "" || contentHash(string(b)) != prior.Files[id].Hash {
+				return result, fmt.Errorf("obsidian: edited renamed note %s; refusing reconciliation", old)
+			}
+			if _, e = w.fs.Stat(target); e == nil {
+				return result, fmt.Errorf("obsidian: rename conflict at %s", target)
+			}
+			changes[old] = nil
+			changes[target] = b
+			byID[id] = target
 		}
-		content, err := w.render(ctx, o, visible)
-		if err != nil {
-			return result, err
+		content, e := w.render(ctx, o, visible)
+		if e != nil {
+			return result, e
 		}
 		hash := contentHash(content)
-		if existing, ok := byID[id]; ok && filepath.Clean(existing) == filepath.Clean(target) {
-			if shouldSkip(existing, state.Files[id], hash) {
-				next.Files[id] = state.Files[id]
-				result.Skipped++
-				continue
-			}
+		rel, _ := filepath.Rel(vault, target)
+		next.Files[id] = stateFile{Path: rel, Hash: hash, UpdatedAt: o.UpdatedAt}
+		if old, ok := byID[id]; ok && filepath.Clean(old) == filepath.Clean(target) && shouldSkipFS(w.fs, old, prior.Files[id], hash) {
+			result.Skipped++
+			continue
 		}
-		if existing, statErr := os.Stat(target); statErr == nil && existing != nil {
-			if known, ok := byID[id]; !ok || filepath.Clean(known) != filepath.Clean(target) {
+		if st, e := w.fs.Lstat(target); e == nil {
+			if st.Mode()&os.ModeSymlink != 0 {
+				return result, fmt.Errorf("obsidian: refusing symlink target %s", target)
+			}
+			if _, owned := byID[id]; !owned {
 				return result, fmt.Errorf("obsidian: refusing overwrite conflict at %s", target)
 			}
 		}
-		if err := ensureSafeParents(vault, filepath.Dir(target)); err != nil {
-			return result, err
+		if e := ensureSafeParentsFS(w.fs, vault, filepath.Dir(target)); e != nil {
+			return result, e
 		}
-		rel, _ := filepath.Rel(vault, target)
-		staged := filepath.Join(stage, rel)
-		if err := os.MkdirAll(filepath.Dir(staged), 0700); err != nil {
-			return result, err
-		}
-		if err := os.WriteFile(staged, []byte(content), 0600); err != nil {
-			return result, err
-		}
-		if err := commitFile(staged, target); err != nil {
-			return result, err
-		}
-		next.Files[id] = stateFile{Path: rel, Hash: hash, UpdatedAt: o.UpdatedAt}
+		changes[target] = []byte(content)
 		result.Written++
 	}
-	for id := range state.Files {
+	for id := range prior.Files {
 		if _, ok := visibleID(visible, id); !ok {
 			result.Stale++
 		}
 	}
-	b, _ := json.MarshalIndent(next, "", "  ")
-	tmp := filepath.Join(vault, ".cortex-sync-state.json.tmp")
-	if err := os.WriteFile(tmp, b, 0600); err != nil {
-		return result, err
+	if len(changes) == 0 && priorBytes != nil {
+		return result, nil
 	}
-	if err := os.Rename(tmp, filepath.Join(vault, ".cortex-sync-state.json")); err != nil {
+	next.ExportedAt = w.clock()
+	manifest, _ := json.MarshalIndent(next, "", "  ")
+	manifest = append(manifest, '\n')
+	changes[statePath] = manifest
+	if err := commitTransaction(w.fs, vault, changes); err != nil {
 		return result, err
 	}
 	return result, nil
 }
 
 func (w *Writer) render(ctx context.Context, o *domain.Observation, all map[int64]*domain.Observation) (string, error) {
-	fm, err := RenderFrontmatter(o, FrontmatterOptions{})
-	if err != nil {
-		return "", err
+	fm, e := RenderFrontmatter(o, FrontmatterOptions{})
+	if e != nil {
+		return "", e
 	}
 	body := strings.TrimRight(o.Content, "\n") + "\n"
 	if w.graph != nil {
@@ -186,8 +212,8 @@ func (w *Writer) render(ctx context.Context, o *domain.Observation, all map[int6
 			if id == o.ID {
 				id = edge.FromObsID
 			}
-			if target, ok := all[id]; ok {
-				links[fmt.Sprintf("[[%s-%s]]", safeSlug(target.Title), idHash(fmt.Sprintf("%d", target.ID)))] = true
+			if t, ok := all[id]; ok {
+				links[fmt.Sprintf("[[%s-%s]]", safeSlug(t.Title), idHash(fmt.Sprintf("%d", t.ID)))] = true
 			}
 		}
 		keys := make([]string, 0, len(links))
@@ -202,31 +228,6 @@ func (w *Writer) render(ctx context.Context, o *domain.Observation, all map[int6
 			}
 		}
 	}
-	if w.entities != nil {
-		links, e := w.entities.GetByObservation(ctx, o.ID)
-		if e != nil {
-			return "", e
-		}
-		values := make([]string, 0, len(links))
-		seen := map[string]bool{}
-		for _, link := range links {
-			if link == nil {
-				continue
-			}
-			name := safeSlug(link.EntityValue)
-			if name != "" && !seen[name] {
-				seen[name] = true
-				values = append(values, name)
-			}
-		}
-		sort.Strings(values)
-		if len(values) > 0 {
-			body += "\n## Entities\n\n"
-			for _, value := range values {
-				body += "- [[" + value + "]]\n"
-			}
-		}
-	}
 	return fm + body, nil
 }
 
@@ -234,45 +235,42 @@ func safeVault(v string) (string, error) {
 	if strings.TrimSpace(v) == "" {
 		return "", errors.New("obsidian: --vault is required")
 	}
-	abs, err := filepath.Abs(v)
-	if err != nil {
-		return "", err
+	abs, e := filepath.Abs(v)
+	if e != nil {
+		return "", e
 	}
 	if st, e := os.Lstat(abs); e == nil && st.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("obsidian: vault must not be a symlink")
 	}
-	cur := abs
-	for {
-		st, e := os.Lstat(cur)
-		if e == nil && st.Mode()&os.ModeSymlink != 0 {
+	for cur := abs; ; cur = filepath.Dir(cur) {
+		if st, e := os.Lstat(cur); e == nil && st.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("obsidian: unsafe symlink path %s", cur)
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			break
 		}
-		cur = parent
 	}
-	if err := os.MkdirAll(abs, 0700); err != nil {
-		return "", err
+	if e := os.MkdirAll(abs, 0700); e != nil {
+		return "", e
 	}
 	return abs, nil
 }
-
-func ensureSafeParents(vault, target string) error {
-	rel, err := filepath.Rel(vault, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+func ensureSafeParentsFS(f fileSystem, vault, target string) error {
+	rel, e := filepath.Rel(vault, target)
+	if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return errors.New("obsidian: target escapes vault")
 	}
 	cur := vault
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
-		if st, e := os.Lstat(cur); e == nil && st.Mode()&os.ModeSymlink != 0 {
+		if st, e := f.Lstat(cur); e == nil && st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("obsidian: refusing symlink traversal at %s", cur)
 		}
 	}
-	return nil
+	return f.MkdirAll(target, 0700)
 }
+
 func projectFolder(p string) string {
 	if p == "" {
 		p = "default"
@@ -280,55 +278,65 @@ func projectFolder(p string) string {
 	return filepath.Join("cortex", "projects", safeSlug(p))
 }
 
-var unsafeChars = regexp.MustCompile(`[^\pL\pN._-]+`)
+var unsafeChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]+`)
 
 func safeSlug(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = norm.NFC.String(strings.TrimSpace(strings.ToLower(s)))
 	s = unsafeChars.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-.")
+	s = strings.TrimRight(s, " .-")
 	if s == "" {
 		s = "untitled"
+	}
+	upper := strings.ToUpper(s)
+	reserved := map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true}
+	if reserved[upper] || (len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9') {
+		s = "_" + s
 	}
 	r := []rune(s)
 	if len(r) > 80 {
 		r = r[:80]
+		s = string(r) + "-" + idHash(s)[:8]
 	}
-	return string(r)
-}
-func idHash(id string) string     { h := sha256.Sum256([]byte(id)); return hex.EncodeToString(h[:])[:12] }
-func contentHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-func loadState(p string) syncState {
-	b, e := os.ReadFile(p)
-	if e != nil {
-		return syncState{Files: map[string]stateFile{}}
-	}
-	var s syncState
-	_ = json.Unmarshal(b, &s)
-	if s.Files == nil {
-		s.Files = map[string]stateFile{}
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return "untitled"
+		}
 	}
 	return s
 }
-func shouldSkip(path string, prior stateFile, nextHash string) bool {
-	b, e := os.ReadFile(path)
+func idHash(id string) string     { h := sha256.Sum256([]byte(id)); return hex.EncodeToString(h[:])[:12] }
+func contentHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func loadState(f fileSystem, p string) (syncState, []byte) {
+	b, e := f.ReadFile(p)
+	if e != nil {
+		return syncState{Files: map[string]stateFile{}}, nil
+	}
+	var s syncState
+	if json.Unmarshal(b, &s) != nil || s.Files == nil {
+		s.Files = map[string]stateFile{}
+	}
+	return s, b
+}
+func shouldSkipFS(f fileSystem, p string, prior stateFile, next string) bool {
+	b, e := f.ReadFile(p)
 	if e != nil {
 		return false
 	}
-	current := contentHash(string(b))
-	if current == nextHash {
-		return true
-	}
-	if prior.Hash != "" && current == prior.Hash {
-		return false
-	}
-	return true
+	return contentHash(string(b)) == next
 }
-func findCortexFiles(vault string) (map[string]string, error) {
+func findCortexFiles(f fileSystem, vault string) (map[string]string, error) {
 	out := map[string]string{}
 	root := filepath.Join(vault, "cortex")
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, e error) error {
+	e := filepath.WalkDir(root, func(path string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
+		}
+		st, e := f.Lstat(path)
+		if e != nil {
+			return e
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("obsidian: refusing symlink %s", path)
 		}
 		if d.IsDir() {
 			return nil
@@ -336,7 +344,7 @@ func findCortexFiles(vault string) (map[string]string, error) {
 		if filepath.Ext(path) != ".md" {
 			return nil
 		}
-		b, e := os.ReadFile(path)
+		b, e := f.ReadFile(path)
 		if e != nil {
 			return e
 		}
@@ -346,21 +354,106 @@ func findCortexFiles(vault string) (map[string]string, error) {
 		}
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(e, os.ErrNotExist) {
 		return out, nil
 	}
-	return out, err
+	return out, e
 }
-func commitFile(staged, target string) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-		return err
+func commitTransaction(f fileSystem, vault string, changes map[string][]byte) error {
+	stage, e := f.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
+	if e != nil {
+		if e = f.MkdirAll(filepath.Join(vault, ".cortex-staging"), 0700); e != nil {
+			return e
+		}
+		stage, e = f.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
 	}
-	if _, e := os.Stat(target); e == nil {
-		if err := os.Remove(target); err != nil {
-			return err
+	if e != nil {
+		return e
+	}
+	defer f.RemoveAll(stage)
+	keys := make([]string, 0, len(changes))
+	for p := range changes {
+		keys = append(keys, p)
+	}
+	sort.Strings(keys)
+	manifest := filepath.Join(vault, ".cortex-sync-state.json")
+	for i, p := range keys {
+		if p == manifest {
+			keys = append(append(keys[:i], keys[i+1:]...), p)
+			break
 		}
 	}
-	return os.Rename(staged, target)
+	for _, p := range keys {
+		if changes[p] == nil {
+			continue
+		}
+		rel, _ := filepath.Rel(vault, p)
+		q := filepath.Join(stage, rel)
+		if e = f.MkdirAll(filepath.Dir(q), 0700); e != nil {
+			return e
+		}
+		if e = f.WriteFile(q, changes[p], 0600); e != nil {
+			return e
+		}
+	}
+	for _, p := range keys {
+		if changes[p] == nil {
+			continue
+		}
+		rel, _ := filepath.Rel(vault, p)
+		if e := syncPath(f, filepath.Join(stage, rel)); e != nil {
+			return e
+		}
+	}
+	type backup struct{ target, bak string }
+	backs := []backup{}
+	installed := []string{}
+	rollback := func() {
+		for i := len(installed) - 1; i >= 0; i-- {
+			_ = f.Remove(installed[i])
+		}
+		for i := len(backs) - 1; i >= 0; i-- {
+			_ = f.Remove(backs[i].target)
+			_ = f.Rename(backs[i].bak, backs[i].target)
+		}
+	}
+	for _, p := range keys {
+		if _, e = f.Lstat(p); e == nil {
+			b := p + ".cortex-backup"
+			_ = f.Remove(b)
+			if e = f.Rename(p, b); e != nil {
+				rollback()
+				return e
+			}
+			backs = append(backs, backup{p, b})
+		}
+		if changes[p] == nil {
+			continue
+		}
+		rel, _ := filepath.Rel(vault, p)
+		if e = f.Rename(filepath.Join(stage, rel), p); e != nil {
+			rollback()
+			return e
+		}
+		installed = append(installed, p)
+		_ = syncPath(f, filepath.Dir(p))
+	}
+	for _, b := range backs {
+		_ = f.Remove(b.bak)
+	}
+	_ = syncPath(f, vault)
+	return nil
+}
+func syncPath(f fileSystem, p string) error {
+	h, e := f.Open(p)
+	if e != nil {
+		return nil
+	}
+	defer h.Close()
+	// Directory/file fsync is best effort: Windows may deny Sync on handles
+	// opened through the portable os.File API, while POSIX filesystems support it.
+	_ = h.Sync()
+	return nil
 }
 func visibleID(m map[int64]*domain.Observation, id string) (*domain.Observation, bool) {
 	for k, v := range m {

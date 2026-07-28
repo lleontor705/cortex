@@ -41,6 +41,21 @@ func (f fakeObs) GetByType(context.Context, string, int) ([]*domain.Observation,
 
 type fakeGraph struct{ edges map[int64][]*domain.Edge }
 
+type failRenameFS struct {
+	fileSystem
+	remaining int
+	failed    bool
+}
+
+func (f *failRenameFS) Rename(old, new string) error {
+	if f.remaining == 0 && !f.failed {
+		f.failed = true
+		return os.ErrPermission
+	}
+	f.remaining--
+	return f.fileSystem.Rename(old, new)
+}
+
 func (f fakeGraph) CreateEdge(context.Context, *domain.Edge) error { return nil }
 func (f fakeGraph) GetRelated(context.Context, int64, int) ([]*domain.Observation, error) {
 	return nil, nil
@@ -157,5 +172,83 @@ func TestExportRefusesUnownedOverwriteAndMatchesRenameByCortexID(t *testing.T) {
 	_, err := e.Export(context.Background(), Options{Vault: dir})
 	if err == nil {
 		t.Fatal("expected overwrite conflict")
+	}
+}
+
+func TestExportRejectsDuplicateIDs(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	root := filepath.Join(dir, "cortex", "projects", "p", "observations")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\ncortex_id: \"1\"\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(root, "a.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e := NewWriter(fakeObs{[]*domain.Observation{{ID: 1, Title: "a", UpdatedAt: now}}}, nil, nil, nil)
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err == nil || !strings.Contains(err.Error(), "duplicate cortex_id") || !strings.Contains(err.Error(), "a.md") || !strings.Contains(err.Error(), "b.md") {
+		t.Fatalf("expected duplicate ID error with both paths, got %v", err)
+	}
+}
+
+func TestExportPreservesManifestOnNoop(t *testing.T) {
+	dir := t.TempDir()
+	clock := func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	e := NewWriter(fakeObs{[]*domain.Observation{{ID: 1, Title: "same", Content: "body", UpdatedAt: clock()}}}, nil, nil, nil)
+	e.clock = clock
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, ".cortex-sync-state.json")
+	first, _ := os.ReadFile(p)
+	e.clock = func() time.Time { return clock().Add(time.Hour) }
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(p)
+	if string(first) != string(second) {
+		t.Fatal("manifest changed during noop export")
+	}
+}
+
+func TestSafeSlugWindowsNamesAndUnicode(t *testing.T) {
+	for _, in := range []string{"CON", "name.", "name ", "a:b", "ｅxample"} {
+		got := safeSlug(in)
+		if got == "CON" || got == "name." || got == "name " || strings.ContainsAny(got, `\\/:*?\"<>|`) || got == "" {
+			t.Fatalf("unsafe slug %q -> %q", in, got)
+		}
+	}
+}
+
+func TestExportRollbackRestoresFilesAndManifestOnCommitFailure(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	obs := []*domain.Observation{{ID: 1, Title: "rollback", Content: "before", UpdatedAt: now}}
+	e := NewWriter(fakeObs{obs}, nil, nil, nil)
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, ".cortex-sync-state.json")
+	manifestBefore, _ := os.ReadFile(manifestPath)
+	obs[0].Content = "after"
+	e.fs = &failRenameFS{fileSystem: osFS{}, remaining: 1}
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err == nil {
+		t.Fatal("expected injected commit failure")
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "cortex", "projects", "default", "observations", "*.md"))
+	if len(files) != 1 {
+		t.Fatalf("rollback left %d files", len(files))
+	}
+	b, _ := os.ReadFile(files[0])
+	if !strings.Contains(string(b), "before") {
+		t.Fatal("rollback did not restore prior note")
+	}
+	manifestAfter, _ := os.ReadFile(manifestPath)
+	if string(manifestBefore) != string(manifestAfter) {
+		t.Fatal("rollback changed manifest")
 	}
 }
