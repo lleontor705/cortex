@@ -400,6 +400,9 @@ func nullableTime(t *time.Time) interface{} {
 
 // GetEdgesForObservation retrieves all edges where the observation is either source or target.
 func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
+	if s.v2TemporalSchema(ctx) {
+		return s.queryTemporalEdges(ctx, `(from_obs_id=? OR to_obs_id=?)`, obsID, obsID)
+	}
 	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
 	                 valid_from, invalid_at, created_at,
@@ -421,6 +424,9 @@ func (s *Store) GetEdgesForObservation(ctx context.Context, obsID int64) ([]*dom
 // GetEdgesValidAt retrieves edges for an observation that were valid at the given time.
 // An edge is valid at time `at` if: (valid_from IS NULL OR valid_from <= at) AND (invalid_at IS NULL OR invalid_at > at).
 func (s *Store) GetEdgesValidAt(ctx context.Context, obsID int64, at time.Time) ([]*domain.Edge, error) {
+	if s.v2TemporalSchema(ctx) {
+		return s.EdgesAsOf(ctx, obsID, at, time.Now().UTC())
+	}
 	atStr := at.UTC().Format(time.RFC3339)
 	query := `SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 	                 COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
@@ -444,6 +450,16 @@ func (s *Store) GetEdgesValidAt(ctx context.Context, obsID int64, at time.Time) 
 
 // GetEdge retrieves a specific edge by its ID.
 func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
+	if s.v2TemporalSchema(ctx) {
+		edges, err := s.queryTemporalEdges(ctx, `id=?`, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(edges) == 0 {
+			return nil, &domain.NotFoundError{Type: "edge", ID: id}
+		}
+		return edges[0], nil
+	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
@@ -467,6 +483,9 @@ func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 
 // GetEvolutionChain retrieves all edges that share the same endpoints.
 func (s *Store) GetEvolutionChain(ctx context.Context, fromObsID, toObsID int64) ([]*domain.Edge, error) {
+	if s.v2TemporalSchema(ctx) {
+		return s.queryTemporalEdges(ctx, `from_obs_id=? AND to_obs_id=?`, fromObsID, toObsID)
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
@@ -511,6 +530,9 @@ func (s *Store) CountAllEdges(ctx context.Context) (int, error) {
 
 // GetContradictions retrieves contradiction edges created in a time range.
 func (s *Store) GetContradictions(ctx context.Context, from, to time.Time) ([]*domain.Edge, error) {
+	if s.v2TemporalSchema(ctx) {
+		return s.queryTemporalEdges(ctx, `relation_type=? AND created_at>=? AND created_at<=?`, domain.RelationContradicts, from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
 		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
