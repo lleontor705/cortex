@@ -47,10 +47,11 @@ jobs:
           set -euo pipefail
           test -f internal/projection/obsidian/writer_test.go
           grep -q 'TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot' internal/projection/obsidian/writer_test.go
+          grep -q 'TestWindowsDeviceNameNearMissesAreNotReservedOrColliding' internal/projection/obsidian/writer_test.go
           grep -q 'TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants' internal/projection/obsidian/writer_test.go
 
       - name: Run focused Obsidian/path portability tests
-        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
+        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
 
   coverage:
     name: Global Coverage

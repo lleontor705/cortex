@@ -284,6 +284,39 @@ func TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot(t *testing.T) {
 	}
 }
 
+func TestWindowsDeviceNameNearMissesAreNotReservedOrColliding(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		alias      string
+		reserved   bool
+		collisions bool
+	}{
+		{name: "conx", input: "CONX", alias: "con", reserved: false, collisions: false},
+		{name: "conx lowercase extension", input: "conx.md", alias: "CON.txt", reserved: false, collisions: false},
+		{name: "com10", input: "COM10", alias: "com1", reserved: false, collisions: false},
+		{name: "com10 lowercase extension", input: "com10.log", alias: "COM1.md", reserved: false, collisions: false},
+		{name: "lpt10", input: "LPT10", alias: "lpt1", reserved: false, collisions: false},
+		{name: "lpt10 lowercase extension", input: "lpt10.txt", alias: "LPT1.md", reserved: false, collisions: false},
+		{name: "clock dollar x", input: "CLOCK$X", alias: "clock$", reserved: false, collisions: false},
+		{name: "clock dollar x lowercase extension", input: "clock$x.anything", alias: "CLOCK$.md", reserved: false, collisions: false},
+		{name: "con alias", input: "CON.foo", alias: "con", reserved: true, collisions: true},
+		{name: "com1 alias", input: "com1.txt", alias: "COM1", reserved: true, collisions: true},
+		{name: "lpt9 alias", input: "LPT9...md", alias: "lpt9", reserved: true, collisions: true},
+		{name: "clock dollar alias", input: "CLOCK$...foo", alias: "clock$", reserved: true, collisions: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isWindowsDeviceName(tc.input); got != tc.reserved {
+				t.Fatalf("isWindowsDeviceName(%q) = %v, want %v", tc.input, got, tc.reserved)
+			}
+			if got := canonicalPathKey(tc.input) == canonicalPathKey(tc.alias); got != tc.collisions {
+				t.Fatalf("canonical collision for %q and %q = %v, want %v", tc.input, tc.alias, got, tc.collisions)
+			}
+		})
+	}
+}
+
 func TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants(t *testing.T) {
 	cases := [][]string{
 		{"CON", "con.txt", "CON.foo.bar", "CON .md", "con...txt", "Con .foo"},
