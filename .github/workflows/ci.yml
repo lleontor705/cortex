@@ -25,6 +25,33 @@ jobs:
       - name: Run unit tests
         run: go test -v -count=1 ./...
 
+  coverage:
+    name: Global Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Enforce whole-project coverage threshold
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+          total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
+          total="${total_line%%%}"
+          awk -v coverage="$total" 'BEGIN {
+            if (coverage < 70.0) {
+              printf "global coverage %.2f%% is below 70.0%%\n", coverage
+              exit 1
+            }
+            printf "global coverage %.2f%% meets 70.0%% threshold\n", coverage
+          }'
+
   baseline-contracts:
     name: Offline Retrieval Baseline Contracts
     runs-on: ubuntu-latest

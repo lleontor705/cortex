@@ -298,6 +298,25 @@ func TestBaselineWorkflowContract(t *testing.T) {
 		t.Error("CI must include a race detector gate over concurrent store packages (search, bundle, mcp)")
 	}
 
+	if !strings.Contains(ciText, "  coverage:") {
+		t.Error("CI must define a dedicated coverage job")
+	}
+	if !strings.Contains(ciText, "    runs-on: ubuntu-latest\n") {
+		t.Error("CI coverage job must run on Linux")
+	}
+	if !strings.Contains(ciText, "go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...") {
+		t.Error("CI coverage job must collect whole-project atomic coverage")
+	}
+	if !strings.Contains(ciText, "go tool cover -func coverage.out") {
+		t.Error("CI coverage job must parse the coverage profile with go tool cover")
+	}
+	if !strings.Contains(ciText, "awk '$1 == \"total:\"") || !strings.Contains(ciText, "< 70.0") {
+		t.Error("CI coverage job must fail when exact total coverage is below 70.0%")
+	}
+	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
+		t.Error("CI coverage threshold must not promote rounded percentages")
+	}
+
 	protocol, err := os.ReadFile(filepath.Join(repositoryRoot, "bench", "evidence", "cortex-native", "v1", "protocol.json"))
 	if err != nil {
 		t.Fatalf("read baseline protocol: %v", err)

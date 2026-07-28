@@ -28,7 +28,7 @@
 - `go vet ./...` PASS.
 - `CGO_ENABLED=0 go build ./cmd/cortex` and full zero-CGO tests PASS.
 - Fresh package coverage remains above 70% overall; Obsidian 84.5%, bundle 82.1%.
-- `gofmt -l` is clean, including the normalized `internal/app/arch_test.go`
-  blob; `git diff --check` PASS.
+- Changed files are `gofmt`-clean, including the normalized
+  `internal/app/arch_test.go` blob; `git diff --check` PASS.
 
 Research files were preserved; generated `$profile` coverage output was removed.
