@@ -312,15 +312,13 @@ func projectFolder(p string) string {
 var unsafeChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]+`)
 
 func safeSlug(s string) string {
-	s = norm.NFC.String(strings.TrimSpace(strings.ToLower(s)))
+	s = norm.NFC.String(cases.Fold().String(strings.TrimSpace(s)))
 	s = unsafeChars.ReplaceAllString(s, "-")
 	s = strings.TrimRight(s, " .-")
 	if s == "" {
 		s = "untitled"
 	}
-	upper := strings.ToUpper(s)
-	reserved := map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true}
-	if reserved[upper] || (len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9') {
+	if isWindowsDeviceName(s) {
 		s = "_" + s
 	}
 	r := []rune(s)
@@ -402,7 +400,7 @@ func canonicalPathKey(name string) string {
 	for i, part := range parts {
 		part = strings.TrimRight(part, " .")
 		if isWindowsDeviceName(part) {
-			part = "#device:" + strings.ToUpper(strings.TrimSuffix(part, filepath.Ext(part)))
+			part = "#device:" + cases.Fold().String(windowsDeviceBase(part))
 		}
 		parts[i] = cases.Fold().String(norm.NFC.String(part))
 	}
@@ -410,16 +408,19 @@ func canonicalPathKey(name string) string {
 }
 
 func isWindowsDeviceName(name string) bool {
-	base := name
-	if dot := strings.IndexByte(base, '.'); dot >= 0 {
-		base = base[:dot]
-	}
-	base = strings.TrimRight(base, " .")
-	upper := strings.ToUpper(base)
-	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" {
+	base := windowsDeviceBase(name)
+	folded := cases.Fold().String(base)
+	if folded == "con" || folded == "prn" || folded == "aux" || folded == "nul" || folded == "clock$" {
 		return true
 	}
-	return len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9'
+	return len([]rune(folded)) == 4 && (strings.HasPrefix(folded, "com") || strings.HasPrefix(folded, "lpt")) && folded[3] >= '1' && folded[3] <= '9'
+}
+
+func windowsDeviceBase(name string) string {
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		name = name[:dot]
+	}
+	return strings.TrimRight(name, " .")
 }
 
 func findVaultFiles(f fileSystem, vault string) (map[string][]string, error) {

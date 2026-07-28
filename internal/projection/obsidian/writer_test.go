@@ -254,6 +254,54 @@ func TestSafeSlugWindowsNamesAndUnicode(t *testing.T) {
 	}
 }
 
+func TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{name: "con extensions", in: "CON.foo.bar"},
+		{name: "con trailing space", in: "CON .md"},
+		{name: "con trailing dot", in: "CON...md"},
+		{name: "prn", in: "prn.txt"},
+		{name: "aux", in: "AUX.anything"},
+		{name: "nul", in: "NUL.1.2"},
+		{name: "clock", in: "CLOCK$.md"},
+		{name: "com1", in: "COM1.log"},
+		{name: "com9", in: "com9.foo.bar"},
+		{name: "lpt1", in: "LPT1.md"},
+		{name: "lpt9", in: "lpt9...md"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := safeSlug(tc.in)
+			if isWindowsDeviceName(got) {
+				t.Fatalf("safe slug remains a Windows device basename: %q -> %q", tc.in, got)
+			}
+			if !strings.HasPrefix(got, "_") {
+				t.Fatalf("safe slug %q was not made visibly non-reserved: %q", tc.in, got)
+			}
+		})
+	}
+}
+
+func TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants(t *testing.T) {
+	cases := [][]string{
+		{"CON", "con.txt", "CON.foo.bar", "CON .md", "con...txt", "Con .foo"},
+		{"PRN", "prn.md", "PRN.foo.bar"},
+		{"CLOCK$", "clock$.md", "CLOCK$...foo"},
+		{"COM1", "com1.txt", "COM1.foo.bar"},
+		{"LPT9", "lpt9.md", "LPT9...foo"},
+	}
+	for _, variants := range cases {
+		want := canonicalPathKey(variants[0])
+		for _, variant := range variants[1:] {
+			if got := canonicalPathKey(variant); got != want {
+				t.Fatalf("canonical key %q = %q, want %q", variant, got, want)
+			}
+		}
+	}
+}
+
 func TestSafeSlugBoundsAndHashAreStable(t *testing.T) {
 	long := strings.Repeat("x", 200)
 	slug := safeSlug(long)

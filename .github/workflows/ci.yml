@@ -25,6 +25,33 @@ jobs:
       - name: Run unit tests
         run: go test -v -count=1 ./...
 
+  obsidian-path-portability:
+    name: Obsidian Path Portability (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Assert portability test contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f internal/projection/obsidian/writer_test.go
+          grep -q 'TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot' internal/projection/obsidian/writer_test.go
+          grep -q 'TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants' internal/projection/obsidian/writer_test.go
+
+      - name: Run focused Obsidian/path portability tests
+        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
+
   coverage:
     name: Global Coverage
     runs-on: ubuntu-latest
