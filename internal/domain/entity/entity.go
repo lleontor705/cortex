@@ -7,6 +7,7 @@ package entity
 import (
 	"context"
 	"fmt"
+	"golang.org/x/text/unicode/norm"
 	"regexp"
 	"strings"
 	"unicode"
@@ -73,6 +74,22 @@ func (s *Service) ExtractAndSave(ctx context.Context, obs *domain.Observation) e
 		return fmt.Errorf("entity: save links: %w", err)
 	}
 	return nil
+}
+
+// ExtractAndSaveInTx performs extraction using the transaction already enlisted
+// by the caller's UnitOfWork. It never opens an autocommit transaction.
+func (s *Service) ExtractAndSaveInTx(ctx context.Context, handle any, obs *domain.Observation) error {
+	links := Extract(obs)
+	if len(links) == 0 {
+		return nil
+	}
+	participant, ok := s.repo.(domain.TxParticipant)
+	if !ok {
+		return fmt.Errorf("entity: repository does not support transactions")
+	}
+	return participant.WithinTx(ctx, handle, func(txCtx context.Context) error {
+		return s.repo.SaveLinks(txCtx, links)
+	})
 }
 
 // GetByObservation returns entity links for an observation.
@@ -202,7 +219,9 @@ func Extract(obs *domain.Observation) []*domain.EntityLink {
 // no fuzzy/LLM matching: lower-casing, Unicode space folding and punctuation
 // removal are safe, repeatable operations suitable for blocking and dedup.
 func Normalize(entityType, value string) string {
-	v := strings.ToLower(strings.TrimSpace(value))
+	// NFKC makes composed/decomposed Unicode spellings share one key before
+	// case folding and filtering. Keep punctuation separators so a-b != ab.
+	v := norm.NFKC.String(strings.ToLower(strings.TrimSpace(value)))
 	var b strings.Builder
 	for _, r := range v {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '/' || r == ':' || r == '@' || r == '.' || r == '-' || r == '_' {

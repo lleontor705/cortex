@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
 	"github.com/lleontor705/cortex/internal/embedding"
 	entitystore "github.com/lleontor705/cortex/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/internal/store/graph"
@@ -294,8 +295,11 @@ func computeBackoff(cfg domain.BusyRetryConfig, attempt int) time.Duration {
 // paired, so this only affects test wiring and preserves zero-worker behavior.
 func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observation) error {
 	// Zero-embedding / unwired path: standalone save, no outbox activity.
-	if stores.Outbox == nil || stores.UnitOfWork == nil {
+	if stores.Outbox == nil && (stores.Entities == nil || stores.UnitOfWork == nil) {
 		return stores.Observations.Save(ctx, obs)
+	}
+	if stores.UnitOfWork == nil {
+		return fmt.Errorf("bundle: entities require UnitOfWork for atomic save")
 	}
 
 	// Saturation check via the worker's authoritative state (single source of
@@ -321,7 +325,14 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 		modelInfo = stores.Embeddings.Model()
 	}
 	var wasDedup bool
-	err := stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Observations, stores.Outbox}, func(txCtx context.Context) error {
+	participants := []domain.TxParticipant{stores.Observations}
+	if stores.Outbox != nil {
+		participants = append(participants, stores.Outbox)
+	}
+	if stores.Entities != nil {
+		participants = append(participants, stores.Entities)
+	}
+	err := stores.UnitOfWork.Do(ctx, nil, participants, func(txCtx context.Context) error {
 		// Participant 1: save the observation within the shared tx.
 		if err := stores.Observations.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
 			return stores.Observations.SaveInTx(c, obs)
@@ -335,10 +346,22 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 			}
 			return err
 		}
-		// Participant 2: enqueue the embed intent within the SAME shared tx.
-		return stores.Outbox.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
-			return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
-		})
+		if stores.Outbox != nil {
+			if err := stores.Outbox.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
+				return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
+			}); err != nil {
+				return err
+			}
+		}
+		if stores.Entities != nil {
+			links := domainentity.Extract(obs)
+			if err := stores.Entities.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
+				return stores.Entities.SaveLinksInTx(c, links)
+			}); err != nil {
+				return fmt.Errorf("bundle: save entity links: %w", err)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return err

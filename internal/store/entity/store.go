@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
 )
 
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"
@@ -19,6 +20,19 @@ type Store struct {
 	db *sql.DB
 	v2 bool
 }
+
+type entityTxKey struct{}
+
+// WithinTx enlists entity writes in the caller's shared UnitOfWork.
+func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
+	tx, ok := handle.(*sql.Tx)
+	if !ok {
+		return fmt.Errorf("entity store: WithinTx expected *sql.Tx handle, got %T", handle)
+	}
+	return fn(context.WithValue(ctx, entityTxKey{}, tx))
+}
+
+func entityTx(ctx context.Context) *sql.Tx { tx, _ := ctx.Value(entityTxKey{}).(*sql.Tx); return tx }
 
 func (s *Store) v2Schema(ctx context.Context) bool {
 	return s.v2
@@ -38,11 +52,19 @@ func (s *Store) SaveLinks(ctx context.Context, links []*domain.EntityLink) error
 	}
 
 	v2 := s.v2Schema(ctx)
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx := entityTx(ctx)
+	owned := false
+	var err error
+	if tx == nil {
+		tx, err = s.db.BeginTx(ctx, nil)
+		owned = true
+	}
 	if err != nil {
 		return fmt.Errorf("entity: begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	if owned {
+		defer func() { _ = tx.Rollback() }()
+	}
 
 	query := `INSERT OR IGNORE INTO entity_links (observation_id, entity_type, entity_value) VALUES (?, ?, ?)`
 	if v2 {
@@ -78,17 +100,19 @@ func (s *Store) SaveLinks(ctx context.Context, links []*domain.EntityLink) error
 		}
 	}
 
-	return tx.Commit()
+	if owned {
+		return tx.Commit()
+	}
+	return nil
+}
+
+// SaveLinksInTx is the explicit atomic-save seam used by UnitOfWork callers.
+func (s *Store) SaveLinksInTx(ctx context.Context, links []*domain.EntityLink) error {
+	return s.SaveLinks(ctx, links)
 }
 
 func canonicalKey(kind, value string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || strings.ContainsRune("/:@._-", r) {
-			b.WriteRune(r)
-		}
-	}
-	return kind + ":" + b.String()
+	return domainentity.Normalize(kind, value)
 }
 
 // GetByObservation retrieves all entity links for an observation.
@@ -107,26 +131,35 @@ func (s *Store) GetByObservation(ctx context.Context, obsID int64) ([]*domain.En
 
 // FindByEntity retrieves entity links matching a type and value.
 func (s *Store) FindByEntity(ctx context.Context, entityType, entityValue string) ([]*domain.EntityLink, error) {
+	return s.FindByEntityScoped(ctx, entityType, entityValue, "", "", "")
+}
+
+// FindByEntityScoped applies tenant, workspace, and project isolation while
+// retaining the legacy unscoped API for local mode.
+func (s *Store) FindByEntityScoped(ctx context.Context, entityType, entityValue, tenantID, workspaceID, project string) ([]*domain.EntityLink, error) {
 	v2 := s.v2Schema(ctx)
-	query := `SELECT id, observation_id, entity_type, entity_value, created_at FROM entity_links WHERE 1=1`
+	if !v2 && (tenantID != "" || workspaceID != "") {
+		return nil, fmt.Errorf("entity: tenant/workspace scope requires v2 schema")
+	}
+	query := `SELECT el.id, el.observation_id, el.entity_type, el.entity_value, el.created_at FROM entity_links el JOIN observations o ON o.id=el.observation_id WHERE 1=1`
 	if v2 {
-		query = `SELECT id, observation_id, entity_type, entity_value, normalized_value, provenance, created_at FROM entity_links WHERE 1=1`
+		query = `SELECT el.id, el.observation_id, el.entity_type, el.entity_value, el.normalized_value, el.provenance, el.created_at FROM entity_links el JOIN observations o ON o.id=el.observation_id WHERE 1=1`
 	}
 	args := []interface{}{}
 
 	if entityType != "" {
-		query += " AND entity_type = ?"
+		query += " AND el.entity_type = ?"
 		args = append(args, entityType)
 	}
 
 	if entityValue != "" {
 		if strings.Contains(entityValue, "%") {
-			query += " AND entity_value LIKE ?"
+			query += " AND el.entity_value LIKE ?"
 		} else {
 			if v2 {
-				query += " AND normalized_value = ?"
+				query += " AND el.normalized_value = ?"
 			} else {
-				query += " AND entity_value = ?"
+				query += " AND el.entity_value = ?"
 			}
 		}
 		if v2 && !strings.Contains(entityValue, "%") {
@@ -135,8 +168,20 @@ func (s *Store) FindByEntity(ctx context.Context, entityType, entityValue string
 			args = append(args, entityValue)
 		}
 	}
+	if tenantID != "" {
+		query += " AND o.tenant_id = ?"
+		args = append(args, tenantID)
+	}
+	if workspaceID != "" {
+		query += " AND o.workspace_id = ?"
+		args = append(args, workspaceID)
+	}
+	if project != "" {
+		query += " AND o.project = ?"
+		args = append(args, project)
+	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY el.created_at DESC"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -184,3 +229,4 @@ func scanEntityLinks(rows *sql.Rows, v2 ...bool) ([]*domain.EntityLink, error) {
 
 // Ensure Store implements domain.EntityRepository.
 var _ domain.EntityRepository = (*Store)(nil)
+var _ domain.TxParticipant = (*Store)(nil)

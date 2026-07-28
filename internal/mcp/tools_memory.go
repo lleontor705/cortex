@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/entity"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -553,12 +552,6 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 				return textResult("Memory saved: %q (%s) [duplicate skipped]", title, typ)
 			}
 			return errorResult("Failed to save: %s", err)
-		}
-
-		// Extract and save entity links
-		if stores.Entities != nil {
-			entitySvc := entity.NewService(stores.Entities)
-			_ = entitySvc.ExtractAndSave(ctx, obs) // best-effort
 		}
 
 		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)

@@ -62,6 +62,9 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 	}
 
 	tx := graphTx(ctx)
+	if s.v2TemporalSchema(ctx) && (edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts) && tx == nil {
+		return fmt.Errorf("graph: %s requires a shared UnitOfWork transaction", edge.RelationType)
+	}
 	var result sql.Result
 	var err error
 	if s.v2TemporalSchema(ctx) {
@@ -70,23 +73,28 @@ func (s *Store) CreateEdge(ctx context.Context, edge *domain.Edge) error {
 		if validFrom == nil {
 			validFrom = now
 		}
+		// Close the exact predecessor before inserting the successor. The shared
+		// transaction makes this ordering atomic and lets the current-state unique
+		// index reject a conflicting writer without touching unrelated facts.
+		if edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts {
+			state := "deprecated"
+			if edge.RelationType == domain.RelationSupersedes {
+				state = "superseded"
+			}
+			update := `UPDATE edges SET valid_until=?, tx_until=?, fact_state=?, evolution_type=?, change_reason=COALESCE(?,change_reason) WHERE from_obs_id=? AND to_obs_id=? AND relation_type=? AND valid_until IS NULL AND fact_state NOT IN ('deprecated','superseded') AND (tenant_id IS ? OR tenant_id=?) AND (workspace_id IS ? OR workspace_id=?)`
+			args := []any{now, now, state, edge.RelationType, nullableString(edge.ChangeReason), edge.FromObsID, edge.ToObsID, edge.RelationType, nullableString(edge.TenantID), edge.TenantID, nullableString(edge.WorkspaceID), edge.WorkspaceID}
+			if tx != nil {
+				_, err = tx.ExecContext(ctx, update, args...)
+			}
+			if err != nil {
+				return fmt.Errorf("graph: close predecessor: %w", err)
+			}
+		}
 		q := `INSERT INTO edges (from_obs_id,to_obs_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tenant_id,workspace_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		if tx != nil {
 			result, err = tx.ExecContext(ctx, q, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), validFrom, nullableTime(edge.InvalidAt), nullableTime(edge.ValidUntil), now, nullableString(edge.TenantID), nullableString(edge.WorkspaceID))
 		} else {
 			result, err = s.db.ExecContext(ctx, q, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), validFrom, nullableTime(edge.InvalidAt), nullableTime(edge.ValidUntil), now, nullableString(edge.TenantID), nullableString(edge.WorkspaceID))
-		}
-		if err == nil && (edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts) {
-			state := "deprecated"
-			if edge.RelationType == domain.RelationSupersedes {
-				state = "superseded"
-			}
-			update := `UPDATE edges SET valid_until=?, tx_until=?, fact_state=?, evolution_type=?, change_reason=COALESCE(?,change_reason) WHERE to_obs_id=? AND valid_until IS NULL AND fact_state NOT IN ('deprecated','superseded') AND id<>last_insert_rowid()`
-			if tx != nil {
-				_, err = tx.ExecContext(ctx, update, now, now, state, edge.RelationType, nullableString(edge.ChangeReason), edge.ToObsID)
-			} else {
-				_, err = s.db.ExecContext(ctx, update, now, now, state, edge.RelationType, nullableString(edge.ChangeReason), edge.ToObsID)
-			}
 		}
 	} else {
 		result, err = s.db.ExecContext(ctx, `INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight, confidence, source, reasoning, valid_from, invalid_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, edge.FromObsID, edge.ToObsID, edge.RelationType, edge.Weight, edge.Confidence, nullableString(edge.Source), nullableString(edge.Reasoning), nullableTime(edge.ValidFrom), nullableTime(edge.InvalidAt))
@@ -136,8 +144,8 @@ func (s *Store) EdgesAsOf(ctx context.Context, obsID int64, validAt, systemAt ti
 }
 
 // GetRelatedScoped performs bounded bidirectional traversal with cycle safety
-// and tenant/workspace/project isolation. The visited set is maintained by the
-// recursive CTE's UNION (not UNION ALL), so cycles cannot grow without bound.
+// and tenant/workspace/project isolation. The visited set is maintained by an
+// ID path predicate, so UNION ALL recursion cannot revisit a node indefinitely.
 func (s *Store) GetRelatedScoped(ctx context.Context, obsID int64, opts domain.GraphTraversalOptions) ([]*domain.Observation, error) {
 	depth := opts.Depth
 	if depth <= 0 {
@@ -156,8 +164,14 @@ func (s *Store) GetRelatedScoped(ctx context.Context, obsID int64, opts domain.G
 	if !s.v2TemporalSchema(ctx) {
 		return s.GetRelated(ctx, obsID, depth)
 	}
-	q := `WITH RECURSIVE walk(id,lvl) AS (SELECT ?,0 UNION SELECT CASE WHEN e.from_obs_id=walk.id THEN e.to_obs_id ELSE e.from_obs_id END,walk.lvl+1 FROM edges e JOIN walk ON (e.from_obs_id=walk.id OR e.to_obs_id=walk.id) JOIN observations so ON so.id=e.from_obs_id JOIN observations tobs ON tobs.id=e.to_obs_id WHERE walk.lvl<? AND e.valid_until IS NULL AND e.invalid_at IS NULL AND e.fact_state NOT IN ('deprecated','superseded') AND (?='' OR e.tenant_id=?) AND (?='' OR e.workspace_id=?) LIMIT ?) SELECT DISTINCT o.id,o.title,o.content,o.type,o.project,o.scope,o.session_id,COALESCE(o.topic_key,''),COALESCE(o.confidence,1),COALESCE(o.source,'manual'),COALESCE(o.tags,''),o.created_at,o.updated_at FROM observations o JOIN walk ON walk.id=o.id WHERE o.id<>? AND o.deleted_at IS NULL AND (?='' OR o.project=?) AND (?='' OR o.tenant_id=?) AND (?='' OR o.workspace_id=?) ORDER BY walk.lvl,o.created_at DESC`
-	args := []any{obsID, depth, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID, budget, obsID, opts.Project, opts.Project, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID}
+	q := `WITH RECURSIVE walk(id,lvl,path) AS (SELECT ?,0,','||?||',' UNION ALL SELECT CASE WHEN e.from_obs_id=walk.id THEN e.to_obs_id ELSE e.from_obs_id END,walk.lvl+1,walk.path||CASE WHEN e.from_obs_id=walk.id THEN e.to_obs_id ELSE e.from_obs_id END||',' FROM edges e JOIN walk ON (e.from_obs_id=walk.id OR e.to_obs_id=walk.id) JOIN observations so ON so.id=e.from_obs_id JOIN observations tobs ON tobs.id=e.to_obs_id WHERE walk.lvl<? AND instr(walk.path, ','||CASE WHEN e.from_obs_id=walk.id THEN e.to_obs_id ELSE e.from_obs_id END||',')=0 AND (? IS NOT NULL OR (e.valid_until IS NULL AND e.invalid_at IS NULL AND e.fact_state NOT IN ('deprecated','superseded'))) AND (? IS NULL OR ((e.valid_from IS NULL OR e.valid_from<=?) AND (e.invalid_at IS NULL OR e.invalid_at>?) AND (e.tx_from IS NULL OR e.tx_from<=?) AND (e.tx_until IS NULL OR e.tx_until>?))) AND (?='' OR e.tenant_id=?) AND (?='' OR e.workspace_id=?) AND (?='' OR so.project=?) AND (?='' OR tobs.project=?) AND (?='' OR so.tenant_id=?) AND (?='' OR tobs.tenant_id=?) AND (?='' OR so.workspace_id=?) AND (?='' OR tobs.workspace_id=?) LIMIT ?) SELECT DISTINCT o.id,o.title,o.content,o.type,o.project,o.scope,o.session_id,COALESCE(o.topic_key,''),COALESCE(o.confidence,1),COALESCE(o.source,'manual'),COALESCE(o.tags,''),o.created_at,o.updated_at FROM observations o JOIN walk ON walk.id=o.id WHERE o.id<>? AND o.deleted_at IS NULL AND (?='' OR o.project=?) AND (?='' OR o.tenant_id=?) AND (?='' OR o.workspace_id=?) ORDER BY walk.lvl,o.created_at DESC`
+	var asOf any
+	var asOfText string
+	if opts.AsOf != nil {
+		asOfText = opts.AsOf.UTC().Format(time.RFC3339Nano)
+		asOf = asOfText
+	}
+	args := []any{obsID, obsID, depth, asOf, asOf, asOfText, asOfText, asOfText, asOfText, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID, opts.Project, opts.Project, opts.Project, opts.Project, opts.TenantID, opts.TenantID, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID, opts.WorkspaceID, opts.WorkspaceID, budget, obsID, opts.Project, opts.Project, opts.TenantID, opts.TenantID, opts.WorkspaceID, opts.WorkspaceID}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("graph: scoped traversal: %w", err)

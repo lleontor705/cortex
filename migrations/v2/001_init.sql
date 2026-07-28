@@ -213,8 +213,9 @@ CREATE TABLE edges (
     change_reason  TEXT,
     created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (from_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
-    FOREIGN KEY (to_obs_id) REFERENCES observations(id) ON DELETE CASCADE,
-    UNIQUE(from_obs_id, to_obs_id, relation_type)
+    FOREIGN KEY (to_obs_id) REFERENCES observations(id) ON DELETE CASCADE
+    -- Temporal history permits repeated endpoint/relation facts; the partial
+    -- current-state index below enforces a single live fact.
 );
 
 CREATE INDEX idx_edges_from          ON edges(from_obs_id);
@@ -228,6 +229,11 @@ CREATE INDEX idx_edges_validity      ON edges(invalid_at);
 CREATE INDEX idx_edges_valid         ON edges(from_obs_id) WHERE valid_until IS NULL;
 CREATE INDEX idx_edges_temporal      ON edges(valid_from, valid_until, tx_from, tx_until);
 CREATE INDEX idx_edges_tenant        ON edges(tenant_id, workspace_id);
+-- At most one current fact may exist for an isolated endpoint/relation tuple.
+-- COALESCE makes local-mode NULL tenants participate in the same conflict key.
+CREATE UNIQUE INDEX idx_edges_one_current_fact
+    ON edges(to_obs_id, relation_type, COALESCE(tenant_id,''), COALESCE(workspace_id,''))
+    WHERE valid_until IS NULL AND fact_state = 'current';
 
 -- ===========================================================================
 -- 5. Importance scoring
