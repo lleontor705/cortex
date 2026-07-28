@@ -19,6 +19,7 @@ import (
 	"github.com/lleontor705/cortex/internal/mcp"
 	"github.com/lleontor705/cortex/internal/ollama"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
+	"github.com/lleontor705/cortex/internal/projection/obsidian"
 	"github.com/lleontor705/cortex/internal/setup"
 	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/tui"
@@ -123,6 +124,7 @@ Commands:
   setup [agent]          Install agent integration
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
+  export --to-obsidian --vault PATH  Export a read-only Obsidian projection
   sync                   Sync memories via git-friendly chunks
   merge-projects         Merge project name variants into one canonical name
   reindex [--project P]  Generate vector embeddings for all observations
@@ -772,6 +774,11 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 }
 
 func runExport(args []string, stdout, stderr io.Writer) int {
+	for _, arg := range args {
+		if arg == "--to-obsidian" {
+			return runObsidianExport(args, stdout, stderr)
+		}
+	}
 	project := ""
 	output := ""
 
@@ -824,6 +831,47 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		writeln(stdout, string(data))
 	}
 
+	return 0
+}
+
+func runObsidianExport(args []string, stdout, stderr io.Writer) int {
+	vault, project := "", ""
+	includePersonal := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--vault":
+			if i+1 < len(args) {
+				vault = args[i+1]
+				i++
+			}
+		case "--project":
+			if i+1 < len(args) {
+				project = args[i+1]
+				i++
+			}
+		case "--include-personal":
+			includePersonal = true
+		}
+	}
+	if vault == "" {
+		writeln(stderr, "usage: cortex export --to-obsidian --vault PATH [--project PROJECT] [--include-personal]")
+		return 1
+	}
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+	r, err := obsidian.NewWriter(a.Stores.Observations, a.Stores.Graph, a.Stores.Entities, a.Stores.Scoring).Export(context.Background(), obsidian.Options{Vault: vault, Project: project, IncludePersonal: includePersonal})
+	if err != nil {
+		writef(stderr, "cortex: obsidian export: %v\n", err)
+		return 1
+	}
+	for _, warning := range r.Warnings {
+		writef(stderr, "warning: %s\n", warning)
+	}
+	writef(stdout, "Exported %d observations to Obsidian (%d skipped, %d stale)\n", r.Written, r.Skipped, r.Stale)
 	return 0
 }
 

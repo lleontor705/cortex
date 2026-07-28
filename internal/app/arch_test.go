@@ -89,7 +89,7 @@ var serverTrackSubpkgs = []string{
 	// Only the external (network-service) adapters remain server-track.
 	"/internal/vector/qdrant",
 	"/internal/vector/pgvector",
-	"/internal/projection/obsidian",
+	// W10: Obsidian is an export-only local projection over SQLite.
 	"/internal/identity", // server identity layer; local uses domain.Principal
 	// W8.4: the server-track VectorIndex factory. Local composition wires
 	// sqlite_blob directly and MUST NOT reach for the factory (which is the
@@ -244,7 +244,6 @@ func TestForbiddenImportDetector(t *testing.T) {
 		modulePath + "/internal/vector/qdrant",
 		modulePath + "/internal/vector/pgvector",
 		modulePath + "/internal/vector/qdrant/sub",
-		modulePath + "/internal/projection/obsidian",
 		// W8.4: the server-track VectorIndex factory.
 		modulePath + "/internal/server/external",
 		modulePath + "/internal/server/external/sub",
