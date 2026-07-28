@@ -53,13 +53,12 @@ func TestRetryOnBusy_AlwaysBusyRetriesExactlyMaxThenReturnsStableError(t *testin
 		return errors.New("SQLITE_BUSY: database is locked")
 	}
 
-	// Bound the context well above the worst-case backoff sum.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	start := time.Now()
-	err := retryOnBusy(ctx, cfg, alwaysBusy)
-	elapsed := time.Since(start)
+	ctx := context.Background()
+	var sleeps []time.Duration
+	err := retryOnBusyWithSleeper(ctx, cfg, alwaysBusy, func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		return nil
+	})
 
 	// 1. Exactly (1 + MaxRetries) calls: the initial attempt + MaxRetries retries.
 	expectedCalls := int32(1 + cfg.MaxRetries)
@@ -80,14 +79,17 @@ func TestRetryOnBusy_AlwaysBusyRetriesExactlyMaxThenReturnsStableError(t *testin
 
 	// 4. No panic — we reached here.
 
-	// 5. Total elapsed bounded: with BaseBackoff=1ms, MaxBackoff=5ms, MaxRetries=3,
-	//    the backoff sequence is 1ms, 2ms, 5ms(capped) → sum = 8ms.
-	//    Allow generous headroom for scheduler jitter (4×).
-	saneCap := 4 * (cfg.BaseBackoff + 2*cfg.BaseBackoff + cfg.MaxBackoff)
-	if elapsed > saneCap {
-		t.Errorf("elapsed = %v, exceeds sane cap %v — possible unbounded blocking", elapsed, saneCap)
+	// 5. Exact backoff policy, without wall-clock scheduling assumptions.
+	wantSleeps := []time.Duration{1 * time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond}
+	if len(sleeps) != len(wantSleeps) {
+		t.Fatalf("sleep count = %d, want %d (%v)", len(sleeps), len(wantSleeps), wantSleeps)
 	}
-	t.Logf("retryOnBusy: %d calls in %v (backoff sum bounded)", calls, elapsed)
+	for i := range wantSleeps {
+		if sleeps[i] != wantSleeps[i] {
+			t.Errorf("sleep[%d] = %v, want %v", i, sleeps[i], wantSleeps[i])
+		}
+	}
+	t.Logf("retryOnBusy: %d calls with backoffs %v", calls, sleeps)
 }
 
 // TestRetryOnBusy_NonBusyErrorReturnsImmediately proves that a non-BUSY error
@@ -223,7 +225,7 @@ func TestComputeBackoff_TableDriven(t *testing.T) {
 		{
 			name:    "overflow_guard_caps_to_max",
 			cfg:     domain.BusyRetryConfig{BaseBackoff: 1 * time.Nanosecond, MaxBackoff: 50 * time.Millisecond, JitterFactor: 0},
-			attempt: 63, // 1 << 63 sets the sign bit → negative int64 → overflow guard fires
+			attempt: 63,                    // 1 << 63 sets the sign bit → negative int64 → overflow guard fires
 			wantMin: 50 * time.Millisecond, // negative → capped to MaxBackoff
 			wantMax: 50 * time.Millisecond,
 		},

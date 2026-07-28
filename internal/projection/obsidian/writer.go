@@ -63,7 +63,11 @@ type fileSystem interface {
 	Rename(string, string) error
 	Remove(string) error
 	RemoveAll(string) error
-	Open(string) (*os.File, error)
+	Open(string) (fileHandle, error)
+}
+type fileHandle interface {
+	Sync() error
+	Close() error
 }
 type osFS struct{}
 
@@ -76,7 +80,7 @@ func (osFS) MkdirTemp(d, p string) (string, error)             { return os.Mkdir
 func (osFS) Rename(a, b string) error                          { return os.Rename(a, b) }
 func (osFS) Remove(p string) error                             { return os.Remove(p) }
 func (osFS) RemoveAll(p string) error                          { return os.RemoveAll(p) }
-func (osFS) Open(p string) (*os.File, error)                   { return os.Open(p) }
+func (osFS) Open(p string) (fileHandle, error)                 { return os.Open(p) }
 
 func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 	var result Result
@@ -137,6 +141,11 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 	for _, o := range visible {
 		id := fmt.Sprintf("%d", o.ID)
 		target := filepath.Join(vault, projectFolder(o.Project), "observations", safeSlug(o.Title)+"-"+idHash(id)+".md")
+		for existing := range paths {
+			if filepath.Clean(existing) != filepath.Clean(target) && strings.EqualFold(existing, target) {
+				return result, fmt.Errorf("obsidian: case-insensitive filename collision between %s and %s", existing, target)
+			}
+		}
 		if old, ok := byID[id]; ok && filepath.Clean(old) != filepath.Clean(target) {
 			b, e := w.fs.ReadFile(old)
 			if e != nil {
@@ -168,7 +177,7 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 				return result, fmt.Errorf("obsidian: refusing symlink target %s", target)
 			}
 			if _, owned := byID[id]; !owned {
-				return result, fmt.Errorf("obsidian: refusing overwrite conflict at %s", target)
+				return result, fmt.Errorf("obsidian: case-insensitive filename collision at %s", target)
 			}
 		}
 		if e := ensureSafeParentsFS(w.fs, vault, filepath.Dir(target)); e != nil {
@@ -359,7 +368,7 @@ func findCortexFiles(f fileSystem, vault string) (map[string]string, error) {
 	}
 	return out, e
 }
-func commitTransaction(f fileSystem, vault string, changes map[string][]byte) error {
+func commitTransaction(f fileSystem, vault string, changes map[string][]byte) (err error) {
 	stage, e := f.MkdirTemp(filepath.Join(vault, ".cortex-staging"), "export-")
 	if e != nil {
 		if e = f.MkdirAll(filepath.Join(vault, ".cortex-staging"), 0700); e != nil {
@@ -370,7 +379,12 @@ func commitTransaction(f fileSystem, vault string, changes map[string][]byte) er
 	if e != nil {
 		return e
 	}
-	defer f.RemoveAll(stage)
+	defer func() {
+		cleanupErr := f.RemoveAll(stage)
+		if err == nil && cleanupErr != nil {
+			err = cleanupErr
+		}
+	}()
 	keys := make([]string, 0, len(changes))
 	for p := range changes {
 		keys = append(keys, p)
@@ -436,12 +450,19 @@ func commitTransaction(f fileSystem, vault string, changes map[string][]byte) er
 			return e
 		}
 		installed = append(installed, p)
-		_ = syncPath(f, filepath.Dir(p))
+		if e = syncPath(f, filepath.Dir(p)); e != nil {
+			rollback()
+			return e
+		}
 	}
 	for _, b := range backs {
-		_ = f.Remove(b.bak)
+		if e = f.Remove(b.bak); e != nil {
+			return e
+		}
 	}
-	_ = syncPath(f, vault)
+	if e = syncPath(f, vault); e != nil {
+		return e
+	}
 	return nil
 }
 func syncPath(f fileSystem, p string) error {
@@ -449,11 +470,10 @@ func syncPath(f fileSystem, p string) error {
 	if e != nil {
 		return nil
 	}
-	defer h.Close()
 	// Directory/file fsync is best effort: Windows may deny Sync on handles
 	// opened through the portable os.File API, while POSIX filesystems support it.
 	_ = h.Sync()
-	return nil
+	return h.Close()
 }
 func visibleID(m map[int64]*domain.Observation, id string) (*domain.Observation, bool) {
 	for k, v := range m {

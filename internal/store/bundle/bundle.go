@@ -223,6 +223,21 @@ func IsSQLiteBusy(err error) bool {
 // A MaxRetries of 0 means fn runs exactly once with no retry (the driver-level
 // busy_timeout is the only bound).
 func retryOnBusy(ctx context.Context, cfg domain.BusyRetryConfig, fn func() error) error {
+	return retryOnBusyWithSleeper(ctx, cfg, fn, func(ctx context.Context, d time.Duration) error {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			return nil
+		}
+	})
+}
+
+// retryOnBusyWithSleeper is the deterministic seam for retry policy tests.
+// Production callers use retryOnBusy, which supplies a real timer sleeper.
+func retryOnBusyWithSleeper(ctx context.Context, cfg domain.BusyRetryConfig, fn func() error, sleep func(context.Context, time.Duration) error) error {
 	var lastErr error
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		// Respect context cancellation between retries.
@@ -241,10 +256,8 @@ func retryOnBusy(ctx context.Context, cfg domain.BusyRetryConfig, fn func() erro
 		// Compute backoff for the next attempt (if any remain).
 		if attempt < cfg.MaxRetries {
 			backoff := computeBackoff(cfg, attempt)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
+			if err := sleep(ctx, backoff); err != nil {
+				return err
 			}
 		}
 	}

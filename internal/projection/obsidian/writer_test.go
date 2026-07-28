@@ -1,9 +1,14 @@
 package obsidian
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +50,30 @@ type failRenameFS struct {
 	fileSystem
 	remaining int
 	failed    bool
+}
+
+type failRemoveAllFS struct {
+	fileSystem
+	err error
+}
+
+func (f *failRemoveAllFS) RemoveAll(string) error { return f.err }
+
+type closeErrorHandle struct{ fileHandle }
+
+func (h closeErrorHandle) Close() error {
+	_ = h.fileHandle.Close()
+	return os.ErrClosed
+}
+
+type closeErrorFS struct{ fileSystem }
+
+func (f closeErrorFS) Open(p string) (fileHandle, error) {
+	h, err := f.fileSystem.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	return closeErrorHandle{h}, nil
 }
 
 func (f *failRenameFS) Rename(old, new string) error {
@@ -224,6 +253,20 @@ func TestSafeSlugWindowsNamesAndUnicode(t *testing.T) {
 	}
 }
 
+func TestSafeSlugBoundsAndHashAreStable(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	slug := safeSlug(long)
+	if len([]rune(slug)) > 89 || !strings.HasSuffix(slug, "-"+idHash(long)[:8]) {
+		t.Fatalf("bounded slug = %q", slug)
+	}
+	if idHash("1") != "6b86b273ff34" {
+		t.Fatalf("unexpected stable id hash: %s", idHash("1"))
+	}
+	if err := ensureSafeParentsFS(osFS{}, t.TempDir(), filepath.Join(t.TempDir(), "..", "escape")); err == nil {
+		t.Fatal("outside-vault path was accepted")
+	}
+}
+
 func TestExportRollbackRestoresFilesAndManifestOnCommitFailure(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
@@ -250,5 +293,120 @@ func TestExportRollbackRestoresFilesAndManifestOnCommitFailure(t *testing.T) {
 	manifestAfter, _ := os.ReadFile(manifestPath)
 	if string(manifestBefore) != string(manifestAfter) {
 		t.Fatal("rollback changed manifest")
+	}
+}
+
+func TestCommitTransactionCleanupErrorIsReturnedOnlyWithoutPrimaryError(t *testing.T) {
+	vault := t.TempDir()
+	cleanupErr := errors.New("cleanup failed")
+	fs := &failRemoveAllFS{fileSystem: osFS{}, err: cleanupErr}
+	if err := commitTransaction(fs, vault, map[string][]byte{filepath.Join(vault, "note.md"): []byte("ok")}); !errors.Is(err, cleanupErr) {
+		t.Fatalf("got %v, want cleanup error", err)
+	}
+	primaryErr := errors.New("write failed")
+	writeFS := &failWriteFS{fileSystem: fs, err: primaryErr}
+	if err := commitTransaction(writeFS, vault, map[string][]byte{filepath.Join(vault, "other.md"): []byte("bad")}); !errors.Is(err, primaryErr) {
+		t.Fatalf("got %v, want primary error", err)
+	}
+}
+
+type failWriteFS struct {
+	fileSystem
+	err error
+}
+
+func (f *failWriteFS) WriteFile(string, []byte, fs.FileMode) error { return f.err }
+
+func TestSyncPathReturnsCloseError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPath(closeErrorFS{fileSystem: osFS{}}, path); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("got %v, want close error", err)
+	}
+}
+
+func TestExportRejectsSymlinkedFileAndDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	for _, tc := range []struct {
+		name string
+		make func(string, string) error
+	}{
+		{"file", func(target, link string) error { return os.Symlink(target, link) }},
+		{"directory", func(target, link string) error { return os.Symlink(target, link) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "cortex", "projects", "p", "observations")
+			if err := os.MkdirAll(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(dir, "outside")
+			if tc.name == "directory" {
+				if err := os.MkdirAll(target, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(target, []byte("x"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(root, "link")
+			if err := tc.make(target, link); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			_, err := NewWriter(fakeObs{[]*domain.Observation{{ID: 1, Title: "n", Project: "p", UpdatedAt: time.Now()}}}, nil, nil, nil).Export(context.Background(), Options{Vault: dir})
+			if err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("got %v, want symlink rejection", err)
+			}
+		})
+	}
+}
+
+func TestExportRejectsCaseInsensitiveCollisionAndPreservesSource(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	obs := &domain.Observation{ID: 1, Title: "Note", Content: "source", Project: "p", UpdatedAt: now}
+	before := *obs
+	e := NewWriter(fakeObs{[]*domain.Observation{obs}}, nil, nil, nil)
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "cortex", "projects", "p", "observations", "NOTE-"+idHash("1")+".md")
+	if err := os.WriteFile(path, []byte("user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err == nil || !strings.Contains(err.Error(), "case-insensitive") {
+		t.Fatalf("got %v, want collision", err)
+	}
+	if !reflect.DeepEqual(before, *obs) {
+		t.Fatal("export mutated source observation")
+	}
+}
+
+func TestExportGoldenBytesAndOutsideVaultProtection(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	obs := &domain.Observation{ID: 1, Title: "Golden", Content: "Golden fixture for deterministic export and YAML escaping.", Project: "demo", Scope: "project", Type: "decision", CreatedAt: now, UpdatedAt: now}
+	e := NewWriter(fakeObs{[]*domain.Observation{obs}}, nil, nil, nil)
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "cortex", "projects", "demo", "observations", "golden-"+idHash("1")+".md")
+	want, err := os.ReadFile(filepath.Join("testdata", "golden", "observation.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("golden bytes differ:\n%s", got)
+	}
+	outside := filepath.Join(dir, "outside.md")
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("unexpected outside-vault mutation: %v", err)
 	}
 }
