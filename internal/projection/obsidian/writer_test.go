@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -328,15 +329,12 @@ func TestSyncPathReturnsCloseError(t *testing.T) {
 }
 
 func TestExportRejectsSymlinkedFileAndDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires elevated privileges on Windows")
-	}
 	for _, tc := range []struct {
 		name string
 		make func(string, string) error
 	}{
-		{"file", func(target, link string) error { return os.Symlink(target, link) }},
-		{"directory", func(target, link string) error { return os.Symlink(target, link) }},
+		{"file", func(target, link string) error { return makeLink(target, link, false) }},
+		{"directory", func(target, link string) error { return makeLink(target, link, true) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -356,9 +354,63 @@ func TestExportRejectsSymlinkedFileAndDirectory(t *testing.T) {
 			if err := tc.make(target, link); err != nil {
 				t.Skipf("symlink unavailable: %v", err)
 			}
+			linkInfo, statErr := os.Lstat(link)
+			if statErr != nil {
+				t.Fatal(statErr)
+			}
+			if tc.name == "directory" && runtime.GOOS == "windows" && !isReparsePoint(link) {
+				t.Fatal("directory link was not created as a Windows reparse point")
+			}
+			if tc.name == "file" && linkInfo.Mode()&os.ModeSymlink == 0 && runtime.GOOS != "windows" {
+				t.Fatal("file link was not created as a symlink")
+			}
 			_, err := NewWriter(fakeObs{[]*domain.Observation{{ID: 1, Title: "n", Project: "p", UpdatedAt: time.Now()}}}, nil, nil, nil).Export(context.Background(), Options{Vault: dir})
 			if err == nil || !strings.Contains(err.Error(), "symlink") {
 				t.Fatalf("got %v, want symlink rejection", err)
+			}
+			if tc.name == "file" {
+				got, readErr := os.ReadFile(target)
+				if readErr != nil || string(got) != "x" {
+					t.Fatalf("outside file changed: bytes=%q err=%v", got, readErr)
+				}
+			} else if _, statErr := os.Stat(filepath.Join(target, "n-"+idHash("1")+".md")); !os.IsNotExist(statErr) {
+				t.Fatalf("outside directory was mutated: %v", statErr)
+			}
+		})
+	}
+}
+
+func makeLink(target, link string, directory bool) error {
+	if runtime.GOOS == "windows" && directory {
+		return exec.Command("cmd", "/c", "mklink", "/J", link, target).Run()
+	}
+	return os.Symlink(target, link)
+}
+
+type guardFileInfo struct {
+	name string
+	mode fs.FileMode
+}
+
+func (f guardFileInfo) Name() string       { return f.name }
+func (f guardFileInfo) Size() int64        { return 0 }
+func (f guardFileInfo) Mode() fs.FileMode  { return f.mode }
+func (f guardFileInfo) ModTime() time.Time { return time.Time{} }
+func (f guardFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f guardFileInfo) Sys() any           { return nil }
+
+func TestUnsafePathGuardRejectsInjectedReparseFileAndDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode fs.FileMode
+	}{
+		{name: "file", mode: 0600},
+		{name: "directory", mode: fs.ModeDir | 0700},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := guardFileInfo{name: tc.name, mode: tc.mode}
+			if !unsafePathInfo(filepath.Join("vault", tc.name), info, func(string) bool { return true }) {
+				t.Fatalf("injected reparse metadata was accepted for %s", tc.name)
 			}
 		})
 	}

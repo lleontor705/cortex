@@ -173,7 +173,7 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 			continue
 		}
 		if st, e := w.fs.Lstat(target); e == nil {
-			if st.Mode()&os.ModeSymlink != 0 {
+			if unsafePathInfo(target, st, isReparsePoint) {
 				return result, fmt.Errorf("obsidian: refusing symlink target %s", target)
 			}
 			if _, owned := byID[id]; !owned {
@@ -248,11 +248,11 @@ func safeVault(v string) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	if st, e := os.Lstat(abs); e == nil && st.Mode()&os.ModeSymlink != 0 {
+	if st, e := os.Lstat(abs); e == nil && unsafePathInfo(abs, st, isReparsePoint) {
 		return "", errors.New("obsidian: vault must not be a symlink")
 	}
 	for cur := abs; ; cur = filepath.Dir(cur) {
-		if st, e := os.Lstat(cur); e == nil && st.Mode()&os.ModeSymlink != 0 {
+		if st, e := os.Lstat(cur); e == nil && unsafePathInfo(cur, st, isReparsePoint) {
 			return "", fmt.Errorf("obsidian: unsafe symlink path %s", cur)
 		}
 		parent := filepath.Dir(cur)
@@ -273,7 +273,7 @@ func ensureSafeParentsFS(f fileSystem, vault, target string) error {
 	cur := vault
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
-		if st, e := f.Lstat(cur); e == nil && st.Mode()&os.ModeSymlink != 0 {
+		if st, e := f.Lstat(cur); e == nil && unsafePathInfo(cur, st, isReparsePoint) {
 			return fmt.Errorf("obsidian: refusing symlink traversal at %s", cur)
 		}
 	}
@@ -344,7 +344,7 @@ func findCortexFiles(f fileSystem, vault string) (map[string]string, error) {
 		if e != nil {
 			return e
 		}
-		if st.Mode()&os.ModeSymlink != 0 {
+		if unsafePathInfo(path, st, isReparsePoint) {
 			return fmt.Errorf("obsidian: refusing symlink %s", path)
 		}
 		if d.IsDir() {
