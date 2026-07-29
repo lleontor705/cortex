@@ -79,3 +79,39 @@ func (m *PostgresServerMigration) Apply(ctx context.Context, db *sql.DB) error {
 	}
 	return nil
 }
+
+// Down rolls back the server wave under the same advisory lock used by Apply.
+// It is intentionally explicit: callers must opt in because it removes all
+// tenant data in the server schema.
+func (m *PostgresServerMigration) Down(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return errors.New("migration: PostgreSQL database connection is nil")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migration: begin PostgreSQL rollback: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('cortex:v2:server-migrations'))`); err != nil {
+		return fmt.Errorf("migration: lock PostgreSQL server migrations: %w", err)
+	}
+	var checksum string
+	if err = tx.QueryRowContext(ctx, `SELECT checksum FROM cortex_server_migrations WHERE version=$1`, m.Version()).Scan(&checksum); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
+	}
+	if checksum != m.Checksum() {
+		return fmt.Errorf("migration: PostgreSQL migration %d checksum mismatch", m.Version())
+	}
+	for _, table := range []string{"audit_events", "actor_subjects", "index_outbox", "observation_entities", "entities", "edges", "prompts", "observation_revisions", "observations", "sessions", "api_tokens", "memberships", "rbac_roles", "service_accounts", "app_users", "projects", "workspaces", "organizations", "cortex_tenant_context"} {
+		if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+table+` CASCADE`); err != nil {
+			return fmt.Errorf("migration: rollback table %s: %w", table, err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_current_tenant() CASCADE; DROP FUNCTION IF EXISTS cortex_set_tenant(uuid) CASCADE; DELETE FROM cortex_server_migrations WHERE version=$1`, m.Version()); err != nil {
+		return fmt.Errorf("migration: rollback server schema: %w", err)
+	}
+	return tx.Commit()
+}

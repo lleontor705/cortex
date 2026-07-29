@@ -164,9 +164,13 @@ CREATE TABLE IF NOT EXISTS observations (
     FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, id)
 );
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS revision_count integer NOT NULL DEFAULT 1;
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS project_key text NOT NULL DEFAULT '';
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'project';
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(content,''))) STORED;
 CREATE INDEX IF NOT EXISTS observations_search_vector_gin ON observations USING gin(search_vector);
-CREATE UNIQUE INDEX IF NOT EXISTS observations_topic_key_active_uq ON observations(tenant_id, topic_key) WHERE topic_key IS NOT NULL AND deleted_at IS NULL;
+DROP INDEX IF EXISTS observations_topic_key_active_uq;
+CREATE UNIQUE INDEX IF NOT EXISTS observations_topic_key_active_uq ON observations(tenant_id, project_key, topic_key) WHERE topic_key IS NOT NULL AND deleted_at IS NULL;
 CREATE TABLE IF NOT EXISTS observation_revisions (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     tenant_id uuid NOT NULL,
@@ -196,6 +200,15 @@ CREATE TABLE IF NOT EXISTS edges (
     FOREIGN KEY (tenant_id, from_observation_id) REFERENCES observations(tenant_id, id),
     FOREIGN KEY (tenant_id, to_observation_id) REFERENCES observations(tenant_id, id)
 );
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS evolution_id bigint;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS evolution_type text NOT NULL DEFAULT 'original';
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS fact_state text NOT NULL DEFAULT 'current';
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS change_reason text;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='edges_valid_range') THEN
+        ALTER TABLE edges ADD CONSTRAINT edges_valid_range CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from);
+    END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS entities (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
@@ -221,6 +234,21 @@ CREATE TABLE IF NOT EXISTS index_outbox (
 );
 ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS error text;
+ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS cause text;
+ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS affected_rows integer NOT NULL DEFAULT 0;
+ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS lease_owner text;
+ALTER TABLE index_outbox ADD COLUMN IF NOT EXISTS leased_until timestamptz;
+CREATE INDEX IF NOT EXISTS index_outbox_lease_recovery ON index_outbox(status, leased_until);
+
+CREATE TABLE IF NOT EXISTS actor_subjects (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id uuid NOT NULL,
+    subject text NOT NULL,
+    actor_type text NOT NULL,
+    public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, subject)
+);
 CREATE TABLE IF NOT EXISTS audit_events (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
@@ -234,7 +262,7 @@ DO $$
 DECLARE
     t text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['organizations','workspaces','projects','app_users','service_accounts','rbac_roles','memberships','api_tokens','sessions','observations','observation_revisions','prompts','edges','entities','observation_entities','index_outbox','audit_events'] LOOP
+    FOREACH t IN ARRAY ARRAY['organizations','workspaces','projects','app_users','service_accounts','rbac_roles','memberships','api_tokens','sessions','observations','observation_revisions','prompts','edges','entities','observation_entities','index_outbox','audit_events','actor_subjects'] LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS cortex_tenant_isolation ON %I', t);
@@ -243,7 +271,7 @@ BEGIN
 END
 $$;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events, actor_subjects TO cortex_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cortex_app;
 GRANT SELECT ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_admin;
 GRANT ALL ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_migration;

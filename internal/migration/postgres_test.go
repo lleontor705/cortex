@@ -47,3 +47,15 @@ func TestPostgresServerMigratorRejectsNilDB(t *testing.T) {
 		t.Fatal("Apply(nil) unexpectedly succeeded")
 	}
 }
+
+func TestPostgresServerMigrationHasRecoveryAndIsolationSchema(t *testing.T) {
+	m, err := NewPostgresServerMigration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"actor_subjects", "lease_owner", "leased_until", "affected_rows", "completed_at", "project_key", "scope", "source", "edges_valid_range"} {
+		if !strings.Contains(m.SQL(), token) {
+			t.Errorf("server migration missing %q", token)
+		}
+	}
+}
