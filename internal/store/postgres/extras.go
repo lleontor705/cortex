@@ -21,7 +21,7 @@ func (r *PromptRepository) Save(ctx context.Context, p *domain.Prompt) error {
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO prompts(tenant_id,session_id,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,NULLIF($3,'')::uuid,NULLIF($3,'')::uuid) RETURNING id`, p.SessionID, p.Content, r.principal.Subject).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO prompts(tenant_id,session_id,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1::bigint,$2,NULLIF($3,'')::uuid,NULLIF($3,'')::uuid) RETURNING id`, p.SessionID, p.Content, r.principal.Subject).Scan(&id)
 		p.ID = id
 		return err
 	})

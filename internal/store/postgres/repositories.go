@@ -39,7 +39,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 		}
 		o.UpdatedAt = now
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), $1, $2, $3, $4, NULLIF($5,''), $6, $6, NULLIF($7,'')::uuid, NULLIF($7,'')::uuid) RETURNING id`, o.SessionID, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, r.principal.Subject).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), $1::bigint, $2, $3, $4, NULLIF($5,''), $6, $6, NULLIF($7,'')::uuid, NULLIF($7,'')::uuid) RETURNING id`, o.SessionID, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, r.principal.Subject).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("postgres observations: insert: %w", err)
 		}
@@ -200,7 +200,7 @@ func (r *SessionRepository) Create(ctx context.Context, s *domain.Session) error
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,NULLIF($4,'')::uuid,NULLIF($4,'')::uuid) RETURNING id`, s.ID, s.StartedAt, s.Summary, r.principal.Subject).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1::bigint,$2,$3,NULLIF($4,'')::uuid,NULLIF($4,'')::uuid) RETURNING id`, s.ID, s.StartedAt, s.Summary, r.principal.Subject).Scan(&id)
 		if err != nil {
 			return err
 		}
