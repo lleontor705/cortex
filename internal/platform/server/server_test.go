@@ -98,3 +98,38 @@ func TestRuntimeCloseIsIdempotentAndConcurrencySafe(t *testing.T) {
 		t.Fatalf("embedding Close calls = %d, want 1", embedding.calls)
 	}
 }
+
+func TestValidateConfigRejectsInvalidServerInputs(t *testing.T) {
+	base := config.Config{Server: config.ServerConfig{Storage: config.ServerStorageConfig{Driver: "postgres", DSN: "dsn"}, TenantID: "bad", WorkspaceID: "bad", PrincipalSubject: "p"}}
+	cases := []struct {
+		name   string
+		mutate func(*config.Config)
+		want   string
+	}{
+		{"driver", func(c *config.Config) { c.Server.Storage.Driver = "sqlite" }, "driver"},
+		{"dsn", func(c *config.Config) { c.Server.Storage.DSN = "" }, "DSN"},
+		{"tenant", func(c *config.Config) { c.Server.TenantID = "" }, "tenant_id"},
+		{"tenant uuid", func(c *config.Config) { c.Server.TenantID = "bad" }, "tenant_id"},
+		{"workspace uuid", func(c *config.Config) {
+			c.Server.TenantID = "00000000-0000-0000-0000-000000000001"
+			c.Server.WorkspaceID = "bad"
+		}, "workspace_id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			tc.mutate(&c)
+			if err := validateConfig(c); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestEmbeddingDimensions(t *testing.T) {
+	for provider, want := range map[string]int{"openai": 1536, "ollama": 768, "none": 0} {
+		if got := embeddingDimensions(provider); got != want {
+			t.Errorf("%s=%d want %d", provider, got, want)
+		}
+	}
+}
