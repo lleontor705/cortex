@@ -119,7 +119,7 @@ func (s *AuthorizedStore) CreateGraphEdge(ctx context.Context, e *domain.Edge) e
 	}
 	var fromProject, toProject string
 	if err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT COALESCE(a.project_key,''),COALESCE(b.project_key,'') FROM observations a JOIN observations b ON b.id=$2 WHERE a.id=$1 AND a.deleted_at IS NULL AND b.deleted_at IS NULL`, e.FromObsID, e.ToObsID).Scan(&fromProject, &toProject)
+		return tx.QueryRow(ctx, `SELECT COALESCE(a.project_key,''),COALESCE(b.project_key,'') FROM observations a JOIN observations b ON b.tenant_id=a.tenant_id AND b.id=$2 WHERE a.tenant_id=public.cortex_current_tenant() AND b.tenant_id=public.cortex_current_tenant() AND a.id=$1 AND a.deleted_at IS NULL AND b.deleted_at IS NULL`, e.FromObsID, e.ToObsID).Scan(&fromProject, &toProject)
 	}); err != nil {
 		return err
 	}
@@ -182,6 +182,25 @@ func (s *AuthorizedStore) UpdateImportanceScore(ctx context.Context, id int64, i
 		return err
 	}
 	return s.store.UpdateScore(ctx, id, increment)
+}
+
+// RecordImportanceAccess records a read against an authorized observation.
+// The resource is resolved before authorization so an id from another tenant
+// cannot be used as an oracle or mutate its score metadata.
+func (s *AuthorizedStore) RecordImportanceAccess(ctx context.Context, id int64) error {
+	if err := s.authorizeObservation(ctx, authz.ActionRead, id); err != nil {
+		return err
+	}
+	return s.store.RecordAccess(ctx, id)
+}
+
+// SetImportanceScore sets a lifecycle score only after resolving and enforcing
+// the actual observation resource.
+func (s *AuthorizedStore) SetImportanceScore(ctx context.Context, id int64, score float64) error {
+	if err := s.authorizeObservation(ctx, authz.ActionWrite, id); err != nil {
+		return err
+	}
+	return s.store.SetScore(ctx, id, score)
 }
 func (s *AuthorizedStore) IssueToken(ctx context.Context, in identity.TokenIssue) (identity.IssuedToken, error) {
 	if err := s.authorize(ctx, authz.ResourceTokens, authz.ActionManage, "", in.Subject, ""); err != nil {

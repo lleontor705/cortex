@@ -82,7 +82,7 @@ func (r *Store) SetScore(ctx context.Context, obsID int64, score float64) error 
 func (r *Store) GetAllScores(ctx context.Context) ([]*domain.ImportanceScore, error) {
 	var out []*domain.ImportanceScore
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT observation_id,score,access_count,last_accessed,updated_at FROM importance_scores WHERE workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) ORDER BY score DESC`, r.tenant.WorkspaceID)
+		rows, err := tx.Query(ctx, `SELECT observation_id,score,access_count,last_accessed,updated_at FROM importance_scores WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) ORDER BY score DESC`, r.tenant.WorkspaceID)
 		if err != nil {
 			return err
 		}
@@ -109,7 +109,7 @@ func (r *Store) GetTopByScore(ctx context.Context, project string, limit int) ([
 	}
 	var out []*domain.ImportanceScore
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT s.observation_id,s.score,s.access_count,s.last_accessed,s.updated_at FROM importance_scores s JOIN observations o ON o.tenant_id=s.tenant_id AND o.id=s.observation_id WHERE s.workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) AND o.deleted_at IS NULL AND ($2='' OR o.project_key=$2) ORDER BY s.score DESC,s.observation_id LIMIT $3`, r.tenant.WorkspaceID, project, limit)
+		rows, err := tx.Query(ctx, `SELECT s.observation_id,s.score,s.access_count,s.last_accessed,s.updated_at FROM importance_scores s JOIN observations o ON o.tenant_id=s.tenant_id AND o.id=s.observation_id WHERE s.tenant_id=public.cortex_current_tenant() AND s.workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) AND o.deleted_at IS NULL AND ($2='' OR o.project_key=$2) ORDER BY s.score DESC,s.observation_id LIMIT $3`, r.tenant.WorkspaceID, project, limit)
 		if err != nil {
 			return err
 		}
@@ -133,7 +133,7 @@ func (r *Store) GetTopByScore(ctx context.Context, project string, limit int) ([
 func (r *Store) GetIncomingEdgeCount(ctx context.Context, obsID int64) (int, error) {
 	var count int
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE to_observation_id=$1`, obsID).Scan(&count)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant() AND to_observation_id=$1`, obsID).Scan(&count)
 	})
 	return count, err
 }

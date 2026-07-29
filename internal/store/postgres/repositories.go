@@ -138,7 +138,7 @@ func (r *ObservationRepository) GetByTopicKey(ctx context.Context, project, key 
 	}
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, project, key).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, project, key).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", key)
@@ -162,7 +162,7 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 		f.Limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		q := observationSelect + ` WHERE deleted_at IS NULL`
+		q := observationSelect + ` WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL`
 		args := []any{}
 		n := 1
 		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
@@ -239,7 +239,7 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 }
 func (r *ObservationRepository) CountAll(ctx context.Context) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE deleted_at IS NULL`).Scan(&n)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL`).Scan(&n)
 	})
 	return
 }

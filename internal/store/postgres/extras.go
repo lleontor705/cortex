@@ -345,7 +345,7 @@ func (r *SearchRepository) Search(ctx context.Context, query string, opts domain
 		opts.Limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		q := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.deleted_at IS NULL AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
+		q := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
 		args := []any{opts.Query}
 		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
 			if len(projects) == 0 {

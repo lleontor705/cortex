@@ -77,42 +77,21 @@ type Store struct {
 // AuthorizedStore is the only server-facing storage capability. The raw Store
 // remains package-private in composition; transports receive repository ports
 // and cannot select a tenant or bypass the authorization binding.
-type AuthorizedStore struct{ store *Store }
+type AuthorizedStore struct {
+	store *Store // composition-only compatibility; never exposed to transports
+	caps  *internalCapabilities
+}
 
-func (s *AuthorizedStore) Backend() string                          { return s.store.Backend() }
-func (s *AuthorizedStore) Health(ctx context.Context) domain.Health { return s.store.Health(ctx) }
-func (s *AuthorizedStore) BeginTx(ctx context.Context) (domain.Tx, error) {
-	return s.store.BeginTx(ctx)
-}
-func (s *AuthorizedStore) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
-	return s.store.WithinTx(ctx, handle, fn)
-}
-func (s *AuthorizedStore) GetScore(ctx context.Context, id int64) (*domain.ImportanceScore, error) {
-	return s.store.GetScore(ctx, id)
-}
-func (s *AuthorizedStore) UpdateScore(ctx context.Context, id int64, increment float64) error {
-	return s.store.UpdateScore(ctx, id, increment)
-}
-func (s *AuthorizedStore) GetTop(ctx context.Context, project string, limit int) ([]*domain.ImportanceScore, error) {
-	return s.store.GetTop(ctx, project, limit)
-}
-func (s *AuthorizedStore) RecordAccess(ctx context.Context, id int64) error {
-	return s.store.RecordAccess(ctx, id)
-}
-func (s *AuthorizedStore) SetScore(ctx context.Context, id int64, score float64) error {
-	return s.store.SetScore(ctx, id, score)
-}
-func (s *AuthorizedStore) GetAllScores(ctx context.Context) ([]*domain.ImportanceScore, error) {
-	return s.store.GetAllScores(ctx)
-}
-func (s *AuthorizedStore) GetTopByScore(ctx context.Context, project string, limit int) ([]*domain.ImportanceScore, error) {
-	return s.store.GetTopByScore(ctx, project, limit)
-}
-func (s *AuthorizedStore) GetIncomingEdgeCount(ctx context.Context, id int64) (int, error) {
-	return s.store.GetIncomingEdgeCount(ctx, id)
-}
-func (s *AuthorizedStore) GetObservation(ctx context.Context, id int64) (*domain.Observation, error) {
-	return s.store.GetObservation(ctx, id)
+// rawStore and internalCapabilities are deliberately unexported. They are
+// retained only by operation implementations and SystemService; transports
+// receive AuthorizedStore's operation-specific facade and cannot obtain a
+// transaction, repository, or scoring primitive.
+type rawStore struct{ store *Store }
+
+type internalCapabilities struct{ raw *rawStore }
+
+func newCapabilities(s *Store) *internalCapabilities {
+	return &internalCapabilities{raw: &rawStore{store: s}}
 }
 
 func validateAuthorizedContext(ac authz.AuthorizedContext) error {
@@ -175,7 +154,7 @@ func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*Author
 	s.grantDigest = ac.GrantDigest
 	s.grantVersion = ac.Principal.GrantVersion
 	s.authorizer = authz.NewPolicy()
-	return &AuthorizedStore{store: s}, nil
+	return &AuthorizedStore{store: s, caps: newCapabilities(s)}, nil
 }
 
 func (s *Store) Backend() string { return "postgres" }

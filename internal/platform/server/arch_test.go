@@ -30,7 +30,11 @@ func TestRuntimeDoesNotExposePostgresRepositories(t *testing.T) {
 
 func TestAuthorizedStoreHasNoRawRepositoryAccessors(t *testing.T) {
 	typ := reflect.TypeOf((*postgresstore.AuthorizedStore)(nil))
-	for _, name := range []string{"Observations", "Sessions", "Prompts", "Graph", "Entities", "Search", "Outbox", "Tokens"} {
+	for _, name := range []string{
+		"Observations", "Sessions", "Prompts", "Graph", "Entities", "Search", "Outbox", "Tokens",
+		"GetObservation", "GetScore", "UpdateScore", "SetScore", "GetTop", "GetTopByScore",
+		"GetAllScores", "RecordAccess", "GetIncomingEdgeCount", "BeginTx", "WithinTx", "Backend", "Health",
+	} {
 		if _, ok := typ.MethodByName(name); ok {
 			t.Fatalf("AuthorizedStore exposes raw accessor %s", name)
 		}

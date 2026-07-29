@@ -59,6 +59,35 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	adminDSN := os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
+	if adminDSN == "" {
+		adminDSN = dsn
+	}
+	adminConfig, err := pgxpool.ParseConfig(adminDSN)
+	if err != nil {
+		t.Fatalf("invalid migration DSN: %v", err)
+	}
+	adminPool, err := pgxpool.NewWithConfig(ctx, adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adminPool.Ping(ctx); err != nil {
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	if _, err := adminPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS cortex_server_migrations (version integer PRIMARY KEY, name text NOT NULL, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatalf("create migration ledger: %v", err)
+	}
+	if _, err := adminPool.Exec(ctx, servermigrations.ServerSQL); err != nil {
+		t.Fatalf("apply W11 server schema: %v", err)
+	}
+	// The test DSN is intentionally a real NOSUPERUSER login. Grant only the
+	// application role and object privileges required by the server schema;
+	// tests must never rely on SET ROLE from a superuser connection.
+	if _, err := adminPool.Exec(ctx, `GRANT USAGE ON SCHEMA public TO cortex_test; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO cortex_test; GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO cortex_test; GRANT cortex_app TO cortex_test`); err != nil {
+		t.Fatalf("grant non-superuser test privileges: %v", err)
+	}
+	adminPool.Close()
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("invalid CORTEX_TEST_POSTGRES_DSN: %v", err)
@@ -73,13 +102,14 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	}
 	h := &postgresHarness{t: t, pool: p, tenant: ""}
 	t.Cleanup(func() { p.Close() })
-	if _, err := p.Exec(ctx, `CREATE TABLE IF NOT EXISTS cortex_server_migrations (version integer PRIMARY KEY, name text NOT NULL, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		t.Fatalf("create migration ledger: %v", err)
-	}
-	if _, err := p.Exec(ctx, servermigrations.ServerSQL); err != nil {
-		t.Fatalf("apply W11 server schema: %v", err)
-	}
 	return h
+}
+
+func migrationDSN() string {
+	if dsn := os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN"); dsn != "" {
+		return dsn
+	}
+	return os.Getenv("CORTEX_TEST_POSTGRES_DSN")
 }
 
 func (h *postgresHarness) begin(t *testing.T) (pgx.Tx, context.Context) {
@@ -160,16 +190,16 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 	}
 	storeA, obsA := createStore(t)
 	storeB, obsB := createStore(t)
-	if err := storeA.SetScore(ctx, obsA.ID, 0.25); err != nil {
+	if err := storeA.store.SetScore(ctx, obsA.ID, 0.25); err != nil {
 		t.Fatal(err)
 	}
-	if err := storeB.SetScore(ctx, obsB.ID, 4.5); err != nil {
+	if err := storeB.store.SetScore(ctx, obsB.ID, 4.5); err != nil {
 		t.Fatal(err)
 	}
-	if scoreB, err := storeB.GetScore(ctx, obsB.ID); err != nil || scoreB.Score != 4.5 {
+	if scoreB, err := storeB.store.GetScore(ctx, obsB.ID); err != nil || scoreB.Score != 4.5 {
 		t.Fatalf("tenant B score=%+v err=%v", scoreB, err)
 	}
-	score, err := storeA.GetScore(ctx, obsA.ID)
+	score, err := storeA.store.GetScore(ctx, obsA.ID)
 	if err != nil || score.Score != 0.25 {
 		t.Fatalf("score=%+v err=%v", score, err)
 	}
@@ -197,7 +227,7 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 
 func TestPostgresW11MigrationLifecycle(t *testing.T) {
 	newPostgresHarness(t)
-	dsn := os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+	dsn := migrationDSN()
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +254,7 @@ func TestPostgresW11MigrationLifecycle(t *testing.T) {
 
 func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
 	newPostgresHarness(t)
-	dsn := os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+	dsn := migrationDSN()
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -398,11 +428,11 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatalf("prompt project filter: len=%d err=%v", len(prompts), err)
 	}
 	failedObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-failure", Content: "failure", Type: domain.TypeBugfix}
-	failedTx, err := store.BeginTx(ctx)
+	failedTx, err := store.store.BeginTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = store.WithinTx(ctx, failedTx.Handle(), func(txctx context.Context) error {
+	err = store.store.WithinTx(ctx, failedTx.Handle(), func(txctx context.Context) error {
 		if err := store.observations().Save(txctx, failedObs); err != nil {
 			return err
 		}
@@ -426,11 +456,11 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatalf("rollback entity rows=%d err=%v", n, err)
 	}
 	successObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-success", Content: "success", Type: domain.TypeBugfix}
-	successTx, err := store.BeginTx(ctx)
+	successTx, err := store.store.BeginTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.WithinTx(ctx, successTx.Handle(), func(txctx context.Context) error {
+	if err := store.store.WithinTx(ctx, successTx.Handle(), func(txctx context.Context) error {
 		if err := store.observations().Save(txctx, successObs); err != nil {
 			return err
 		}
@@ -495,11 +525,11 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if err := store.entities().DeleteByObservation(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	unit, err := store.BeginTx(ctx)
+	unit, err := store.store.BeginTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = store.WithinTx(ctx, unit.Handle(), func(txctx context.Context) error {
+	err = store.store.WithinTx(ctx, unit.Handle(), func(txctx context.Context) error {
 		if err := store.outbox().WithinTx(txctx, unit.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, o.ID, "index", "model") }); err != nil {
 			return err
 		}
@@ -509,11 +539,11 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal("failure injection unexpectedly committed")
 	}
 	_ = unit.Rollback()
-	committed, err := store.BeginTx(ctx)
+	committed, err := store.store.BeginTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.WithinTx(ctx, committed.Handle(), func(txctx context.Context) error {
+	if err := store.store.WithinTx(ctx, committed.Handle(), func(txctx context.Context) error {
 		return store.outbox().WithinTx(txctx, committed.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, second.ID, "index", "model") })
 	}); err != nil {
 		_ = committed.Rollback()
