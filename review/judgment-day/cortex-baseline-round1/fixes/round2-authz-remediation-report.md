@@ -48,4 +48,4 @@ and their tests.
 
 ## Commit
 
-The focused conventional commit SHA is recorded after commit creation.
+Focused implementation commit: `8b15f7a`.
