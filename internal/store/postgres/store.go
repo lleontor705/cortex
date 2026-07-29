@@ -21,6 +21,7 @@ var (
 
 type tenantKey struct{}
 type principalKey struct{}
+type actorKey struct{}
 
 func withTenant(ctx context.Context, t *domain.TenantContext) context.Context {
 	return context.WithValue(ctx, tenantKey{}, t)
@@ -52,6 +53,9 @@ func validatePrincipal(p domain.Principal) error {
 	if p.Subject == "" || p.OrgID == "" {
 		return ErrPrincipalRequired
 	}
+	if _, err := uuid.Parse(p.OrgID); err != nil {
+		return fmt.Errorf("%w: org id: %v", ErrPrincipalRequired, err)
+	}
 	return nil
 }
 
@@ -71,6 +75,21 @@ func NewStore(pool *pgxpool.Pool, tenant *domain.TenantContext, principal domain
 	}
 	if err := validatePrincipal(principal); err != nil {
 		return nil, err
+	}
+	if tenant.TenantID != principal.OrgID {
+		return nil, fmt.Errorf("postgres store: tenant %q does not match principal org %q", tenant.TenantID, principal.OrgID)
+	}
+	if tenant.WorkspaceID != "" {
+		granted := false
+		for _, id := range principal.WorkspaceIDs {
+			if id == tenant.WorkspaceID {
+				granted = true
+				break
+			}
+		}
+		if !granted {
+			return nil, fmt.Errorf("postgres store: principal is not granted workspace %q", tenant.WorkspaceID)
+		}
 	}
 	return &Store{pool: pool, tenant: tenant, principal: principal}, nil
 }
@@ -108,12 +127,19 @@ func (s *Store) context(ctx context.Context) context.Context {
 }
 func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	ctx = s.context(ctx)
+	if tx, ok := txFromContext(ctx); ok {
+		return fn(ctx, tx)
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("postgres store: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := s.bind(ctx, tx); err != nil {
+		return err
+	}
+	ctx, err = s.bindActor(ctx, tx)
+	if err != nil {
 		return err
 	}
 	if err := fn(ctx, tx); err != nil {
@@ -142,9 +168,40 @@ func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Contex
 	if err := s.bind(ctx, tx); err != nil {
 		return err
 	}
-	return fn(s.context(ctx))
+	ctx = context.WithValue(s.context(ctx), txKey{}, tx)
+	ctx, err := s.bindActor(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return fn(ctx)
 }
 
 var _ domain.TxParticipant = (*Store)(nil)
 
 func notFound(kind string, id any) error { return &domain.NotFoundError{Type: kind, ID: id} }
+
+func (s *Store) bindActor(ctx context.Context, tx pgx.Tx) (context.Context, error) {
+	if id, err := uuid.Parse(s.principal.Subject); err == nil {
+		return context.WithValue(ctx, actorKey{}, id), nil
+	}
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type) VALUES(public.cortex_current_tenant(),$1,$2) ON CONFLICT(tenant_id,subject) DO UPDATE SET subject=EXCLUDED.subject RETURNING public_id`, s.principal.Subject, s.principal.Type).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("postgres store: resolve actor: %w", err)
+	}
+	return context.WithValue(ctx, actorKey{}, id), nil
+}
+
+func actorFromContext(ctx context.Context) any {
+	if id, ok := ctx.Value(actorKey{}).(uuid.UUID); ok {
+		return id
+	}
+	return nil
+}
+
+type txKey struct{}
+
+func txFromContext(ctx context.Context) (pgx.Tx, bool) {
+	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
+	return tx, ok
+}

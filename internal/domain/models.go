@@ -6,13 +6,19 @@
 // and can be used across different layers of the application.
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Observation represents a single piece of knowledge or memory captured
 // during an AI coding session. It can be a manual note, tool usage record,
 // decision, bugfix, pattern, or any other type of observation.
 type Observation struct {
-	ID         int64     `json:"id"`
+	ID int64 `json:"id"`
+	// PublicID is the opaque server identifier. ID remains an internal/local
+	// compatibility field and must not be used at a server API boundary.
+	PublicID   string    `json:"-"`
 	Title      string    `json:"title"`
 	Content    string    `json:"content"`
 	Type       string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
@@ -25,6 +31,18 @@ type Observation struct {
 	Tags       []string  `json:"tags,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (o Observation) MarshalJSON() ([]byte, error) {
+	type alias Observation
+	var id any = o.ID
+	if o.PublicID != "" {
+		id = o.PublicID
+	}
+	return json.Marshal(struct {
+		ID any `json:"id"`
+		alias
+	}{id, alias(o)})
 }
 
 // Session represents a coding session that groups related observations.
@@ -42,6 +60,7 @@ type Session struct {
 // Edges enable semantic navigation and discovery of related knowledge with temporal awareness.
 type Edge struct {
 	ID           int64      `json:"id"`
+	PublicID     string     `json:"-"`
 	FromObsID    int64      `json:"from_obs_id"`
 	ToObsID      int64      `json:"to_obs_id"`
 	RelationType string     `json:"relation_type"`         // references, relates_to, follows
@@ -65,14 +84,39 @@ type Edge struct {
 	ChangeReason  string `json:"change_reason,omitempty"` // Why the edge changed
 }
 
+func (e Edge) MarshalJSON() ([]byte, error) {
+	type alias Edge
+	var id any = e.ID
+	if e.PublicID != "" {
+		id = e.PublicID
+	}
+	return json.Marshal(struct {
+		ID any `json:"id"`
+		alias
+	}{id, alias(e)})
+}
+
 // Prompt represents a user prompt captured during a session for replay
 // and context understanding.
 type Prompt struct {
 	ID        int64     `json:"id"`
+	PublicID  string    `json:"-"`
 	Content   string    `json:"content"`
 	Project   string    `json:"project"`
 	SessionID string    `json:"session_id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+func (p Prompt) MarshalJSON() ([]byte, error) {
+	type alias Prompt
+	var id any = p.ID
+	if p.PublicID != "" {
+		id = p.PublicID
+	}
+	return json.Marshal(struct {
+		ID any `json:"id"`
+		alias
+	}{id, alias(p)})
 }
 
 // ImportanceScore tracks the importance of an observation based on
@@ -150,6 +194,28 @@ type SearchResult struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+func (s SearchResult) MarshalJSON() ([]byte, error) {
+	b, err := json.Marshal(s.Observation)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	out["rank"] = s.Rank
+	if s.ScoreBreakdown != (SearchScoreBreakdown{}) {
+		out["score_breakdown"] = s.ScoreBreakdown
+	}
+	if s.SearchID != "" {
+		out["search_id"] = s.SearchID
+	}
+	if s.NextCursor != "" {
+		out["next_cursor"] = s.NextCursor
+	}
+	return json.Marshal(out)
+}
+
 // SearchScoreBreakdown explains which retrieval path produced a result.
 type SearchScoreBreakdown struct {
 	Strategy       string  `json:"strategy,omitempty"`         // keyword, topic_key, hybrid
@@ -201,12 +267,25 @@ const (
 // EntityLink represents an extracted entity from an observation.
 type EntityLink struct {
 	ID              int64     `json:"id"`
+	PublicID        string    `json:"-"`
 	ObservationID   int64     `json:"observation_id"`
 	EntityType      string    `json:"entity_type"` // file, url, package, symbol, concept
 	EntityValue     string    `json:"entity_value"`
 	NormalizedValue string    `json:"normalized_value,omitempty"`
 	Provenance      string    `json:"provenance,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+}
+
+func (e EntityLink) MarshalJSON() ([]byte, error) {
+	type alias EntityLink
+	var id any = e.ID
+	if e.PublicID != "" {
+		id = e.PublicID
+	}
+	return json.Marshal(struct {
+		ID any `json:"id"`
+		alias
+	}{id, alias(e)})
 }
 
 // Metrics represents observability metrics for memory system performance.

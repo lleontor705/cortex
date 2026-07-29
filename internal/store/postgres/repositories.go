@@ -25,7 +25,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if o.TopicKey != "" {
 			var id int64
-			err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE topic_key=$1 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, strings.TrimSpace(o.TopicKey)).Scan(&id)
+			err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, o.Project, strings.TrimSpace(o.TopicKey)).Scan(&id)
 			if err == nil {
 				return r.updateInTx(ctx, tx, o, id)
 			}
@@ -39,7 +39,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 		}
 		o.UpdatedAt = now
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), $1::bigint, $2, $3, $4, NULLIF($5,''), $6, $6, NULLIF($7,'')::uuid, NULLIF($7,'')::uuid) RETURNING id`, o.SessionID, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, r.principal.Subject).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, project_key, scope, source, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10) RETURNING id,public_id::text`, o.SessionID, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, actorFromContext(ctx)).Scan(&id, &o.PublicID)
 		if err != nil {
 			return fmt.Errorf("postgres observations: insert: %w", err)
 		}
@@ -51,7 +51,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation, id int64) error {
 	now := time.Now().UTC()
 	var created time.Time
-	err := tx.QueryRow(ctx, `SELECT created_at FROM observations WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&created)
+	err := tx.QueryRow(ctx, `SELECT created_at,public_id::text FROM observations WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&created, &o.PublicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return notFound("observation", id)
 	}
@@ -59,7 +59,7 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 		return err
 	}
 	var revision int
-	err = tx.QueryRow(ctx, `UPDATE observations SET type=$1,title=$2,content=$3,topic_key=NULLIF($4,''),revision_count=revision_count+1,updated_at=$5,updated_by=NULLIF($6,'')::uuid WHERE id=$7 AND deleted_at IS NULL RETURNING revision_count`, o.Type, o.Title, o.Content, o.TopicKey, now, r.principal.Subject, id).Scan(&revision)
+	err = tx.QueryRow(ctx, `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE id=$10 AND deleted_at IS NULL RETURNING revision_count`, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), id).Scan(&revision)
 	if err != nil {
 		return fmt.Errorf("postgres observations: update: %w", err)
 	}
@@ -79,7 +79,7 @@ func (r *ObservationRepository) Update(ctx context.Context, o *domain.Observatio
 func (r *ObservationRepository) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&o.ID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", id)
@@ -95,7 +95,7 @@ func (r *ObservationRepository) GetByTopicKey(ctx context.Context, project, key 
 	}
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE topic_key=$1 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, key).Scan(&o.ID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, project, key).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", key)
@@ -104,7 +104,7 @@ func (r *ObservationRepository) GetByTopicKey(ctx context.Context, project, key 
 }
 func (r *ObservationRepository) Delete(ctx context.Context, id int64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE observations SET deleted_at=now(),updated_at=now(),updated_by=NULLIF($1,'')::uuid WHERE id=$2 AND deleted_at IS NULL`, r.principal.Subject, id)
+		tag, err := tx.Exec(ctx, `UPDATE observations SET deleted_at=now(),updated_at=now(),updated_by=$1 WHERE id=$2 AND deleted_at IS NULL`, actorFromContext(ctx), id)
 		if err != nil {
 			return err
 		}
@@ -127,8 +127,15 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 			args = append(args, f.Type)
 			n++
 		}
+		for _, clause := range []struct{ value, column string }{{f.Project, "project_key"}, {f.Scope, "scope"}, {f.Source, "source"}} {
+			if clause.value != "" {
+				q += fmt.Sprintf(" AND %s=$%d", clause.column, n)
+				args = append(args, clause.value)
+				n++
+			}
+		}
 		if f.SessionID != "" {
-			q += fmt.Sprintf(" AND session_id=$%d", n)
+			q += fmt.Sprintf(" AND session_id=(SELECT id FROM sessions WHERE public_id=$%d::uuid)", n)
 			args = append(args, f.SessionID)
 			n++
 		}
@@ -155,7 +162,7 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 		defer rows.Close()
 		for rows.Next() {
 			o := new(domain.Observation)
-			if e := rows.Scan(&o.ID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt); e != nil {
+			if e := rows.Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt); e != nil {
 				return e
 			}
 			out = append(out, o)
@@ -171,7 +178,10 @@ func (r *ObservationRepository) CountAll(ctx context.Context) (n int, err error)
 	return
 }
 func (r *ObservationRepository) CountByRoot(ctx context.Context, id int64) (n int, err error) {
-	return r.CountEdgesAsObs(ctx, id)
+	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `WITH RECURSIVE reach(id) AS (SELECT $1::bigint UNION SELECT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations a ON a.id=e.from_observation_id AND a.deleted_at IS NULL JOIN observations b ON b.id=e.to_observation_id AND b.deleted_at IS NULL) SELECT count(*) FROM reach WHERE id<>$1::bigint`, id).Scan(&n)
+	})
+	return
 }
 func (r *ObservationRepository) CountEdgesAsObs(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -186,7 +196,18 @@ func (r *ObservationRepository) GetByType(ctx context.Context, typ string, limit
 	return r.List(ctx, domain.ObservationFilter{Type: typ, Limit: limit})
 }
 
-const observationSelect = `SELECT id, session_id::text, type, title, content, COALESCE(topic_key,''), created_at, updated_at FROM observations`
+const observationSelect = `SELECT public_id::text, id, session_id::text, COALESCE(project_key,''), COALESCE(scope,''), COALESCE(source,''), type, title, content, COALESCE(topic_key,''), created_at, updated_at FROM observations`
+
+func (r *ObservationRepository) GetByPublicID(ctx context.Context, publicID string) (*domain.Observation, error) {
+	var o domain.Observation
+	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, observationSelect+` WHERE public_id=$1::uuid AND deleted_at IS NULL`, publicID).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, notFound("observation", publicID)
+	}
+	return &o, err
+}
 
 type SessionRepository struct{ *Store }
 
@@ -199,19 +220,23 @@ func (r *SessionRepository) Create(ctx context.Context, s *domain.Session) error
 		return domain.ErrInvalidInput
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1::bigint,$2,$3,NULLIF($4,'')::uuid,NULLIF($4,'')::uuid) RETURNING id`, s.ID, s.StartedAt, s.Summary, r.principal.Subject).Scan(&id)
+		var publicID string
+		workspace := r.tenant.WorkspaceID
+		if workspace == "" {
+			return fmt.Errorf("postgres sessions: workspace context is required")
+		}
+		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$4,$4) RETURNING public_id::text`, workspace, s.StartedAt, s.Summary, actorFromContext(ctx)).Scan(&publicID)
 		if err != nil {
 			return err
 		}
-		s.ID = fmt.Sprint(id)
+		s.ID = publicID
 		return nil
 	})
 }
 func (r *SessionRepository) GetByID(ctx context.Context, id string) (*domain.Session, error) {
 	var s domain.Session
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE id=$1`, id).Scan(&s.ID, &s.StartedAt, &s.EndedAt, &s.Summary)
+		return tx.QueryRow(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE public_id=$1::uuid`, id).Scan(&s.ID, &s.StartedAt, &s.EndedAt, &s.Summary)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("session", id)
@@ -220,7 +245,7 @@ func (r *SessionRepository) GetByID(ctx context.Context, id string) (*domain.Ses
 }
 func (r *SessionRepository) End(ctx context.Context, id, summary string) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, e := tx.Exec(ctx, `UPDATE sessions SET ended_at=now(),summary=$1,updated_at=now() WHERE id=$2 AND ended_at IS NULL`, summary, id)
+		tag, e := tx.Exec(ctx, `UPDATE sessions SET ended_at=now(),summary=$1,updated_at=now() WHERE public_id=$2::uuid AND ended_at IS NULL`, summary, id)
 		if e != nil {
 			return e
 		}
@@ -232,7 +257,7 @@ func (r *SessionRepository) End(ctx context.Context, id, summary string) error {
 }
 func (r *SessionRepository) List(ctx context.Context, project string) (out []*domain.Session, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions ORDER BY started_at DESC`)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) ORDER BY started_at DESC`, r.tenant.WorkspaceID)
 		if e != nil {
 			return e
 		}

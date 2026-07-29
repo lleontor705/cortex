@@ -1,11 +1,26 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+func TestServerModelsMarshalOpaquePublicID(t *testing.T) {
+	data, err := json.Marshal(domain.Observation{ID: 42, PublicID: "550e8400-e29b-41d4-a716-446655440000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("id=%v", got["id"])
+	}
+}
 
 func TestObservationModel(t *testing.T) {
 	now := time.Now()
