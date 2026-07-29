@@ -1,5 +1,5 @@
 -- Cortex v2 server wave W11.1 (PostgreSQL 16+).
--- Forward-only, idempotent, and intentionally separate from the SQLite line.
+-- Forward-only and idempotent; this file is executed only by the server runner.
 -- Apply as cortex_migration (or an explicitly privileged deployment role).
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -229,3 +229,5 @@ $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cortex_app;
 GRANT SELECT ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_admin;
+GRANT ALL ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_migration;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cortex_migration;
