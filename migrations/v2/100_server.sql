@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, id),
     FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, id)
 );
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_key text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS observations (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
@@ -190,6 +191,7 @@ CREATE TABLE IF NOT EXISTS prompts (
     created_by uuid, updated_by uuid, UNIQUE (tenant_id, id), UNIQUE (tenant_id, public_id),
     FOREIGN KEY (tenant_id, session_id) REFERENCES sessions(tenant_id, id)
 );
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS project_key text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS edges (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
@@ -206,7 +208,7 @@ ALTER TABLE edges ADD COLUMN IF NOT EXISTS fact_state text NOT NULL DEFAULT 'cur
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS change_reason text;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='edges_valid_range') THEN
-        ALTER TABLE edges ADD CONSTRAINT edges_valid_range CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from);
+        ALTER TABLE edges ADD CONSTRAINT edges_valid_range CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from);
     END IF;
 END $$;
 CREATE TABLE IF NOT EXISTS entities (
