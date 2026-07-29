@@ -25,13 +25,13 @@ func TestOAuthVerifierValidatesIssuerAudienceAndRotation(t *testing.T) {
 	current := key
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/openid-configuration" {
-			json.NewEncoder(w).Encode(map[string]string{"issuer": "https://issuer.test", "jwks_uri": "" + "http://" + r.Host + "/jwks"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": "https://issuer.test", "jwks_uri": "" + "http://" + r.Host + "/jwks"})
 			return
 		}
 		if r.URL.Path == "/jwks" {
-			n := base64.RawURLEncoding.EncodeToString(current.PublicKey.N.Bytes())
-			e := base64.RawURLEncoding.EncodeToString([]byte{byte(current.PublicKey.E >> 24), byte(current.PublicKey.E >> 16), byte(current.PublicKey.E >> 8), byte(current.PublicKey.E)})
-			json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]string{"kty": "RSA", "kid": "one", "alg": "RS256", "n": n, "e": strings.TrimLeft(e, "\x00")}}})
+			n := base64.RawURLEncoding.EncodeToString(current.N.Bytes())
+			e := base64.RawURLEncoding.EncodeToString([]byte{byte(current.E >> 24), byte(current.E >> 16), byte(current.E >> 8), byte(current.E)})
+			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]string{"kty": "RSA", "kid": "one", "alg": "RS256", "n": n, "e": strings.TrimLeft(e, "\x00")}}})
 			return
 		}
 		http.NotFound(w, r)

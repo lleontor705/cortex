@@ -55,5 +55,5 @@ func normalizeSlice(s []string) []string {
 	if s == nil {
 		return []string{}
 	}
-	return s
+	return append([]string(nil), s...)
 }

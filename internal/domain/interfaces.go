@@ -382,6 +382,15 @@ type Principal struct {
 	GrantDigest  string
 }
 
+// ScopesCopy returns a defensive copy of the granted scopes.
+func (p Principal) ScopesCopy() []string { return append([]string(nil), p.Scopes...) }
+
+// WorkspacesCopy returns a defensive copy of the workspace grants.
+func (p Principal) WorkspacesCopy() []string { return append([]string(nil), p.WorkspaceIDs...) }
+
+// RolesCopy returns a defensive copy of the role grants.
+func (p Principal) RolesCopy() []string { return append([]string(nil), p.Roles...) }
+
 // ModelInfo describes the embedding model that produced a vector.
 // Used for model-version namespacing to prevent dimension-mismatch
 // corruption (ADR-05, REQ-VEC-001).

@@ -570,7 +570,7 @@ func TestValidate_QdrantFields(t *testing.T) {
 // with dimension 0 must still pass — dimension is resolved at adapter build).
 func TestValidate_QdrantNotCheckedForOtherProviders(t *testing.T) {
 	cfg := validBaseline()
-	cfg.Vector.Provider = "" // default local path
+	cfg.Vector.Provider = ""                                        // default local path
 	cfg.Vector.Qdrant = QdrantConfig{Dimension: 0, MaxBatchSize: 0} // would fail qdrant checks
 	if err := validate(cfg); err != nil {
 		t.Errorf("default provider should not trigger qdrant field checks: %v", err)
@@ -694,7 +694,7 @@ func TestValidate_PgvectorFields(t *testing.T) {
 // field validation is NOT enforced when provider is not "pgvector".
 func TestValidate_PgvectorNotCheckedForOtherProviders(t *testing.T) {
 	cfg := validBaseline()
-	cfg.Vector.Provider = "" // default local path
+	cfg.Vector.Provider = ""                                    // default local path
 	cfg.Vector.Pgvector = PGVectorConfig{DSN: "", Dimension: 0} // would fail pgvector checks
 	if err := validate(cfg); err != nil {
 		t.Errorf("default provider should not trigger pgvector field checks: %v", err)
@@ -821,12 +821,32 @@ func TestConfig_String_NeverLeaksAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigStringRedactsAllCredentialFields(t *testing.T) {
+	cfg := validBaseline()
+	cfg.HTTP.Token = "http-secret"
+	cfg.Server.Storage.DSN = "postgres://u:storage-secret@db/cortex"
+	cfg.Server.Secrets.SigningKey = "signing-secret"
+	cfg.Server.Secrets.OIDCClientSecret = "oidc-secret"
+	cfg.Vector.Qdrant.APIKey = "qdrant-secret"
+	cfg.Vector.Pgvector.DSN = "postgres://u:vector-secret@db/cortex"
+	s := cfg.String()
+	for _, secret := range []string{"http-secret", "storage-secret", "signing-secret", "oidc-secret", "qdrant-secret", "vector-secret"} {
+		if strings.Contains(s, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, s)
+		}
+	}
+}
+
 // TestValidate_ErrorNeverContainsAPIKey verifies validation errors NEVER echo
 // the API key, regardless of which field triggers the error (REQ-CP-002).
 func TestValidate_ErrorNeverContainsAPIKey(t *testing.T) {
 	const secret = "sk-validation-guard-xyz"
 	tests := []func(*Config){
-		func(c *Config) { c.Vector.Provider = "qdrant"; c.Vector.Qdrant = validQdrantConfig(); c.Vector.Qdrant.Port = 99999 },
+		func(c *Config) {
+			c.Vector.Provider = "qdrant"
+			c.Vector.Qdrant = validQdrantConfig()
+			c.Vector.Qdrant.Port = 99999
+		},
 		func(c *Config) { c.Vector.Provider = "bogus" },
 		func(c *Config) { c.Logging.Level = "nope" },
 	}

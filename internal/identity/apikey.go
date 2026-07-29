@@ -79,7 +79,7 @@ func (s *MemoryTokenStore) Issue(_ context.Context, in TokenIssue) (IssuedToken,
 	s.tokens[r.ID] = r
 	s.byPrefix[r.Prefix] = r.ID
 	s.mu.Unlock()
-	return IssuedToken{Secret: secret, Record: r}, nil
+	return IssuedToken{Secret: secret, Record: cloneRecord(r)}, nil
 }
 
 func (s *MemoryTokenStore) Verify(_ context.Context, secret, requiredScope string) (Principal, error) {
@@ -151,6 +151,11 @@ func randomID() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 func cloneStrings(v []string) []string { return append([]string(nil), v...) }
+func cloneRecord(r TokenRecord) TokenRecord {
+	r.Workspaces = cloneStrings(r.Workspaces)
+	r.Scopes = cloneStrings(r.Scopes)
+	return r
+}
 func contains(v []string, want string) bool {
 	for _, x := range v {
 		if x == want {

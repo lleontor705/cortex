@@ -39,6 +39,20 @@ func TestAPITokenLifecycle(t *testing.T) {
 	}
 }
 
+func TestIssuedTokenRecordCannotMutateStoreGrants(t *testing.T) {
+	s := identity.NewMemoryTokenStore([]byte("test-key"))
+	issued, err := s.Issue(context.Background(), identity.TokenIssue{Subject: "u", Workspaces: []string{"w"}, Scopes: []string{"read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued.Record.Scopes[0] = "admin"
+	issued.Record.Workspaces[0] = "other"
+	p, err := s.Verify(context.Background(), issued.Secret, "read")
+	if err != nil || p.Scopes[0] != "read" || p.WorkspaceIDs[0] != "w" {
+		t.Fatalf("grant mutation escalated token: %+v, %v", p, err)
+	}
+}
+
 func TestAPITokenRotationKeepsPreviousUntilExpiry(t *testing.T) {
 	s := identity.NewMemoryTokenStore([]byte("test-key-material-that-is-long-enough"))
 	old, err := s.Issue(context.Background(), identity.TokenIssue{Subject: "svc", ExpiresAt: time.Now().Add(time.Hour)})

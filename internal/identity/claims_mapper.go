@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"sort"
 )
 
 // ClaimsMapper converts verified issuer claims into an immutable Principal.
@@ -59,12 +58,6 @@ func stringsClaim(v any) []string {
 }
 func splitSpace(s string) []string {
 	var out []string
-	for _, x := range []byte(s) {
-		_ = x
-	}
-	for _, field := range []rune(s) {
-		_ = field
-	}
 	start := 0
 	for i, c := range s {
 		if c == ' ' || c == '\t' {
@@ -80,4 +73,3 @@ func splitSpace(s string) []string {
 	return out
 }
 func canonicalClaims(c map[string]any) string { b, _ := json.Marshal(c); return string(b) }
-func sorted(v []string) []string              { out := append([]string(nil), v...); sort.Strings(out); return out }

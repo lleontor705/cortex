@@ -74,6 +74,22 @@ func TestNewPrincipalNilSafe(t *testing.T) {
 	}
 }
 
+func TestNewPrincipalDeepCopiesAuthorizationSlices(t *testing.T) {
+	workspaces := []string{"w1"}
+	roles := []string{"reader"}
+	scopes := []string{"memory:read"}
+	p := identity.NewPrincipal("u", "user", "o", workspaces, roles, scopes, "oidc", "g")
+	workspaces[0], roles[0], scopes[0] = "evil", "admin", "memory:write"
+	if p.WorkspaceIDs[0] != "w1" || p.Roles[0] != "reader" || p.Scopes[0] != "memory:read" {
+		t.Fatal("principal aliases caller authorization slices")
+	}
+	copyScopes := p.ScopesCopy()
+	copyScopes[0] = "memory:write"
+	if p.Scopes[0] != "memory:read" {
+		t.Fatal("scope getter exposed mutable storage")
+	}
+}
+
 // TestNewTenantContext verifies the constructor.
 func TestNewTenantContext(t *testing.T) {
 	tc := identity.NewTenantContext("t1", "w1", "u1")

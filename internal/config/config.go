@@ -693,12 +693,21 @@ func ClearEnvVar(key string) error {
 // or debug output (REQ-CP-002). Vector is rendered with the key blanked so the
 // representation stays useful without leaking credentials.
 func (c *Config) String() string {
+	if c == nil {
+		return "Config<nil>"
+	}
+	server := c.Server
+	server.Storage.DSN = redactDSNPassword(server.Storage.DSN)
+	server.Secrets.SigningKey = ""
+	server.Secrets.OIDCClientSecret = ""
+	httpCfg := c.HTTP
+	httpCfg.Token = ""
 	vec := c.Vector
 	vec.Qdrant.APIKey = ""                                 // hard redaction: no plaintext secret in String()
 	vec.Pgvector.DSN = redactDSNPassword(vec.Pgvector.DSN) // redact password from DSN
 	return fmt.Sprintf(
-		"Config{Server: name=%q version=%q storage=%q provider=%q, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
-		c.Server.Name, c.Server.Version, c.Server.Storage.Driver, c.Server.Provider.Vector, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
+		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
+		server, c.Database, c.MCP, httpCfg, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
 	)
 }
 

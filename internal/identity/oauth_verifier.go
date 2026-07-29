@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -41,7 +42,10 @@ type OAuthVerifier struct {
 	keys    map[string]jwk
 	fetched time.Time
 }
-type jwk struct{ Kty, Kid, Alg, N, E, X, Y, Crv string }
+type jwk struct {
+	Kty, Kid, Alg, Use, N, E, X, Y, Crv string
+	KeyOps                              []string `json:"key_ops"`
+}
 
 func NewOAuthVerifier(cfg OAuthConfig) *OAuthVerifier {
 	if cfg.ClockSkew <= 0 {
@@ -71,7 +75,7 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw, resource string) (Princ
 	}
 	alg, _ := header["alg"].(string)
 	kid, _ := header["kid"].(string)
-	if alg == "" || kid == "" || alg == "none" {
+	if !allowedAlgorithm(alg) || kid == "" {
 		return Principal{}, ErrInvalidToken
 	}
 	if err = v.loadKeys(ctx, false); err != nil {
@@ -83,6 +87,9 @@ func (v *OAuthVerifier) Verify(ctx context.Context, raw, resource string) (Princ
 			return Principal{}, err
 		}
 		key, ok = v.key(kid)
+	}
+	if !jwkCompatible(key, alg) {
+		return Principal{}, ErrInvalidToken
 	}
 	if !ok {
 		return Principal{}, errors.New("unknown signing key")
@@ -121,21 +128,27 @@ func (v *OAuthVerifier) loadKeys(ctx context.Context, force bool) error {
 	v.mu.Unlock()
 	url := v.cfg.JWKSURL
 	if url == "" {
-		b, err := v.get(ctx, strings.TrimRight(v.cfg.Issuer, "/")+"/.well-known/openid-configuration")
-		if err != nil {
-			// RFC 8414 metadata is the fallback for issuers that do not expose OIDC discovery.
-			b, err = v.get(ctx, strings.TrimRight(v.cfg.Issuer, "/")+"/.well-known/oauth-authorization-server")
+		urls := []string{strings.TrimRight(v.cfg.Issuer, "/") + "/.well-known/openid-configuration", strings.TrimRight(v.cfg.Issuer, "/") + "/.well-known/oauth-authorization-server"}
+		var discoveryErr error
+		for _, discoveryURL := range urls {
+			b, err := v.get(ctx, discoveryURL)
+			if err != nil {
+				discoveryErr = err
+				continue
+			}
+			var m struct {
+				JWKSURI string `json:"jwks_uri"`
+			}
+			if err := json.Unmarshal(b, &m); err != nil || !validJWKSURL(m.JWKSURI) {
+				discoveryErr = errors.New("jwks discovery failed")
+				continue
+			}
+			url = m.JWKSURI
+			break
 		}
-		if err != nil {
-			return err
+		if url == "" {
+			return discoveryErr
 		}
-		var m struct {
-			JWKSURI string `json:"jwks_uri"`
-		}
-		if json.Unmarshal(b, &m) != nil || m.JWKSURI == "" {
-			return errors.New("jwks discovery failed")
-		}
-		url = m.JWKSURI
 	}
 	b, err := v.get(ctx, url)
 	if err != nil {
@@ -152,7 +165,7 @@ func (v *OAuthVerifier) loadKeys(ctx context.Context, force bool) error {
 	}
 	next := make(map[string]jwk, len(doc.Keys))
 	for _, k := range doc.Keys {
-		if k.Kid != "" {
+		if k.Kid != "" && allowedAlgorithm(k.Alg) && jwkUsable(k) {
 			next[k.Kid] = k
 		}
 	}
@@ -171,7 +184,7 @@ func (v *OAuthVerifier) get(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("jwks status %d", resp.StatusCode)
 	}
@@ -230,6 +243,9 @@ func verifySignature(k jwk, alg, input, sig string) error {
 	if e != nil {
 		return e
 	}
+	if !jwkCompatible(k, alg) {
+		return errors.New("incompatible jwk")
+	}
 	pub, e := publicKey(k)
 	if e != nil {
 		return e
@@ -251,12 +267,17 @@ func verifySignature(k jwk, alg, input, sig string) error {
 	case "ES512":
 		hash = crypto.SHA512
 	default:
-		if alg != "EdDSA" && !strings.HasPrefix(alg, "ES") {
-			return errors.New("unsupported algorithm")
-		}
+		return errors.New("unsupported algorithm")
+	}
+	if !hash.Available() {
+		return errors.New("hash unavailable")
 	}
 	if alg == "EdDSA" {
-		if ed25519.Verify(pub.(ed25519.PublicKey), []byte(input), raw) {
+		p, ok := pub.(ed25519.PublicKey)
+		if !ok || len(p) != ed25519.PublicKeySize {
+			return errors.New("invalid ed25519 key")
+		}
+		if ed25519.Verify(p, []byte(input), raw) {
 			return nil
 		}
 		return errors.New("signature mismatch")
@@ -301,9 +322,19 @@ func publicKey(k jwk) (any, error) {
 		for _, b := range eb {
 			ei = ei<<8 | int(b)
 		}
-		return &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: ei}, nil
+		N := new(big.Int).SetBytes(n)
+		if N.Sign() <= 0 || ei < 3 || ei%2 == 0 || len(n) < 256 {
+			return nil, errors.New("invalid RSA key")
+		}
+		return &rsa.PublicKey{N: N, E: ei}, nil
 	case "OKP":
+		if k.Crv != "Ed25519" {
+			return nil, errors.New("unsupported OKP curve")
+		}
 		x, e := dec.DecodeString(k.X)
+		if e != nil || len(x) != ed25519.PublicKeySize {
+			return nil, errors.New("invalid ed25519 key")
+		}
 		return ed25519.PublicKey(x), e
 	case "EC":
 		x, e := dec.DecodeString(k.X)
@@ -314,13 +345,80 @@ func publicKey(k jwk) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		crv := elliptic.P256()
-		if k.Crv == "P-384" {
+		var crv elliptic.Curve
+		switch k.Crv {
+		case "P-256":
+			crv = elliptic.P256()
+		case "P-384":
 			crv = elliptic.P384()
-		} else if k.Crv == "P-521" {
+		case "P-521":
 			crv = elliptic.P521()
+		default:
+			return nil, errors.New("unsupported EC curve")
 		}
-		return &ecdsa.PublicKey{Curve: crv, X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}, nil
+		px, py := new(big.Int).SetBytes(x), new(big.Int).SetBytes(y)
+		if !validECPoint(k.Crv, x, y) {
+			return nil, errors.New("invalid EC point")
+		}
+		return &ecdsa.PublicKey{Curve: crv, X: px, Y: py}, nil
 	}
 	return nil, errors.New("unsupported jwk")
+}
+
+func validECPoint(crv string, x, y []byte) bool {
+	curveBytes := append([]byte{4}, append(x, y...)...)
+	var c ecdh.Curve
+	switch crv {
+	case "P-256":
+		c = ecdh.P256()
+	case "P-384":
+		c = ecdh.P384()
+	case "P-521":
+		c = ecdh.P521()
+	default:
+		return false
+	}
+	_, err := c.NewPublicKey(curveBytes)
+	return err == nil
+}
+
+func allowedAlgorithm(alg string) bool {
+	switch alg {
+	case "RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA":
+		return true
+	default:
+		return false
+	}
+}
+func validJWKSURL(u string) bool {
+	return strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://")
+}
+func jwkUsable(k jwk) bool {
+	if k.Use != "" && k.Use != "sig" {
+		return false
+	}
+	for _, op := range k.KeyOps {
+		if op != "verify" {
+			return false
+		}
+	}
+	return true
+}
+func jwkCompatible(k jwk, alg string) bool {
+	if !allowedAlgorithm(alg) || !jwkUsable(k) || (k.Alg != "" && k.Alg != alg) {
+		return false
+	}
+	switch alg {
+	case "RS256", "RS384", "RS512":
+		return k.Kty == "RSA"
+	case "ES256":
+		return k.Kty == "EC" && k.Crv == "P-256"
+	case "ES384":
+		return k.Kty == "EC" && k.Crv == "P-384"
+	case "ES512":
+		return k.Kty == "EC" && k.Crv == "P-521"
+	case "EdDSA":
+		return k.Kty == "OKP" && k.Crv == "Ed25519"
+	}
+	return false
 }
