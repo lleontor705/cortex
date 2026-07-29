@@ -16,4 +16,4 @@ Commits: `7035441`, `c4a6f4e`, `3ac4890`, `c6e5a44`, `4b6ad8e`, `2d5877b`.
 - identity package coverage: **73.5%**
 - config package coverage: **87.2%**
 
-`govulncheck` was run with `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`. It reported GO-2026-6061 (grpc 1.81.1), GO-2026-5970 (x/text 0.37.0), and GO-2026-5856 (Go crypto/tls 1.26.4); no dependency or repository changes were made.
+The initial W12 scan reported GO-2026-6061, GO-2026-5970, and GO-2026-5856. Those findings are remediated by the follow-up W12.1 dependency and Go toolchain update documented in `W12.1-reachable-vulnerability-remediation.md`.

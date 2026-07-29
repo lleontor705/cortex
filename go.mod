@@ -1,6 +1,8 @@
 module github.com/lleontor705/cortex
 
-go 1.26.1
+go 1.26.0
+
+toolchain go1.26.5
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -14,6 +16,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.45.0
+	golang.org/x/text v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.47.0
 )
@@ -59,10 +62,9 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.53.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
-	google.golang.org/grpc v1.81.1 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
