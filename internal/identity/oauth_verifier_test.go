@@ -82,3 +82,30 @@ func TestClaimsMapperNormalizesScopeAndDefaults(t *testing.T) {
 		t.Fatal("missing subject accepted")
 	}
 }
+
+func TestClaimsMapperAcceptsStandardArrayClaims(t *testing.T) {
+	p, err := (identity.ClaimsMapper{}).Map(map[string]any{"sub": "u", "workspace_ids": []string{"w1"}, "roles": []any{"reader", "writer"}, "scp": []any{"a", "b"}}, "oidc")
+	if err != nil || len(p.WorkspaceIDs) != 1 || len(p.Roles) != 2 || len(p.Scopes) != 2 {
+		t.Fatalf("array claims not mapped: %+v %v", p, err)
+	}
+}
+
+func TestOAuthVerifierRejectsUnsupportedAlgorithmBeforeKeyFetch(t *testing.T) {
+	v := identity.NewOAuthVerifier(identity.OAuthConfig{Issuer: "https://issuer.test", JWKSURL: "http://127.0.0.1:1/jwks"})
+	enc := base64.RawURLEncoding
+	h, _ := json.Marshal(map[string]string{"alg": "HS256", "kid": "x"})
+	c, _ := json.Marshal(map[string]any{"iss": "https://issuer.test", "sub": "u"})
+	token := enc.EncodeToString(h) + "." + enc.EncodeToString(c) + ".AA"
+	if _, err := v.Verify(context.Background(), token, ""); err == nil {
+		t.Fatal("unsupported signing algorithm accepted")
+	}
+}
+
+func TestOAuthVerifierRejectsMalformedAndMissingHeaderFields(t *testing.T) {
+	v := identity.NewOAuthVerifier(identity.OAuthConfig{Issuer: "https://issuer.test", JWKSURL: "http://127.0.0.1:1/jwks"})
+	for _, token := range []string{"broken", "a.b.c", "eyJhbGciOiJSUzI1NiJ9.e30.AA"} {
+		if _, err := v.Verify(context.Background(), token, ""); err == nil {
+			t.Fatalf("malformed token accepted: %q", token)
+		}
+	}
+}
