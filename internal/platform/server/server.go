@@ -33,6 +33,7 @@ type Repositories struct {
 	Entities     *postgresstore.EntityRepository
 	Search       *postgresstore.SearchRepository
 	Outbox       *postgresstore.OutboxStore
+	Tokens       *postgresstore.TokenRepository
 }
 
 // Runtime owns every resource created by Open. Close is idempotent and follows
@@ -122,7 +123,7 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 
 	rt := &Runtime{Config: &cfg, MigrationDB: migrationDB, Pool: pool, Storage: store, Vectors: vec, Embeddings: emb}
-	rt.Repositories = Repositories{Observations: store.Observations(), Sessions: store.Sessions(), Prompts: store.Prompts(), Graph: store.Graph(), Entities: store.Entities(), Search: store.Search(), Outbox: store.Outbox()}
+	rt.Repositories = Repositories{Observations: store.Observations(), Sessions: store.Sessions(), Prompts: store.Prompts(), Graph: store.Graph(), Entities: store.Entities(), Search: store.Search(), Outbox: store.Outbox(), Tokens: store.Tokens()}
 	interval, parseErr := time.ParseDuration(cfg.Lifecycle.ArchiveCheckInterval)
 	if parseErr != nil || interval <= 0 {
 		interval = time.Hour
