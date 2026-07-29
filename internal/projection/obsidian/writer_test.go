@@ -573,6 +573,82 @@ func TestExportCanonicalCollisionTableOnLinuxFilesystem(t *testing.T) {
 	}
 }
 
+func TestExportCanonicalAliasCollisionLeavesUnownedFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "cortex", "projects", "p", "observations")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "NOTE-"+idHash("1")+".md")
+	before := []byte("unowned user note\n")
+	if err := os.WriteFile(alias, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	o := &domain.Observation{ID: 1, Title: "Note", Project: "p", UpdatedAt: time.Now()}
+	if _, err := NewWriter(fakeObs{[]*domain.Observation{o}}, nil, nil, nil).Export(context.Background(), Options{Vault: dir}); err == nil {
+		t.Fatal("expected unowned canonical alias collision")
+	}
+	after, err := os.ReadFile(alias)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("unowned alias was modified: bytes=%q err=%v", after, err)
+	}
+}
+
+func TestExportRewritesExactOwnerPath(t *testing.T) {
+	dir := t.TempDir()
+	o := &domain.Observation{ID: 1, Title: "Note", Content: "before", Project: "p", UpdatedAt: time.Now()}
+	e := NewWriter(fakeObs{[]*domain.Observation{o}}, nil, nil, nil)
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "cortex", "projects", "p", "observations", "note-"+idHash("1")+".md")
+	o.Content = "after"
+	if _, err := e.Export(context.Background(), Options{Vault: dir}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || !strings.Contains(string(got), "after") {
+		t.Fatalf("exact owner was not rewritten: bytes=%q err=%v", got, err)
+	}
+}
+
+func TestSafeVaultRejectsExplicitSymlinkRoot(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "target")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "vault-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := safeVault(link); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("got %v, want explicit vault symlink rejection", err)
+	}
+}
+
+func TestSafeVaultResolvesMacOSVarAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS /var alias regression")
+	}
+	dir := t.TempDir()
+	if !strings.HasPrefix(dir, "/private/") {
+		t.Skipf("temporary directory is not under /private: %s", dir)
+	}
+	alias := "/var/" + strings.TrimPrefix(dir, "/private/")
+	want, err := filepath.EvalSymlinks(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := safeVault(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(want) {
+		t.Fatalf("resolved vault=%q, want %q", got, want)
+	}
+}
+
 func TestExportGoldenBytesAndOutsideVaultProtection(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

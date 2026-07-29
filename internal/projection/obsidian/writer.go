@@ -140,6 +140,16 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 		return result, err
 	}
 	changes := map[string][]byte{}
+	// A canonical collision key is deliberately not an ownership key. Ownership
+	// is exact lexical path identity (from the manifest, or a validated rename
+	// candidate), so an unrelated file that merely aliases the target cannot be
+	// overwritten on case-sensitive filesystems.
+	ownerPath := make(map[string]string, len(byID))
+	for id, sf := range prior.Files {
+		if sf.Path != "" {
+			ownerPath[id] = filepath.Join(vault, filepath.FromSlash(sf.Path))
+		}
+	}
 	next := syncState{Version: 1, ExportedAt: prior.ExportedAt, Files: map[string]stateFile{}}
 	if next.ExportedAt.IsZero() {
 		next.ExportedAt = w.clock()
@@ -163,7 +173,17 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 			if filepath.Clean(existing) == filepath.Clean(target) {
 				continue
 			}
-			if owner, ok := byID[id]; ok && canonicalPathKey(owner) == key {
+			if owner, ok := ownerPath[id]; ok && filepath.Clean(owner) == filepath.Clean(existing) {
+				continue
+			}
+			if owner, ok := byID[id]; ok && filepath.Clean(owner) == filepath.Clean(existing) && prior.Files[id].Hash != "" {
+				b, readErr := w.fs.ReadFile(owner)
+				if readErr == nil && contentHash(string(b)) == prior.Files[id].Hash {
+					ownerPath[id] = owner
+					continue
+				}
+			}
+			if owner, ok := byID[id]; ok && filepath.Clean(owner) == filepath.Clean(existing) && prior.Files[id].Hash == "" {
 				continue
 			}
 			return result, fmt.Errorf("obsidian: case-insensitive filename collision between %s and %s", existing, target)
@@ -182,6 +202,7 @@ func (w *Writer) Export(ctx context.Context, opts Options) (Result, error) {
 			changes[old] = nil
 			changes[target] = b
 			byID[id] = target
+			ownerPath[id] = target
 		}
 		content, e := w.render(ctx, o, visible)
 		if e != nil {
@@ -273,19 +294,14 @@ func safeVault(v string) (string, error) {
 	if st, e := os.Lstat(abs); e == nil && unsafePathInfo(abs, st, isReparsePoint) {
 		return "", errors.New("obsidian: vault must not be a symlink")
 	}
-	for cur := abs; ; cur = filepath.Dir(cur) {
-		if st, e := os.Lstat(cur); e == nil && unsafePathInfo(cur, st, isReparsePoint) {
-			return "", fmt.Errorf("obsidian: unsafe symlink path %s", cur)
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-	}
 	if e := os.MkdirAll(abs, 0700); e != nil {
 		return "", e
 	}
-	return abs, nil
+	resolved, e := filepath.EvalSymlinks(abs)
+	if e != nil {
+		return "", fmt.Errorf("obsidian: resolve vault: %w", e)
+	}
+	return filepath.Clean(resolved), nil
 }
 func ensureSafeParentsFS(f fileSystem, vault, target string) error {
 	rel, e := filepath.Rel(vault, target)
@@ -432,14 +448,15 @@ func findVaultFiles(f fileSystem, vault string) (map[string][]string, error) {
 		if path == vault {
 			return nil
 		}
+		st, statErr := f.Lstat(path)
+		if statErr != nil {
+			return statErr
+		}
+		if unsafePathInfo(path, st, isReparsePoint) {
+			return fmt.Errorf("obsidian: refusing symlink %s", path)
+		}
 		if d.IsDir() {
 			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		if _, err := f.Lstat(path); err != nil {
-			return err
 		}
 		key := canonicalPathKey(path)
 		out[key] = append(out[key], path)
