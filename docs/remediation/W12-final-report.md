@@ -1,6 +1,6 @@
 # W12 remediation final report
 
-Commits: `7035441`, `c4a6f4e`, `3ac4890`, `c6e5a44`, `4b6ad8e`.
+Commits: `7035441`, `c4a6f4e`, `3ac4890`, `c6e5a44`, `4b6ad8e`, `2d5877b`.
 
 ## Verification
 
