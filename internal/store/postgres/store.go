@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,10 +31,6 @@ func tenantFromContext(ctx context.Context) (*domain.TenantContext, bool) {
 }
 func withPrincipal(ctx context.Context, p domain.Principal) context.Context {
 	return context.WithValue(ctx, principalKey{}, p)
-}
-func principalFromContext(ctx context.Context) (domain.Principal, bool) {
-	p, ok := ctx.Value(principalKey{}).(domain.Principal)
-	return p, ok
 }
 
 func validateTenantContext(t *domain.TenantContext) error {
@@ -153,9 +148,3 @@ func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Contex
 var _ domain.TxParticipant = (*Store)(nil)
 
 func notFound(kind string, id any) error { return &domain.NotFoundError{Type: kind, ID: id} }
-func nullableTime(t *time.Time) any {
-	if t == nil {
-		return nil
-	}
-	return *t
-}
