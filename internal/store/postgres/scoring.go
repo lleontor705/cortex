@@ -17,7 +17,7 @@ func (r *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 	var score domain.ImportanceScore
 	var last *time.Time
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT observation_id,score,access_count,last_accessed,updated_at FROM importance_scores WHERE observation_id=$1`, obsID).
+		return tx.QueryRow(ctx, `SELECT observation_id,score,access_count,last_accessed,updated_at FROM importance_scores WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1`, obsID).
 			Scan(&score.ObservationID, &score.Score, &score.AccessCount, &last, &score.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -36,13 +36,13 @@ func (r *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 func (r *Store) UpdateScore(ctx context.Context, obsID int64, increment float64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var score float64
-		if err := tx.QueryRow(ctx, `SELECT score FROM importance_scores WHERE observation_id=$1 FOR UPDATE`, obsID).Scan(&score); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT score FROM importance_scores WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1 FOR UPDATE`, obsID).Scan(&score); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return &domain.NotFoundError{Type: "importance_score", ID: obsID}
 			}
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE importance_scores SET score=$1,updated_at=now() WHERE observation_id=$2`, math.Max(0, math.Min(5, score+increment)), obsID)
+		_, err := tx.Exec(ctx, `UPDATE importance_scores SET score=$1,updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$2`, math.Max(0, math.Min(5, score+increment)), obsID)
 		return err
 	})
 }
@@ -54,7 +54,7 @@ func (r *Store) GetTop(ctx context.Context, project string, limit int) ([]*domai
 
 func (r *Store) RecordAccess(ctx context.Context, obsID int64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		result, err := tx.Exec(ctx, `UPDATE importance_scores SET access_count=access_count+1,last_accessed=now(),updated_at=now() WHERE observation_id=$1`, obsID)
+		result, err := tx.Exec(ctx, `UPDATE importance_scores SET access_count=access_count+1,last_accessed=now(),updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1`, obsID)
 		if err != nil {
 			return err
 		}
@@ -141,7 +141,7 @@ func (r *Store) GetIncomingEdgeCount(ctx context.Context, obsID int64) (int, err
 func (r *Store) GetObservation(ctx context.Context, obsID int64) (*domain.Observation, error) {
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT id,session_id::text,COALESCE(project_key,''),COALESCE(scope,''),COALESCE(source,''),type,title,content,COALESCE(topic_key,''),created_at,updated_at FROM observations WHERE id=$1 AND deleted_at IS NULL`, obsID).
+		return tx.QueryRow(ctx, `SELECT id,session_id::text,COALESCE(project_key,''),COALESCE(scope,''),COALESCE(source,''),type,title,content,COALESCE(topic_key,''),created_at,updated_at FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, obsID).
 			Scan(&o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

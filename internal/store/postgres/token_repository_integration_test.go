@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/identity"
 )
 
@@ -22,10 +21,7 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	if _, err := h.pool.Exec(ctx, `INSERT INTO service_accounts(tenant_id,public_id,name) VALUES($1,$2,$3)`, tenant, sa, "token-service"); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(h.pool, &domain.TenantContext{TenantID: tenant.String()}, domain.Principal{Subject: "admin", OrgID: tenant.String()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newAuthorizedTestStore(t, h, tenant, uuid.Nil, uuid.New())
 	issued, err := store.Tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -57,10 +53,7 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	if _, err := h.pool.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, other, "other"); err != nil {
 		t.Fatal(err)
 	}
-	otherStore, err := NewStore(h.pool, &domain.TenantContext{TenantID: other.String()}, domain.Principal{Subject: "admin", OrgID: other.String()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	otherStore := newAuthorizedTestStore(t, h, other, uuid.Nil, uuid.New())
 	if _, err := otherStore.Tokens().Verify(ctx, rotated.Secret, "read"); err == nil {
 		t.Fatal("cross-tenant token accepted")
 	}

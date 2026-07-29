@@ -122,13 +122,18 @@ func (p *Policy) decide(req Request) Decision {
 	if req.Tenant.WorkspaceID != "" && req.Resource.WorkspaceID != "" && req.Tenant.WorkspaceID != req.Resource.WorkspaceID {
 		return Decision{Reason: DenyWorkspace}
 	}
+	if req.Tenant.WorkspaceID != "" && !contains(req.Principal.WorkspaceIDs, req.Tenant.WorkspaceID) {
+		return Decision{Reason: DenyWorkspace}
+	}
 	if req.Resource.WorkspaceID != "" && !contains(req.Principal.WorkspaceIDs, req.Resource.WorkspaceID) {
 		return Decision{Reason: DenyWorkspace}
 	}
 	if req.Tenant.ProjectID != "" && req.Resource.ProjectID != "" && req.Tenant.ProjectID != req.Resource.ProjectID {
 		return Decision{Reason: DenyProject}
 	}
-	if req.Resource.ProjectID != "" && req.Tenant.ProjectID == "" && !hasRole(req.Principal, RoleOwner) && !hasRole(req.Principal, RoleAdmin) && !hasProjectScope(req.Principal.Scopes, req.Resource.ProjectID) {
+	// Project authority is never implied by a tenant role. This prevents a
+	// caller from elevating itself by selecting an arbitrary project ID.
+	if req.Resource.ProjectID != "" && !hasProjectScope(req.Principal.Scopes, req.Resource.ProjectID) {
 		return Decision{Reason: DenyProject}
 	}
 	allowed := false
@@ -200,8 +205,8 @@ func DeriveTenantContext(p domain.Principal, requested Tenant) (domain.TenantCon
 	if p.Subject == "" || p.OrgID == "" {
 		return domain.TenantContext{}, errors.New(DenyUnauthenticated)
 	}
-	if requested.ID != "" && requested.ID != p.OrgID { /* ignore, never trust */
-	}
+	// requested.ID is intentionally ignored; tenant authority comes only from
+	// the verified principal organization.
 	return domain.TenantContext{TenantID: p.OrgID, WorkspaceID: firstWorkspace(p, requested.WorkspaceID), OwnerSubject: p.Subject}, nil
 }
 func firstWorkspace(p domain.Principal, requested string) string {

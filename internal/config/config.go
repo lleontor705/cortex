@@ -60,6 +60,8 @@ type ServerConfig struct {
 	TenantID         string               `yaml:"tenant_id" mapstructure:"tenant_id"`
 	WorkspaceID      string               `yaml:"workspace_id" mapstructure:"workspace_id"`
 	PrincipalSubject string               `yaml:"principal_subject" mapstructure:"principal_subject"`
+	GrantDigest      string               `yaml:"grant_digest" mapstructure:"grant_digest"`
+	GrantVersion     int64                `yaml:"grant_version" mapstructure:"grant_version"`
 }
 
 // ServerStorageConfig contains server-only PostgreSQL connection settings.
@@ -361,6 +363,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.provider.embedding", defaults.Server.Provider.Embedding)
 	v.SetDefault("server.provider.vector", defaults.Server.Provider.Vector)
 	v.SetDefault("server.tenant_id", "")
+	v.SetDefault("server.grant_digest", "")
+	v.SetDefault("server.grant_version", int64(0))
 	v.SetDefault("server.workspace_id", "")
 	v.SetDefault("server.principal_subject", "")
 	v.SetDefault("server.secrets.signing_key", "")

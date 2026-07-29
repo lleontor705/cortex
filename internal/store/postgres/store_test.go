@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
@@ -53,6 +54,13 @@ func TestActorMappingDoesNotCastOpaqueSubject(t *testing.T) {
 	}
 	if actorFromContext(context.Background()) != nil {
 		t.Fatal("unresolved actor must not become a SQL value")
+	}
+}
+
+func TestAuthorizedContextRequiresGrantDigest(t *testing.T) {
+	ac := authz.AuthorizedContext{Principal: domain.Principal{Subject: uuid.NewString(), OrgID: uuid.NewString()}, Tenant: domain.TenantContext{TenantID: "00000000-0000-0000-0000-000000000001"}}
+	if err := validateAuthorizedContext(ac); !errors.Is(err, ErrGrantDigestRequired) {
+		t.Fatalf("error=%v, want %v", err, ErrGrantDigestRequired)
 	}
 }
 

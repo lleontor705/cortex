@@ -34,6 +34,20 @@ func TestPolicyRoleMatrix(t *testing.T) {
 	}
 }
 
+func TestTokenAdminBoundary(t *testing.T) {
+	admin := principal(RoleAdmin)
+	for _, action := range []Action{ActionRead, ActionWrite, ActionManage} {
+		d := NewPolicy().Authorize(context.Background(), Request{Principal: admin, Tenant: Tenant{ID: "tenant-a", WorkspaceID: "ws-a"}, Resource: ResourceRef{TenantID: "tenant-a", WorkspaceID: "ws-a"}, ResourceType: ResourceTokens, Action: action})
+		if !d.Allowed {
+			t.Fatalf("admin token %s denied: %+v", action, d)
+		}
+	}
+	member := principal(RoleMember)
+	if d := NewPolicy().Authorize(context.Background(), Request{Principal: member, Tenant: Tenant{ID: "tenant-a", WorkspaceID: "ws-a"}, Resource: ResourceRef{TenantID: "tenant-a", WorkspaceID: "ws-a"}, ResourceType: ResourceTokens, Action: ActionManage}); d.Allowed {
+		t.Fatal("member escalated to token administration")
+	}
+}
+
 func TestPolicyDefaultDenyAndTenantSpoof(t *testing.T) {
 	p := NewPolicy()
 	d := p.Authorize(context.Background(), Request{Principal: principal(RoleOwner), Tenant: Tenant{ID: "tenant-a"}, Resource: ResourceRef{TenantID: "tenant-b"}, ResourceType: ResourceMemory, Action: ActionRead})
@@ -73,5 +87,23 @@ func TestOpaqueResolverIsTenantScoped(t *testing.T) {
 	}
 	if got, err := r.Resolve("tenant-a", "memory", "mem-a"); err != nil || got != "internal-a" {
 		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestPolicyABACBoundaries(t *testing.T) {
+	p := NewPolicy()
+	base := Request{Principal: principal(RoleMember, "project:p"), Tenant: Tenant{ID: "tenant-a", WorkspaceID: "ws-a"}, Resource: ResourceRef{TenantID: "tenant-a", WorkspaceID: "ws-a", ProjectID: "p"}, ResourceType: ResourceMemory, Action: ActionRead}
+	for name, mutate := range map[string]func(*Request){
+		"workspace":      func(r *Request) { r.Resource.WorkspaceID = "ws-b" },
+		"ownership":      func(r *Request) { r.Resource.OwnerSubject = "other"; r.Resource.Classification = "personal" },
+		"classification": func(r *Request) { r.Resource.Classification = "restricted" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := base
+			mutate(&r)
+			if d := p.Authorize(context.Background(), r); d.Allowed {
+				t.Fatalf("boundary %s unexpectedly allowed", name)
+			}
+		})
 	}
 }

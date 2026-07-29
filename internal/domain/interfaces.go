@@ -380,6 +380,7 @@ type Principal struct {
 	Scopes       []string
 	AuthMethod   string // oidc, client_credentials, api_key, static
 	GrantDigest  string
+	GrantVersion int64
 }
 
 // ScopesCopy returns a defensive copy of the granted scopes.

@@ -26,29 +26,9 @@ CREATE TABLE IF NOT EXISTS cortex_tenant_context (
     PRIMARY KEY (backend_pid, transaction_id)
 );
 REVOKE ALL ON cortex_tenant_context FROM PUBLIC;
-
-CREATE OR REPLACE FUNCTION cortex_set_tenant(p_tenant_id uuid)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-    IF p_tenant_id IS NULL THEN
-        RAISE EXCEPTION 'tenant context is required' USING ERRCODE = '22004';
-    END IF;
-    DELETE FROM public.cortex_tenant_context
-     WHERE backend_pid = pg_backend_pid() AND transaction_id <> txid_current();
-    INSERT INTO public.cortex_tenant_context (backend_pid, transaction_id, tenant_id)
-    VALUES (pg_backend_pid(), txid_current(), p_tenant_id)
-    ON CONFLICT (backend_pid, transaction_id) DO UPDATE
-      SET tenant_id = EXCLUDED.tenant_id, bound_at = clock_timestamp();
-    -- This is informational only. Policies never trust a caller-supplied GUC.
-    PERFORM pg_catalog.set_config('cortex.tenant_id', p_tenant_id::text, true);
-END
-$$;
-REVOKE ALL ON FUNCTION cortex_set_tenant(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION cortex_set_tenant(uuid) TO cortex_app, cortex_admin;
+-- Remove the pre-W13 caller-selected binder on upgraded databases before
+-- installing the principal-derived replacement.
+DROP FUNCTION IF EXISTS cortex_set_tenant(uuid);
 
 CREATE OR REPLACE FUNCTION cortex_current_tenant()
 RETURNS uuid
@@ -274,8 +254,55 @@ CREATE TABLE IF NOT EXISTS actor_subjects (
     actor_type text NOT NULL,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
     created_at timestamptz NOT NULL DEFAULT now(),
+    active boolean NOT NULL DEFAULT true,
+    revoked_at timestamptz,
+    grant_version bigint NOT NULL DEFAULT 1,
+    grant_digest text NOT NULL DEFAULT '',
     UNIQUE (tenant_id, subject)
 );
+ALTER TABLE actor_subjects ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+ALTER TABLE actor_subjects ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+ALTER TABLE actor_subjects ADD COLUMN IF NOT EXISTS grant_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE actor_subjects ADD COLUMN IF NOT EXISTS grant_digest text NOT NULL DEFAULT '';
+
+-- The only application binding entry point. It accepts an authenticated
+-- actor public ID and a grant digest, never a caller-selected tenant. The
+-- SECURITY DEFINER owner is the migration role (BYPASSRLS), so revocation and
+-- digest checks are atomic with the transaction context installation.
+CREATE OR REPLACE FUNCTION cortex_bind_principal(p_actor_public_id uuid, p_grant_digest text, p_grant_version bigint)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_tenant uuid;
+    v_digest text;
+BEGIN
+    IF p_actor_public_id IS NULL OR NULLIF(p_grant_digest, '') IS NULL OR p_grant_version IS NULL OR p_grant_version <= 0 THEN
+        RAISE EXCEPTION 'principal binding is required' USING ERRCODE = '28000';
+    END IF;
+    SELECT tenant_id, grant_digest INTO v_tenant, v_digest
+      FROM public.actor_subjects
+     WHERE public_id = p_actor_public_id
+       AND active
+       AND revoked_at IS NULL
+       AND grant_version = p_grant_version
+     FOR UPDATE;
+    IF v_tenant IS NULL OR (v_digest <> '' AND v_digest <> p_grant_digest) THEN
+        RAISE EXCEPTION 'principal grant is revoked or stale' USING ERRCODE = '28000';
+    END IF;
+    DELETE FROM public.cortex_tenant_context
+     WHERE backend_pid = pg_backend_pid() AND transaction_id <> txid_current();
+    INSERT INTO public.cortex_tenant_context (backend_pid, transaction_id, tenant_id)
+    VALUES (pg_backend_pid(), txid_current(), v_tenant)
+    ON CONFLICT (backend_pid, transaction_id) DO UPDATE
+      SET tenant_id = EXCLUDED.tenant_id, bound_at = clock_timestamp();
+END
+$$;
+REVOKE ALL ON FUNCTION cortex_bind_principal(uuid,text,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION cortex_bind_principal(uuid,text,bigint) FROM cortex_admin;
+GRANT EXECUTE ON FUNCTION cortex_bind_principal(uuid,text,bigint) TO cortex_app;
 CREATE TABLE IF NOT EXISTS audit_events (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,

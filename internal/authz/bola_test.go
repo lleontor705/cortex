@@ -26,3 +26,22 @@ func TestAuthorizedContextRequiresDecision(t *testing.T) {
 		t.Fatalf("ctx=%+v err=%v", c, err)
 	}
 }
+
+func TestProjectGrantIsRequiredEvenForTenantAdmin(t *testing.T) {
+	p := domain.Principal{Subject: "u", OrgID: "t", Roles: []string{string(RoleAdmin)}, WorkspaceIDs: []string{"w"}}
+	req := Request{Principal: p, Tenant: Tenant{ID: "t", WorkspaceID: "w"}, Resource: ResourceRef{TenantID: "t", WorkspaceID: "w", ProjectID: "p"}, ResourceType: ResourceMemory, Action: ActionRead}
+	if got := NewPolicy().Authorize(context.Background(), req); got.Allowed || got.Reason != DenyProject {
+		t.Fatalf("decision=%+v, want project denial without a principal grant", got)
+	}
+	p.Scopes = []string{"project:p"}
+	req.Principal = p
+	if got := NewPolicy().Authorize(context.Background(), req); !got.Allowed {
+		t.Fatalf("decision=%+v, want explicit project grant", got)
+	}
+}
+
+func TestEnforceFailsClosedForNilAuthorizer(t *testing.T) {
+	if err := Enforce(context.Background(), nil, Request{}); err == nil || err.Error() != DenyRole {
+		t.Fatalf("error=%v, want fail-closed role denial", err)
+	}
+}

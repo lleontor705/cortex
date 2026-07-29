@@ -25,7 +25,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if o.TopicKey != "" {
 			var id int64
-			err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, o.Project, strings.TrimSpace(o.TopicKey)).Scan(&id)
+			err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, o.Project, strings.TrimSpace(o.TopicKey)).Scan(&id)
 			if err == nil {
 				return r.updateInTx(ctx, tx, o, id)
 			}
@@ -51,7 +51,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation, id int64) error {
 	now := time.Now().UTC()
 	var created time.Time
-	err := tx.QueryRow(ctx, `SELECT created_at,public_id::text FROM observations WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&created, &o.PublicID)
+	err := tx.QueryRow(ctx, `SELECT created_at,public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&created, &o.PublicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return notFound("observation", id)
 	}
@@ -59,7 +59,7 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 		return err
 	}
 	var revision int
-	err = tx.QueryRow(ctx, `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE id=$10 AND deleted_at IS NULL RETURNING revision_count`, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), id).Scan(&revision)
+	err = tx.QueryRow(ctx, `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE tenant_id=public.cortex_current_tenant() AND id=$10 AND deleted_at IS NULL RETURNING revision_count`, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), id).Scan(&revision)
 	if err != nil {
 		return fmt.Errorf("postgres observations: update: %w", err)
 	}
@@ -179,13 +179,13 @@ func (r *ObservationRepository) CountAll(ctx context.Context) (n int, err error)
 }
 func (r *ObservationRepository) CountByRoot(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `WITH RECURSIVE reach(id) AS (SELECT $1::bigint UNION SELECT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations a ON a.id=e.from_observation_id AND a.deleted_at IS NULL JOIN observations b ON b.id=e.to_observation_id AND b.deleted_at IS NULL) SELECT count(*) FROM reach WHERE id<>$1::bigint`, id).Scan(&n)
+		return tx.QueryRow(ctx, `WITH RECURSIVE reach(id) AS (SELECT $1::bigint UNION SELECT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations a ON a.id=e.from_observation_id AND a.tenant_id=public.cortex_current_tenant() AND a.deleted_at IS NULL JOIN observations b ON b.id=e.to_observation_id AND b.tenant_id=public.cortex_current_tenant() AND b.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant()) SELECT count(*) FROM reach WHERE id<>$1::bigint`, id).Scan(&n)
 	})
 	return
 }
 func (r *ObservationRepository) CountEdgesAsObs(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&n)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&n)
 	})
 	return
 }

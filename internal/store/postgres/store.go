@@ -16,8 +16,11 @@ import (
 )
 
 var (
-	ErrTenantContextRequired = errors.New("postgres store: tenant context is required")
-	ErrPrincipalRequired     = errors.New("postgres store: principal is required")
+	ErrTenantContextRequired   = errors.New("postgres store: tenant context is required")
+	ErrPrincipalRequired       = errors.New("postgres store: principal is required")
+	ErrGrantDigestRequired     = errors.New("postgres store: grant digest is required")
+	ErrGrantVersionRequired    = errors.New("postgres store: grant version is required")
+	ErrAuthorizedStoreRequired = errors.New("postgres store: authorized store is required")
 )
 
 type tenantKey struct{}
@@ -62,10 +65,77 @@ func validatePrincipal(p domain.Principal) error {
 
 // Store is a tenant-scoped PostgreSQL repository bundle.
 type Store struct {
-	pool       *pgxpool.Pool
-	tenant     *domain.TenantContext
-	principal  domain.Principal
-	authorized bool
+	pool         *pgxpool.Pool
+	tenant       *domain.TenantContext
+	principal    domain.Principal
+	authorized   bool
+	grantDigest  string
+	grantVersion int64
+}
+
+// AuthorizedStore is the only server-facing storage capability. The raw Store
+// remains package-private in composition; transports receive repository ports
+// and cannot select a tenant or bypass the authorization binding.
+type AuthorizedStore struct{ store *Store }
+
+func (s *AuthorizedStore) Backend() string                          { return s.store.Backend() }
+func (s *AuthorizedStore) Health(ctx context.Context) domain.Health { return s.store.Health(ctx) }
+func (s *AuthorizedStore) BeginTx(ctx context.Context) (domain.Tx, error) {
+	return s.store.BeginTx(ctx)
+}
+func (s *AuthorizedStore) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
+	return s.store.WithinTx(ctx, handle, fn)
+}
+func (s *AuthorizedStore) Observations() *ObservationRepository { return s.store.Observations() }
+func (s *AuthorizedStore) Sessions() *SessionRepository         { return s.store.Sessions() }
+func (s *AuthorizedStore) Prompts() *PromptRepository           { return s.store.Prompts() }
+func (s *AuthorizedStore) Graph() *GraphRepository              { return s.store.Graph() }
+func (s *AuthorizedStore) Entities() *EntityRepository          { return s.store.Entities() }
+func (s *AuthorizedStore) Search() *SearchRepository            { return s.store.Search() }
+func (s *AuthorizedStore) Outbox() *OutboxStore                 { return s.store.Outbox() }
+func (s *AuthorizedStore) Tokens() *TokenRepository             { return s.store.Tokens() }
+func (s *AuthorizedStore) GetScore(ctx context.Context, id int64) (*domain.ImportanceScore, error) {
+	return s.store.GetScore(ctx, id)
+}
+func (s *AuthorizedStore) UpdateScore(ctx context.Context, id int64, increment float64) error {
+	return s.store.UpdateScore(ctx, id, increment)
+}
+func (s *AuthorizedStore) GetTop(ctx context.Context, project string, limit int) ([]*domain.ImportanceScore, error) {
+	return s.store.GetTop(ctx, project, limit)
+}
+func (s *AuthorizedStore) RecordAccess(ctx context.Context, id int64) error {
+	return s.store.RecordAccess(ctx, id)
+}
+func (s *AuthorizedStore) SetScore(ctx context.Context, id int64, score float64) error {
+	return s.store.SetScore(ctx, id, score)
+}
+func (s *AuthorizedStore) GetAllScores(ctx context.Context) ([]*domain.ImportanceScore, error) {
+	return s.store.GetAllScores(ctx)
+}
+func (s *AuthorizedStore) GetTopByScore(ctx context.Context, project string, limit int) ([]*domain.ImportanceScore, error) {
+	return s.store.GetTopByScore(ctx, project, limit)
+}
+func (s *AuthorizedStore) GetIncomingEdgeCount(ctx context.Context, id int64) (int, error) {
+	return s.store.GetIncomingEdgeCount(ctx, id)
+}
+func (s *AuthorizedStore) GetObservation(ctx context.Context, id int64) (*domain.Observation, error) {
+	return s.store.GetObservation(ctx, id)
+}
+
+func validateAuthorizedContext(ac authz.AuthorizedContext) error {
+	if ac.Principal.Subject == "" || ac.Principal.OrgID == "" {
+		return ErrPrincipalRequired
+	}
+	if ac.GrantDigest == "" {
+		return ErrGrantDigestRequired
+	}
+	if ac.Principal.GrantVersion <= 0 {
+		return ErrGrantVersionRequired
+	}
+	if ac.Tenant.TenantID == "" || ac.Tenant.TenantID != ac.Principal.OrgID {
+		return ErrTenantContextRequired
+	}
+	return nil
 }
 
 func NewStore(pool *pgxpool.Pool, tenant *domain.TenantContext, principal domain.Principal) (*Store, error) {
@@ -99,20 +169,19 @@ func NewStore(pool *pgxpool.Pool, tenant *domain.TenantContext, principal domain
 // NewAuthorizedStore is the server-safe constructor. The tenant and grants
 // are taken from a prior authorization decision; callers cannot supply a
 // client-owned tenant independently of the verified principal.
-func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*Store, error) {
-	if ac.Principal.Subject == "" || ac.Principal.OrgID == "" {
-		return nil, ErrPrincipalRequired
+func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*AuthorizedStore, error) {
+	if err := validateAuthorizedContext(ac); err != nil {
+		return nil, err
 	}
 	t := ac.Tenant
-	if t.TenantID == "" || t.TenantID != ac.Principal.OrgID {
-		return nil, ErrTenantContextRequired
-	}
 	s, err := NewStore(pool, &t, ac.Principal)
 	if err != nil {
 		return nil, err
 	}
 	s.authorized = true
-	return s, nil
+	s.grantDigest = ac.GrantDigest
+	s.grantVersion = ac.Principal.GrantVersion
+	return &AuthorizedStore{store: s}, nil
 }
 
 func (s *Store) Backend() string { return "postgres" }
@@ -134,14 +203,22 @@ func (s *Store) BeginTx(ctx context.Context) (domain.Tx, error) {
 	return &txHandle{tx: tx, ctx: ctx}, nil
 }
 func (s *Store) bind(ctx context.Context, tx pgx.Tx) error {
-	if err := validateTenantContext(s.tenant); err != nil {
-		return err
+	if s.authorized {
+		if s.grantDigest == "" {
+			return ErrGrantDigestRequired
+		}
+		if _, err := uuid.Parse(s.principal.Subject); err != nil {
+			return fmt.Errorf("%w: principal public id: %v", ErrPrincipalRequired, err)
+		}
+		_, err := tx.Exec(ctx, `SELECT public.cortex_bind_principal($1::uuid,$2::text,$3::bigint)`, s.principal.Subject, s.grantDigest, s.grantVersion)
+		if err != nil {
+			return fmt.Errorf("postgres store: bind principal: %w", err)
+		}
+		return nil
 	}
-	_, err := tx.Exec(ctx, `SELECT public.cortex_set_tenant($1::uuid)`, s.tenant.TenantID)
-	if err != nil {
-		return fmt.Errorf("postgres store: bind tenant: %w", err)
-	}
-	return nil
+	// Compatibility stores cannot safely establish server authorization.
+	// Refuse before any tenant value can reach PostgreSQL.
+	return ErrAuthorizedStoreRequired
 }
 func (s *Store) context(ctx context.Context) context.Context {
 	return withPrincipal(withTenant(ctx, s.tenant), s.principal)

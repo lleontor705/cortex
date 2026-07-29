@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -27,6 +28,27 @@ type postgresHarness struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
 	tenant string
+}
+
+func newAuthorizedTestStore(t *testing.T, h *postgresHarness, tenant, workspace, subject uuid.UUID) *AuthorizedStore {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.pool.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'test',$3,'test-digest',1) ON CONFLICT (tenant_id,subject) DO UPDATE SET public_id=EXCLUDED.public_id,active=true,revoked_at=NULL,grant_digest=EXCLUDED.grant_digest,grant_version=1`, tenant, subject.String(), subject); err != nil {
+		t.Fatal(err)
+	}
+	p := domain.Principal{Subject: subject.String(), Type: "user", OrgID: tenant.String(), GrantDigest: "test-digest", GrantVersion: 1}
+	if workspace != uuid.Nil {
+		p.WorkspaceIDs = []string{workspace.String()}
+	}
+	ac := authz.AuthorizedContext{Principal: p, Tenant: domain.TenantContext{TenantID: tenant.String(), WorkspaceID: workspace.String()}, GrantDigest: p.GrantDigest}
+	if workspace == uuid.Nil {
+		ac.Tenant.WorkspaceID = ""
+	}
+	store, err := NewAuthorizedStore(h.pool, ac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func newPostgresHarness(t *testing.T) *postgresHarness {
@@ -114,7 +136,7 @@ func TestPostgresImportanceScoresAreTenantScoped(t *testing.T) {
 func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 	h := newPostgresHarness(t)
 	ctx := context.Background()
-	createStore := func(t *testing.T) (*Store, *domain.Observation) {
+	createStore := func(t *testing.T) (*AuthorizedStore, *domain.Observation) {
 		tenant, workspace := uuid.New(), uuid.New()
 		if _, err := h.pool.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, tenant.String()); err != nil {
 			t.Fatal(err)
@@ -122,10 +144,7 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 		if _, err := h.pool.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,$3)`, tenant, workspace, workspace.String()); err != nil {
 			t.Fatal(err)
 		}
-		store, err := NewStore(h.pool, &domain.TenantContext{TenantID: tenant.String(), WorkspaceID: workspace.String()}, domain.Principal{Subject: "scoring-user-" + tenant.String(), Type: "user", OrgID: tenant.String(), WorkspaceIDs: []string{workspace.String()}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
 		session := &domain.Session{Project: "archive-project", StartedAt: time.Now().UTC()}
 		if err := store.Sessions().Create(ctx, session); err != nil {
 			t.Fatal(err)
@@ -328,10 +347,7 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if _, err := h.pool.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'test-workspace')`, tenant, workspace); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(h.pool, &domain.TenantContext{TenantID: tenant.String(), WorkspaceID: workspace.String()}, domain.Principal{Subject: "opaque-user", Type: "user", OrgID: tenant.String(), WorkspaceIDs: []string{workspace.String()}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
 	s := &domain.Session{Project: "repo", StartedAt: time.Now().UTC(), Summary: "integration"}
 	if err := store.Sessions().Create(ctx, s); err != nil {
 		t.Fatal(err)

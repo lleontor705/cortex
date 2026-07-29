@@ -113,8 +113,8 @@ func (m *PostgresServerMigration) Down(ctx context.Context, db *sql.DB) error {
 	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_current_tenant() CASCADE`); err != nil {
 		return fmt.Errorf("migration: rollback current tenant function: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_set_tenant(uuid) CASCADE`); err != nil {
-		return fmt.Errorf("migration: rollback tenant setter function: %w", err)
+	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_bind_principal(uuid,text,bigint) CASCADE`); err != nil {
+		return fmt.Errorf("migration: rollback principal binder function: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM cortex_server_migrations WHERE version=$1`, m.Version()); err != nil {
 		return fmt.Errorf("migration: rollback migration ledger: %w", err)

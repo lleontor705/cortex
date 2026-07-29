@@ -125,7 +125,7 @@ func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string
 }
 func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) (out []*domain.Edge, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1)`, id)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND EXISTS (SELECT 1 FROM observations a WHERE a.tenant_id=public.cortex_current_tenant() AND a.id=edges.from_observation_id AND a.deleted_at IS NULL) AND EXISTS (SELECT 1 FROM observations b WHERE b.tenant_id=public.cortex_current_tenant() AND b.id=edges.to_observation_id AND b.deleted_at IS NULL)`, id)
 		if e != nil {
 			return e
 		}
@@ -158,7 +158,7 @@ func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (
 		depth = 1
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.deleted_at IS NULL JOIN observations at ON at.id=e.to_observation_id AND at.deleted_at IS NULL WHERE d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.deleted_at IS NULL`, id, depth)
+		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.tenant_id=public.cortex_current_tenant() AND af.deleted_at IS NULL JOIN observations at ON at.id=e.to_observation_id AND at.tenant_id=public.cortex_current_tenant() AND at.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant() AND d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL`, id, depth)
 		if e != nil {
 			return e
 		}
@@ -177,7 +177,7 @@ func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (
 func (r *GraphRepository) GetEvolutionChain(ctx context.Context, a, b int64) ([]*domain.Edge, error) {
 	var out []*domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE evolution_id=(SELECT evolution_id FROM edges WHERE from_observation_id=$1 AND to_observation_id=$2 LIMIT 1) OR (from_observation_id=$1 AND to_observation_id=$2) ORDER BY created_at`, a, b)
+		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (evolution_id=(SELECT evolution_id FROM edges WHERE tenant_id=public.cortex_current_tenant() AND from_observation_id=$1 AND to_observation_id=$2 LIMIT 1) OR (from_observation_id=$1 AND to_observation_id=$2)) ORDER BY created_at`, a, b)
 		if err != nil {
 			return err
 		}
@@ -203,20 +203,20 @@ func (r *GraphRepository) GetEvolutionChain(ctx context.Context, a, b int64) ([]
 }
 func (r *GraphRepository) CountEdgesByObservation(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE from_observation_id=$1 OR to_observation_id=$1`, id).Scan(&n)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1)`, id).Scan(&n)
 	})
 	return
 }
 func (r *GraphRepository) CountAllEdges(ctx context.Context) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM edges`).Scan(&n)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant()`).Scan(&n)
 	})
 	return
 }
 func (r *GraphRepository) GetContradictions(ctx context.Context, from, to time.Time) ([]*domain.Edge, error) {
 	var out []*domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE relation_type=$1 AND created_at >= $2 AND created_at < $3 ORDER BY created_at`, domain.RelationContradicts, from, to)
+		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND relation_type=$1 AND created_at >= $2 AND created_at < $3 ORDER BY created_at`, domain.RelationContradicts, from, to)
 		if err != nil {
 			return err
 		}

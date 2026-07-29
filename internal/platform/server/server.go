@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
@@ -43,7 +44,7 @@ type Runtime struct {
 	Config        *config.Config
 	MigrationDB   *sql.DB
 	Pool          *pgxpool.Pool
-	Storage       *postgresstore.Store
+	Storage       *postgresstore.AuthorizedStore
 	Repositories  Repositories
 	Vectors       domain.VectorIndex
 	Embeddings    embedding.Service
@@ -96,9 +97,14 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("server: PostgreSQL health check: %w", err)
 	}
 
-	tenant := &domain.TenantContext{TenantID: cfg.Server.TenantID, WorkspaceID: cfg.Server.WorkspaceID, OwnerSubject: cfg.Server.PrincipalSubject}
-	principal := domain.Principal{Subject: cfg.Server.PrincipalSubject, Type: "service_account", OrgID: cfg.Server.TenantID, WorkspaceIDs: []string{cfg.Server.WorkspaceID}}
-	store, err := postgresstore.NewStore(pool, tenant, principal)
+	principal := domain.Principal{Subject: cfg.Server.PrincipalSubject, Type: "service_account", OrgID: cfg.Server.TenantID, WorkspaceIDs: []string{cfg.Server.WorkspaceID}, Scopes: []string{"workspaces:read"}, GrantDigest: cfg.Server.GrantDigest, GrantVersion: cfg.Server.GrantVersion}
+	policy := authz.NewPolicy()
+	ac, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: principal, Tenant: authz.Tenant{ID: cfg.Server.TenantID, WorkspaceID: cfg.Server.WorkspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: authorize composition: %w", err)
+	}
+	store, err := postgresstore.NewAuthorizedStore(pool, ac)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct storage: %w", err)
@@ -153,6 +159,12 @@ func validateConfig(cfg config.Config) error {
 	}
 	if _, err := uuid.Parse(cfg.Server.WorkspaceID); err != nil {
 		return fmt.Errorf("server: workspace_id is invalid")
+	}
+	if cfg.Server.GrantDigest == "" {
+		return errors.New("server: grant_digest is required")
+	}
+	if cfg.Server.GrantVersion <= 0 {
+		return errors.New("server: grant_version is required")
 	}
 	return nil
 }
