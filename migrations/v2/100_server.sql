@@ -156,6 +156,8 @@ ALTER TABLE observations ADD COLUMN IF NOT EXISTS revision_count integer NOT NUL
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS project_key text NOT NULL DEFAULT '';
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'project';
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS owner_subject text NOT NULL DEFAULT '';
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS classification text NOT NULL DEFAULT 'project';
 ALTER TABLE observations ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(title,'') || ' ' || coalesce(content,''))) STORED;
 CREATE INDEX IF NOT EXISTS observations_search_vector_gin ON observations USING gin(search_vector);
 DROP INDEX IF EXISTS observations_topic_key_active_uq;
@@ -311,6 +313,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (tenant_id, id), UNIQUE (tenant_id, public_id)
 );
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS correlation_id text NOT NULL DEFAULT '';
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_subject text NOT NULL DEFAULT '';
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS reason text NOT NULL DEFAULT '';
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS allowed boolean NOT NULL DEFAULT false;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS resource_id text NOT NULL DEFAULT '';
 
 DO $$
 DECLARE

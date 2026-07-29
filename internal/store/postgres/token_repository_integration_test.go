@@ -22,31 +22,31 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newAuthorizedTestStore(t, h, tenant, uuid.Nil, uuid.New())
-	issued, err := store.Tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)})
+	issued, err := store.tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Tokens().Verify(ctx, issued.Secret, "read"); err != nil {
+	if _, err := store.tokens().Verify(ctx, issued.Secret, "read"); err != nil {
 		t.Fatal(err)
 	}
 	var lastUsed time.Time
 	if err := h.pool.QueryRow(ctx, `SELECT last_used_at FROM api_tokens WHERE public_id=$1::uuid`, issued.Record.ID).Scan(&lastUsed); err != nil || lastUsed.IsZero() {
 		t.Fatalf("last_used_at not persisted: %v %v", lastUsed, err)
 	}
-	rotated, err := store.Tokens().Rotate(ctx, issued.Record.ID)
+	rotated, err := store.tokens().Rotate(ctx, issued.Record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Tokens().Verify(ctx, issued.Secret, "read"); err == nil {
+	if _, err := store.tokens().Verify(ctx, issued.Secret, "read"); err == nil {
 		t.Fatal("rotated token remained valid")
 	}
-	if _, err := store.Tokens().Verify(ctx, rotated.Secret, "read"); err != nil {
+	if _, err := store.tokens().Verify(ctx, rotated.Secret, "read"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Tokens().Revoke(ctx, rotated.Record.ID); err != nil {
+	if err := store.tokens().Revoke(ctx, rotated.Record.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Tokens().Verify(ctx, rotated.Secret, "read"); err == nil {
+	if _, err := store.tokens().Verify(ctx, rotated.Secret, "read"); err == nil {
 		t.Fatal("revoked token remained valid")
 	}
 	other := uuid.New()
@@ -54,7 +54,7 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherStore := newAuthorizedTestStore(t, h, other, uuid.Nil, uuid.New())
-	if _, err := otherStore.Tokens().Verify(ctx, rotated.Secret, "read"); err == nil {
+	if _, err := otherStore.tokens().Verify(ctx, rotated.Secret, "read"); err == nil {
 		t.Fatal("cross-tenant token accepted")
 	}
 }

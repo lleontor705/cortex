@@ -18,7 +18,7 @@ var (
 
 type PromptRepository struct{ *Store }
 
-func (s *Store) Prompts() *PromptRepository { return &PromptRepository{s} }
+func (s *Store) prompts() *PromptRepository { return &PromptRepository{s} }
 
 var _ domain.PromptRepository = (*PromptRepository)(nil)
 
@@ -57,7 +57,7 @@ func (r *PromptRepository) List(ctx context.Context, project string, limit int) 
 
 type GraphRepository struct{ *Store }
 
-func (s *Store) Graph() *GraphRepository { return &GraphRepository{s} }
+func (s *Store) graph() *GraphRepository { return &GraphRepository{s} }
 
 var _ domain.GraphRepository = (*GraphRepository)(nil)
 
@@ -265,8 +265,6 @@ func (r *GraphRepository) UpdateEdge(ctx context.Context, e *domain.Edge) error 
 
 type EntityRepository struct{ *Store }
 
-func (s *Store) Entities() *EntityRepository { return &EntityRepository{s} }
-
 var _ domain.EntityRepository = (*EntityRepository)(nil)
 
 func (r *EntityRepository) SaveLinks(ctx context.Context, links []*domain.EntityLink) error {
@@ -332,7 +330,7 @@ func (r *EntityRepository) DeleteByObservation(ctx context.Context, id int64) er
 
 type SearchRepository struct{ *Store }
 
-func (s *Store) Search() *SearchRepository { return &SearchRepository{s} }
+func (s *Store) search() *SearchRepository { return &SearchRepository{s} }
 
 var _ domain.SearchRepository = (*SearchRepository)(nil)
 
@@ -357,8 +355,20 @@ func (r *SearchRepository) Search(ctx context.Context, query string, opts domain
 				args = append(args, projects)
 			}
 		}
+		if r.authorized {
+			if classes, wildcard := r.classificationGrantFilter(); !wildcard {
+				if len(classes) == 0 {
+					q += ` AND o.classification NOT IN ('restricted','confidential')`
+				} else {
+					q += fmt.Sprintf(" AND (o.classification = ANY($%d) OR o.classification NOT IN ('restricted','confidential'))", len(args)+1)
+					args = append(args, classes)
+				}
+			}
+			q += fmt.Sprintf(" AND (o.classification <> 'personal' OR o.owner_subject=$%d)", len(args)+1)
+			args = append(args, r.principal.Subject)
+		}
 		if opts.Project != "" {
-			q += ` AND o.project_key=$2`
+			q += fmt.Sprintf(` AND o.project_key=$%d`, len(args)+1)
 			args = append(args, opts.Project)
 		}
 		if opts.Scope != "" {

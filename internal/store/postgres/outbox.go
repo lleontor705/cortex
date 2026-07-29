@@ -30,7 +30,6 @@ type OutboxIntent struct {
 }
 type OutboxStore struct{ *Store }
 
-func (s *Store) Outbox() *OutboxStore { return &OutboxStore{s} }
 func (r *OutboxStore) EnqueueInTx(ctx context.Context, id int64, intent, model string) error {
 	tx, ok := txFromContext(ctx)
 	if !ok {

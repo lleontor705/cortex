@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/migration"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
 
 	"go.uber.org/goleak"
@@ -34,31 +35,12 @@ func setupWorkerDB(t *testing.T) (*sql.DB, *sqlitestore.OutboxStore, *sqlitestor
 	}
 	db.SetMaxOpenConns(1)
 
-	for _, stmt := range []string{
-		`CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT, type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
-			project TEXT NOT NULL DEFAULT 'default', scope TEXT NOT NULL DEFAULT 'project',
-			topic_key TEXT, normalized_hash TEXT,
-			confidence REAL DEFAULT 1.0, source TEXT DEFAULT 'manual',
-			tags TEXT, revision_count INTEGER DEFAULT 1, duplicate_count INTEGER DEFAULT 1,
-			last_seen_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			updated_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT
-		)`,
-		`CREATE TABLE index_outbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			observation_id INTEGER NOT NULL,
-			intent TEXT NOT NULL, model_info TEXT,
-			status TEXT NOT NULL DEFAULT 'pending',
-			attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 5,
-			next_retry_at TEXT, leased_at TEXT, completed_at TEXT, error TEXT,
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE index_state (namespace TEXT PRIMARY KEY, coverage REAL NOT NULL, parity INTEGER DEFAULT 0, authority_digest TEXT, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create table: %v", err)
-		}
+	baseline, err := migration.NewV2Baseline()
+	if err != nil {
+		t.Fatalf("new v2 baseline: %v", err)
+	}
+	if err := baseline.Apply(context.Background(), db); err != nil {
+		t.Fatalf("apply v2 baseline: %v", err)
 	}
 	cleanup := func() { _ = db.Close() }
 	return db, sqlitestore.NewOutboxStore(db), sqlitestore.NewStore(db), cleanup

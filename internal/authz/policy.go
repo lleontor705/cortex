@@ -6,6 +6,7 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -75,10 +76,13 @@ type Decision struct {
 type Authorizer interface {
 	Authorize(context.Context, Request) Decision
 }
+type AuditedAuthorizer interface {
+	AuthorizeWithAudit(context.Context, Request) (Decision, error)
+}
 
 type AuditEvent struct {
-	CorrelationID, Actor, Action, Resource, Reason string
-	Allowed                                        bool
+	CorrelationID, Actor, Action, Resource, ResourceID, Reason string
+	Allowed                                                    bool
 }
 type AuditSink interface {
 	Record(context.Context, AuditEvent) error
@@ -105,9 +109,23 @@ func allPermissions() map[Resource]map[Action]bool {
 func (p *Policy) Authorize(ctx context.Context, req Request) Decision {
 	d := p.decide(req)
 	if p.Audit != nil {
-		_ = p.Audit.Record(ctx, AuditEvent{CorrelationID: req.CorrelationID, Actor: req.Principal.Subject, Action: string(req.Action), Resource: string(req.ResourceType), Reason: d.Reason, Allowed: d.Allowed})
+		_ = p.Audit.Record(ctx, AuditEvent{CorrelationID: req.CorrelationID, Actor: req.Principal.Subject, Action: string(req.Action), Resource: string(req.ResourceType), ResourceID: req.Resource.OpaqueID, Reason: d.Reason, Allowed: d.Allowed})
 	}
 	return d
+}
+
+// AuthorizeWithAudit makes audit persistence part of privileged authorization.
+// A failed audit denies writes, deletes, and management operations.
+func (p *Policy) AuthorizeWithAudit(ctx context.Context, req Request) (Decision, error) {
+	d := p.decide(req)
+	if p.Audit == nil {
+		return d, nil
+	}
+	err := p.Audit.Record(ctx, AuditEvent{CorrelationID: req.CorrelationID, Actor: req.Principal.Subject, Action: string(req.Action), Resource: string(req.ResourceType), ResourceID: req.Resource.OpaqueID, Reason: d.Reason, Allowed: d.Allowed})
+	if err != nil && (req.Action == ActionWrite || req.Action == ActionDelete || req.Action == ActionManage) {
+		return d, fmt.Errorf("audit authorization: %w", err)
+	}
+	return d, nil
 }
 func (p *Policy) decide(req Request) Decision {
 	if req.Principal.Subject == "" || req.Principal.OrgID == "" {

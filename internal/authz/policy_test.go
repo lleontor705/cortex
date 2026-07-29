@@ -2,10 +2,23 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+type failingAudit struct{}
+
+func (failingAudit) Record(context.Context, AuditEvent) error { return errors.New("audit unavailable") }
+
+func TestPrivilegedAuthorizationFailsClosedWhenAuditFails(t *testing.T) {
+	p := &Policy{Audit: failingAudit{}}
+	req := Request{Principal: domain.Principal{Subject: "actor", OrgID: "tenant", Roles: []string{"owner"}}, Tenant: Tenant{ID: "tenant"}, ResourceType: ResourceMemory, Action: ActionWrite}
+	if err := Enforce(context.Background(), p, req); err == nil {
+		t.Fatal("privileged operation allowed after audit failure")
+	}
+}
 
 func principal(role Role, scopes ...string) domain.Principal {
 	return domain.Principal{Subject: "u1", Type: "user", OrgID: "tenant-a", Roles: []string{string(role)}, Scopes: scopes, WorkspaceIDs: []string{"ws-a"}}

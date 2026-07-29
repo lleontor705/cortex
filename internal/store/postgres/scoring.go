@@ -17,7 +17,7 @@ func (r *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 	var score domain.ImportanceScore
 	var last *time.Time
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT observation_id,score,access_count,last_accessed,updated_at FROM importance_scores WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1`, obsID).
+		return tx.QueryRow(ctx, `SELECT s.observation_id,s.score,s.access_count,s.last_accessed,s.updated_at FROM importance_scores s JOIN observations o ON o.tenant_id=s.tenant_id AND o.id=s.observation_id WHERE s.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND s.observation_id=$1`, obsID).
 			Scan(&score.ObservationID, &score.Score, &score.AccessCount, &last, &score.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -36,7 +36,7 @@ func (r *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 func (r *Store) UpdateScore(ctx context.Context, obsID int64, increment float64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var score float64
-		if err := tx.QueryRow(ctx, `SELECT score FROM importance_scores WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1 FOR UPDATE`, obsID).Scan(&score); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT s.score FROM importance_scores s JOIN observations o ON o.tenant_id=s.tenant_id AND o.id=s.observation_id WHERE s.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND s.observation_id=$1 FOR UPDATE`, obsID).Scan(&score); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return &domain.NotFoundError{Type: "importance_score", ID: obsID}
 			}
@@ -54,7 +54,7 @@ func (r *Store) GetTop(ctx context.Context, project string, limit int) ([]*domai
 
 func (r *Store) RecordAccess(ctx context.Context, obsID int64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		result, err := tx.Exec(ctx, `UPDATE importance_scores SET access_count=access_count+1,last_accessed=now(),updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1`, obsID)
+		result, err := tx.Exec(ctx, `UPDATE importance_scores SET access_count=access_count+1,last_accessed=now(),updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1 AND EXISTS (SELECT 1 FROM observations o WHERE o.tenant_id=importance_scores.tenant_id AND o.id=importance_scores.observation_id AND o.deleted_at IS NULL)`, obsID)
 		if err != nil {
 			return err
 		}
@@ -68,7 +68,7 @@ func (r *Store) RecordAccess(ctx context.Context, obsID int64) error {
 func (r *Store) SetScore(ctx context.Context, obsID int64, score float64) error {
 	score = math.Max(0, math.Min(5, score))
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		result, err := tx.Exec(ctx, `INSERT INTO importance_scores(tenant_id,workspace_id,project_id,project_key,observation_id,score) SELECT public.cortex_current_tenant(),w.id,o.project_id,o.project_key,o.id,$1 FROM observations o JOIN sessions s ON s.tenant_id=o.tenant_id AND s.id=o.session_id JOIN workspaces w ON w.tenant_id=s.tenant_id AND w.id=s.workspace_id WHERE o.id=$2 AND o.deleted_at IS NULL ON CONFLICT (tenant_id,observation_id) DO UPDATE SET score=EXCLUDED.score,updated_at=now()`, score, obsID)
+		result, err := tx.Exec(ctx, `INSERT INTO importance_scores(tenant_id,workspace_id,project_id,project_key,observation_id,score) SELECT public.cortex_current_tenant(),w.id,o.project_id,o.project_key,o.id,$1 FROM observations o JOIN sessions s ON s.tenant_id=o.tenant_id AND s.id=o.session_id JOIN workspaces w ON w.tenant_id=s.tenant_id AND w.id=s.workspace_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.id=$2 AND o.deleted_at IS NULL ON CONFLICT (tenant_id,observation_id) DO UPDATE SET score=EXCLUDED.score,updated_at=now()`, score, obsID)
 		if err != nil {
 			return fmt.Errorf("postgres scoring: set score: %w", err)
 		}

@@ -146,11 +146,11 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 		}
 		store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
 		session := &domain.Session{Project: "archive-project", StartedAt: time.Now().UTC()}
-		if err := store.Sessions().Create(ctx, session); err != nil {
+		if err := store.sessions().Create(ctx, session); err != nil {
 			t.Fatal(err)
 		}
 		obs := &domain.Observation{SessionID: session.ID, Project: "archive-project", Type: domain.TypeManual, Title: "old", Content: "old"}
-		if err := store.Observations().Save(ctx, obs); err != nil {
+		if err := store.observations().Save(ctx, obs); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := h.pool.Exec(ctx, `UPDATE observations SET created_at=$1 WHERE id=$2`, time.Now().Add(-48*time.Hour), obs.ID); err != nil {
@@ -173,24 +173,24 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 	if err != nil || score.Score != 0.25 {
 		t.Fatalf("score=%+v err=%v", score, err)
 	}
-	archivable, err := storeA.Observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10)
+	archivable, err := storeA.observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10)
 	if err != nil || len(archivable) != 1 || archivable[0].ID != obsA.ID {
 		t.Fatalf("tenant A archivable=%v err=%v", archivable, err)
 	}
-	if got, err := storeB.Observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10); err != nil || len(got) != 0 {
+	if got, err := storeB.observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10); err != nil || len(got) != 0 {
 		id := int64(0)
 		if len(got) > 0 {
 			id = got[0].ID
 		}
 		t.Fatalf("tenant B archivable=%v first_id=%d expected_obs=%d err=%v", got, id, obsB.ID, err)
 	}
-	service := lifecycle.NewArchivalService(storeA.Observations(), lifecycle.ArchivalConfig{MaxAgeDays: 1, MinArchiveScore: 1, CheckInterval: time.Hour})
+	service := lifecycle.NewArchivalService(storeA.observations(), lifecycle.ArchivalConfig{MaxAgeDays: 1, MinArchiveScore: 1, CheckInterval: time.Hour})
 	service.SetNowFunc(time.Now)
 	archived, err := service.RunArchivalCheck(ctx)
 	if err != nil || archived != 1 {
 		t.Fatalf("manual archival count=%d err=%v", archived, err)
 	}
-	if _, err := storeA.Observations().GetByID(ctx, obsA.ID); err == nil {
+	if _, err := storeA.observations().GetByID(ctx, obsA.ID); err == nil {
 		t.Fatal("archived observation remained visible")
 	}
 }
@@ -349,52 +349,52 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	}
 	store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
 	s := &domain.Session{Project: "repo", StartedAt: time.Now().UTC(), Summary: "integration"}
-	if err := store.Sessions().Create(ctx, s); err != nil {
+	if err := store.sessions().Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
 	o := &domain.Observation{SessionID: s.ID, Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeManual, Title: "title", Content: "content", TopicKey: "topic"}
-	if err := store.Observations().Save(ctx, o); err != nil {
+	if err := store.observations().Save(ctx, o); err != nil {
 		t.Fatal(err)
 	}
 	if o.PublicID == "" || o.ID == 0 {
 		t.Fatalf("observation IDs not populated: %#v", o)
 	}
-	got, err := store.Observations().GetByPublicID(ctx, o.PublicID)
+	got, err := store.observations().GetByPublicID(ctx, o.PublicID)
 	if err != nil || got.PublicID != o.PublicID {
 		t.Fatalf("opaque observation lookup: %v", err)
 	}
-	if err := store.Prompts().Save(ctx, &domain.Prompt{SessionID: s.ID, Project: "repo", Content: "prompt"}); err != nil {
+	if err := store.prompts().Save(ctx, &domain.Prompt{SessionID: s.ID, Project: "repo", Content: "prompt"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Search().Search(ctx, "content", domain.SearchOptions{Project: "repo", Scope: domain.ScopeProject, Type: domain.TypeManual}); err != nil {
+	if _, err := store.search().Search(ctx, "content", domain.SearchOptions{Project: "repo", Scope: domain.ScopeProject, Type: domain.TypeManual}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Observations().List(ctx, domain.ObservationFilter{Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeManual}); err != nil {
+	if _, err := store.observations().List(ctx, domain.ObservationFilter{Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeManual}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Prompts().List(ctx, "repo", 10); err != nil {
+	if _, err := store.prompts().List(ctx, "repo", 10); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Sessions().GetByID(ctx, s.ID); err != nil {
+	if _, err := store.sessions().GetByID(ctx, s.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Sessions().End(ctx, s.ID, "done"); err != nil {
+	if err := store.sessions().End(ctx, s.ID, "done"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Sessions().List(ctx, "repo"); err != nil {
+	if _, err := store.sessions().List(ctx, "repo"); err != nil {
 		t.Fatal(err)
 	}
 	otherSession := &domain.Session{Project: "other", StartedAt: time.Now().UTC()}
-	if err := store.Sessions().Create(ctx, otherSession); err != nil {
+	if err := store.sessions().Create(ctx, otherSession); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Prompts().Save(ctx, &domain.Prompt{SessionID: otherSession.ID, Project: "other", Content: "other prompt"}); err != nil {
+	if err := store.prompts().Save(ctx, &domain.Prompt{SessionID: otherSession.ID, Project: "other", Content: "other prompt"}); err != nil {
 		t.Fatal(err)
 	}
-	if sessions, err := store.Sessions().List(ctx, "repo"); err != nil || len(sessions) != 1 {
+	if sessions, err := store.sessions().List(ctx, "repo"); err != nil || len(sessions) != 1 {
 		t.Fatalf("session project filter: len=%d err=%v", len(sessions), err)
 	}
-	if prompts, err := store.Prompts().List(ctx, "repo", 10); err != nil || len(prompts) != 1 {
+	if prompts, err := store.prompts().List(ctx, "repo", 10); err != nil || len(prompts) != 1 {
 		t.Fatalf("prompt project filter: len=%d err=%v", len(prompts), err)
 	}
 	failedObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-failure", Content: "failure", Type: domain.TypeBugfix}
@@ -403,13 +403,13 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = store.WithinTx(ctx, failedTx.Handle(), func(txctx context.Context) error {
-		if err := store.Observations().Save(txctx, failedObs); err != nil {
+		if err := store.observations().Save(txctx, failedObs); err != nil {
 			return err
 		}
-		if err := store.Entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: failedObs.ID, EntityType: domain.EntityConcept, EntityValue: "rollback-entity"}}); err != nil {
+		if err := store.entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: failedObs.ID, EntityType: domain.EntityConcept, EntityValue: "rollback-entity"}}); err != nil {
 			return err
 		}
-		if err := store.Outbox().WithinTx(txctx, failedTx.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, failedObs.ID, "index", "model") }); err != nil {
+		if err := store.outbox().WithinTx(txctx, failedTx.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, failedObs.ID, "index", "model") }); err != nil {
 			return err
 		}
 		return errors.New("final injected failure")
@@ -431,13 +431,13 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.WithinTx(ctx, successTx.Handle(), func(txctx context.Context) error {
-		if err := store.Observations().Save(txctx, successObs); err != nil {
+		if err := store.observations().Save(txctx, successObs); err != nil {
 			return err
 		}
-		if err := store.Entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: successObs.ID, EntityType: domain.EntityConcept, EntityValue: "success-entity"}}); err != nil {
+		if err := store.entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: successObs.ID, EntityType: domain.EntityConcept, EntityValue: "success-entity"}}); err != nil {
 			return err
 		}
-		return store.Outbox().WithinTx(txctx, successTx.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, successObs.ID, "index", "model") })
+		return store.outbox().WithinTx(txctx, successTx.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, successObs.ID, "index", "model") })
 	}); err != nil {
 		_ = successTx.Rollback()
 		t.Fatal(err)
@@ -449,50 +449,50 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatalf("success observation rows=%d err=%v", n, err)
 	}
 	second := &domain.Observation{SessionID: s.ID, Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceAI, Type: domain.TypeDecision, Title: "second", Content: "second content"}
-	if err := store.Observations().Save(ctx, second); err != nil {
+	if err := store.observations().Save(ctx, second); err != nil {
 		t.Fatal(err)
 	}
 	edge := &domain.Edge{FromObsID: o.ID, ToObsID: second.ID, RelationType: domain.RelationReferences}
-	if err := store.Graph().CreateEdge(ctx, edge); err != nil {
+	if err := store.graph().CreateEdge(ctx, edge); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetEdge(ctx, edge.ID); err != nil {
+	if _, err := store.graph().GetEdge(ctx, edge.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetEdgeByPublicID(ctx, edge.PublicID); err != nil {
+	if _, err := store.graph().GetEdgeByPublicID(ctx, edge.PublicID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetEdgesForObservation(ctx, o.ID); err != nil {
+	if _, err := store.graph().GetEdgesForObservation(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetRelated(ctx, o.ID, 2); err != nil {
+	if _, err := store.graph().GetRelated(ctx, o.ID, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetEvolutionChain(ctx, o.ID, second.ID); err != nil {
+	if _, err := store.graph().GetEvolutionChain(ctx, o.ID, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().GetContradictions(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)); err != nil {
+	if _, err := store.graph().GetContradictions(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().CountEdgesByObservation(ctx, o.ID); err != nil {
+	if _, err := store.graph().CountEdgesByObservation(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Graph().CountAllEdges(ctx); err != nil {
+	if _, err := store.graph().CountAllEdges(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Observations().CountByRoot(ctx, o.ID); err != nil {
+	if _, err := store.observations().CountByRoot(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Entities().SaveLinks(ctx, []*domain.EntityLink{{ObservationID: o.ID, EntityType: domain.EntityConcept, EntityValue: "concept"}}); err != nil {
+	if err := store.entities().SaveLinks(ctx, []*domain.EntityLink{{ObservationID: o.ID, EntityType: domain.EntityConcept, EntityValue: "concept"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Entities().GetByObservation(ctx, o.ID); err != nil {
+	if _, err := store.entities().GetByObservation(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Entities().FindByEntity(ctx, domain.EntityConcept, "concept"); err != nil {
+	if _, err := store.entities().FindByEntity(ctx, domain.EntityConcept, "concept"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Entities().DeleteByObservation(ctx, o.ID); err != nil {
+	if err := store.entities().DeleteByObservation(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
 	unit, err := store.BeginTx(ctx)
@@ -500,7 +500,7 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = store.WithinTx(ctx, unit.Handle(), func(txctx context.Context) error {
-		if err := store.Outbox().WithinTx(txctx, unit.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, o.ID, "index", "model") }); err != nil {
+		if err := store.outbox().WithinTx(txctx, unit.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, o.ID, "index", "model") }); err != nil {
 			return err
 		}
 		return errors.New("rollback")
@@ -514,7 +514,7 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.WithinTx(ctx, committed.Handle(), func(txctx context.Context) error {
-		return store.Outbox().WithinTx(txctx, committed.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, second.ID, "index", "model") })
+		return store.outbox().WithinTx(txctx, committed.Handle(), func(c context.Context) error { return store.outbox().EnqueueInTx(c, second.ID, "index", "model") })
 	}); err != nil {
 		_ = committed.Rollback()
 		t.Fatal(err)
@@ -522,40 +522,40 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if err := committed.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := store.Outbox().Lease(ctx, 10)
+	leased, err := store.outbox().Lease(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(leased) > 0 {
-		if err := store.Outbox().MarkFailed(ctx, leased[0].ID, errors.New("injected"), time.Now()); err != nil {
+		if err := store.outbox().MarkFailed(ctx, leased[0].ID, errors.New("injected"), time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Outbox().DeadLetter(ctx, leased[0].ID, errors.New("dead")); err != nil {
+		if err := store.outbox().DeadLetter(ctx, leased[0].ID, errors.New("dead")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.Outbox().PendingCount(ctx); err != nil {
+	if _, err := store.outbox().PendingCount(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Outbox().RecoverPending(ctx); err != nil {
+	if err := store.outbox().RecoverPending(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Search().Search(ctx, "", domain.SearchOptions{}); err == nil {
+	if _, err := store.search().Search(ctx, "", domain.SearchOptions{}); err == nil {
 		t.Fatal("empty search accepted")
 	}
-	if _, err := store.Observations().GetByTopicKey(ctx, "repo", "topic"); err != nil {
+	if _, err := store.observations().GetByTopicKey(ctx, "repo", "topic"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Graph().UpdateEdge(ctx, edge); err != nil {
+	if err := store.graph().UpdateEdge(ctx, edge); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Graph().DeleteEdge(ctx, edge.ID); err != nil {
+	if err := store.graph().DeleteEdge(ctx, edge.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Observations().Delete(ctx, o.ID); err != nil {
+	if err := store.observations().Delete(ctx, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Observations().GetByPublicID(ctx, o.PublicID); err == nil {
+	if _, err := store.observations().GetByPublicID(ctx, o.PublicID); err == nil {
 		t.Fatal("soft-deleted observation remained visible")
 	}
 }

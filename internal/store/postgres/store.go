@@ -87,14 +87,6 @@ func (s *AuthorizedStore) BeginTx(ctx context.Context) (domain.Tx, error) {
 func (s *AuthorizedStore) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
 	return s.store.WithinTx(ctx, handle, fn)
 }
-func (s *AuthorizedStore) Observations() *ObservationRepository { return s.store.Observations() }
-func (s *AuthorizedStore) Sessions() *SessionRepository         { return s.store.Sessions() }
-func (s *AuthorizedStore) Prompts() *PromptRepository           { return s.store.Prompts() }
-func (s *AuthorizedStore) Graph() *GraphRepository              { return s.store.Graph() }
-func (s *AuthorizedStore) Entities() *EntityRepository          { return s.store.Entities() }
-func (s *AuthorizedStore) Search() *SearchRepository            { return s.store.Search() }
-func (s *AuthorizedStore) Outbox() *OutboxStore                 { return s.store.Outbox() }
-func (s *AuthorizedStore) Tokens() *TokenRepository             { return s.store.Tokens() }
 func (s *AuthorizedStore) GetScore(ctx context.Context, id int64) (*domain.ImportanceScore, error) {
 	return s.store.GetScore(ctx, id)
 }
@@ -242,6 +234,19 @@ func (s *Store) projectGrantFilter() (projects []string, wildcard bool) {
 		}
 	}
 	return projects, false
+}
+
+func (s *Store) classificationGrantFilter() (classes []string, wildcard bool) {
+	if s.principal.Type == "service_account" || len(s.principal.ClassificationClearance) == 0 {
+		return nil, false
+	}
+	for _, c := range s.principal.ClassificationClearance {
+		if c == "*" {
+			return nil, true
+		}
+		classes = append(classes, c)
+	}
+	return classes, false
 }
 func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	ctx = s.context(ctx)

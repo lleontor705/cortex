@@ -17,7 +17,7 @@ import (
 // are returned only by Issue and are never stored.
 type TokenRepository struct{ *Store }
 
-func (s *Store) Tokens() *TokenRepository { return &TokenRepository{s} }
+func (s *Store) tokens() *TokenRepository { return &TokenRepository{s} }
 
 var _ identity.TokenStore = (*TokenRepository)(nil)
 

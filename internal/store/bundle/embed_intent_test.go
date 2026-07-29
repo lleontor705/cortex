@@ -8,6 +8,7 @@ import (
 
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/embedding"
+	"github.com/lleontor705/cortex/internal/migration"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
 	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
@@ -39,31 +40,12 @@ func setupEmbedIntentDB(t *testing.T) *sql.DB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
-	for _, stmt := range []string{
-		`CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT, type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
-			project TEXT NOT NULL DEFAULT 'default', scope TEXT NOT NULL DEFAULT 'project',
-			topic_key TEXT, normalized_hash TEXT,
-			confidence REAL DEFAULT 1.0, source TEXT DEFAULT 'manual',
-			tags TEXT, revision_count INTEGER DEFAULT 1, duplicate_count INTEGER DEFAULT 1,
-			last_seen_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			updated_at TEXT NOT NULL DEFAULT (datetime('now')), deleted_at TEXT
-		)`,
-		`CREATE TABLE index_outbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			observation_id INTEGER NOT NULL,
-			intent TEXT NOT NULL, model_info TEXT,
-			status TEXT NOT NULL DEFAULT 'pending',
-			attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 5,
-			next_retry_at TEXT, leased_at TEXT, completed_at TEXT, error TEXT,
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE INDEX idx_outbox_pending ON index_outbox(status, next_retry_at) WHERE status = 'pending'`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create table: %v", err)
-		}
+	baseline, err := migration.NewV2Baseline()
+	if err != nil {
+		t.Fatalf("new v2 baseline: %v", err)
+	}
+	if err := baseline.Apply(context.Background(), db); err != nil {
+		t.Fatalf("apply v2 baseline: %v", err)
 	}
 	return db
 }

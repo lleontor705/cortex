@@ -16,6 +16,16 @@ func Enforce(ctx context.Context, a Authorizer, req Request) error {
 	if a == nil {
 		return errors.New(DenyRole)
 	}
+	if audited, ok := a.(AuditedAuthorizer); ok {
+		d, err := audited.AuthorizeWithAudit(ctx, req)
+		if err != nil {
+			return err
+		}
+		if d.Allowed {
+			return nil
+		}
+		return errors.New(d.Reason)
+	}
 	d := a.Authorize(ctx, req)
 	if d.Allowed {
 		return nil

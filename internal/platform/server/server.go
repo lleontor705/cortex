@@ -25,18 +25,6 @@ import (
 	postgresstore "github.com/lleontor705/cortex/internal/store/postgres"
 )
 
-// Repositories exposes server repositories for later HTTP/identity waves.
-type Repositories struct {
-	Observations *postgresstore.ObservationRepository
-	Sessions     *postgresstore.SessionRepository
-	Prompts      *postgresstore.PromptRepository
-	Graph        *postgresstore.GraphRepository
-	Entities     *postgresstore.EntityRepository
-	Search       *postgresstore.SearchRepository
-	Outbox       *postgresstore.OutboxStore
-	Tokens       *postgresstore.TokenRepository
-}
-
 // Runtime owns every resource created by Open. Close is idempotent and follows
 // the dependency order: background lifecycle, vector client, SQL pool, then
 // migration handle. No transport or identity service is started in W11.
@@ -44,8 +32,6 @@ type Runtime struct {
 	Config        *config.Config
 	MigrationDB   *sql.DB
 	Pool          *pgxpool.Pool
-	Storage       *postgresstore.AuthorizedStore
-	Repositories  Repositories
 	Vectors       domain.VectorIndex
 	Embeddings    embedding.Service
 	Lifecycle     *lifecycle.ArchivalService
@@ -98,7 +84,13 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 
 	principal := domain.Principal{Subject: cfg.Server.PrincipalSubject, Type: "service_account", OrgID: cfg.Server.TenantID, WorkspaceIDs: []string{cfg.Server.WorkspaceID}, Scopes: []string{"workspaces:read"}, GrantDigest: cfg.Server.GrantDigest, GrantVersion: cfg.Server.GrantVersion}
+	audit, err := postgresstore.NewAuditSink(pool, cfg.Server.PrincipalSubject, cfg.Server.GrantDigest, cfg.Server.GrantVersion)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: construct audit sink: %w", err)
+	}
 	policy := authz.NewPolicy()
+	policy.Audit = audit
 	ac, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: principal, Tenant: authz.Tenant{ID: cfg.Server.TenantID, WorkspaceID: cfg.Server.WorkspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
 	if err != nil {
 		pool.Close()
@@ -128,13 +120,17 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("server: construct vector provider: %w", err)
 	}
 
-	rt := &Runtime{Config: &cfg, MigrationDB: migrationDB, Pool: pool, Storage: store, Vectors: vec, Embeddings: emb}
-	rt.Repositories = Repositories{Observations: store.Observations(), Sessions: store.Sessions(), Prompts: store.Prompts(), Graph: store.Graph(), Entities: store.Entities(), Search: store.Search(), Outbox: store.Outbox(), Tokens: store.Tokens()}
+	system, err := postgresstore.NewSystemService(store)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: construct system service: %w", err)
+	}
+	rt := &Runtime{Config: &cfg, MigrationDB: migrationDB, Pool: pool, Vectors: vec, Embeddings: emb}
 	interval, parseErr := time.ParseDuration(cfg.Lifecycle.ArchiveCheckInterval)
 	if parseErr != nil || interval <= 0 {
 		interval = time.Hour
 	}
-	rt.Lifecycle = lifecycle.NewArchivalService(rt.Repositories.Observations, lifecycle.ArchivalConfig{MaxAgeDays: cfg.Memory.AutoArchiveDays, MinArchiveScore: cfg.Memory.MinArchiveScore, CheckInterval: interval})
+	rt.Lifecycle = lifecycle.NewArchivalService(system, lifecycle.ArchivalConfig{MaxAgeDays: cfg.Memory.AutoArchiveDays, MinArchiveScore: cfg.Memory.MinArchiveScore, CheckInterval: interval})
 	if cfg.Lifecycle.EnableAutoArchive {
 		rt.stopLifecycle = rt.Lifecycle.Start(ctx)
 	}
