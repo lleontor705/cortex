@@ -25,6 +25,12 @@ func (r *TokenRepository) Issue(ctx context.Context, in identity.TokenIssue) (id
 	if in.Subject == "" {
 		return identity.IssuedToken{}, identity.ErrInvalidToken
 	}
+	if in.Workspaces == nil {
+		in.Workspaces = []string{}
+	}
+	if in.Scopes == nil {
+		in.Scopes = []string{}
+	}
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return identity.IssuedToken{}, err
