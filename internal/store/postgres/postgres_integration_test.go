@@ -116,6 +116,60 @@ func TestPostgresW11MigrationLifecycle(t *testing.T) {
 	}
 }
 
+func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
+	newPostgresHarness(t)
+	dsn := os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m, err := migration.NewPostgresServerMigration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE cortex_server_migrations SET checksum='tampered' WHERE version=$1`, m.Version()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply(context.Background(), db); err == nil {
+		t.Fatal("checksum mismatch was accepted")
+	}
+	if _, err := db.Exec(`UPDATE cortex_server_migrations SET checksum=$1 WHERE version=$2`, m.Checksum(), m.Version()); err != nil {
+		t.Fatal(err)
+	}
+	lockTx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.Exec(`SELECT pg_advisory_xact_lock(hashtext('cortex:v2:server-migrations'))`); err != nil {
+		t.Fatal(err)
+	}
+	lockCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	lockDone := make(chan error, 1)
+	go func() { lockDone <- m.Apply(lockCtx, db) }()
+	if err := <-lockDone; err == nil {
+		t.Fatal("advisory lock contention unexpectedly succeeded")
+	}
+	_ = lockTx.Rollback()
+	if err := m.Down(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.observations') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("Down left server tables behind")
+	}
+	if err := m.Apply(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresW11ParameterizedInputIsData(t *testing.T) {
 	h := newPostgresHarness(t)
 	tx, ctx := h.begin(t)
@@ -124,6 +178,56 @@ func TestPostgresW11ParameterizedInputIsData(t *testing.T) {
 	err := tx.QueryRow(ctx, `SELECT $1::text`, `'; DROP TABLE observations; --`).Scan(&got)
 	if err != nil || got == "" {
 		t.Fatalf("parameterized value failed: %v", err)
+	}
+}
+
+func TestPostgresW11SearchParameterCorpus(t *testing.T) {
+	h := newPostgresHarness(t)
+	tx, ctx := h.begin(t)
+	queries := []string{`' OR 1=1 --`, `"quoted phrase"`, `comment /* */`, `unicode café 東京`, `emoji 🔐`, `backslash\\`, `topic:alpha`, `NEAR(foo bar)`}
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			var parsed string
+			if err := tx.QueryRow(ctx, `SELECT websearch_to_tsquery('simple',$1)::text`, query).Scan(&parsed); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPostgresW11AppRoleRequiresBoundTenant(t *testing.T) {
+	h := newPostgresHarness(t)
+	ctx := context.Background()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE cortex_app`); err != nil {
+		t.Fatal(err)
+	}
+	var tenant any
+	if err := tx.QueryRow(ctx, `SELECT public.cortex_current_tenant()`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	if tenant != nil {
+		t.Fatalf("tenant context unexpectedly inherited: %v", tenant)
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM public.observations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("unbound app role saw %d rows", count)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('cortex.tenant_id',$1,false)`, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT public.cortex_current_tenant()`).Scan(&tenant); err != nil {
+		t.Fatal(err)
+	}
+	if tenant != nil {
+		t.Fatalf("GUC spoof changed tenant context: %v", tenant)
 	}
 }
 
@@ -141,7 +245,7 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &domain.Session{StartedAt: time.Now().UTC(), Summary: "integration"}
+	s := &domain.Session{Project: "repo", StartedAt: time.Now().UTC(), Summary: "integration"}
 	if err := store.Sessions().Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +260,7 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if err != nil || got.PublicID != o.PublicID {
 		t.Fatalf("opaque observation lookup: %v", err)
 	}
-	if err := store.Prompts().Save(ctx, &domain.Prompt{SessionID: s.ID, Content: "prompt"}); err != nil {
+	if err := store.Prompts().Save(ctx, &domain.Prompt{SessionID: s.ID, Project: "repo", Content: "prompt"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Search().Search(ctx, "content", domain.SearchOptions{Project: "repo", Scope: domain.ScopeProject, Type: domain.TypeManual}); err != nil {
@@ -176,6 +280,70 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	}
 	if _, err := store.Sessions().List(ctx, "repo"); err != nil {
 		t.Fatal(err)
+	}
+	otherSession := &domain.Session{Project: "other", StartedAt: time.Now().UTC()}
+	if err := store.Sessions().Create(ctx, otherSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Prompts().Save(ctx, &domain.Prompt{SessionID: otherSession.ID, Project: "other", Content: "other prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, err := store.Sessions().List(ctx, "repo"); err != nil || len(sessions) != 1 {
+		t.Fatalf("session project filter: len=%d err=%v", len(sessions), err)
+	}
+	if prompts, err := store.Prompts().List(ctx, "repo", 10); err != nil || len(prompts) != 1 {
+		t.Fatalf("prompt project filter: len=%d err=%v", len(prompts), err)
+	}
+	failedObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-failure", Content: "failure", Type: domain.TypeBugfix}
+	failedTx, err := store.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.WithinTx(ctx, failedTx.Handle(), func(txctx context.Context) error {
+		if err := store.Observations().Save(txctx, failedObs); err != nil {
+			return err
+		}
+		if err := store.Entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: failedObs.ID, EntityType: domain.EntityConcept, EntityValue: "rollback-entity"}}); err != nil {
+			return err
+		}
+		if err := store.Outbox().WithinTx(txctx, failedTx.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, failedObs.ID, "index", "model") }); err != nil {
+			return err
+		}
+		return errors.New("final injected failure")
+	})
+	if err == nil {
+		t.Fatal("UoW failure was not propagated")
+	}
+	_ = failedTx.Rollback()
+	var n int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-failure'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rollback observation rows=%d err=%v", n, err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM entities WHERE entity_key='rollback-entity'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rollback entity rows=%d err=%v", n, err)
+	}
+	successObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-success", Content: "success", Type: domain.TypeBugfix}
+	successTx, err := store.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithinTx(ctx, successTx.Handle(), func(txctx context.Context) error {
+		if err := store.Observations().Save(txctx, successObs); err != nil {
+			return err
+		}
+		if err := store.Entities().SaveLinks(txctx, []*domain.EntityLink{{ObservationID: successObs.ID, EntityType: domain.EntityConcept, EntityValue: "success-entity"}}); err != nil {
+			return err
+		}
+		return store.Outbox().WithinTx(txctx, successTx.Handle(), func(c context.Context) error { return store.Outbox().EnqueueInTx(c, successObs.ID, "index", "model") })
+	}); err != nil {
+		_ = successTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := successTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-success'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("success observation rows=%d err=%v", n, err)
 	}
 	second := &domain.Observation{SessionID: s.ID, Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceAI, Type: domain.TypeDecision, Title: "second", Content: "second content"}
 	if err := store.Observations().Save(ctx, second); err != nil {
