@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lleontor705/cortex/internal/domain"
@@ -50,5 +52,19 @@ func TestActorMappingDoesNotCastOpaqueSubject(t *testing.T) {
 	}
 	if actorFromContext(context.Background()) != nil {
 		t.Fatal("unresolved actor must not become a SQL value")
+	}
+}
+
+func TestEdgeValidationErrorsAreStable(t *testing.T) {
+	graph := (&Store{}).Graph()
+	if err := graph.CreateEdge(context.Background(), &domain.Edge{FromObsID: 1, ToObsID: 2, RelationType: "unknown"}); !errors.Is(err, ErrInvalidRelation) {
+		t.Fatalf("relation error=%v", err)
+	}
+	from, to := time.Now(), time.Now()
+	if err := graph.CreateEdge(context.Background(), &domain.Edge{FromObsID: 1, ToObsID: 2, RelationType: domain.RelationReferences, ValidFrom: &from, ValidUntil: &to}); !errors.Is(err, ErrInvalidTimeRange) {
+		t.Fatalf("range error=%v", err)
+	}
+	if err := graph.UpdateEdge(context.Background(), &domain.Edge{ID: 1, RelationType: "unknown"}); !errors.Is(err, ErrInvalidRelation) {
+		t.Fatalf("update relation error=%v", err)
 	}
 }

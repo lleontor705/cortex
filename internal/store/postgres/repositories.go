@@ -225,7 +225,7 @@ func (r *SessionRepository) Create(ctx context.Context, s *domain.Session) error
 		if workspace == "" {
 			return fmt.Errorf("postgres sessions: workspace context is required")
 		}
-		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$4,$4) RETURNING public_id::text`, workspace, s.StartedAt, s.Summary, actorFromContext(ctx)).Scan(&publicID)
+		err := tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,project_key,started_at,summary,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$4,$5,$5) RETURNING public_id::text`, workspace, s.Project, s.StartedAt, s.Summary, actorFromContext(ctx)).Scan(&publicID)
 		if err != nil {
 			return err
 		}
@@ -257,7 +257,7 @@ func (r *SessionRepository) End(ctx context.Context, id, summary string) error {
 }
 func (r *SessionRepository) List(ctx context.Context, project string) (out []*domain.Session, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) ORDER BY started_at DESC`, r.tenant.WorkspaceID)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) ORDER BY started_at DESC`, project, r.tenant.WorkspaceID)
 		if e != nil {
 			return e
 		}

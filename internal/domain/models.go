@@ -63,6 +63,8 @@ type Edge struct {
 	PublicID     string     `json:"-"`
 	FromObsID    int64      `json:"from_obs_id"`
 	ToObsID      int64      `json:"to_obs_id"`
+	FromPublicID string     `json:"-"`
+	ToPublicID   string     `json:"-"`
 	RelationType string     `json:"relation_type"`         // references, relates_to, follows
 	Weight       float64    `json:"weight"`                // Strength of relationship (0.0 to 10.0, default 1.0)
 	Confidence   float64    `json:"confidence"`            // Confidence in this relationship (0.0 to 1.0)
@@ -86,14 +88,26 @@ type Edge struct {
 
 func (e Edge) MarshalJSON() ([]byte, error) {
 	type alias Edge
-	var id any = e.ID
-	if e.PublicID != "" {
-		id = e.PublicID
+	b, err := json.Marshal(alias(e))
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(struct {
-		ID any `json:"id"`
-		alias
-	}{id, alias(e)})
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	if e.PublicID != "" {
+		out["id"] = e.PublicID
+	}
+	delete(out, "from_obs_id")
+	delete(out, "to_obs_id")
+	if e.FromPublicID != "" {
+		out["from_id"] = e.FromPublicID
+	}
+	if e.ToPublicID != "" {
+		out["to_id"] = e.ToPublicID
+	}
+	return json.Marshal(out)
 }
 
 // Prompt represents a user prompt captured during a session for replay
@@ -266,26 +280,35 @@ const (
 
 // EntityLink represents an extracted entity from an observation.
 type EntityLink struct {
-	ID              int64     `json:"id"`
-	PublicID        string    `json:"-"`
-	ObservationID   int64     `json:"observation_id"`
-	EntityType      string    `json:"entity_type"` // file, url, package, symbol, concept
-	EntityValue     string    `json:"entity_value"`
-	NormalizedValue string    `json:"normalized_value,omitempty"`
-	Provenance      string    `json:"provenance,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                  int64     `json:"id"`
+	PublicID            string    `json:"-"`
+	ObservationID       int64     `json:"observation_id"`
+	ObservationPublicID string    `json:"-"`
+	EntityType          string    `json:"entity_type"` // file, url, package, symbol, concept
+	EntityValue         string    `json:"entity_value"`
+	NormalizedValue     string    `json:"normalized_value,omitempty"`
+	Provenance          string    `json:"provenance,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 func (e EntityLink) MarshalJSON() ([]byte, error) {
 	type alias EntityLink
-	var id any = e.ID
-	if e.PublicID != "" {
-		id = e.PublicID
+	b, err := json.Marshal(alias(e))
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(struct {
-		ID any `json:"id"`
-		alias
-	}{id, alias(e)})
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	if e.PublicID != "" {
+		out["id"] = e.PublicID
+	}
+	delete(out, "observation_id")
+	if e.ObservationPublicID != "" {
+		out["observation_id"] = e.ObservationPublicID
+	}
+	return json.Marshal(out)
 }
 
 // Metrics represents observability metrics for memory system performance.

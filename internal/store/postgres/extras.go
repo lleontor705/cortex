@@ -10,6 +10,12 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
+var (
+	ErrInvalidRelation  = errors.New("postgres graph: invalid relation type")
+	ErrInvalidTimeRange = errors.New("postgres graph: invalid valid-time range")
+	ErrInvalidEdge      = errors.New("postgres graph: invalid edge")
+)
+
 type PromptRepository struct{ *Store }
 
 func (s *Store) Prompts() *PromptRepository { return &PromptRepository{s} }
@@ -22,7 +28,7 @@ func (r *PromptRepository) Save(ctx context.Context, p *domain.Prompt) error {
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO prompts(tenant_id,session_id,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$3) RETURNING id,public_id::text`, p.SessionID, p.Content, actorFromContext(ctx)).Scan(&id, &p.PublicID)
+		err := tx.QueryRow(ctx, `INSERT INTO prompts(tenant_id,session_id,project_key,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$4,$4) RETURNING id,public_id::text`, p.SessionID, p.Project, p.Content, actorFromContext(ctx)).Scan(&id, &p.PublicID)
 		p.ID = id
 		return err
 	})
@@ -32,7 +38,7 @@ func (r *PromptRepository) List(ctx context.Context, project string, limit int) 
 		limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,content,session_id::text,created_at FROM prompts ORDER BY created_at DESC LIMIT $1`, limit)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,content,session_id::text,created_at FROM prompts WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 ORDER BY created_at DESC LIMIT $2`, project, limit)
 		if e != nil {
 			return e
 		}
@@ -57,22 +63,28 @@ var _ domain.GraphRepository = (*GraphRepository)(nil)
 
 func (r *GraphRepository) CreateEdge(ctx context.Context, e *domain.Edge) error {
 	if e == nil || e.FromObsID <= 0 || e.ToObsID <= 0 || e.FromObsID == e.ToObsID {
-		return domain.ErrInvalidInput
+		return ErrInvalidEdge
 	}
 	allowed := map[string]bool{domain.RelationReferences: true, domain.RelationRelatesTo: true, domain.RelationFollows: true, domain.RelationContradicts: true, domain.RelationSupersedes: true}
-	if !allowed[e.RelationType] || (e.ValidFrom != nil && e.ValidUntil != nil && e.ValidUntil.Before(*e.ValidFrom)) {
-		return domain.ErrInvalidInput
+	if !allowed[e.RelationType] {
+		return ErrInvalidRelation
+	}
+	if e.ValidFrom != nil && e.ValidUntil != nil && !e.ValidFrom.Before(*e.ValidUntil) {
+		return ErrInvalidTimeRange
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var id int64
 		err := tx.QueryRow(ctx, `INSERT INTO edges(tenant_id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$6) RETURNING id,public_id::text`, e.FromObsID, e.ToObsID, e.RelationType, e.ValidFrom, e.ValidUntil, actorFromContext(ctx)).Scan(&id, &e.PublicID)
 		e.ID = id
+		if err == nil {
+			err = r.populateEdgeEndpoints(ctx, tx, e)
+		}
 		return err
 	})
 }
 func (r *GraphRepository) DeleteEdge(ctx context.Context, id int64) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, e := tx.Exec(ctx, `DELETE FROM edges WHERE id=$1`, id)
+		tag, e := tx.Exec(ctx, `DELETE FROM edges WHERE tenant_id=public.cortex_current_tenant() AND id=$1`, id)
 		if e != nil {
 			return e
 		}
@@ -85,7 +97,11 @@ func (r *GraphRepository) DeleteEdge(ctx context.Context, id int64) error {
 func (r *GraphRepository) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 	var e domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE id=$1`, id).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND id=$1`, id).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		if err == nil {
+			err = r.populateEdgeEndpoints(ctx, tx, &e)
+		}
+		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("edge", id)
@@ -96,7 +112,11 @@ func (r *GraphRepository) GetEdge(ctx context.Context, id int64) (*domain.Edge, 
 func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string) (*domain.Edge, error) {
 	var e domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE public_id=$1::uuid`, publicID).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, publicID).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		if err == nil {
+			err = r.populateEdgeEndpoints(ctx, tx, &e)
+		}
+		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("edge", publicID)
@@ -105,7 +125,7 @@ func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string
 }
 func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) (out []*domain.Edge, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE from_observation_id=$1 OR to_observation_id=$1`, id)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1)`, id)
 		if e != nil {
 			return e
 		}
@@ -117,9 +137,21 @@ func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) 
 			}
 			out = append(out, x)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, x := range out {
+			if err := r.populateEdgeEndpoints(ctx, tx, x); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return
+}
+
+func (r *GraphRepository) populateEdgeEndpoints(ctx context.Context, tx pgx.Tx, e *domain.Edge) error {
+	return tx.QueryRow(ctx, `SELECT a.public_id::text,b.public_id::text FROM observations a JOIN observations b ON b.id=$2 WHERE a.id=$1 AND a.tenant_id=public.cortex_current_tenant() AND b.tenant_id=public.cortex_current_tenant()`, e.FromObsID, e.ToObsID).Scan(&e.FromPublicID, &e.ToPublicID)
 }
 func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (out []*domain.Observation, err error) {
 	if depth <= 0 {
@@ -157,7 +189,15 @@ func (r *GraphRepository) GetEvolutionChain(ctx context.Context, a, b int64) ([]
 			}
 			out = append(out, e)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, e := range out {
+			if err := r.populateEdgeEndpoints(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return out, err
 }
@@ -188,13 +228,31 @@ func (r *GraphRepository) GetContradictions(ctx context.Context, from, to time.T
 			}
 			out = append(out, e)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, e := range out {
+			if err := r.populateEdgeEndpoints(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return out, err
 }
 func (r *GraphRepository) UpdateEdge(ctx context.Context, e *domain.Edge) error {
+	if e == nil || e.ID <= 0 {
+		return ErrInvalidEdge
+	}
+	allowed := map[string]bool{domain.RelationReferences: true, domain.RelationRelatesTo: true, domain.RelationFollows: true, domain.RelationContradicts: true, domain.RelationSupersedes: true}
+	if !allowed[e.RelationType] {
+		return ErrInvalidRelation
+	}
+	if e.ValidFrom != nil && e.ValidUntil != nil && !e.ValidFrom.Before(*e.ValidUntil) {
+		return ErrInvalidTimeRange
+	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE edges SET relation_type=$1,valid_from=$2,valid_until=$3,updated_at=now() WHERE id=$4`, e.RelationType, e.ValidFrom, e.ValidUntil, e.ID)
+		tag, err := tx.Exec(ctx, `UPDATE edges SET relation_type=$1,valid_from=$2,valid_until=$3,updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND id=$4`, e.RelationType, e.ValidFrom, e.ValidUntil, e.ID)
 		if err != nil {
 			return err
 		}
@@ -222,20 +280,23 @@ func (r *EntityRepository) SaveLinks(ctx context.Context, links []*domain.Entity
 				return err
 			}
 			l.ID = eid
+			if err := tx.QueryRow(ctx, `SELECT public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1`, l.ObservationID).Scan(&l.ObservationPublicID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 }
 func (r *EntityRepository) GetByObservation(ctx context.Context, id int64) (out []*domain.EntityLink, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT e.public_id::text,oe.entity_id,oe.observation_id,e.entity_type,e.entity_key,e.created_at FROM observation_entities oe JOIN entities e ON e.id=oe.entity_id WHERE oe.observation_id=$1`, id)
+		rows, e := tx.Query(ctx, `SELECT e.public_id::text,oe.entity_id,oe.observation_id,o.public_id::text,e.entity_type,e.entity_key,e.created_at FROM observation_entities oe JOIN entities e ON e.id=oe.entity_id JOIN observations o ON o.id=oe.observation_id WHERE oe.observation_id=$1 AND oe.tenant_id=public.cortex_current_tenant()`, id)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			l := new(domain.EntityLink)
-			if e := rows.Scan(&l.PublicID, &l.ID, &l.ObservationID, &l.EntityType, &l.EntityValue, &l.CreatedAt); e != nil {
+			if e := rows.Scan(&l.PublicID, &l.ID, &l.ObservationID, &l.ObservationPublicID, &l.EntityType, &l.EntityValue, &l.CreatedAt); e != nil {
 				return e
 			}
 			out = append(out, l)
@@ -246,14 +307,14 @@ func (r *EntityRepository) GetByObservation(ctx context.Context, id int64) (out 
 }
 func (r *EntityRepository) FindByEntity(ctx context.Context, typ, val string) (out []*domain.EntityLink, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT e.public_id::text,oe.entity_id,oe.observation_id,e.entity_type,e.entity_key,e.created_at FROM observation_entities oe JOIN entities e ON e.id=oe.entity_id WHERE e.entity_type=$1 AND e.entity_key=$2`, typ, val)
+		rows, e := tx.Query(ctx, `SELECT e.public_id::text,oe.entity_id,oe.observation_id,o.public_id::text,e.entity_type,e.entity_key,e.created_at FROM observation_entities oe JOIN entities e ON e.id=oe.entity_id JOIN observations o ON o.id=oe.observation_id WHERE oe.tenant_id=public.cortex_current_tenant() AND e.entity_type=$1 AND e.entity_key=$2`, typ, val)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			l := new(domain.EntityLink)
-			if e := rows.Scan(&l.PublicID, &l.ID, &l.ObservationID, &l.EntityType, &l.EntityValue, &l.CreatedAt); e != nil {
+			if e := rows.Scan(&l.PublicID, &l.ID, &l.ObservationID, &l.ObservationPublicID, &l.EntityType, &l.EntityValue, &l.CreatedAt); e != nil {
 				return e
 			}
 			out = append(out, l)

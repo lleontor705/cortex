@@ -22,6 +22,34 @@ func TestServerModelsMarshalOpaquePublicID(t *testing.T) {
 	}
 }
 
+func TestEdgeAndEntityJSONHideInternalIDs(t *testing.T) {
+	edge, err := json.Marshal(domain.Edge{ID: 7, PublicID: "edge-public", FromObsID: 11, ToObsID: 12, FromPublicID: "from-public", ToPublicID: "to-public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edgeJSON map[string]any
+	if err := json.Unmarshal(edge, &edgeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if edgeJSON["id"] != "edge-public" || edgeJSON["from_id"] != "from-public" || edgeJSON["to_id"] != "to-public" {
+		t.Fatalf("edge JSON=%v", edgeJSON)
+	}
+	if _, ok := edgeJSON["from_obs_id"]; ok {
+		t.Fatal("edge leaked internal from_obs_id")
+	}
+	link, err := json.Marshal(domain.EntityLink{ID: 8, PublicID: "entity-public", ObservationID: 13, ObservationPublicID: "observation-public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linkJSON map[string]any
+	if err := json.Unmarshal(link, &linkJSON); err != nil {
+		t.Fatal(err)
+	}
+	if linkJSON["id"] != "entity-public" || linkJSON["observation_id"] != "observation-public" {
+		t.Fatalf("entity JSON=%v", linkJSON)
+	}
+}
+
 func TestObservationModel(t *testing.T) {
 	now := time.Now()
 	obs := &domain.Observation{
