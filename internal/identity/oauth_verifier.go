@@ -123,6 +123,10 @@ func (v *OAuthVerifier) loadKeys(ctx context.Context, force bool) error {
 	if url == "" {
 		b, err := v.get(ctx, strings.TrimRight(v.cfg.Issuer, "/")+"/.well-known/openid-configuration")
 		if err != nil {
+			// RFC 8414 metadata is the fallback for issuers that do not expose OIDC discovery.
+			b, err = v.get(ctx, strings.TrimRight(v.cfg.Issuer, "/")+"/.well-known/oauth-authorization-server")
+		}
+		if err != nil {
 			return err
 		}
 		var m struct {
