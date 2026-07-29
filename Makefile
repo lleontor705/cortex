@@ -1,4 +1,4 @@
-.PHONY: build run test test-baseline test-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
+.PHONY: build run test test-integration test-postgres-integration test-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
 
 # Binary name
 BINARY_NAME=cortex
@@ -40,8 +40,11 @@ help:
 	@echo "  build          Build the binary"
 	@echo "  run            Run the server"
 	@echo "  test           Run all tests"
+	@echo "  test-integration Run generic and PostgreSQL integration tests (requires CORTEX_TEST_POSTGRES_DSN)"
+	@echo "  test-postgres-integration Run PostgreSQL integration tests (requires CORTEX_TEST_POSTGRES_DSN)"
 	@echo "  test-baseline  Validate offline retrieval baseline contracts"
 	@echo "  test-coverage  Run tests with coverage report"
+	@echo "  test-postgres-coverage Run PostgreSQL-backed coverage (requires CORTEX_TEST_POSTGRES_DSN)"
 	@echo "  lint           Run golangci-lint"
 	@echo "  fmt            Format code"
 	@echo "  clean          Remove binaries and coverage"
@@ -67,6 +70,16 @@ test:
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
 
+# Run the complete explicitly tagged integration suite.
+test-integration:
+	@echo "Running generic and PostgreSQL integration tests..."
+	$(GOTEST) -v -tags "integration postgres_integration" ./...
+
+# Run PostgreSQL integration tests only.
+test-postgres-integration:
+	@echo "Running PostgreSQL integration tests..."
+	$(GOTEST) -v -tags postgres_integration ./internal/store/postgres
+
 # Validate the offline Cortex retrieval baseline contracts.
 test-baseline:
 	@echo "Validating offline retrieval baseline contracts..."
@@ -83,6 +96,13 @@ test-coverage:
 	@echo "Generating coverage report..."
 	$(GOCMD) tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
 	@echo "Coverage report generated: $(COVERAGE_HTML)"
+	@$(GOCMD) tool cover -func=$(COVERAGE_FILE)
+
+# Run whole-project coverage with PostgreSQL integration coverage included.
+test-postgres-coverage:
+	@echo "Running PostgreSQL-backed coverage..."
+	@mkdir -p $(COVERAGE_DIR)
+	$(GOTEST) -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_FILE) ./...
 	@$(GOCMD) tool cover -func=$(COVERAGE_FILE)
 
 # Run golangci-lint

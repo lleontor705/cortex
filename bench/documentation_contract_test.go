@@ -179,21 +179,21 @@ func TestEngramCompatibilitySurfaceRemoved(t *testing.T) {
 	isAllowlisted := func(rel string) bool {
 		rel = filepath.ToSlash(rel)
 		exact := map[string]bool{
-			"docs/BENCHMARKS.md":                         true,
-			"internal/migration/preflight.go":            true,
-			"internal/migration/preflight_test.go":       true,
-			"internal/migration/v2.go":                   true,
-			"internal/app/app.go":                        true,
-			"bench/documentation_contract_test.go":       true,
-			"internal/mcp/cortex_namespace_test.go":      true,
+			"docs/BENCHMARKS.md":                    true,
+			"internal/migration/preflight.go":       true,
+			"internal/migration/preflight_test.go":  true,
+			"internal/migration/v2.go":              true,
+			"internal/app/app.go":                   true,
+			"bench/documentation_contract_test.go":  true,
+			"internal/mcp/cortex_namespace_test.go": true,
 		}
 		if exact[rel] {
 			return true
 		}
 		prefixes := []string{
-			"review/",      // historical review artifacts
+			"review/",        // historical review artifacts
 			"docs/research/", // research artifacts
-			".git/",        // VCS metadata
+			".git/",          // VCS metadata
 		}
 		for _, p := range prefixes {
 			if strings.HasPrefix(rel, p) {
@@ -217,11 +217,11 @@ func TestEngramCompatibilitySurfaceRemoved(t *testing.T) {
 
 	// File extensions to scan for active surface.
 	scanExt := map[string]bool{
-		".go":  true,
-		".sh":  true,
-		".ts":  true,
-		".txt": true,
-		".md":  true,
+		".go":   true,
+		".sh":   true,
+		".ts":   true,
+		".txt":  true,
+		".md":   true,
 		".json": true,
 	}
 
@@ -304,8 +304,8 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if !strings.Contains(ciText, "    runs-on: ubuntu-latest\n") {
 		t.Error("CI coverage job must run on Linux")
 	}
-	if !strings.Contains(ciText, "go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...") {
-		t.Error("CI coverage job must collect whole-project atomic coverage")
+	if !strings.Contains(ciText, "go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...") {
+		t.Error("CI coverage job must collect whole-project atomic coverage with PostgreSQL integration")
 	}
 	if !strings.Contains(ciText, "go tool cover -func coverage.out") {
 		t.Error("CI coverage job must parse the coverage profile with go tool cover")
@@ -349,5 +349,67 @@ func TestBaselineWorkflowContract(t *testing.T) {
 				t.Errorf("%s is missing committed judge runtime contract %q", path, required)
 			}
 		}
+	}
+}
+
+func TestPostgresCoverageWorkflowContract(t *testing.T) {
+	t.Parallel()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve workflow test location")
+	}
+	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
+	ci, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	ciText := strings.ReplaceAll(string(ci), "\r\n", "\n")
+	for _, required := range []string{
+		"image: postgres:16",
+		"POSTGRES_USER: cortex_test",
+		"POSTGRES_PASSWORD: cortex_test",
+		"POSTGRES_DB: cortex_test",
+		"pg_isready -U cortex_test -d cortex_test",
+		"CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable",
+		"go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...",
+		"go tool cover -func coverage.out",
+		"awk '$1 == \"total:\"",
+		"coverage < 70.0",
+		"go test -v -count=1 -tags \"integration postgres_integration\" ./...",
+	} {
+		if !strings.Contains(ciText, required) {
+			t.Errorf("CI PostgreSQL coverage contract is missing %q", required)
+		}
+	}
+	if strings.Contains(ciText, "t.Skip(\"CORTEX_TEST_POSTGRES_DSN") {
+		t.Error("PostgreSQL harness must fail when DSN is missing, not skip")
+	}
+	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
+		t.Error("PostgreSQL coverage threshold must not use rounded percentages")
+	}
+	harness, err := os.ReadFile(filepath.Join(repositoryRoot, "internal", "store", "postgres", "postgres_integration_test.go"))
+	if err != nil {
+		t.Fatalf("read PostgreSQL harness: %v", err)
+	}
+	harnessText := string(harness)
+	for _, required := range []string{
+		"//go:build postgres_integration",
+		"CORTEX_TEST_POSTGRES_DSN is required for postgres_integration tests",
+		"invalid CORTEX_TEST_POSTGRES_DSN",
+	} {
+		if !strings.Contains(harnessText, required) {
+			t.Errorf("PostgreSQL harness contract is missing %q", required)
+		}
+	}
+	if strings.Contains(harnessText, "t.Skip") {
+		t.Error("PostgreSQL harness must fail on missing or invalid DSN, not skip")
+	}
+	makefile, err := os.ReadFile(filepath.Join(repositoryRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	if !strings.Contains(string(makefile), "$(GOTEST) -v -tags \"integration postgres_integration\" ./...") {
+		t.Error("Makefile complete integration target must include PostgreSQL integration tests")
 	}
 }

@@ -78,6 +78,21 @@ cortex version
 cortex search "test"
 ```
 
+## Integration Tests
+
+The default test suite is database-independent. Generic integration tests use
+the `integration` build tag; PostgreSQL tests use the dedicated
+`postgres_integration` tag and require a reachable PostgreSQL 16 instance:
+
+```bash
+export CORTEX_TEST_POSTGRES_DSN='postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable'
+make test-integration
+make test-postgres-coverage
+```
+
+The PostgreSQL harness fails when the DSN is missing or invalid; it never skips
+database coverage silently.
+
 ## Agent Setup
 
 After installing, configure your AI coding agent:

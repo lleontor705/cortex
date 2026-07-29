@@ -87,7 +87,10 @@ Cortex is a next-generation memory server for AI coding assistants, built on Eng
 - Use table-driven tests for multiple scenarios
 
 ### Integration Tests
-- Tagged with `// +build integration`
+- Generic integration tests use `integration`; PostgreSQL integration tests use
+  `postgres_integration`. Run the complete tagged suite with
+  `go test -tags "integration postgres_integration" ./...` and provide
+  `CORTEX_TEST_POSTGRES_DSN`.
 - Test against real SQLite database
 - Cover: migrations, FTS5 triggers, graph relationships, archival
 

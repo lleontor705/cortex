@@ -1,4 +1,4 @@
-//go:build integration
+//go:build postgres_integration
 
 package postgres
 
@@ -20,9 +20,8 @@ import (
 )
 
 // postgresHarness deliberately uses a real PostgreSQL connection and applies
-// the same embedded W11 schema used by the migration runner. Tests are skipped
-// when CORTEX_TEST_POSTGRES_DSN is absent, keeping the default zero-CGO suite
-// deterministic.
+// the same embedded W11 schema used by the migration runner. The dedicated
+// postgres_integration tag makes the database dependency explicit.
 type postgresHarness struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
@@ -33,11 +32,15 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	t.Helper()
 	dsn := os.Getenv("CORTEX_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("CORTEX_TEST_POSTGRES_DSN is not set")
+		t.Fatal("CORTEX_TEST_POSTGRES_DSN is required for postgres_integration tests")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	p, err := pgxpool.New(ctx, dsn)
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("invalid CORTEX_TEST_POSTGRES_DSN: %v", err)
+	}
+	p, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
