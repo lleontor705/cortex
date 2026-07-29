@@ -105,7 +105,7 @@ func (m *PostgresServerMigration) Down(ctx context.Context, db *sql.DB) error {
 	if checksum != m.Checksum() {
 		return fmt.Errorf("migration: PostgreSQL migration %d checksum mismatch", m.Version())
 	}
-	for _, table := range []string{"audit_events", "actor_subjects", "index_outbox", "observation_entities", "entities", "edges", "prompts", "observation_revisions", "observations", "sessions", "api_tokens", "memberships", "rbac_roles", "service_accounts", "app_users", "projects", "workspaces", "organizations", "cortex_tenant_context"} {
+	for _, table := range []string{"audit_events", "actor_subjects", "index_outbox", "observation_entities", "entities", "edges", "prompts", "observation_revisions", "importance_scores", "observations", "sessions", "api_tokens", "memberships", "rbac_roles", "service_accounts", "app_users", "projects", "workspaces", "organizations", "cortex_tenant_context"} {
 		if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+table+` CASCADE`); err != nil {
 			return fmt.Errorf("migration: rollback table %s: %w", table, err)
 		}

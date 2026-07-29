@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,7 +48,8 @@ type Runtime struct {
 	Embeddings    embedding.Service
 	Lifecycle     *lifecycle.ArchivalService
 	stopLifecycle context.CancelFunc
-	closed        bool
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 // Open validates server-only configuration, applies the PostgreSQL migration,
@@ -167,27 +169,38 @@ func embeddingDimensions(provider string) int {
 
 // Close gracefully shuts down background work before closing database handles.
 func (r *Runtime) Close() error {
-	if r == nil || r.closed {
+	if r == nil {
 		return nil
 	}
-	r.closed = true
-	if r.stopLifecycle != nil {
-		r.stopLifecycle()
-		r.Lifecycle.Stop()
-	}
-	if r.Vectors != nil {
-		_ = r.Vectors.Close()
-	}
-	if r.Embeddings != nil {
-		if c, ok := r.Embeddings.(io.Closer); ok {
-			_ = c.Close()
+	r.closeOnce.Do(func() {
+		var errs []error
+		if r.stopLifecycle != nil {
+			r.stopLifecycle()
+			if r.Lifecycle != nil {
+				r.Lifecycle.Stop()
+			}
 		}
-	}
-	if r.Pool != nil {
-		r.Pool.Close()
-	}
-	if r.MigrationDB != nil {
-		return r.MigrationDB.Close()
-	}
-	return nil
+		if r.Vectors != nil {
+			if err := r.Vectors.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if r.Embeddings != nil {
+			if c, ok := r.Embeddings.(io.Closer); ok {
+				if err := c.Close(); err != nil {
+					errs = append(errs, err)
+				}
+			}
+		}
+		if r.Pool != nil {
+			r.Pool.Close()
+		}
+		if r.MigrationDB != nil {
+			if err := r.MigrationDB.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		r.closeErr = errors.Join(errs...)
+	})
+	return r.closeErr
 }

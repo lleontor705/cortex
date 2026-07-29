@@ -172,6 +172,23 @@ ALTER TABLE observations ADD COLUMN IF NOT EXISTS search_vector tsvector GENERAT
 CREATE INDEX IF NOT EXISTS observations_search_vector_gin ON observations USING gin(search_vector);
 DROP INDEX IF EXISTS observations_topic_key_active_uq;
 CREATE UNIQUE INDEX IF NOT EXISTS observations_topic_key_active_uq ON observations(tenant_id, project_key, topic_key) WHERE topic_key IS NOT NULL AND deleted_at IS NULL;
+CREATE TABLE IF NOT EXISTS importance_scores (
+    tenant_id uuid NOT NULL,
+    workspace_id bigint NOT NULL,
+    project_id bigint,
+    project_key text NOT NULL DEFAULT '',
+    observation_id bigint NOT NULL,
+    score double precision NOT NULL DEFAULT 0.5 CHECK (score >= 0.0 AND score <= 5.0),
+    access_count integer NOT NULL DEFAULT 0 CHECK (access_count >= 0),
+    last_accessed timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, observation_id),
+    FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, id),
+    FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, id),
+    FOREIGN KEY (tenant_id, observation_id) REFERENCES observations(tenant_id, id)
+);
+CREATE INDEX IF NOT EXISTS importance_scores_workspace_project_score_idx ON importance_scores(tenant_id, workspace_id, project_key, score DESC, observation_id);
+CREATE INDEX IF NOT EXISTS importance_scores_observation_idx ON importance_scores(tenant_id, observation_id);
 CREATE TABLE IF NOT EXISTS observation_revisions (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     tenant_id uuid NOT NULL,
@@ -264,7 +281,7 @@ DO $$
 DECLARE
     t text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['organizations','workspaces','projects','app_users','service_accounts','rbac_roles','memberships','api_tokens','sessions','observations','observation_revisions','prompts','edges','entities','observation_entities','index_outbox','audit_events','actor_subjects'] LOOP
+    FOREACH t IN ARRAY ARRAY['organizations','workspaces','projects','app_users','service_accounts','rbac_roles','memberships','api_tokens','sessions','observations','importance_scores','observation_revisions','prompts','edges','entities','observation_entities','index_outbox','audit_events','actor_subjects'] LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS cortex_tenant_isolation ON %I', t);
@@ -273,8 +290,8 @@ BEGIN
 END
 $$;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events, actor_subjects TO cortex_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, importance_scores, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events, actor_subjects TO cortex_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cortex_app;
-GRANT SELECT ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_admin;
-GRANT ALL ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_migration;
+GRANT SELECT ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, importance_scores, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_admin;
+GRANT ALL ON organizations, workspaces, projects, app_users, service_accounts, rbac_roles, memberships, api_tokens, sessions, observations, importance_scores, observation_revisions, prompts, edges, entities, observation_entities, index_outbox, audit_events TO cortex_migration;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cortex_migration;

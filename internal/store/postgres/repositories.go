@@ -218,7 +218,7 @@ func (r *ObservationRepository) ListArchivable(ctx context.Context, cutoff time.
 	}
 	var out []*domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, observationSelect+` o LEFT JOIN importance_scores s ON s.observation_id=o.id WHERE o.deleted_at IS NULL AND o.created_at < $1 AND (s.score IS NULL OR s.score < $2) ORDER BY o.created_at LIMIT $3`, cutoff, minScore, limit)
+		rows, err := tx.Query(ctx, `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o LEFT JOIN importance_scores s ON s.tenant_id=o.tenant_id AND s.observation_id=o.id WHERE o.tenant_id=public.cortex_current_tenant() AND o.session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$4::uuid)) AND o.deleted_at IS NULL AND o.created_at < $1 AND (s.score IS NULL OR s.score < $2) ORDER BY o.created_at LIMIT $3`, cutoff, minScore, limit, r.tenant.WorkspaceID)
 		if err != nil {
 			return err
 		}

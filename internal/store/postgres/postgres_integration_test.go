@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/internal/migration"
 	servermigrations "github.com/lleontor705/cortex/migrations/v2"
 )
@@ -74,7 +75,7 @@ func TestPostgresW11SchemaConformance(t *testing.T) {
 	h := newPostgresHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for _, table := range []string{"organizations", "workspaces", "projects", "sessions", "observations", "prompts", "edges", "entities", "observation_entities", "index_outbox", "actor_subjects", "cortex_server_migrations"} {
+	for _, table := range []string{"organizations", "workspaces", "projects", "sessions", "observations", "importance_scores", "prompts", "edges", "entities", "observation_entities", "index_outbox", "actor_subjects", "cortex_server_migrations"} {
 		var exists bool
 		if err := h.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+table).Scan(&exists); err != nil {
 			t.Fatal(err)
@@ -89,6 +90,89 @@ func TestPostgresW11SchemaConformance(t *testing.T) {
 	}
 	if !rls {
 		t.Fatal("observations must force RLS")
+	}
+}
+
+func TestPostgresImportanceScoresAreTenantScoped(t *testing.T) {
+	h := newPostgresHarness(t)
+	var rls bool
+	if err := h.pool.QueryRow(context.Background(), `SELECT relforcerowsecurity FROM pg_class WHERE oid='public.importance_scores'::regclass`).Scan(&rls); err != nil {
+		t.Fatal(err)
+	}
+	if !rls {
+		t.Fatal("importance_scores must force RLS")
+	}
+	var hasObservationFK bool
+	if err := h.pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.importance_scores'::regclass AND confrelid='public.observations'::regclass)`).Scan(&hasObservationFK); err != nil {
+		t.Fatal(err)
+	}
+	if !hasObservationFK {
+		t.Fatal("importance_scores must reference observations")
+	}
+}
+
+func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
+	h := newPostgresHarness(t)
+	ctx := context.Background()
+	createStore := func(t *testing.T) (*Store, *domain.Observation) {
+		tenant, workspace := uuid.New(), uuid.New()
+		if _, err := h.pool.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, tenant.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.pool.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,$3)`, tenant, workspace, workspace.String()); err != nil {
+			t.Fatal(err)
+		}
+		store, err := NewStore(h.pool, &domain.TenantContext{TenantID: tenant.String(), WorkspaceID: workspace.String()}, domain.Principal{Subject: "scoring-user-" + tenant.String(), Type: "user", OrgID: tenant.String(), WorkspaceIDs: []string{workspace.String()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		session := &domain.Session{Project: "archive-project", StartedAt: time.Now().UTC()}
+		if err := store.Sessions().Create(ctx, session); err != nil {
+			t.Fatal(err)
+		}
+		obs := &domain.Observation{SessionID: session.ID, Project: "archive-project", Type: domain.TypeManual, Title: "old", Content: "old"}
+		if err := store.Observations().Save(ctx, obs); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.pool.Exec(ctx, `UPDATE observations SET created_at=$1 WHERE id=$2`, time.Now().Add(-48*time.Hour), obs.ID); err != nil {
+			t.Fatal(err)
+		}
+		return store, obs
+	}
+	storeA, obsA := createStore(t)
+	storeB, obsB := createStore(t)
+	if err := storeA.SetScore(ctx, obsA.ID, 0.25); err != nil {
+		t.Fatal(err)
+	}
+	if err := storeB.SetScore(ctx, obsB.ID, 4.5); err != nil {
+		t.Fatal(err)
+	}
+	if scoreB, err := storeB.GetScore(ctx, obsB.ID); err != nil || scoreB.Score != 4.5 {
+		t.Fatalf("tenant B score=%+v err=%v", scoreB, err)
+	}
+	score, err := storeA.GetScore(ctx, obsA.ID)
+	if err != nil || score.Score != 0.25 {
+		t.Fatalf("score=%+v err=%v", score, err)
+	}
+	archivable, err := storeA.Observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10)
+	if err != nil || len(archivable) != 1 || archivable[0].ID != obsA.ID {
+		t.Fatalf("tenant A archivable=%v err=%v", archivable, err)
+	}
+	if got, err := storeB.Observations().ListArchivable(ctx, time.Now().Add(-24*time.Hour), 1, 10); err != nil || len(got) != 0 {
+		id := int64(0)
+		if len(got) > 0 {
+			id = got[0].ID
+		}
+		t.Fatalf("tenant B archivable=%v first_id=%d expected_obs=%d err=%v", got, id, obsB.ID, err)
+	}
+	service := lifecycle.NewArchivalService(storeA.Observations(), lifecycle.ArchivalConfig{MaxAgeDays: 1, MinArchiveScore: 1, CheckInterval: time.Hour})
+	service.SetNowFunc(time.Now)
+	archived, err := service.RunArchivalCheck(ctx)
+	if err != nil || archived != 1 {
+		t.Fatalf("manual archival count=%d err=%v", archived, err)
+	}
+	if _, err := storeA.Observations().GetByID(ctx, obsA.ID); err == nil {
+		t.Fatal("archived observation remained visible")
 	}
 }
 
