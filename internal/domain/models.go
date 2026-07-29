@@ -88,6 +88,9 @@ type Edge struct {
 
 func (e Edge) MarshalJSON() ([]byte, error) {
 	type alias Edge
+	if e.PublicID == "" {
+		return json.Marshal(alias(e))
+	}
 	b, err := json.Marshal(alias(e))
 	if err != nil {
 		return nil, err
@@ -293,6 +296,9 @@ type EntityLink struct {
 
 func (e EntityLink) MarshalJSON() ([]byte, error) {
 	type alias EntityLink
+	if e.PublicID == "" {
+		return json.Marshal(alias(e))
+	}
 	b, err := json.Marshal(alias(e))
 	if err != nil {
 		return nil, err
