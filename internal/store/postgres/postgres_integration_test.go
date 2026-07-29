@@ -27,13 +27,18 @@ import (
 type postgresHarness struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
+	admin  *pgxpool.Pool
 	tenant string
+}
+
+func appRoleGrantSQL(role string) string {
+	return `GRANT cortex_app TO ` + pgx.Identifier{role}.Sanitize()
 }
 
 func newAuthorizedTestStore(t *testing.T, h *postgresHarness, tenant, workspace, subject uuid.UUID) *AuthorizedStore {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := h.pool.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'test',$3,'test-digest',1) ON CONFLICT (tenant_id,subject) DO UPDATE SET public_id=EXCLUDED.public_id,active=true,revoked_at=NULL,grant_digest=EXCLUDED.grant_digest,grant_version=1`, tenant, subject.String(), subject); err != nil {
+	if _, err := h.admin.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'test',$3,'test-digest',1) ON CONFLICT (tenant_id,subject) DO UPDATE SET public_id=EXCLUDED.public_id,active=true,revoked_at=NULL,grant_digest=EXCLUDED.grant_digest,grant_version=1`, tenant, subject.String(), subject); err != nil {
 		t.Fatal(err)
 	}
 	p := domain.Principal{Subject: subject.String(), Type: "user", OrgID: tenant.String(), GrantDigest: "test-digest", GrantVersion: 1}
@@ -61,7 +66,7 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	defer cancel()
 	adminDSN := os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
 	if adminDSN == "" {
-		adminDSN = dsn
+		t.Fatal("CORTEX_TEST_POSTGRES_MIGRATION_DSN is required for privileged PostgreSQL fixture setup")
 	}
 	adminConfig, err := pgxpool.ParseConfig(adminDSN)
 	if err != nil {
@@ -81,17 +86,17 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	if _, err := adminPool.Exec(ctx, servermigrations.ServerSQL); err != nil {
 		t.Fatalf("apply W11 server schema: %v", err)
 	}
-	// The test DSN is intentionally a real NOSUPERUSER login. Grant only the
-	// application role and object privileges required by the server schema;
-	// tests must never rely on SET ROLE from a superuser connection.
-	if _, err := adminPool.Exec(ctx, `GRANT USAGE ON SCHEMA public TO cortex_test; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO cortex_test; GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO cortex_test; GRANT cortex_app TO cortex_test`); err != nil {
-		t.Fatalf("grant non-superuser test privileges: %v", err)
-	}
-	adminPool.Close()
-	config, err := pgxpool.ParseConfig(dsn)
+	// The application DSN is a real login, never a superuser session that is
+	// narrowed with SET ROLE. Grant only the schema role to that login. Table,
+	// sequence, and function privileges remain defined by the migration.
+	appConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("invalid CORTEX_TEST_POSTGRES_DSN: %v", err)
 	}
+	if _, err := adminPool.Exec(ctx, appRoleGrantSQL(appConfig.ConnConfig.User)); err != nil {
+		t.Fatalf("grant application role to login %q: %v", appConfig.ConnConfig.User, err)
+	}
+	config := appConfig
 	p, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +106,20 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 		t.Fatal(err)
 	}
 	h := &postgresHarness{t: t, pool: p, tenant: ""}
+	var superuser bool
+	if err := p.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname=current_user`).Scan(&superuser); err != nil {
+		p.Close()
+		t.Fatalf("inspect application login: %v", err)
+	}
+	if superuser {
+		p.Close()
+		t.Fatalf("application DSN login %q must be NOSUPERUSER", config.ConnConfig.User)
+	}
 	t.Cleanup(func() { p.Close() })
+	// Keep the privileged pool separate. It is never passed to a repository or
+	// authorization probe.
+	h.admin = adminPool
+	t.Cleanup(func() { h.admin.Close() })
 	return h
 }
 
@@ -168,10 +186,10 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 	ctx := context.Background()
 	createStore := func(t *testing.T) (*AuthorizedStore, *domain.Observation) {
 		tenant, workspace := uuid.New(), uuid.New()
-		if _, err := h.pool.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, tenant.String()); err != nil {
+		if _, err := h.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, tenant.String()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.pool.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,$3)`, tenant, workspace, workspace.String()); err != nil {
+		if _, err := h.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,$3)`, tenant, workspace, workspace.String()); err != nil {
 			t.Fatal(err)
 		}
 		store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
@@ -183,7 +201,7 @@ func TestPostgresScoringAndManualArchivalAreScoped(t *testing.T) {
 		if err := store.observations().Save(ctx, obs); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.pool.Exec(ctx, `UPDATE observations SET created_at=$1 WHERE id=$2`, time.Now().Add(-48*time.Hour), obs.ID); err != nil {
+		if _, err := h.admin.Exec(ctx, `UPDATE observations SET created_at=$1 WHERE id=$2`, time.Now().Add(-48*time.Hour), obs.ID); err != nil {
 			t.Fatal(err)
 		}
 		return store, obs
@@ -339,9 +357,6 @@ func TestPostgresW11AppRoleRequiresBoundTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SET LOCAL ROLE cortex_app`); err != nil {
-		t.Fatal(err)
-	}
 	var tenant any
 	if err := tx.QueryRow(ctx, `SELECT public.cortex_current_tenant()`).Scan(&tenant); err != nil {
 		t.Fatal(err)
@@ -371,10 +386,10 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	h := newPostgresHarness(t)
 	tenant, workspace := uuid.New(), uuid.New()
 	ctx := context.Background()
-	if _, err := h.pool.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,'test-org')`, tenant); err != nil {
+	if _, err := h.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,'test-org')`, tenant); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.pool.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'test-workspace')`, tenant, workspace); err != nil {
+	if _, err := h.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'test-workspace')`, tenant, workspace); err != nil {
 		t.Fatal(err)
 	}
 	store := newAuthorizedTestStore(t, h, tenant, workspace, uuid.New())
@@ -448,12 +463,19 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 		t.Fatal("UoW failure was not propagated")
 	}
 	_ = failedTx.Rollback()
+	verifyTx, err := store.store.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var n int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-failure'`).Scan(&n); err != nil || n != 0 {
+	if err := verifyTx.Handle().(pgx.Tx).QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-failure'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rollback observation rows=%d err=%v", n, err)
 	}
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM entities WHERE entity_key='rollback-entity'`).Scan(&n); err != nil || n != 0 {
+	if err := verifyTx.Handle().(pgx.Tx).QueryRow(ctx, `SELECT count(*) FROM entities WHERE entity_key='rollback-entity'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rollback entity rows=%d err=%v", n, err)
+	}
+	if err := verifyTx.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 	successObs := &domain.Observation{SessionID: s.ID, Project: "repo", Title: "uow-success", Content: "success", Type: domain.TypeBugfix}
 	successTx, err := store.store.BeginTx(ctx)
@@ -475,8 +497,15 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	if err := successTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-success'`).Scan(&n); err != nil || n != 1 {
+	verifySuccessTx, err := store.store.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifySuccessTx.Handle().(pgx.Tx).QueryRow(ctx, `SELECT count(*) FROM observations WHERE title='uow-success'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("success observation rows=%d err=%v", n, err)
+	}
+	if err := verifySuccessTx.Rollback(); err != nil {
+		t.Fatal(err)
 	}
 	second := &domain.Observation{SessionID: s.ID, Project: "repo", Scope: domain.ScopeProject, Source: domain.SourceAI, Type: domain.TypeDecision, Title: "second", Content: "second content"}
 	if err := store.observations().Save(ctx, second); err != nil {

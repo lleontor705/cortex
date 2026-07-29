@@ -367,11 +367,13 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 	ciText := strings.ReplaceAll(string(ci), "\r\n", "\n")
 	for _, required := range []string{
 		"image: postgres:16",
-		"POSTGRES_USER: cortex_test",
-		"POSTGRES_PASSWORD: cortex_test",
+		"POSTGRES_USER: cortex_bootstrap",
+		"POSTGRES_PASSWORD: cortex_bootstrap",
 		"POSTGRES_DB: cortex_test",
-		"pg_isready -U cortex_test -d cortex_test",
+		"pg_isready -U cortex_bootstrap -d cortex_test",
 		"CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable",
+		"CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable",
+		"CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable",
 		"go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...",
 		"go tool cover -func coverage.out",
 		"awk '$1 == \"total:\"",
@@ -396,6 +398,7 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 	for _, required := range []string{
 		"//go:build postgres_integration",
 		"CORTEX_TEST_POSTGRES_DSN is required for postgres_integration tests",
+		"CORTEX_TEST_POSTGRES_MIGRATION_DSN is required for privileged PostgreSQL fixture setup",
 		"invalid CORTEX_TEST_POSTGRES_DSN",
 	} {
 		if !strings.Contains(harnessText, required) {

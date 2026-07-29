@@ -60,18 +60,20 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: cortex_test
-          POSTGRES_PASSWORD: cortex_test
+          POSTGRES_USER: cortex_bootstrap
+          POSTGRES_PASSWORD: cortex_bootstrap
           POSTGRES_DB: cortex_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U cortex_test -d cortex_test"
+          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
       CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,6 +82,15 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
+
+      - name: Create non-superuser application and authorization logins
+        run: |
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_test';
+          CREATE ROLE cortex_admin NOLOGIN;
+          CREATE ROLE cortex_admin_login LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_admin_login';
+          GRANT cortex_admin TO cortex_admin_login;
+          SQL
 
       - name: Enforce whole-project coverage threshold
         shell: bash
@@ -118,18 +129,20 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: cortex_test
-          POSTGRES_PASSWORD: cortex_test
+          POSTGRES_USER: cortex_bootstrap
+          POSTGRES_PASSWORD: cortex_bootstrap
           POSTGRES_DB: cortex_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U cortex_test -d cortex_test"
+          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     env:
       CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,6 +151,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
+
+      - name: Create non-superuser application and authorization logins
+        run: |
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_test';
+          CREATE ROLE cortex_admin_login LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_admin_login';
+          GRANT cortex_admin TO cortex_admin_login;
+          SQL
 
       - name: Run e2e tests
         run: go test -v -count=1 -tags "integration postgres_integration" ./...
