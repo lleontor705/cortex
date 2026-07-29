@@ -135,13 +135,21 @@ CREATE TABLE IF NOT EXISTS memberships (
 CREATE TABLE IF NOT EXISTS api_tokens (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
-    tenant_id uuid NOT NULL, token_digest bytea NOT NULL, subject_user_id bigint, subject_service_account_id bigint,
-    expires_at timestamptz, revoked_at timestamptz,
+    tenant_id uuid NOT NULL, token_prefix text NOT NULL, token_digest bytea NOT NULL,
+    subject_user_id bigint, subject_service_account_id bigint,
+    scopes text[] NOT NULL DEFAULT '{}', workspace_ids uuid[] NOT NULL DEFAULT '{}', rate_limit_tier text NOT NULL DEFAULT 'standard',
+    expires_at timestamptz, revoked_at timestamptz, last_used_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (tenant_id, id), UNIQUE (tenant_id, token_digest),
+    UNIQUE (tenant_id, id), UNIQUE (tenant_id, token_digest), UNIQUE (tenant_id, token_prefix),
     FOREIGN KEY (tenant_id, subject_user_id) REFERENCES app_users(tenant_id, id),
     FOREIGN KEY (tenant_id, subject_service_account_id) REFERENCES service_accounts(tenant_id, id)
 );
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS token_prefix text;
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS scopes text[] NOT NULL DEFAULT '{}';
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS workspace_ids uuid[] NOT NULL DEFAULT '{}';
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS rate_limit_tier text NOT NULL DEFAULT 'standard';
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS last_used_at timestamptz;
+CREATE INDEX IF NOT EXISTS api_tokens_prefix_idx ON api_tokens(tenant_id, token_prefix);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
