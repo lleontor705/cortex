@@ -34,6 +34,7 @@ type ArchivalService struct {
 	repo   ArchivalRepository
 	config ArchivalConfig
 	now    func() time.Time
+	done   chan struct{}
 }
 
 // NewArchivalService creates a new archival service.
@@ -71,10 +72,12 @@ func (s *ArchivalService) RunArchivalCheck(ctx context.Context) (int, error) {
 // Returns a cancel function to stop the service.
 func (s *ArchivalService) Start(ctx context.Context) context.CancelFunc {
 	ctx, cancel := context.WithCancel(ctx)
+	s.done = make(chan struct{})
 
 	var running int32
 
 	go func() {
+		defer close(s.done)
 		ticker := time.NewTicker(s.config.CheckInterval)
 		defer ticker.Stop()
 
@@ -104,6 +107,16 @@ func (s *ArchivalService) Start(ctx context.Context) context.CancelFunc {
 	}()
 
 	return cancel
+}
+
+// Stop waits for the periodic archival goroutine to exit. It is safe to call
+// before Start or repeatedly; composition roots use it to guarantee no
+// lifecycle check can touch a repository after the database is closed.
+func (s *ArchivalService) Stop() {
+	if s == nil || s.done == nil {
+		return
+	}
+	<-s.done
 }
 
 // SetNowFunc allows injecting a custom time function for testing.

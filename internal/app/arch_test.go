@@ -95,6 +95,7 @@ var serverTrackSubpkgs = []string{
 	// sqlite_blob directly and MUST NOT reach for the factory (which is the
 	// only place that imports the external adapter packages).
 	"/internal/server/external",
+	"/internal/platform/server", // W11 server composition root
 }
 
 // forbiddenExternalDeps are third-party import path prefixes that drag in
@@ -305,6 +306,11 @@ func TestNoLocalToServerImport(t *testing.T) {
 		}
 		scanned++
 		for _, imp := range bp.Imports {
+			// W11 CLI bootstrap is the sole permitted bridge into the server
+			// composition root; local command implementations remain unchanged.
+			if pkg == modulePath+"/cmd/cortex" && (imp == modulePath+"/internal/platform/server" || strings.HasPrefix(imp, modulePath+"/internal/platform/server/")) {
+				continue
+			}
 			if reason := forbidden(imp); reason != "" {
 				t.Errorf("INVARIANT VIOLATION: local package %s imports %s\n"+
 					"  import: %q\n"+

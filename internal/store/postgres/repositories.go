@@ -209,6 +209,32 @@ func (r *ObservationRepository) GetByPublicID(ctx context.Context, publicID stri
 	return &o, err
 }
 
+// ListArchivable returns old, low-importance observations for lifecycle jobs.
+// Importance is currently represented by the supplied score threshold; the
+// server schema keeps lifecycle filtering tenant-scoped inside the transaction.
+func (r *ObservationRepository) ListArchivable(ctx context.Context, cutoff time.Time, minScore float64, limit int) ([]*domain.Observation, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	var out []*domain.Observation
+	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, observationSelect+` o LEFT JOIN importance_scores s ON s.observation_id=o.id WHERE o.deleted_at IS NULL AND o.created_at < $1 AND (s.score IS NULL OR s.score < $2) ORDER BY o.created_at LIMIT $3`, cutoff, minScore, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			o := new(domain.Observation)
+			if err := rows.Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt); err != nil {
+				return err
+			}
+			out = append(out, o)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 type SessionRepository struct{ *Store }
 
 func (s *Store) Sessions() *SessionRepository { return &SessionRepository{s} }

@@ -52,8 +52,35 @@ type Config struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Name    string `yaml:"name" mapstructure:"name"`
-	Version string `yaml:"version" mapstructure:"version"`
+	Name             string               `yaml:"name" mapstructure:"name"`
+	Version          string               `yaml:"version" mapstructure:"version"`
+	Storage          ServerStorageConfig  `yaml:"storage" mapstructure:"storage"`
+	Provider         ServerProviderConfig `yaml:"provider" mapstructure:"provider"`
+	Secrets          ServerSecretsConfig  `yaml:"secrets" mapstructure:"secrets"`
+	TenantID         string               `yaml:"tenant_id" mapstructure:"tenant_id"`
+	WorkspaceID      string               `yaml:"workspace_id" mapstructure:"workspace_id"`
+	PrincipalSubject string               `yaml:"principal_subject" mapstructure:"principal_subject"`
+}
+
+// ServerStorageConfig contains server-only PostgreSQL connection settings.
+// It is intentionally separate from the local SQLite database config.
+type ServerStorageConfig struct {
+	Driver   string `yaml:"driver" mapstructure:"driver"`
+	DSN      string `yaml:"dsn" mapstructure:"dsn"`
+	MaxConns int32  `yaml:"max_conns" mapstructure:"max_conns"`
+}
+
+// ServerProviderConfig selects server-side providers without constructing them.
+type ServerProviderConfig struct {
+	Embedding string `yaml:"embedding" mapstructure:"embedding"`
+	Vector    string `yaml:"vector" mapstructure:"vector"`
+}
+
+// ServerSecretsConfig contains credentials consumed by later identity waves.
+// Secrets are never rendered by Config.String.
+type ServerSecretsConfig struct {
+	SigningKey       string `yaml:"signing_key" mapstructure:"signing_key"`
+	OIDCClientSecret string `yaml:"oidc_client_secret" mapstructure:"oidc_client_secret"`
 }
 
 // DatabaseConfig holds database configuration
@@ -99,10 +126,10 @@ type SearchConfig struct {
 	FTS5              bool    `yaml:"fts5" mapstructure:"fts5"`
 	Vector            bool    `yaml:"vector" mapstructure:"vector"`
 	FusionK           float64 `yaml:"fusion_k" mapstructure:"fusion_k"`
-	EmbeddingProvider string `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
-	EmbeddingModel    string `yaml:"embedding_model" mapstructure:"embedding_model"`       // Model name override (e.g. "qwen3-embedding:8b")
-	EmbeddingBaseURL  string `yaml:"embedding_base_url" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
-	OllamaAutoStart   bool   `yaml:"ollama_auto_start" mapstructure:"ollama_auto_start"`   // Auto-start Ollama when configured as provider
+	EmbeddingProvider string  `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
+	EmbeddingModel    string  `yaml:"embedding_model" mapstructure:"embedding_model"`       // Model name override (e.g. "qwen3-embedding:8b")
+	EmbeddingBaseURL  string  `yaml:"embedding_base_url" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
+	OllamaAutoStart   bool    `yaml:"ollama_auto_start" mapstructure:"ollama_auto_start"`   // Auto-start Ollama when configured as provider
 }
 
 // MemoryConfig holds memory management configuration
@@ -149,15 +176,15 @@ type VectorConfig struct {
 // The APIKey is passed to the gRPC client and MUST NEVER be logged or
 // surfaced in error messages (REQ-CP-002 token storage / no plaintext).
 type QdrantConfig struct {
-	Host         string        `yaml:"host" mapstructure:"host"`                   // gRPC host (default localhost)
-	Port         int           `yaml:"port" mapstructure:"port"`                   // gRPC port (default 6334)
-	Collection   string        `yaml:"collection" mapstructure:"collection"`       // collection name (default cortex)
-	Dimension    int           `yaml:"dimension" mapstructure:"dimension"`         // expected vector dimension (collection vector size)
-	APIKey       string        `yaml:"api_key" mapstructure:"api_key"`             // optional API key (never logged)
-	UseTLS       bool          `yaml:"use_tls" mapstructure:"use_tls"`             // TLS for gRPC (default false)
+	Host         string        `yaml:"host" mapstructure:"host"`                     // gRPC host (default localhost)
+	Port         int           `yaml:"port" mapstructure:"port"`                     // gRPC port (default 6334)
+	Collection   string        `yaml:"collection" mapstructure:"collection"`         // collection name (default cortex)
+	Dimension    int           `yaml:"dimension" mapstructure:"dimension"`           // expected vector dimension (collection vector size)
+	APIKey       string        `yaml:"api_key" mapstructure:"api_key"`               // optional API key (never logged)
+	UseTLS       bool          `yaml:"use_tls" mapstructure:"use_tls"`               // TLS for gRPC (default false)
 	MaxBatchSize int           `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
-	MaxRetries   uint          `yaml:"max_retries" mapstructure:"max_retries"`     // transient gRPC retries (default 3)
-	Timeout      time.Duration `yaml:"timeout" mapstructure:"timeout"`             // per-operation gRPC timeout (default 30s)
+	MaxRetries   uint          `yaml:"max_retries" mapstructure:"max_retries"`       // transient gRPC retries (default 3)
+	Timeout      time.Duration `yaml:"timeout" mapstructure:"timeout"`               // per-operation gRPC timeout (default 30s)
 }
 
 // PGVectorConfig holds connection parameters for the pgvector external vector
@@ -167,25 +194,27 @@ type QdrantConfig struct {
 // The DSN may contain a password; it MUST NEVER be logged or surfaced in
 // error messages (REQ-CP-002 token storage / no plaintext).
 type PGVectorConfig struct {
-	DSN                string        `yaml:"dsn" mapstructure:"dsn"`                              // PostgreSQL connection string
-	Schema             string        `yaml:"schema" mapstructure:"schema"`                        // schema name (default cortex_vector)
-	Table              string        `yaml:"table" mapstructure:"table"`                          // table name (default embeddings)
-	Dimension          int           `yaml:"dimension" mapstructure:"dimension"`                  // expected vector dimension
-	IndexType          string        `yaml:"index_type" mapstructure:"index_type"`                // hnsw or ivfflat (default hnsw)
-	HNSWM              int           `yaml:"hnsw_m" mapstructure:"hnsw_m"`                        // HNSW max connections per node (default 16, range 2-100)
+	DSN                string        `yaml:"dsn" mapstructure:"dsn"`                                   // PostgreSQL connection string
+	Schema             string        `yaml:"schema" mapstructure:"schema"`                             // schema name (default cortex_vector)
+	Table              string        `yaml:"table" mapstructure:"table"`                               // table name (default embeddings)
+	Dimension          int           `yaml:"dimension" mapstructure:"dimension"`                       // expected vector dimension
+	IndexType          string        `yaml:"index_type" mapstructure:"index_type"`                     // hnsw or ivfflat (default hnsw)
+	HNSWM              int           `yaml:"hnsw_m" mapstructure:"hnsw_m"`                             // HNSW max connections per node (default 16, range 2-100)
 	HNSWEfConstruction int           `yaml:"hnsw_ef_construction" mapstructure:"hnsw_ef_construction"` // HNSW dynamic candidate list size for build (default 64, range 1-1000)
-	IVFFlatLists       int           `yaml:"ivfflat_lists" mapstructure:"ivfflat_lists"`          // IVFFlat number of inverted lists (default 100, range 1-50000)
-	MaxBatchSize       int           `yaml:"max_batch_size" mapstructure:"max_batch_size"`        // upsert batch ceiling (default 256)
-	Timeout            time.Duration `yaml:"timeout" mapstructure:"timeout"`                      // per-operation timeout (default 30s)
-	MaxConns           int32         `yaml:"max_conns" mapstructure:"max_conns"`                  // pool max connections (default 10)
+	IVFFlatLists       int           `yaml:"ivfflat_lists" mapstructure:"ivfflat_lists"`               // IVFFlat number of inverted lists (default 100, range 1-50000)
+	MaxBatchSize       int           `yaml:"max_batch_size" mapstructure:"max_batch_size"`             // upsert batch ceiling (default 256)
+	Timeout            time.Duration `yaml:"timeout" mapstructure:"timeout"`                           // per-operation timeout (default 30s)
+	MaxConns           int32         `yaml:"max_conns" mapstructure:"max_conns"`                       // pool max connections (default 10)
 	StatementTimeoutMs int           `yaml:"statement_timeout_ms" mapstructure:"statement_timeout_ms"` // PostgreSQL statement_timeout in ms (default 5000)
 }
 
 // Default configuration values
 var defaults = Config{
 	Server: ServerConfig{
-		Name:    "cortex",
-		Version: "2.0.0",
+		Name:     "cortex",
+		Version:  "2.0.0",
+		Storage:  ServerStorageConfig{Driver: "postgres", MaxConns: 10},
+		Provider: ServerProviderConfig{Embedding: "none", Vector: "none"},
 	},
 	Database: DatabaseConfig{
 		Path:     "", // resolved dynamically by DefaultDBPath()
@@ -326,6 +355,16 @@ func Load(configPath string) (*Config, error) {
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.name", defaults.Server.Name)
 	v.SetDefault("server.version", defaults.Server.Version)
+	v.SetDefault("server.storage.driver", defaults.Server.Storage.Driver)
+	v.SetDefault("server.storage.dsn", defaults.Server.Storage.DSN)
+	v.SetDefault("server.storage.max_conns", defaults.Server.Storage.MaxConns)
+	v.SetDefault("server.provider.embedding", defaults.Server.Provider.Embedding)
+	v.SetDefault("server.provider.vector", defaults.Server.Provider.Vector)
+	v.SetDefault("server.tenant_id", "")
+	v.SetDefault("server.workspace_id", "")
+	v.SetDefault("server.principal_subject", "")
+	v.SetDefault("server.secrets.signing_key", "")
+	v.SetDefault("server.secrets.oidc_client_secret", "")
 
 	v.SetDefault("database.path", DefaultDBPath())
 	v.SetDefault("database.in_memory", defaults.Database.InMemory)
@@ -655,11 +694,11 @@ func ClearEnvVar(key string) error {
 // representation stays useful without leaking credentials.
 func (c *Config) String() string {
 	vec := c.Vector
-	vec.Qdrant.APIKey = "" // hard redaction: no plaintext secret in String()
+	vec.Qdrant.APIKey = ""                                 // hard redaction: no plaintext secret in String()
 	vec.Pgvector.DSN = redactDSNPassword(vec.Pgvector.DSN) // redact password from DSN
 	return fmt.Sprintf(
-		"Config{Server: %+v, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
-		c.Server, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
+		"Config{Server: name=%q version=%q storage=%q provider=%q, Database: %+v, MCP: %+v, HTTP: %+v, Logging: %+v, Search: %+v, Memory: %+v, Lifecycle: %+v, Vector: %+v}",
+		c.Server.Name, c.Server.Version, c.Server.Storage.Driver, c.Server.Provider.Vector, c.Database, c.MCP, c.HTTP, c.Logging, c.Search, c.Memory, c.Lifecycle, vec,
 	)
 }
 

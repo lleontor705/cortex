@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"runtime/debug"
 
 	"github.com/lleontor705/cortex/internal/cli"
+	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/platform"
+	serverplatform "github.com/lleontor705/cortex/internal/platform/server"
 )
 
 // version is set by GoReleaser via ldflags at build time.
@@ -33,10 +36,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// the live execution path preserves the existing main→cli→app chain.
 		return cli.Run(cleanArgs, stdout, stderr)
 	case platform.ModeServer:
-		// W1 stub: server mode is compiled but inert.
-		// No goroutine, no listener, no PG/OIDC client. Full wiring in W11.
-		_, _ = fmt.Fprintln(stderr, "cortex: server mode is not yet implemented in W1; use --mode local")
-		return 2
+		configPath := ""
+		for i := 0; i < len(cleanArgs); i++ {
+			if cleanArgs[i] == "--config" && i+1 < len(cleanArgs) {
+				configPath = cleanArgs[i+1]
+				i++
+				continue
+			}
+			if len(cleanArgs[i]) > len("--config=") && cleanArgs[i][:len("--config=")] == "--config=" {
+				configPath = cleanArgs[i][len("--config="):]
+			}
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "cortex: server config: %v\n", err)
+			return 2
+		}
+		rt, err := serverplatform.Open(context.Background(), *cfg)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "cortex: server bootstrap: %v\n", err)
+			return 2
+		}
+		defer func() { _ = rt.Close() }()
+		_, _ = fmt.Fprintln(stdout, "cortex: server composition ready")
+		return 0
 	default:
 		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local or --mode server)\n", mode)
 		return 2
