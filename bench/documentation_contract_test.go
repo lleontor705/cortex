@@ -416,3 +416,47 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 		t.Error("Makefile complete integration target must include PostgreSQL integration tests")
 	}
 }
+
+func TestPostgresAuthzBootstrapContract(t *testing.T) {
+	t.Parallel()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve workflow test location")
+	}
+	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
+	bootstrapPath := filepath.Join(repositoryRoot, "scripts", "postgres", "bootstrap-authz.sql")
+	bootstrap, err := os.ReadFile(bootstrapPath)
+	if err != nil {
+		t.Fatalf("read PostgreSQL authz bootstrap: %v", err)
+	}
+	text := strings.ReplaceAll(string(bootstrap), "\r\n", "\n")
+	for _, workflow := range []string{".github/workflows/ci.yml", ".github/workflows/release.yml"} {
+		data, err := os.ReadFile(filepath.Join(repositoryRoot, workflow))
+		if err != nil {
+			t.Fatalf("read workflow %s: %v", workflow, err)
+		}
+		if !strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), "scripts/postgres/bootstrap-authz.sql") {
+			t.Errorf("%s must execute the shared PostgreSQL authz bootstrap", workflow)
+		}
+	}
+	for _, required := range []string{
+		"CREATE ROLE cortex_admin NOLOGIN",
+		"CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS",
+		"CREATE ROLE cortex_admin_login LOGIN NOSUPERUSER NOBYPASSRLS",
+		"GRANT cortex_admin TO cortex_admin_login",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("PostgreSQL authz bootstrap is missing %q", required)
+		}
+	}
+	admin := strings.Index(text, "CREATE ROLE cortex_admin NOLOGIN")
+	login := strings.Index(text, "CREATE ROLE cortex_admin_login LOGIN")
+	grant := strings.Index(text, "GRANT cortex_admin TO cortex_admin_login")
+	if admin < 0 || login < 0 || grant < 0 || admin >= login || login >= grant {
+		t.Fatal("PostgreSQL authz roles must be created in dependency order before GRANT")
+	}
+	if strings.Count(text, "IF NOT EXISTS (SELECT 1 FROM pg_roles") != 3 {
+		t.Fatal("PostgreSQL authz role creation must guard each role idempotently")
+	}
+}

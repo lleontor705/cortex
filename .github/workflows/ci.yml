@@ -85,12 +85,7 @@ jobs:
 
       - name: Create non-superuser application and authorization logins
         run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_test';
-          CREATE ROLE cortex_admin NOLOGIN;
-          CREATE ROLE cortex_admin_login LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_admin_login';
-          GRANT cortex_admin TO cortex_admin_login;
-          SQL
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
 
       - name: Enforce whole-project coverage threshold
         shell: bash
@@ -154,11 +149,7 @@ jobs:
 
       - name: Create non-superuser application and authorization logins
         run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_test';
-          CREATE ROLE cortex_admin_login LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'cortex_admin_login';
-          GRANT cortex_admin TO cortex_admin_login;
-          SQL
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
 
       - name: Run e2e tests
         run: go test -v -count=1 -tags "integration postgres_integration" ./...
