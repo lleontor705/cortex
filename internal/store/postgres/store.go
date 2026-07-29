@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
@@ -61,9 +62,10 @@ func validatePrincipal(p domain.Principal) error {
 
 // Store is a tenant-scoped PostgreSQL repository bundle.
 type Store struct {
-	pool      *pgxpool.Pool
-	tenant    *domain.TenantContext
-	principal domain.Principal
+	pool       *pgxpool.Pool
+	tenant     *domain.TenantContext
+	principal  domain.Principal
+	authorized bool
 }
 
 func NewStore(pool *pgxpool.Pool, tenant *domain.TenantContext, principal domain.Principal) (*Store, error) {
@@ -92,6 +94,25 @@ func NewStore(pool *pgxpool.Pool, tenant *domain.TenantContext, principal domain
 		}
 	}
 	return &Store{pool: pool, tenant: tenant, principal: principal}, nil
+}
+
+// NewAuthorizedStore is the server-safe constructor. The tenant and grants
+// are taken from a prior authorization decision; callers cannot supply a
+// client-owned tenant independently of the verified principal.
+func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*Store, error) {
+	if ac.Principal.Subject == "" || ac.Principal.OrgID == "" {
+		return nil, ErrPrincipalRequired
+	}
+	t := ac.Tenant
+	if t.TenantID == "" || t.TenantID != ac.Principal.OrgID {
+		return nil, ErrTenantContextRequired
+	}
+	s, err := NewStore(pool, &t, ac.Principal)
+	if err != nil {
+		return nil, err
+	}
+	s.authorized = true
+	return s, nil
 }
 
 func (s *Store) Backend() string { return "postgres" }
