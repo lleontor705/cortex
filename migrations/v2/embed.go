@@ -14,3 +14,9 @@ import _ "embed"
 //
 //go:embed 001_init.sql
 var BaselineSQL string
+
+// ServerSQL is the PostgreSQL-only server schema migration. It is deliberately
+// a separate embed so local SQLite builds never execute or import it.
+//
+//go:embed 100_server.sql
+var ServerSQL string
