@@ -71,6 +71,7 @@ type Store struct {
 	authorized   bool
 	grantDigest  string
 	grantVersion int64
+	authorizer   authz.Authorizer
 }
 
 // AuthorizedStore is the only server-facing storage capability. The raw Store
@@ -181,6 +182,7 @@ func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*Author
 	s.authorized = true
 	s.grantDigest = ac.GrantDigest
 	s.grantVersion = ac.Principal.GrantVersion
+	s.authorizer = authz.NewPolicy()
 	return &AuthorizedStore{store: s}, nil
 }
 
@@ -222,6 +224,24 @@ func (s *Store) bind(ctx context.Context, tx pgx.Tx) error {
 }
 func (s *Store) context(ctx context.Context) context.Context {
 	return withPrincipal(withTenant(ctx, s.tenant), s.principal)
+}
+
+func (s *Store) projectGrantFilter() (projects []string, wildcard bool) {
+	for _, p := range s.principal.ProjectIDs {
+		if p == "*" {
+			return nil, true
+		}
+		projects = append(projects, p)
+	}
+	for _, scope := range s.principal.Scopes {
+		if scope == "project:*" {
+			return nil, true
+		}
+		if len(scope) > len("project:") && scope[:len("project:")] == "project:" {
+			projects = append(projects, scope[len("project:"):])
+		}
+	}
+	return projects, false
 }
 func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	ctx = s.context(ctx)

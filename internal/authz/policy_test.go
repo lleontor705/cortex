@@ -107,3 +107,20 @@ func TestPolicyABACBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitProjectAndClassificationGrants(t *testing.T) {
+	p := NewPolicy()
+	principal := domain.Principal{Subject: "u", Type: "user", OrgID: "t", Roles: []string{string(RoleMember)}, WorkspaceIDs: []string{"w"}, ProjectIDs: []string{"p1"}, ClassificationClearance: []string{"restricted"}}
+	base := Request{Principal: principal, Tenant: Tenant{ID: "t", WorkspaceID: "w"}, Resource: ResourceRef{TenantID: "t", WorkspaceID: "w", ProjectID: "p1", Classification: "restricted"}, ResourceType: ResourceMemory, Action: ActionRead}
+	if d := p.Authorize(context.Background(), base); !d.Allowed {
+		t.Fatalf("granted resource denied: %+v", d)
+	}
+	base.Resource.ProjectID = "p2"
+	if d := p.Authorize(context.Background(), base); d.Allowed || d.Reason != DenyProject {
+		t.Fatalf("ungranted project decision=%+v", d)
+	}
+	base.Resource.ProjectID, base.Resource.Classification = "p1", "confidential"
+	if d := p.Authorize(context.Background(), base); d.Allowed || d.Reason != DenyClassification {
+		t.Fatalf("uncleared classification decision=%+v", d)
+	}
+}

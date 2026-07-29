@@ -133,7 +133,7 @@ func (p *Policy) decide(req Request) Decision {
 	}
 	// Project authority is never implied by a tenant role. This prevents a
 	// caller from elevating itself by selecting an arbitrary project ID.
-	if req.Resource.ProjectID != "" && !hasProjectScope(req.Principal.Scopes, req.Resource.ProjectID) {
+	if req.Resource.ProjectID != "" && !hasProjectGrant(req.Principal, req.Resource.ProjectID) {
 		return Decision{Reason: DenyProject}
 	}
 	allowed := false
@@ -156,7 +156,7 @@ func (p *Policy) decide(req Request) Decision {
 	if req.Resource.OwnerSubject != "" && req.Resource.OwnerSubject != req.Principal.Subject && !hasRole(req.Principal, RoleOwner) && req.Resource.Classification == "personal" {
 		return Decision{Reason: DenyOwnership}
 	}
-	if req.Resource.Classification == "restricted" && !hasRole(req.Principal, RoleOwner) && !hasRole(req.Principal, RoleAdmin) {
+	if req.Resource.Classification != "" && !hasClassificationClearance(req.Principal, req.Resource.Classification) {
 		return Decision{Reason: DenyClassification}
 	}
 	return Decision{Allowed: true}
@@ -173,6 +173,31 @@ func scopeAllows(scopes []string, req Request) bool {
 		}
 	}
 	return false
+}
+func hasProjectGrant(p domain.Principal, project string) bool {
+	if project == "" {
+		return true
+	}
+	for _, id := range p.ProjectIDs {
+		if id == "*" || id == project {
+			return true
+		}
+	}
+	// Scopes are also verified grants (never copied from the request). The
+	// explicit ProjectIDs field is preferred, while scoped credentials remain
+	// compatible with existing issuers.
+	return hasProjectScope(p.Scopes, project)
+}
+func hasClassificationClearance(p domain.Principal, classification string) bool {
+	if hasRole(p, RoleOwner) || hasRole(p, RoleAdmin) {
+		return true
+	}
+	for _, c := range p.ClassificationClearance {
+		if c == "*" || c == classification {
+			return true
+		}
+	}
+	return classification != "restricted" && classification != "confidential"
 }
 func hasProjectScope(scopes []string, project string) bool {
 	for _, s := range scopes {

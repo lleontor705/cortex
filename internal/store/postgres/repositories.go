@@ -48,6 +48,43 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 	})
 }
 
+// SaveBulk persists an already-authorized batch in one transaction. Authorization
+// belongs to the facade; this repository method only provides atomic persistence.
+func (r *ObservationRepository) SaveBulk(ctx context.Context, observations []*domain.Observation) error {
+	if len(observations) == 0 {
+		return domain.ErrInvalidInput
+	}
+	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		for _, o := range observations {
+			if o == nil || strings.TrimSpace(o.Title) == "" || strings.TrimSpace(o.Content) == "" {
+				return domain.ErrInvalidInput
+			}
+			if o.TopicKey != "" {
+				var id int64
+				err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, o.Project, strings.TrimSpace(o.TopicKey)).Scan(&id)
+				if err == nil {
+					if err := r.updateInTx(ctx, tx, o, id); err != nil {
+						return err
+					}
+					continue
+				}
+				if !errors.Is(err, pgx.ErrNoRows) {
+					return err
+				}
+			}
+			now := time.Now().UTC()
+			if o.CreatedAt.IsZero() {
+				o.CreatedAt = now
+			}
+			o.UpdatedAt = now
+			if err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, project_key, scope, source, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10) RETURNING id,public_id::text`, o.SessionID, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, actorFromContext(ctx)).Scan(&o.ID, &o.PublicID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation, id int64) error {
 	now := time.Now().UTC()
 	var created time.Time
@@ -122,6 +159,15 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 		q := observationSelect + ` WHERE deleted_at IS NULL`
 		args := []any{}
 		n := 1
+		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
+			if len(projects) == 0 {
+				q += ` AND FALSE`
+			} else {
+				q += fmt.Sprintf(" AND project_key = ANY($%d)", n)
+				args = append(args, projects)
+				n++
+			}
+		}
 		if f.Type != "" {
 			q += fmt.Sprintf(" AND type=$%d", n)
 			args = append(args, f.Type)

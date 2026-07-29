@@ -381,6 +381,11 @@ type Principal struct {
 	AuthMethod   string // oidc, client_credentials, api_key, static
 	GrantDigest  string
 	GrantVersion int64
+	// ProjectIDs and ClassificationClearance are verified grants. They are
+	// intentionally separate from OAuth scopes: a client supplied project
+	// selector can never create either grant.
+	ProjectIDs              []string
+	ClassificationClearance []string
 }
 
 // ScopesCopy returns a defensive copy of the granted scopes.
@@ -390,7 +395,11 @@ func (p Principal) ScopesCopy() []string { return append([]string(nil), p.Scopes
 func (p Principal) WorkspacesCopy() []string { return append([]string(nil), p.WorkspaceIDs...) }
 
 // RolesCopy returns a defensive copy of the role grants.
-func (p Principal) RolesCopy() []string { return append([]string(nil), p.Roles...) }
+func (p Principal) RolesCopy() []string    { return append([]string(nil), p.Roles...) }
+func (p Principal) ProjectsCopy() []string { return append([]string(nil), p.ProjectIDs...) }
+func (p Principal) ClassificationClearanceCopy() []string {
+	return append([]string(nil), p.ClassificationClearance...)
+}
 
 // ModelInfo describes the embedding model that produced a vector.
 // Used for model-version namespacing to prevent dimension-mismatch

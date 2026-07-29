@@ -21,6 +21,27 @@ func (s *Store) Tokens() *TokenRepository { return &TokenRepository{s} }
 
 var _ identity.TokenStore = (*TokenRepository)(nil)
 
+// List returns metadata only. Secret and digest material are never exposed.
+func (r *TokenRepository) List(ctx context.Context) (out []identity.TokenRecord, err error) {
+	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT public_id::text,token_prefix,subject_user_id,subject_service_account_id,tenant_id::text,scopes,workspace_ids,COALESCE(expires_at,'epoch'::timestamptz),COALESCE(revoked_at,'epoch'::timestamptz),COALESCE(last_used_at,'epoch'::timestamptz) FROM api_tokens WHERE tenant_id=public.cortex_current_tenant() ORDER BY created_at DESC`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r identity.TokenRecord
+			var userID, serviceID any
+			if e := rows.Scan(&r.ID, &r.Prefix, &userID, &serviceID, &r.OrgID, &r.Scopes, &r.Workspaces, &r.ExpiresAt, &r.RevokedAt, &r.LastUsedAt); e != nil {
+				return e
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	return
+}
+
 func (r *TokenRepository) Issue(ctx context.Context, in identity.TokenIssue) (identity.IssuedToken, error) {
 	if in.Subject == "" {
 		return identity.IssuedToken{}, identity.ErrInvalidToken
@@ -56,7 +77,23 @@ func (r *TokenRepository) Verify(ctx context.Context, secret, requiredScope stri
 	digest := r.digest(secret)
 	var rec identity.TokenRecord
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT t.public_id::text,t.token_prefix,encode(t.token_digest,'base64'),COALESCE(au.public_id,sa.public_id)::text,CASE WHEN sa.id IS NOT NULL THEN 'service_account' ELSE 'user' END,t.tenant_id::text,COALESCE(t.expires_at,'epoch'::timestamptz),COALESCE(t.revoked_at,'epoch'::timestamptz),COALESCE(t.last_used_at,'epoch'::timestamptz),t.scopes,t.workspace_ids::text[] FROM api_tokens t LEFT JOIN app_users au ON au.tenant_id=t.tenant_id AND au.id=t.subject_user_id LEFT JOIN service_accounts sa ON sa.tenant_id=t.tenant_id AND sa.id=t.subject_service_account_id WHERE t.tenant_id=public.cortex_current_tenant() AND t.token_prefix=$1 AND t.token_digest=$2`, secret[:12], digest).Scan(&rec.ID, &rec.Prefix, &rec.Digest, &rec.Subject, &rec.PrincipalType, &rec.OrgID, &rec.ExpiresAt, &rec.RevokedAt, &rec.LastUsedAt, &rec.Scopes, &rec.Workspaces)
+		// Lock and validate in the SAME transaction as last_used_at. A revoke
+		// that wins this row lock is never followed by an accepted verification.
+		if err := tx.QueryRow(ctx, `SELECT t.public_id::text,t.token_prefix,encode(t.token_digest,'base64'),COALESCE(au.public_id,sa.public_id)::text,CASE WHEN sa.id IS NOT NULL THEN 'service_account' ELSE 'user' END,t.tenant_id::text,COALESCE(t.expires_at,'epoch'::timestamptz),COALESCE(t.revoked_at,'epoch'::timestamptz),COALESCE(t.last_used_at,'epoch'::timestamptz),t.scopes,t.workspace_ids::text[] FROM api_tokens t LEFT JOIN app_users au ON au.tenant_id=t.tenant_id AND au.id=t.subject_user_id LEFT JOIN service_accounts sa ON sa.tenant_id=t.tenant_id AND sa.id=t.subject_service_account_id WHERE t.tenant_id=public.cortex_current_tenant() AND t.token_prefix=$1 AND t.token_digest=$2 FOR UPDATE OF t`, secret[:12], digest).Scan(&rec.ID, &rec.Prefix, &rec.Digest, &rec.Subject, &rec.PrincipalType, &rec.OrgID, &rec.ExpiresAt, &rec.RevokedAt, &rec.LastUsedAt, &rec.Scopes, &rec.Workspaces); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if !rec.RevokedAt.IsZero() && rec.RevokedAt.Unix() > 0 {
+			return identity.ErrTokenRevoked
+		}
+		if rec.ExpiresAt.Unix() > 0 && !now.Before(rec.ExpiresAt) {
+			return identity.ErrTokenExpired
+		}
+		if requiredScope != "" && !contains(rec.Scopes, requiredScope) {
+			return identity.ErrInsufficientScope
+		}
+		_, err := tx.Exec(ctx, `UPDATE api_tokens SET last_used_at=now(),updated_at=now() WHERE public_id=$1::uuid AND revoked_at IS NULL`, rec.ID)
+		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return identity.Principal{}, identity.ErrInvalidToken
@@ -64,20 +101,6 @@ func (r *TokenRepository) Verify(ctx context.Context, secret, requiredScope stri
 	if err != nil {
 		return identity.Principal{}, err
 	}
-	now := time.Now().UTC()
-	if !rec.RevokedAt.IsZero() && rec.RevokedAt.Unix() > 0 {
-		return identity.Principal{}, identity.ErrTokenRevoked
-	}
-	if rec.ExpiresAt.Unix() > 0 && !now.Before(rec.ExpiresAt) {
-		return identity.Principal{}, identity.ErrTokenExpired
-	}
-	if requiredScope != "" && !contains(rec.Scopes, requiredScope) {
-		return identity.Principal{}, identity.ErrInsufficientScope
-	}
-	_ = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		_, e := tx.Exec(ctx, `UPDATE api_tokens SET last_used_at=now(),updated_at=now() WHERE public_id=$1::uuid AND revoked_at IS NULL`, rec.ID)
-		return e
-	})
 	return identity.NewPrincipal(rec.Subject, rec.PrincipalType, rec.OrgID, rec.Workspaces, nil, rec.Scopes, "api_key", rec.ID), nil
 }
 

@@ -158,7 +158,7 @@ func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (
 		depth = 1
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.tenant_id=public.cortex_current_tenant() AND af.deleted_at IS NULL JOIN observations at ON at.id=e.to_observation_id AND at.tenant_id=public.cortex_current_tenant() AND at.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant() AND d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL`, id, depth)
+		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.tenant_id=public.cortex_current_tenant() AND af.deleted_at IS NULL JOIN observations at ON at.id=e.to_observation_id AND at.tenant_id=public.cortex_current_tenant() AND at.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant() AND af.project_key=(SELECT project_key FROM observations WHERE id=$1) AND at.project_key=(SELECT project_key FROM observations WHERE id=$1) AND d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.project_key=(SELECT project_key FROM observations WHERE id=$1)`, id, depth)
 		if e != nil {
 			return e
 		}
@@ -349,6 +349,14 @@ func (r *SearchRepository) Search(ctx context.Context, query string, opts domain
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		q := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.deleted_at IS NULL AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
 		args := []any{opts.Query}
+		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
+			if len(projects) == 0 {
+				q += ` AND FALSE`
+			} else {
+				q += fmt.Sprintf(" AND o.project_key = ANY($%d)", len(args)+1)
+				args = append(args, projects)
+			}
+		}
 		if opts.Project != "" {
 			q += ` AND o.project_key=$2`
 			args = append(args, opts.Project)
