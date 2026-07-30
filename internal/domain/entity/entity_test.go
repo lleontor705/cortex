@@ -7,6 +7,15 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
+func TestNormalizeDeterministicCanonicalKey(t *testing.T) {
+	if got, want := Normalize(domain.EntityPackage, "  Python/Requests! "), "package:python/requests"; got != want {
+		t.Fatalf("Normalize() = %q, want %q", got, want)
+	}
+	if Normalize(domain.EntityFile, "A.go") != Normalize(domain.EntityFile, "a.go") {
+		t.Fatal("case variants must share a canonical blocking key")
+	}
+}
+
 func TestExtract(t *testing.T) {
 	tests := []struct {
 		name     string

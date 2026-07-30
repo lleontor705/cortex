@@ -1,12 +1,12 @@
 # Cortex
 
-> Persistent memory server for AI coding assistants. Single Go binary with SQLite + FTS5, knowledge graph, importance scoring, and temporal evolution tracking. 100% Engram API compatible with extended capabilities.
+> Persistent memory server for AI coding assistants. Single Go binary with SQLite + FTS5, knowledge graph, importance scoring, and temporal evolution tracking.
 
 ## Overview
 
 Cortex is a memory server that stores observations (decisions, bugfixes, patterns, discoveries, configurations) across AI coding sessions and makes them retrievable via an enhanced multi-signal search pipeline. It runs as a single Go binary with zero external dependencies beyond SQLite.
 
-**Key differentiators from Engram:**
+Core capabilities:
 - Knowledge graph with typed edges and temporal validity
 - Importance scoring (base + access + recency + edges + type - age penalty)
 - 7-signal search pipeline (BM25 + recency + importance + topic expansion + PRF + graph + RRF)
@@ -52,8 +52,6 @@ cortex context [project]          Show recent memory context for a project
 cortex stats                      Show memory statistics
 cortex setup [agent]              Install agent integration
                                   Agents: claude-code, opencode, gemini-cli, codex, cursor, windsurf
-cortex import --from-engram       Import from an Engram database
-  --path PATH                     Path to engram.db
 cortex import --from-json         Import observations from JSON file
   --path PATH                     Path to JSON file
 cortex export                     Export observations to JSON
@@ -77,79 +75,93 @@ cortex help                       Show help
 
 ## MCP Tools
 
-### Engram-Compatible (14 tools)
+All public MCP tools use the `cortex_*` namespace.
 
-**mem_save** - Save an observation to persistent memory. Call PROACTIVELY after completing significant work.
+### Memory Tools (15 tools)
+
+**cortex_save** - Save an observation to persistent memory. Call PROACTIVELY after completing significant work.
 - Parameters: title* (string), content* (string), type (string), session_id (string), project (string), scope (string), topic_key (string), confidence (number 0-1), source (string), tags (string, comma-separated)
 - Topic key enables upsert: same topic_key + project updates existing observation
 
-**mem_search** - Search persistent memory across all sessions using FTS5.
+**cortex_search** - Search persistent memory across all sessions using FTS5.
 - Parameters: query* (string), type (string), project (string), scope (string), limit (number), graph_expand (boolean)
 - Returns results with score_breakdown showing which signals contributed
 
-**mem_context** - Get recent session context for a project.
+**cortex_context** - Get recent session context for a project.
 - Parameters: project (string), limit (number)
 - Returns formatted recent observations and session summaries
 
-**mem_session_summary** - Save a structured session summary. MANDATORY before ending session.
+**cortex_session_summary** - Save a structured session summary. MANDATORY before ending session.
 - Parameters: content* (string), project (string), session_id (string)
 - Format: ## Goal, ## Discoveries, ## Accomplished, ## Next Steps, ## Relevant Files
 
-**mem_get_observation** - Get full content of an observation by ID.
+**cortex_get_observation** - Get full content of an observation by ID.
 - Parameters: id* (number)
 - Also records implicit access feedback for importance scoring
 
-**mem_save_prompt** - Save a user prompt to memory.
+**cortex_save_prompt** - Save a user prompt to memory.
 - Parameters: content* (string), session_id (string), project (string)
 
-**mem_update** - Update an existing observation by ID.
+**cortex_update** - Update an existing observation by ID.
 - Parameters: id* (number), title (string), content (string), type (string), project (string), scope (string), topic_key (string), confidence (number), source (string), tags (string)
 
-**mem_suggest_topic_key** - Suggest a stable topic key for an observation.
+**cortex_suggest_topic_key** - Suggest a stable topic key for an observation.
 - Parameters: type (string), title (string), content (string)
 - Returns family/segment format (e.g., architecture/auth-model)
 
-**mem_session_start** - Start a new coding session.
+**cortex_session_start** - Start a new coding session.
 - Parameters: project* (string), directory (string), session_id (string)
 
-**mem_session_end** - End a coding session.
+**cortex_session_end** - End a coding session.
 - Parameters: session_id* (string), summary (string)
 
-**mem_stats** - Show memory system statistics.
+**cortex_stats** - Show memory system statistics.
 - Returns total sessions, observations, projects, type distribution
 
-**mem_delete** - Delete an observation (soft delete by default).
+**cortex_delete** - Delete an observation (soft delete by default).
 - Parameters: id* (number), hard (boolean)
 
-**mem_timeline** - Show chronological context around an observation.
+**cortex_timeline** - Show chronological context around an observation.
 - Parameters: observation_id* (number), before (number), after (number)
 - Includes revision history when available
 
-**mem_capture_passive** - Extract and save key learnings from content.
+**cortex_revision_history** - Show structured revision snapshots for an observation.
+- Parameters: observation_id* (number), limit (number)
+
+**cortex_capture_passive** - Extract and save key learnings from content.
 - Parameters: content* (string), project (string), session_id (string), source (string)
 - Auto-extracts ## Key Learnings section and saves as observation
 
-### Cortex-Exclusive (6 tools)
+### Extended Tools (9 tools)
 
-**mem_relate** - Create a typed relationship between two observations.
+**cortex_relate** - Create a typed relationship between two observations.
 - Parameters: from_id* (number), to_id* (number), relation_type* (string: references, relates_to, follows, contradicts, supersedes), weight (number 0-10), confidence (number 0-1), source (string), reasoning (string)
 
-**mem_graph** - Traverse the knowledge graph from an observation.
+**cortex_graph** - Traverse the knowledge graph from an observation.
 - Parameters: observation_id* (number), depth (number, default 1, max 10)
 - Uses recursive CTE for efficient graph traversal
 
-**mem_score** - Get or recalculate importance score for an observation.
+**cortex_score** - Get or recalculate importance score for an observation.
 - Parameters: observation_id* (number), recalculate (boolean)
 - Formula: base(0.5) + accessBonus(max 1.0) + recencyBonus(0.5 if <24h) + edgeBonus(max 1.0) + typeBonus - agePenalty(max 0.5)
 
-**mem_archive** - Soft-delete an observation (archive).
+**cortex_archive** - Soft-delete an observation (archive).
 - Parameters: observation_id* (number)
 
-**mem_search_hybrid** - Hybrid search combining FTS5 + optional vector similarity.
+**cortex_search_hybrid** - Hybrid search combining FTS5 + optional vector similarity.
 - Parameters: query* (string), project (string), scope (string), limit (number)
 - Uses Reciprocal Rank Fusion (RRF) with configurable k parameter
 
-**mem_merge_projects** - Merge project name variants into one canonical name.
+**cortex_search_temporal** - Search memories as-of a specific date.
+- Parameters: query* (string), as_of* (ISO 8601 timestamp), project (string), limit (number)
+
+**cortex_consolidate** - Find consolidation candidates grouped by topic key.
+- Parameters: project* (string), topic_key (string)
+
+**cortex_project_dna** - Generate a structured project summary for onboarding.
+- Parameters: project* (string)
+
+**cortex_merge_projects** - Merge project name variants into one canonical name (admin).
 - Parameters: from* (string, comma-separated), to* (string)
 - Destructive: updates all observations and sessions atomically
 
@@ -242,12 +254,12 @@ lifecycle:
 cmd/cortex/          Entry point (main.go)
 internal/
   app/               Dependency wiring (Config, DB, Migrator, Stores)
-  cli/               CLI command dispatch (15 commands)
-  config/            Viper-based YAML + env config (8 sections)
+  cli/               CLI command dispatch
+  config/            Viper-based YAML + env config
   database/          SQLite connection manager (WAL, modernc.org/sqlite)
   domain/
     models.go        Core types: Observation, Session, Edge, ImportanceScore
-    interfaces.go    12 repository interfaces
+    interfaces.go    Repository interfaces
     errors.go        Domain errors (NotFound, Validation, Conflict)
     memory/          Observation CRUD service
     scoring/         Importance scoring (formula-based)
@@ -268,13 +280,13 @@ internal/
     entity/          Entity link store
     prompt/          Prompt store
   migration/         Version-tracked migration framework (up/down)
-  mcp/               MCP server + 30 tool handlers
-  http/              REST API (net/http, 17 endpoints)
+  mcp/               MCP server + cortex_* tool handlers
+  http/              REST API (net/http)
   sync/              Git-friendly chunk sync (Transport + FileTransport)
   project/           Project detection (git), similarity (Levenshtein), normalization
   tui/               Terminal UI (simplified browser)
   setup/             Agent integration installer
-migrations/          14 SQL migrations (001-014)
+migrations/          SQL migrations
 testutil/            Test helpers (in-memory DB, fixtures, assertions)
 ```
 
@@ -357,29 +369,11 @@ Git-friendly chunk-based synchronization:
 
 **ImportanceScore**: observation_id, score (0-5), access_count, last_accessed
 
-## Migrations
-
-14 versioned migrations with up/down support:
-001: Init schema (sessions, observations, user_prompts)
-002: FTS5 full-text search with triggers
-003: Knowledge graph edges
-004: Importance scoring
-005: Vector embeddings (optional)
-006: Entity links
-007: Performance indexes
-008: Schema enrichment (confidence, source, tags)
-009: Temporal observability (metrics, quality, snapshots)
-010: Edge indexes
-011: CHECK constraints on edges
-012: Sync chunks table
-013: Contextual FTS5 (metadata-enriched triggers + rebuild)
-014: Search feedback (implicit LTR training data)
-
 ## Building
 
 ```bash
 make build            # Build binary -> bin/cortex
-make test             # Run all tests (741 passing)
+make test             # Run all tests
 make lint             # golangci-lint
 make fmt              # gofmt -s -w
 make tidy             # go mod tidy

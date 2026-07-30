@@ -17,6 +17,7 @@ import (
 	"github.com/lleontor705/cortex/bench/common"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/embedding" //nolint:all
+	"github.com/lleontor705/cortex/internal/retrieval"
 )
 
 // categoryNames maps LOCOMO numeric categories to names.
@@ -30,18 +31,18 @@ var categoryNames = map[int]string{
 
 // Conversation represents a LOCOMO conversation sample.
 type Conversation struct {
-	SampleID     string                       `json:"sample_id"`
-	Conversation ConversationData             `json:"conversation"`
-	QA           []QA                         `json:"qa"`
-	Observation  json.RawMessage `json:"observation"` // Complex nested structure, parsed manually
+	SampleID     string           `json:"sample_id"`
+	Conversation ConversationData `json:"conversation"`
+	QA           []QA             `json:"qa"`
+	Observation  json.RawMessage  `json:"observation"` // Complex nested structure, parsed manually
 }
 
 // ConversationData holds the dialogue sessions and metadata.
 type ConversationData struct {
-	SpeakerA string              `json:"speaker_a"`
-	SpeakerB string              `json:"speaker_b"`
-	Sessions map[string][]Turn   // Parsed from session_N keys
-	Dates    map[string]string   // Parsed from session_N_date_time keys
+	SpeakerA string            `json:"speaker_a"`
+	SpeakerB string            `json:"speaker_b"`
+	Sessions map[string][]Turn // Parsed from session_N keys
+	Dates    map[string]string // Parsed from session_N_date_time keys
 }
 
 // Turn represents a single dialogue turn.
@@ -105,11 +106,11 @@ func (cd *ConversationData) UnmarshalJSON(data []byte) error {
 
 // Config controls the benchmark run.
 type Config struct {
-	DataPath      string
-	Limit         int // Max questions (0 = all)
-	JudgeCfg      *common.JudgeConfig
-	GraphBoost    bool
-	EmbeddingCfg  *embedding.Config // If set, enables vector search
+	DataPath     string
+	Limit        int // Max questions (0 = all)
+	JudgeCfg     *common.JudgeConfig
+	GraphBoost   bool
+	EmbeddingCfg *embedding.Config // If set, enables vector search
 }
 
 // Run executes the LOCOMO benchmark against Cortex.
@@ -258,66 +259,29 @@ func hybridSearch(ctx context.Context, stores *common.BenchStores, query, projec
 		return nil, err
 	}
 
-	// Vector search (when embeddings are available)
-	if stores.Embedder != nil && stores.App.Stores.Vectors != nil && stores.App.Stores.Vectors.IsAvailable() {
+	// Vector search (when embeddings are available). W8.1: stores.Vectors is a
+	// domain.VectorIndex; availability is checked via Health.
+	if stores.Embedder != nil && domain.IsVectorIndexHealthy(ctx, stores.App.Stores.Vectors) {
 		queryVec := stores.EmbedQuery(ctx, query)
 		if len(queryVec) > 0 {
-			vecResults, vecErr := stores.App.Stores.Vectors.SearchByVector(ctx, domain.VectorSearchOptions{
-				Embedding: queryVec,
+			vecCandidates, vecErr := stores.App.Stores.Vectors.Search(ctx, domain.VectorQuery{
+				Vector:    queryVec,
 				Limit:     10,
 				Threshold: 0.2,
-				Project:   project,
+				Filters: map[string]any{
+					"project": project,
+				},
 			})
-			if vecErr == nil && len(vecResults) > 0 {
-				// RRF fusion
-				ftsResults = fuseResults(ftsResults, vecResults, 10)
+			if vecErr == nil && len(vecCandidates) > 0 {
+				vecResults := retrieval.RevalidateCandidates(ctx, stores.App.Stores.Observations, vecCandidates)
+				if len(vecResults) > 0 {
+					ftsResults = retrieval.FuseResults(ftsResults, vecResults, 10)
+				}
 			}
 		}
 	}
 
 	return ftsResults, nil
-}
-
-// fuseResults combines FTS5 and vector results using Reciprocal Rank Fusion.
-func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, limit int) []*domain.SearchResult {
-	const k = 60.0
-
-	type scored struct {
-		result *domain.SearchResult
-		score  float64
-	}
-
-	scoreMap := make(map[int64]*scored)
-	for rank, r := range ftsResults {
-		scoreMap[r.ID] = &scored{result: r, score: 1.0 / (k + float64(rank+1))}
-	}
-
-	for rank, vr := range vecResults {
-		rrf := 1.0 / (k + float64(rank+1))
-		if existing, ok := scoreMap[vr.ID]; ok {
-			existing.score += rrf
-		} else {
-			scoreMap[vr.ID] = &scored{
-				result: &domain.SearchResult{Observation: vr.Observation, Rank: vr.Similarity},
-				score:  rrf,
-			}
-		}
-	}
-
-	sorted := make([]*scored, 0, len(scoreMap))
-	for _, s := range scoreMap {
-		sorted = append(sorted, s)
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
-
-	results := make([]*domain.SearchResult, 0, limit)
-	for i, s := range sorted {
-		if i >= limit {
-			break
-		}
-		results = append(results, s.result)
-	}
-	return results
 }
 
 // parseObservations extracts observation texts from the raw JSON structure.

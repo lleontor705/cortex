@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,14 @@ import (
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+// errDedupSkipped is a private sentinel returned by saveInTx when a duplicate
+// manual observation is detected and its duplicate_count was incremented.
+// Save and SaveInTx intercept this sentinel, commit the transaction (so the
+// increment persists), and convert it to domain.NewDedupSkipped so callers
+// can classify the outcome via errors.As(domain.ValidationError{}).
+// (REQ-FOUND-003, REQ-MCPH-002)
+var errDedupSkipped = errors.New("dedup skipped")
 
 // sqliteDatetimeFormat is the format used by SQLite's datetime() function.
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"
@@ -76,7 +85,48 @@ func NewStore(db *sql.DB) *Store {
 //     window, increment duplicate_count instead of creating a new one.
 //   - Sets created_at and updated_at timestamps.
 //   - Normalizes scope to "project" or "personal".
+//
+// Dedup classification (REQ-FOUND-003, REQ-MCPH-002): when a TypeManual save
+// hits the normalized_hash dedup path, Save returns a
+// domain.NewDedupSkipped error (IsClass(err, ClassDedupSkipped) == true).
+// Callers can use errors.As / domain.IsClass to distinguish an intentional
+// dedup skip from a real persistence failure.
+//
+// This method opens and commits its OWN transaction (local-mode path). For
+// cross-store atomic saves, use SaveInTx within a UnitOfWork (W2.1, REQ-TX-001).
 func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return fmt.Errorf("memory store: begin transaction: %w", err)
+	}
+
+	err = s.saveInTx(ctx, tx, obs)
+	if err != nil {
+		if errors.Is(err, errDedupSkipped) {
+			// Dedup path: the duplicate_count increment and load already
+			// happened within this tx. Commit so the increment persists,
+			// then return a ClassDedupSkipped classification so callers can
+			// distinguish dedup from real failures (REQ-MCPH-002).
+			if commitErr := tx.Commit(); commitErr != nil {
+				return fmt.Errorf("memory store: commit dedup: %w", commitErr)
+			}
+			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		}
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory store: commit transaction: %w", err)
+	}
+	return nil
+}
+
+// saveInTx contains the core save logic (validation, normalization, insert/
+// update/dedup) running within an externally-provided transaction. It is shared
+// by Save (which wraps it in its own tx) and SaveInTx (which uses a shared tx).
+// It MUST NOT call BeginTx/Commit/Rollback — the caller owns the tx lifecycle.
+func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observation) error {
 	if err := validateObservation(obs); err != nil {
 		return err
 	}
@@ -98,75 +148,78 @@ func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
 	obsSource := normalizeObservationSource(obs.Source)
 	obsConfidence := normalizeConfidence(obs.Confidence)
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		// 1. Check for topic_key upsert
-		if topicKey != "" {
-			existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
-			if err != nil && !isNoRows(err) {
-				return fmt.Errorf("memory store: find by topic key: %w", err)
-			}
-			if existingID > 0 {
-				if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
-					return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
-				}
-				// Update existing observation
-				if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
-					return fmt.Errorf("memory store: update by topic key: %w", err)
-				}
-				obs.ID = existingID
-				return s.loadObservationTx(tx, obs)
-			}
+	// 1. Check for topic_key upsert
+	if topicKey != "" {
+		existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
+		if err != nil && !isNoRows(err) {
+			return fmt.Errorf("memory store: find by topic key: %w", err)
 		}
-
-		// 2. Check for deduplication by normalized_hash
-		// Only deduplicate when the caller explicitly provides Type as "manual",
-		// which signals an intentional duplicate observation.
-		if callerType == domain.TypeManual {
-			existingID, err := s.findDuplicateObservationTx(tx, obs.Project, scope, obsType, obs.Title, normHash)
-			if err != nil && !isNoRows(err) {
-				return fmt.Errorf("memory store: find duplicate: %w", err)
+		if existingID > 0 {
+			if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
+				return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
 			}
-			if existingID > 0 {
-				// Increment duplicate_count and last_seen_at
-				if err := s.incrementDuplicateCountTx(tx, existingID); err != nil {
-					return fmt.Errorf("memory store: increment duplicate: %w", err)
-				}
-				obs.ID = existingID
-				return s.loadObservationTx(tx, obs)
+			// Update existing observation
+			if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
+				return fmt.Errorf("memory store: update by topic key: %w", err)
 			}
+			obs.ID = existingID
+			return s.loadObservationTx(tx, obs)
 		}
+	}
 
-		// 3. Insert new observation -" let SQLite set created_at/updated_at via defaults
-		result, err := tx.ExecContext(ctx, `
-			INSERT INTO observations (
-				session_id, type, title, content, project, scope, topic_key,
-				normalized_hash, revision_count, duplicate_count, last_seen_at,
-				confidence, source, tags
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), ?, ?, ?)
-		`,
-			obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
-			nullableString(topicKey), normHash,
-			obsConfidence, obsSource, tagsToJSON(obs.Tags),
-		)
-		if err != nil {
-			return fmt.Errorf("memory store: insert observation: %w", err)
+	// 2. Check for deduplication by normalized_hash
+	// Only deduplicate when the caller explicitly provides Type as "manual",
+	// which signals an intentional duplicate observation.
+	if callerType == domain.TypeManual {
+		existingID, err := s.findDuplicateObservationTx(tx, obs.Project, scope, obsType, obs.Title, normHash)
+		if err != nil && !isNoRows(err) {
+			return fmt.Errorf("memory store: find duplicate: %w", err)
 		}
-
-		id, err := result.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("memory store: get last insert id: %w", err)
+		if existingID > 0 {
+			// Increment duplicate_count and last_seen_at
+			if err := s.incrementDuplicateCountTx(tx, existingID); err != nil {
+				return fmt.Errorf("memory store: increment duplicate: %w", err)
+			}
+			obs.ID = existingID
+			if err := s.loadObservationTx(tx, obs); err != nil {
+				return fmt.Errorf("memory store: load after dedup: %w", err)
+			}
+			// Signal dedup to Save/SaveInTx so they commit the tx and convert
+			// to domain.NewDedupSkipped for caller classification.
+			return errDedupSkipped
 		}
+	}
 
-		obs.ID = id
-		obs.Scope = scope
-		obs.TopicKey = topicKey
-		obs.Type = obsType
-		obs.Source = obsSource
-		obs.Confidence = obsConfidence
+	// 3. Insert new observation — let SQLite set created_at/updated_at via defaults
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO observations (
+			session_id, type, title, content, project, scope, topic_key,
+			normalized_hash, revision_count, duplicate_count, last_seen_at,
+			confidence, source, tags
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), ?, ?, ?)
+	`,
+		obs.SessionID, obsType, obs.Title, obs.Content, obs.Project, scope,
+		nullableString(topicKey), normHash,
+		obsConfidence, obsSource, tagsToJSON(obs.Tags),
+	)
+	if err != nil {
+		return fmt.Errorf("memory store: insert observation: %w", err)
+	}
 
-		// Reload timestamps from DB so in-memory values match stored values
-		return s.loadObservationTx(tx, obs)
-	})
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("memory store: get last insert id: %w", err)
+	}
+
+	obs.ID = id
+	obs.Scope = scope
+	obs.TopicKey = topicKey
+	obs.Type = obsType
+	obs.Source = obsSource
+	obs.Confidence = obsConfidence
+
+	// Reload timestamps from DB so in-memory values match stored values
+	return s.loadObservationTx(tx, obs)
 }
 
 // GetByID retrieves an observation by its ID.
@@ -766,7 +819,7 @@ type Stats struct {
 	ByType            map[string]int `json:"by_type"`
 }
 
-// "-"-"- Transaction Helpers "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
+// --- Transaction Helpers ------------------------------------------------------
 
 func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	// Use IMMEDIATE isolation to prevent write conflicts during topic_key upsert
@@ -788,7 +841,74 @@ func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
-// "-"-"- Transaction-Scoped Operations "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
+// DB returns the underlying *sql.DB shared by all SQLite stores. The
+// UnitOfWork (W2.1) uses this to open ONE transaction that threads through
+// every TxParticipant (ADR-02, REQ-TX-001).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
+// --- Cross-Store Transaction Seam (W2.1, REQ-TX-001) -------------------------
+//
+// The TxParticipant seam lets the Store enlist in a shared *sql.Tx owned by a
+// UnitOfWork, instead of opening its own transaction. The local-mode Save()
+// path is unchanged; the new atomic path goes through WithinTx + SaveInTx.
+
+// txKey is the context key under which WithinTx stashes the shared *sql.Tx.
+type txKey struct{}
+
+// txFromContext returns the *sql.Tx stashed by WithinTx, or nil if none is
+// active. Tx-aware Store methods (SaveInTx) use this to find the shared tx.
+func txFromContext(ctx context.Context) *sql.Tx {
+	tx, _ := ctx.Value(txKey{}).(*sql.Tx)
+	return tx
+}
+
+// WithinTx implements domain.TxParticipant. It type-asserts the handle to
+// *sql.Tx, stashes it into the context, and invokes fn within that context.
+// The fn closure can then call tx-aware Store methods (e.g. SaveInTx) that
+// read the shared tx via txFromContext.
+//
+// WithinTx does NOT begin, commit, or roll back the transaction — the
+// UnitOfWork that owns the shared tx is responsible for its lifecycle.
+func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error {
+	tx, ok := handle.(*sql.Tx)
+	if !ok {
+		return fmt.Errorf("sqlite store: WithinTx expected *sql.Tx handle, got %T", handle)
+	}
+	return fn(context.WithValue(ctx, txKey{}, tx))
+}
+
+// SaveInTx saves an observation using a shared transaction previously stashed
+// in the context by WithinTx. It MUST be called from within a WithinTx closure
+// (or any context that carries a txKey). It does NOT begin/commit its own
+// transaction — the UnitOfWork owns the lifecycle.
+//
+// Dedup classification (REQ-MCPH-002): when saveInTx signals a dedup skip via
+// the errDedupSkipped sentinel, SaveInTx converts it to
+// domain.NewDedupSkipped so callers (e.g. SaveWithEmbedIntent) can classify
+// the outcome via errors.As. The shared transaction's commit/rollback is
+// owned by the UnitOfWork — SaveInTx only signals, it does not commit.
+//
+// This is the atomic-path counterpart to Save() (REQ-TX-001).
+func (s *Store) SaveInTx(ctx context.Context, obs *domain.Observation) error {
+	tx := txFromContext(ctx)
+	if tx == nil {
+		return fmt.Errorf("sqlite store: SaveInTx requires an active shared transaction (call within WithinTx)")
+	}
+	if err := s.saveInTx(ctx, tx, obs); err != nil {
+		if errors.Is(err, errDedupSkipped) {
+			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		}
+		return err
+	}
+	return nil
+}
+
+// Ensure Store implements domain.TxParticipant (W2.1 adoption of the W1 port).
+var _ domain.TxParticipant = (*Store)(nil)
+
+// --- Transaction-Scoped Operations -------------------------------------------
 
 func (s *Store) findObservationByTopicKeyTx(tx *sql.Tx, project, topicKey string) (int64, error) {
 	var id int64
@@ -1205,7 +1325,7 @@ func validateObservation(obs *domain.Observation) error {
 	if obs.Type != "" && !isAllowedObservationType(normalizeObservationType(obs.Type)) {
 		return &domain.ValidationError{
 			Field:   "type",
-			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning",
+			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning, session_summary, passive",
 		}
 	}
 
@@ -1236,7 +1356,8 @@ func validateObservation(obs *domain.Observation) error {
 func isAllowedObservationType(obsType string) bool {
 	switch obsType {
 	case domain.TypeManual, domain.TypeToolUse, domain.TypeDecision, domain.TypeBugfix,
-		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning:
+		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning,
+		domain.TypeSessionSummary, domain.TypePassive:
 		return true
 	default:
 		return false

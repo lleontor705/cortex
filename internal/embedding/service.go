@@ -3,8 +3,18 @@
 // Embeddings enable semantic search: instead of matching keywords,
 // search by meaning. The service supports multiple backends:
 //   - ollama: Local Ollama server (default: nomic-embed-text, 768 dims)
-//   - openai: OpenAI API (text-embedding-3-small, 384 dims)
+//   - openai: OpenAI API (text-embedding-3-small, 1536 dims)
 //   - none: Disabled (default)
+//
+// HTTP client lifecycle: each backend holds a single reusable *http.Client
+// (constructed once in New) so HTTP keepalive connections are pooled across
+// all Embed() calls rather than re-created per call. The concrete types
+// (*ollamaService, *openAIService) implement io.Closer: Close() calls
+// CloseIdleConnections on the shared client, reaping the Transport's
+// persistConn read/write goroutines. The composition root (app.Close,
+// bench Close) type-asserts to io.Closer to invoke it — the Service
+// interface itself is NOT bloated with Close(), so test fakes and stubs
+// need no changes.
 package embedding
 
 import (
@@ -38,6 +48,25 @@ type Config struct {
 	BaseURL  string // Base URL override (Ollama: default http://localhost:11434)
 }
 
+// defaultHTTPClient returns a shared *http.Client configured for embedding
+// API calls with a generous timeout and keepalive. One client per service
+// instance means HTTP connections are pooled and reused across Embed calls
+// instead of being re-created (and leaked) per call.
+func defaultHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			// Defaults are fine; the important thing is that the Transport
+			// and its connection pool live as long as the client, which lives
+			// as long as the service. Close() calls CloseIdleConnections to
+			// reap the persistConn goroutines on shutdown.
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 5,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+}
+
 // New creates an embedding service from config.
 // Returns nil if provider is "none" or empty.
 func New(cfg Config) Service {
@@ -51,7 +80,11 @@ func New(cfg Config) Service {
 		if model == "" {
 			model = "nomic-embed-text"
 		}
-		return &ollamaService{baseURL: baseURL, model: model}
+		return &ollamaService{
+			baseURL: baseURL,
+			model:   model,
+			client:  defaultHTTPClient(60 * time.Second),
+		}
 
 	case "openai":
 		key := cfg.APIKey
@@ -65,7 +98,11 @@ func New(cfg Config) Service {
 		if model == "" {
 			model = "text-embedding-3-small"
 		}
-		return &openAIService{apiKey: key, model: model}
+		return &openAIService{
+			apiKey: key,
+			model:  model,
+			client: defaultHTTPClient(30 * time.Second),
+		}
 
 	default:
 		return nil
@@ -78,6 +115,7 @@ type ollamaService struct {
 	baseURL string
 	model   string
 	dims    int // cached after first call
+	client  *http.Client
 	mu      sync.Mutex
 }
 
@@ -95,8 +133,7 @@ func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("ollama: request failed (is Ollama running?): %w", err)
 	}
@@ -145,12 +182,24 @@ func (s *ollamaService) Dimensions() int {
 
 func (s *ollamaService) Model() string { return s.model }
 
+// Close releases idle HTTP keepalive connections held by the shared client.
+// It is safe to call multiple times (idempotent). This implements io.Closer
+// so the composition root (app.Close, bench Close) can type-assert and
+// invoke it without bloating the Service interface.
+func (s *ollamaService) Close() error {
+	if s.client != nil {
+		s.client.CloseIdleConnections()
+	}
+	return nil
+}
+
 // --- OpenAI Backend ----------------------------------------------------------
 
 type openAIService struct {
 	apiKey string
 	model  string
 	dims   int
+	client *http.Client
 	mu     sync.Mutex
 }
 
@@ -168,8 +217,7 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai: request: %w", err)
 	}
@@ -212,4 +260,21 @@ func (s *openAIService) Dimensions() int {
 	// Default for text-embedding-3-small
 	return 1536
 }
-func (s *openAIService) Model() string   { return s.model }
+func (s *openAIService) Model() string { return s.model }
+
+// Close releases idle HTTP keepalive connections held by the shared client.
+// It is safe to call multiple times (idempotent). This implements io.Closer
+// so the composition root (app.Close, bench Close) can type-assert and
+// invoke it without bloating the Service interface.
+func (s *openAIService) Close() error {
+	if s.client != nil {
+		s.client.CloseIdleConnections()
+	}
+	return nil
+}
+
+// Compile-time assertions: both concrete services implement io.Closer.
+var (
+	_ interface{ Close() error } = (*ollamaService)(nil)
+	_ interface{ Close() error } = (*openAIService)(nil)
+)

@@ -1,6 +1,7 @@
 # Binaries
 bin/
 *.exe
+/cortex.exe~
 
 # Database files
 *.db
@@ -18,6 +19,14 @@ Thumbs.db
 
 # Go
 vendor/
+
+# Coverage profiles (go test -coverprofile / go tool cover).
+# The broad /coverage* pattern catches ad-hoc names like coverage-w8,
+# coverage.html, etc. without listing each typo individually.
+/cover
+/cover.*
+/coverage*
+*.prof
 
 # Claude local settings
 .claude/settings.local.json

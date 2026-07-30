@@ -26,8 +26,10 @@ func TestVectorStore_StoreEmbedding_ValidationError(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	store := NewVectorStore(db.DB())
 
-	// Test with wrong dimension - should return validation error or disabled error
-	embedding := make([]float32, 100) // Wrong dimension
+	// Dimension below MinEmbeddingDimension triggers ValidationError (or
+	// ErrVectorSearchDisabled in the stub build) before any DB access, so
+	// the test is deterministic under both build configurations.
+	embedding := make([]float32, MinEmbeddingDimension-1)
 	err := store.StoreEmbedding(context.Background(), 1, embedding, "test-model")
 
 	// Should either be disabled or validation error
@@ -40,9 +42,10 @@ func TestVectorStore_SearchByVector_ValidationError(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	store := NewVectorStore(db.DB())
 
-	// Test with wrong dimension
+	// Dimension below MinEmbeddingDimension triggers ValidationError (or
+	// ErrVectorSearchDisabled in the stub build) before any DB access.
 	opts := domain.VectorSearchOptions{
-		Embedding: make([]float32, 100), // Wrong dimension
+		Embedding: make([]float32, MinEmbeddingDimension-1),
 		Limit:     10,
 	}
 	_, err := store.SearchByVector(context.Background(), opts)
@@ -55,6 +58,7 @@ func TestVectorStore_SearchByVector_ValidationError(t *testing.T) {
 
 func TestVectorStore_GetEmbedding_NotFound(t *testing.T) {
 	db := testutil.NewTestDB(t)
+	createObservationVectorsTable(t, db)
 	store := NewVectorStore(db.DB())
 
 	_, _, err := store.GetEmbedding(context.Background(), 99999)
@@ -67,6 +71,7 @@ func TestVectorStore_GetEmbedding_NotFound(t *testing.T) {
 
 func TestVectorStore_DeleteEmbedding_NotFound(t *testing.T) {
 	db := testutil.NewTestDB(t)
+	createObservationVectorsTable(t, db)
 	store := NewVectorStore(db.DB())
 
 	err := store.DeleteEmbedding(context.Background(), 99999)
@@ -75,4 +80,21 @@ func TestVectorStore_DeleteEmbedding_NotFound(t *testing.T) {
 	if err != domain.ErrVectorSearchDisabled && !domain.IsNotFoundError(err) {
 		t.Errorf("expected ErrVectorSearchDisabled or NotFoundError, got %v", err)
 	}
+}
+
+// createObservationVectorsTable creates the observation_vectors table matching
+// the production schema (migration 005) so that VectorStore operations that
+// query by ID return sql.ErrNoRows / 0 rows (yielding NotFoundError) instead
+// of SQL "no such table" errors. The FK constraint is omitted because the
+// test DB does not create the observations table.
+func createObservationVectorsTable(t *testing.T, db *testutil.TestDB) {
+	t.Helper()
+	db.MustExec(`CREATE TABLE observation_vectors (
+		observation_id INTEGER PRIMARY KEY,
+		embedding BLOB,
+		embedding_model TEXT,
+		dimensions INTEGER,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
 }

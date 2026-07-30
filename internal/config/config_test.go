@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -22,6 +24,9 @@ func TestLoad(t *testing.T) {
 			checkFunc: func(t *testing.T, cfg *Config) {
 				if cfg.Server.Name != "cortex" {
 					t.Errorf("expected server name 'cortex', got '%s'", cfg.Server.Name)
+				}
+				if cfg.Server.Version != "2.0.0" {
+					t.Errorf("expected default server version '2.0.0' (v2 line, REQ-DB-001), got '%s'", cfg.Server.Version)
 				}
 				if cfg.HTTP.Port != 7438 {
 					t.Errorf("expected HTTP port 7438, got %d", cfg.HTTP.Port)
@@ -388,6 +393,478 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+// validBaseline is a Config that passes validate() unchanged. Vector-specific
+// tests clone it and mutate only the field under test.
+func validBaseline() *Config {
+	return &Config{
+		Server: ServerConfig{Name: "test", Version: "1.0"},
+		Database: DatabaseConfig{
+			Path:     "test.db",
+			InMemory: false,
+			Pragma: PragmaConfig{
+				JournalMode: "WAL",
+				Synchronous: "NORMAL",
+				TempStore:   "MEMORY",
+			},
+		},
+		HTTP:      HTTPConfig{Enabled: true, Port: 7438},
+		Logging:   LoggingConfig{Level: "info", Format: "json"},
+		Search:    SearchConfig{DefaultLimit: 20, MaxLimit: 100, FTS5: true, FusionK: 60},
+		Memory:    MemoryConfig{MaxObservationLength: 50000, DedupeWindow: "15m", AutoArchiveDays: 90, DecayHalfLifeDays: 30, MinArchiveScore: 0.1},
+		Lifecycle: LifecycleConfig{EnableAutoArchive: true, ArchiveCheckInterval: "1h"},
+	}
+}
+
+// TestValidate_VectorProviderEnum verifies the vector provider is restricted to
+// the scoped enum set, and that an unknown provider is rejected with a clear
+// error (no silent fallback to the default).
+func TestValidate_VectorProviderEnum(t *testing.T) {
+	validProviders := []string{"", "sqlite_blob", "qdrant", "pgvector", "none"}
+	for _, p := range validProviders {
+		cfg := validBaseline()
+		cfg.Vector.Provider = p
+		// qdrant requires full QdrantConfig to be valid; set a valid one.
+		if p == "qdrant" {
+			cfg.Vector.Qdrant = validQdrantConfig()
+		}
+		// pgvector requires full PGVectorConfig to be valid; set a valid one.
+		if p == "pgvector" {
+			cfg.Vector.Pgvector = validPgvectorConfig()
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("provider %q should be valid, got error: %v", p, err)
+		}
+	}
+
+	unknownProviders := []string{"redis", "pinecone", "weaviate", "milvus", "QDRANT", "SQLite_Blob"}
+	for _, p := range unknownProviders {
+		cfg := validBaseline()
+		cfg.Vector.Provider = p
+		err := validate(cfg)
+		if err == nil {
+			t.Errorf("provider %q should be REJECTED (unknown provider, no silent fallback)", p)
+			continue
+		}
+		if !strings.Contains(err.Error(), "provider") {
+			t.Errorf("provider %q error should mention 'provider', got: %v", p, err)
+		}
+	}
+}
+
+// validQdrantConfig returns a QdrantConfig that passes validation on its own.
+func validQdrantConfig() QdrantConfig {
+	return QdrantConfig{
+		Host:         "localhost",
+		Port:         6334,
+		Collection:   "cortex",
+		Dimension:    384,
+		MaxBatchSize: 256,
+		MaxRetries:   3,
+		Timeout:      30 * time.Second,
+	}
+}
+
+// validPgvectorConfig returns a PGVectorConfig that passes validation on its own.
+func validPgvectorConfig() PGVectorConfig {
+	return PGVectorConfig{
+		DSN:                "postgres://user:pass@localhost:5432/cortex",
+		Schema:             "cortex_vector",
+		Table:              "embeddings",
+		Dimension:          384,
+		IndexType:          "hnsw",
+		HNSWM:              16,
+		HNSWEfConstruction: 64,
+		IVFFlatLists:       100,
+		MaxBatchSize:       256,
+		Timeout:            30 * time.Second,
+		MaxConns:           10,
+		StatementTimeoutMs: 5000,
+	}
+}
+
+// TestValidate_QdrantFields verifies all QdrantConfig fields are validated with
+// clear errors when provider is "qdrant".
+func TestValidate_QdrantFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*QdrantConfig)
+		wantErr string // substring expected in error
+	}{
+		{
+			name:    "port too low",
+			modify:  func(q *QdrantConfig) { q.Port = 0 },
+			wantErr: "port",
+		},
+		{
+			name:    "port too high",
+			modify:  func(q *QdrantConfig) { q.Port = 70000 },
+			wantErr: "port",
+		},
+		{
+			name:    "dimension zero",
+			modify:  func(q *QdrantConfig) { q.Dimension = 0 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "dimension negative",
+			modify:  func(q *QdrantConfig) { q.Dimension = -8 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "batch size zero",
+			modify:  func(q *QdrantConfig) { q.MaxBatchSize = 0 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "batch size negative",
+			modify:  func(q *QdrantConfig) { q.MaxBatchSize = -5 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "retries exceed max",
+			modify:  func(q *QdrantConfig) { q.MaxRetries = 11 },
+			wantErr: "max_retries",
+		},
+		{
+			name:    "timeout zero",
+			modify:  func(q *QdrantConfig) { q.Timeout = 0 },
+			wantErr: "timeout",
+		},
+		{
+			name:    "timeout negative",
+			modify:  func(q *QdrantConfig) { q.Timeout = -1 * time.Second },
+			wantErr: "timeout",
+		},
+		{
+			name:    "collection empty",
+			modify:  func(q *QdrantConfig) { q.Collection = "" },
+			wantErr: "collection",
+		},
+		{
+			name:    "host empty",
+			modify:  func(q *QdrantConfig) { q.Host = "" },
+			wantErr: "host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseline()
+			cfg.Vector.Provider = "qdrant"
+			q := validQdrantConfig()
+			tt.modify(&q)
+			cfg.Vector.Qdrant = q
+			err := validate(cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error should contain %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestValidate_QdrantNotCheckedForOtherProviders verifies qdrant-specific field
+// validation is NOT enforced when provider is not "qdrant" (e.g. empty default
+// with dimension 0 must still pass — dimension is resolved at adapter build).
+func TestValidate_QdrantNotCheckedForOtherProviders(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = ""                                        // default local path
+	cfg.Vector.Qdrant = QdrantConfig{Dimension: 0, MaxBatchSize: 0} // would fail qdrant checks
+	if err := validate(cfg); err != nil {
+		t.Errorf("default provider should not trigger qdrant field checks: %v", err)
+	}
+}
+
+// TestValidate_PgvectorFields verifies all PGVectorConfig fields are validated
+// with clear errors when provider is "pgvector".
+func TestValidate_PgvectorFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*PGVectorConfig)
+		wantErr string
+	}{
+		{
+			name:    "dsn empty",
+			modify:  func(p *PGVectorConfig) { p.DSN = "" },
+			wantErr: "dsn",
+		},
+		{
+			name:    "schema empty",
+			modify:  func(p *PGVectorConfig) { p.Schema = "" },
+			wantErr: "schema",
+		},
+		{
+			name:    "table empty",
+			modify:  func(p *PGVectorConfig) { p.Table = "" },
+			wantErr: "table",
+		},
+		{
+			name:    "dimension zero",
+			modify:  func(p *PGVectorConfig) { p.Dimension = 0 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "dimension negative",
+			modify:  func(p *PGVectorConfig) { p.Dimension = -8 },
+			wantErr: "dimension",
+		},
+		{
+			name:    "invalid index type",
+			modify:  func(p *PGVectorConfig) { p.IndexType = "bogus" },
+			wantErr: "index_type",
+		},
+		{
+			name:    "batch size zero",
+			modify:  func(p *PGVectorConfig) { p.MaxBatchSize = 0 },
+			wantErr: "max_batch_size",
+		},
+		{
+			name:    "timeout zero",
+			modify:  func(p *PGVectorConfig) { p.Timeout = 0 },
+			wantErr: "timeout",
+		},
+		{
+			name:    "timeout negative",
+			modify:  func(p *PGVectorConfig) { p.Timeout = -1 * time.Second },
+			wantErr: "timeout",
+		},
+		{
+			name:    "max_conns negative",
+			modify:  func(p *PGVectorConfig) { p.MaxConns = -1 },
+			wantErr: "max_conns",
+		},
+		{
+			name:    "statement_timeout_ms zero",
+			modify:  func(p *PGVectorConfig) { p.StatementTimeoutMs = 0 },
+			wantErr: "statement_timeout_ms",
+		},
+		{
+			name:    "hnsw_m below min",
+			modify:  func(p *PGVectorConfig) { p.HNSWM = 1 },
+			wantErr: "hnsw_m",
+		},
+		{
+			name:    "hnsw_m above max",
+			modify:  func(p *PGVectorConfig) { p.HNSWM = 200 },
+			wantErr: "hnsw_m",
+		},
+		{
+			name:    "hnsw_ef_construction below min",
+			modify:  func(p *PGVectorConfig) { p.HNSWEfConstruction = -1 },
+			wantErr: "hnsw_ef_construction",
+		},
+		{
+			name:    "hnsw_ef_construction above max",
+			modify:  func(p *PGVectorConfig) { p.HNSWEfConstruction = 5000 },
+			wantErr: "hnsw_ef_construction",
+		},
+		{
+			name:    "ivfflat_lists below min",
+			modify:  func(p *PGVectorConfig) { p.IVFFlatLists = -1 },
+			wantErr: "ivfflat_lists",
+		},
+		{
+			name:    "ivfflat_lists above max",
+			modify:  func(p *PGVectorConfig) { p.IVFFlatLists = 100000 },
+			wantErr: "ivfflat_lists",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseline()
+			cfg.Vector.Provider = "pgvector"
+			p := validPgvectorConfig()
+			tt.modify(&p)
+			cfg.Vector.Pgvector = p
+			err := validate(cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error should contain %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestValidate_PgvectorNotCheckedForOtherProviders verifies pgvector-specific
+// field validation is NOT enforced when provider is not "pgvector".
+func TestValidate_PgvectorNotCheckedForOtherProviders(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = ""                                    // default local path
+	cfg.Vector.Pgvector = PGVectorConfig{DSN: "", Dimension: 0} // would fail pgvector checks
+	if err := validate(cfg); err != nil {
+		t.Errorf("default provider should not trigger pgvector field checks: %v", err)
+	}
+}
+
+// TestValidate_PgvectorValidIVFFlat verifies ivfflat is a valid index type.
+func TestValidate_PgvectorValidIVFFlat(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "pgvector"
+	p := validPgvectorConfig()
+	p.IndexType = "ivfflat"
+	cfg.Vector.Pgvector = p
+	if err := validate(cfg); err != nil {
+		t.Errorf("ivfflat index type should be valid: %v", err)
+	}
+}
+
+// TestValidate_PgvectorIndexTuningDefaults verifies that zero/zero/zero index
+// tuning values are normalized to sensible pgvector defaults (not rejected).
+func TestValidate_PgvectorIndexTuningDefaults(t *testing.T) {
+	cfg := validBaseline()
+	cfg.Vector.Provider = "pgvector"
+	p := validPgvectorConfig()
+	p.HNSWM = 0
+	p.HNSWEfConstruction = 0
+	p.IVFFlatLists = 0
+	cfg.Vector.Pgvector = p
+	if err := validate(cfg); err != nil {
+		t.Fatalf("zero index tuning should default, got error: %v", err)
+	}
+	got := cfg.Vector.Pgvector
+	if got.HNSWM != 16 {
+		t.Errorf("default HNSWM = %d, want 16", got.HNSWM)
+	}
+	if got.HNSWEfConstruction != 64 {
+		t.Errorf("default HNSWEfConstruction = %d, want 64", got.HNSWEfConstruction)
+	}
+	if got.IVFFlatLists != 100 {
+		t.Errorf("default IVFFlatLists = %d, want 100", got.IVFFlatLists)
+	}
+}
+
+// TestConfig_String_NeverLeaksPgvectorDSN verifies the DSN password NEVER
+// appears in Config.String() (REQ-CP-002).
+func TestConfig_String_NeverLeaksPgvectorDSN(t *testing.T) {
+	const secret = "pg-super-secret-do-not-leak"
+	cfg := validBaseline()
+	cfg.Vector.Pgvector = PGVectorConfig{
+		DSN: "postgres://user:" + secret + "@localhost:5432/cortex",
+	}
+	s := cfg.String()
+	if strings.Contains(s, secret) {
+		t.Errorf("DSN password LEAKED into Config.String(): %s", s)
+	}
+	if !strings.Contains(s, "***REDACTED***") {
+		t.Errorf("expected redaction placeholder in String(): %s", s)
+	}
+}
+
+// TestRedactDSNPassword verifies password redaction for both DSN formats.
+func TestRedactDSNPassword(t *testing.T) {
+	tests := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{
+			name: "URL format",
+			dsn:  "postgres://user:secretpass@localhost:5432/db",
+			want: "***REDACTED***",
+		},
+		{
+			name: "key=value format",
+			dsn:  "host=localhost password=kvpsecret dbname=test",
+			want: "***REDACTED***",
+		},
+		{
+			name: "no password URL",
+			dsn:  "postgres://localhost:5432/db",
+			want: "",
+		},
+		{
+			name: "empty DSN",
+			dsn:  "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := redactDSNPassword(tt.dsn)
+			if tt.want == "" {
+				// No redaction expected; verify no password leaked if any was present.
+				if strings.Contains(out, "secretpass") || strings.Contains(out, "kvpsecret") {
+					t.Errorf("password leaked: %s", out)
+				}
+			} else {
+				if !strings.Contains(out, tt.want) {
+					t.Errorf("expected %q in redacted DSN, got: %s", tt.want, out)
+				}
+			}
+			// Original password must never appear in output.
+			if strings.Contains(out, "secretpass") || strings.Contains(out, "kvpsecret") {
+				t.Errorf("password still present after redaction: %s", out)
+			}
+		})
+	}
+}
+
+// TestConfig_String_NeverLeaksAPIKey verifies the API key NEVER appears in the
+// Config.String() representation, even when a non-empty key is configured
+// (REQ-CP-002 token storage / no plaintext secrets).
+func TestConfig_String_NeverLeaksAPIKey(t *testing.T) {
+	const secret = "sk-leak-guard-do-not-print"
+	cfg := validBaseline()
+	cfg.Vector.Qdrant.APIKey = secret
+	s := cfg.String()
+	if strings.Contains(s, secret) {
+		t.Errorf("API key LEAKED into Config.String(): %s", s)
+	}
+	// String() must still be non-empty and useful (other sections present).
+	if s == "" {
+		t.Error("String() returned empty")
+	}
+}
+
+func TestConfigStringRedactsAllCredentialFields(t *testing.T) {
+	cfg := validBaseline()
+	cfg.HTTP.Token = "http-secret"
+	cfg.Server.Storage.DSN = "postgres://u:storage-secret@db/cortex"
+	cfg.Server.Secrets.SigningKey = "signing-secret"
+	cfg.Server.Secrets.OIDCClientSecret = "oidc-secret"
+	cfg.Vector.Qdrant.APIKey = "qdrant-secret"
+	cfg.Vector.Pgvector.DSN = "postgres://u:vector-secret@db/cortex"
+	s := cfg.String()
+	for _, secret := range []string{"http-secret", "storage-secret", "signing-secret", "oidc-secret", "qdrant-secret", "vector-secret"} {
+		if strings.Contains(s, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, s)
+		}
+	}
+}
+
+// TestValidate_ErrorNeverContainsAPIKey verifies validation errors NEVER echo
+// the API key, regardless of which field triggers the error (REQ-CP-002).
+func TestValidate_ErrorNeverContainsAPIKey(t *testing.T) {
+	const secret = "sk-validation-guard-xyz"
+	tests := []func(*Config){
+		func(c *Config) {
+			c.Vector.Provider = "qdrant"
+			c.Vector.Qdrant = validQdrantConfig()
+			c.Vector.Qdrant.Port = 99999
+		},
+		func(c *Config) { c.Vector.Provider = "bogus" },
+		func(c *Config) { c.Logging.Level = "nope" },
+	}
+	for i, mutate := range tests {
+		cfg := validBaseline()
+		cfg.Vector.Qdrant.APIKey = secret
+		mutate(cfg)
+		err := validate(cfg)
+		if err == nil {
+			t.Errorf("case %d: expected validation error, got nil", i)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("case %d: API key LEAKED into validation error: %s", i, err.Error())
+		}
+	}
+}
+
 // Helper function to clear all CORTEX environment variables
 func clearEnvVars(t *testing.T) {
 	t.Helper()
@@ -421,14 +898,9 @@ func clearEnvVars(t *testing.T) {
 // Helper function to check if string contains all substrings
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
-		if !contains(s, sub) {
+		if !strings.Contains(s, sub) {
 			return false
 		}
 	}
 	return true
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr ||
-		len(s) > len(substr) && contains(s[1:], substr)
 }

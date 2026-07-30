@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -12,16 +11,18 @@ import (
 	"github.com/lleontor705/cortex/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
+	"github.com/lleontor705/cortex/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// registerCortexTools registers the 5 Cortex-exclusive MCP tools.
+// registerCortexTools registers Cortex-native MCP tools (graph, scoring,
+// search, consolidation, and admin tools) in the cortex_* namespace.
 func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[string]bool) {
-	// --- mem_relate -----------------------------------------------------
-	if shouldRegister("mem_relate", allowlist) {
+	// --- cortex_relate --------------------------------------------------
+	if shouldRegister("cortex_relate", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_relate",
+			mcp.NewTool("cortex_relate",
 				mcp.WithTitleAnnotation("Relate Observations"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -57,10 +58,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_graph ------------------------------------------------------
-	if shouldRegister("mem_graph", allowlist) {
+	// --- cortex_graph ---------------------------------------------------
+	if shouldRegister("cortex_graph", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_graph",
+			mcp.NewTool("cortex_graph",
 				mcp.WithTitleAnnotation("Traverse Knowledge Graph"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -79,10 +80,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_score ------------------------------------------------------
-	if shouldRegister("mem_score", allowlist) {
+	// --- cortex_score ---------------------------------------------------
+	if shouldRegister("cortex_score", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_score",
+			mcp.NewTool("cortex_score",
 				mcp.WithTitleAnnotation("Get Importance Score"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -101,10 +102,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_archive ----------------------------------------------------
-	if shouldRegister("mem_archive", allowlist) {
+	// --- cortex_archive -------------------------------------------------
+	if shouldRegister("cortex_archive", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_archive",
+			mcp.NewTool("cortex_archive",
 				mcp.WithTitleAnnotation("Archive Observation"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -120,10 +121,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_search_hybrid ----------------------------------------------
-	if shouldRegister("mem_search_hybrid", allowlist) {
+	// --- cortex_search_hybrid -------------------------------------------
+	if shouldRegister("cortex_search_hybrid", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_search_hybrid",
+			mcp.NewTool("cortex_search_hybrid",
 				mcp.WithTitleAnnotation("Hybrid Search"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -148,10 +149,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_search_temporal -----------------------------------------------
-	if shouldRegister("mem_search_temporal", allowlist) {
+	// --- cortex_search_temporal -----------------------------------------
+	if shouldRegister("cortex_search_temporal", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_search_temporal",
+			mcp.NewTool("cortex_search_temporal",
 				mcp.WithTitleAnnotation("Temporal Search"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDescription("Search memories as-of a specific date. Graph expansion only follows edges that were valid at that time. Observations created after that date are excluded from graph neighbors."),
@@ -174,13 +175,13 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_consolidate ---------------------------------------------------
-	if shouldRegister("mem_consolidate", allowlist) {
+	// --- cortex_consolidate ---------------------------------------------
+	if shouldRegister("cortex_consolidate", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_consolidate",
+			mcp.NewTool("cortex_consolidate",
 				mcp.WithTitleAnnotation("Consolidate Memories"),
 				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Find observations that share the same topic_key and could be consolidated. Returns candidates grouped by topic key. Use mem_save with the same topic_key to create a merged observation, then mem_relate with 'supersedes' to link old ones."),
+				mcp.WithDescription("Find observations that share the same topic_key and could be consolidated. Returns candidates grouped by topic key. Use cortex_save with the same topic_key to create a merged observation, then cortex_relate with 'supersedes' to link old ones."),
 				mcp.WithString("project",
 					mcp.Required(),
 					mcp.Description("Project to search for consolidation candidates"),
@@ -193,10 +194,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_project_dna ---------------------------------------------------
-	if shouldRegister("mem_project_dna", allowlist) {
+	// --- cortex_project_dna ---------------------------------------------
+	if shouldRegister("cortex_project_dna", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_project_dna",
+			mcp.NewTool("cortex_project_dna",
 				mcp.WithTitleAnnotation("Project DNA"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDescription("Generate a structured summary of a project's key decisions, patterns, tech stack, and gotchas from stored observations. Useful for onboarding or context recovery."),
@@ -209,10 +210,10 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- mem_merge_projects (admin) ---
-	if shouldRegister("mem_merge_projects", allowlist) {
+	// --- cortex_merge_projects (admin) ---
+	if shouldRegister("cortex_merge_projects", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_merge_projects",
+			mcp.NewTool("cortex_merge_projects",
 				mcp.WithDescription("Merge memories from multiple project name variants into one canonical name. Use when project names have drifted (e.g., 'MyApp', 'myapp', 'my-app' should all be 'myapp')."),
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithString("from",
@@ -380,8 +381,9 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		searchMode := "FTS5"
 
-		// Vector search (when available)
-		if stores.Vectors != nil && stores.Vectors.IsAvailable() {
+		// Vector search (when available). W8.1: stores.Vectors is a
+		// domain.VectorIndex; availability is checked via Health.
+		if domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
 			var queryVec []float32
 
 			// Prefer generating a real query embedding via the embedding service
@@ -395,16 +397,24 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 			if len(queryVec) > 0 {
 				searchMode = "hybrid (FTS5 + vector)"
-				vecOpts := domain.VectorSearchOptions{
-					Embedding: queryVec,
+				vecQuery := domain.VectorQuery{
+					Vector:    queryVec,
 					Limit:     limit,
 					Threshold: 0.3,
-					Project:   project,
-					Scope:     scope,
+					Filters: map[string]any{
+						"project": project,
+						"scope":   scope,
+					},
 				}
-				vecResults, vecErr := stores.Vectors.SearchByVector(ctx, vecOpts)
+				// W8.4: use the capability-driven SearchVectors entry point.
+				// The engine reads VectorIndex.Capabilities and selects
+				// PreFilter (trust adapter) vs PostFilter (pool expansion +
+				// in-engine safety net). This replaces the manual Search +
+				// RevalidateCandidates + filter-drop-prone path with the
+				// centralized strategy selector (REQ-VEC-001/002).
+				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
 				if vecErr == nil && len(vecResults) > 0 {
-					ftsResults = fuseResults(ftsResults, vecResults, limit)
+					ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
 				}
 			}
 		}
@@ -426,61 +436,6 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		return textResult("%s", sb.String())
 	}
-}
-
-// fuseResults combines FTS5 and vector search results using Reciprocal Rank Fusion (k=60).
-func fuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, limit int) []*domain.SearchResult {
-	const k = 60.0
-
-	type scored struct {
-		result *domain.SearchResult
-		score  float64
-	}
-
-	scoreMap := make(map[int64]*scored)
-
-	// Score FTS5 results
-	for rank, r := range ftsResults {
-		scoreMap[r.ID] = &scored{
-			result: r,
-			score:  1.0 / (k + float64(rank+1)),
-		}
-	}
-
-	// Add vector result scores
-	for rank, vr := range vecResults {
-		rrf := 1.0 / (k + float64(rank+1))
-		if existing, ok := scoreMap[vr.ID]; ok {
-			existing.score += rrf
-		} else {
-			scoreMap[vr.ID] = &scored{
-				result: &domain.SearchResult{
-					Observation: vr.Observation,
-					Rank:        vr.Similarity,
-				},
-				score: rrf,
-			}
-		}
-	}
-
-	// Sort by RRF score
-	sorted := make([]*scored, 0, len(scoreMap))
-	for _, s := range scoreMap {
-		sorted = append(sorted, s)
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].score > sorted[j].score
-	})
-
-	results := make([]*domain.SearchResult, 0, limit)
-	for i, s := range sorted {
-		if i >= limit {
-			break
-		}
-		results = append(results, s.result)
-	}
-
-	return results
 }
 
 func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
@@ -581,8 +536,8 @@ func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
 				fmt.Fprintf(&sb, "%d. [%d] %s (%s, %s)\n   %s\n\n",
 					i+1, o.ID, o.Title, o.Type, o.CreatedAt.Format("2006-01-02"), truncate(o.Content, 200))
 			}
-			sb.WriteString("To consolidate: save a merged observation with mem_save using the same topic_key, ")
-			sb.WriteString("then use mem_relate with relation_type='supersedes' from the new observation to each old one.")
+			sb.WriteString("To consolidate: save a merged observation with cortex_save using the same topic_key, ")
+			sb.WriteString("then use cortex_relate with relation_type='supersedes' from the new observation to each old one.")
 			return textResult("%s", sb.String())
 		}
 
@@ -602,7 +557,7 @@ func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
 			fmt.Fprintf(&sb, "  %-40s  %d observations  (latest: %s)\n", g.TopicKey, g.Count, g.Latest)
 		}
 		fmt.Fprintf(&sb, "\nTotal: %d topic keys with 2+ observations.\n", len(groups))
-		sb.WriteString("Use mem_consolidate with topic_key=<key> to see full content.")
+		sb.WriteString("Use cortex_consolidate with topic_key=<key> to see full content.")
 		return textResult("%s", sb.String())
 	}
 }

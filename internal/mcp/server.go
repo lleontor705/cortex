@@ -6,8 +6,9 @@
 // Tool profiles allow agents to load only the tools they need:
 //
 //	cortex mcp                        -> all tools (default)
-//	cortex mcp --tools=agent          -> Engram-compatible memory tools
-//	cortex mcp --tools=admin          -> delete, stats, timeline
+//	cortex mcp --tools=agent          -> ordinary agent tools (cortex_* namespace)
+//	cortex mcp --tools=admin          -> admin/diagnostic tools
+//	cortex mcp --tools=temporal       -> temporal/advanced tools
 package mcp
 
 import (
@@ -19,46 +20,70 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Stores is an alias for bundle.Stores for backward compatibility.
+// Stores is an alias for bundle.Stores.
 type Stores = bundle.Stores
 
 // --- Tool Profiles ---
 
-// ProfileAgent contains 11 Engram-compatible memory tools for AI agent workflows
-// plus Cortex-exclusive tools (graph, scoring, hybrid search).
+// ProfileAgent contains the ordinary agent tool set in the cortex_* namespace.
+// These are the tools an AI agent needs for proactive memory, search, context,
+// and knowledge-graph workflows. Temporal and admin tools are intentionally
+// absent — they belong to separate profiles (REQ-MCP-002).
 var ProfileAgent = map[string]bool{
-	"mem_save":              true,
-	"mem_search":            true,
-	"mem_context":           true,
-	"mem_session_summary":   true,
-	"mem_session_start":     true,
-	"mem_session_end":       true,
-	"mem_get_observation":   true,
-	"mem_suggest_topic_key": true,
-	"mem_capture_passive":   true,
-	"mem_save_prompt":       true,
-	"mem_update":            true,
-	"mem_relate":            true,
-	"mem_graph":             true,
-	"mem_score":             true,
-	"mem_search_hybrid":     true,
-	"mem_revision_history":  true,
+	"cortex_save":              true,
+	"cortex_search":            true,
+	"cortex_context":           true,
+	"cortex_session_summary":   true,
+	"cortex_session_start":     true,
+	"cortex_session_end":       true,
+	"cortex_get_observation":   true,
+	"cortex_suggest_topic_key": true,
+	"cortex_capture_passive":   true,
+	"cortex_save_prompt":       true,
+	"cortex_update":            true,
+	"cortex_relate":            true,
+	"cortex_graph":             true,
+	"cortex_score":             true,
+	"cortex_search_hybrid":     true,
+	"cortex_revision_history":  true,
+	// Additional agent-useful tools (no orphans — REQ-MCP-002).
+	"cortex_consolidate":  true,
+	"cortex_project_dna":  true,
 }
 
-// ProfileAdmin contains tools for manual curation (TUI, CLI, dashboards).
+// ProfileAdmin contains admin/diagnostic tools for manual curation
+// (TUI, CLI, dashboards). Destructive tools carry destructive-hint annotations.
 var ProfileAdmin = map[string]bool{
-	"mem_delete":           true,
-	"mem_stats":            true,
-	"mem_timeline":         true,
-	"mem_revision_history": true,
-	"mem_archive":          true,
-	"mem_merge_projects":   true,
+	"cortex_delete":         true,
+	"cortex_stats":          true,
+	"cortex_timeline":       true,
+	"cortex_archive":        true,
+	"cortex_merge_projects": true,
+}
+
+// ProfileTemporal contains temporal/advanced tools for bi-temporal graph
+// queries, observability, and point-in-time analysis. These MUST NOT appear
+// in ordinary agent discovery (REQ-MCP-002).
+var ProfileTemporal = map[string]bool{
+	"cortex_temporal_create_edge":      true,
+	"cortex_temporal_create_snapshot":  true,
+	"cortex_temporal_evaluate_quality": true,
+	"cortex_temporal_evolution_path":   true,
+	"cortex_temporal_fact_state":       true,
+	"cortex_temporal_get_edges":        true,
+	"cortex_temporal_get_relevant":     true,
+	"cortex_temporal_health_check":     true,
+	"cortex_temporal_record_operation": true,
+	"cortex_temporal_system_metrics":   true,
+	// Point-in-time search belongs with temporal tools, not ordinary agent.
+	"cortex_search_temporal": true,
 }
 
 // Profiles maps profile names to their tool sets.
 var Profiles = map[string]map[string]bool{
-	"agent": ProfileAgent,
-	"admin": ProfileAdmin,
+	"agent":    ProfileAgent,
+	"admin":    ProfileAdmin,
+	"temporal": ProfileTemporal,
 }
 
 // ResolveTools takes a comma-separated string of profile names and/or
@@ -93,26 +118,29 @@ func ResolveTools(input string) map[string]bool {
 	return result
 }
 
+// serverVersion is the MCP server version reported to clients.
+const serverVersion = "2.0.0"
+
 const serverInstructions = `Cortex provides persistent memory for AI coding assistants.
 
-MEMORY (Engram-compatible):
-  mem_save - save decisions, bugs, discoveries PROACTIVELY
-  mem_search - find past work via FTS5
-  mem_context - recent session history
-  mem_session_summary - MANDATORY before ending session
-  mem_get_observation - full content by ID
-  mem_save_prompt - save user prompt
+CORE MEMORY:
+  cortex_save - save decisions, bugs, discoveries PROACTIVELY
+  cortex_search - find past work via FTS5 full-text search
+  cortex_context - recent session history
+  cortex_session_summary - MANDATORY before ending session
+  cortex_get_observation - full content by ID
+  cortex_save_prompt - save user prompt
 
-CORTEX-EXCLUSIVE:
-  mem_relate - create relationship between observations
-  mem_graph - traverse knowledge graph from an observation
-  mem_score - get/recalculate importance score
-  mem_archive - archive an observation
-  mem_search_hybrid - hybrid FTS5 + vector search
-  mem_revision_history - structured revision snapshots for an observation
+KNOWLEDGE GRAPH & SCORING:
+  cortex_relate - create relationship between observations
+  cortex_graph - traverse knowledge graph from an observation
+  cortex_score - get/recalculate importance score
+  cortex_search_hybrid - FTS5 + vector search with Reciprocal Rank Fusion
+  cortex_revision_history - structured revision snapshots for an observation
 
-DEFERRED: mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end,
-  mem_stats, mem_delete, mem_timeline, mem_revision_history, mem_capture_passive`
+ADDITIONAL TOOLS (use ToolSearch):
+  cortex_suggest_topic_key, cortex_capture_passive, cortex_session_start,
+  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna`
 
 // NewServer creates an MCP server with ALL tools registered.
 func NewServer(stores *Stores) *server.MCPServer {
@@ -124,7 +152,7 @@ func NewServer(stores *Stores) *server.MCPServer {
 func NewServerWithTools(stores *Stores, allowlist map[string]bool) *server.MCPServer {
 	srv := server.NewMCPServer(
 		"cortex",
-		"0.1.0",
+		serverVersion,
 		server.WithToolCapabilities(true),
 		server.WithInstructions(serverInstructions),
 	)

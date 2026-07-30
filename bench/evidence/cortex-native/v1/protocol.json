@@ -1,0 +1,249 @@
+{
+  "schema_version": "cortex.retrieval-baseline-protocol/v1",
+  "protocol_id": "cortex-native-lexical-baseline-v1",
+  "protocol_version": "1.0.0",
+  "registered_seed": "42",
+  "registered_before_candidate_results": true,
+  "scope": {
+    "retrieval_path": "current-production-lexical",
+    "entrypoint": "bench/cortex.RunCurrentProductionBaseline",
+    "authoritative_call": "BenchStores.App.Stores.Search.Search",
+    "candidate_results_permitted": false,
+    "representative_results_permitted_before_input_approval": false
+  },
+  "identity": {
+    "evidence_set_id": "cortex-native/v1",
+    "required_equal_across_runs": [
+      "commit",
+      "binary_sha256",
+      "corpus_sha256",
+      "protocol_sha256",
+      "go_version",
+      "goos",
+      "goarch",
+      "cgo_enabled",
+      "build_tags",
+      "build_flags",
+      "hardware_profile_id",
+      "os_version",
+      "cpu_model",
+      "cpu_logical_count",
+      "ram_bytes",
+      "resource_collector_method",
+      "resource_collector_version",
+      "registered_seed"
+    ],
+    "required_distinct_across_runs": [
+      "process_id",
+      "database_path",
+      "run_id",
+      "report_id",
+      "started_at"
+    ],
+    "approval_state": "pending_human_input_and_environment_approval"
+  },
+  "offline_policy": {
+    "network": "forbidden",
+    "downloaded_datasets": "forbidden",
+    "embeddings": "forbidden",
+    "ollama": "forbidden",
+    "live_judge": "forbidden",
+    "external_provider_configuration": "forbidden",
+    "answer_evaluation": "out_of_scope",
+    "retrieval_quality_claims_before_approved_evidence": "forbidden"
+  },
+  "corpus_and_split": {
+    "origin": "cortex-authored-synthetic",
+    "corpus_version": "cortex-native/v1",
+    "split_version": "fixed-query-id/v1",
+    "split_method": "immutable query IDs assigned before representative execution",
+    "held_out_reuse_for_gate_revision": "forbidden"
+  },
+  "capabilities": {
+    "project_filter": "executed_current_path",
+    "type_filter": "executed_current_path",
+    "scope_filter": "executed_current_path",
+    "temporal_as_of": "executed_current_path",
+    "privacy_authority": "not_executed_capability",
+    "lifecycle_authority": "not_executed_capability",
+    "provenance_authority": "not_executed_capability",
+    "record_kind_authority": "not_executed_capability",
+    "classification_tags": "not_executed_capability",
+    "confidence_filter": "not_executed_capability",
+    "source_filter": "not_executed_capability",
+    "graph_multi_hop": "not_executed_capability",
+    "vector_retrieval": "not_executed_capability",
+    "hybrid_retrieval": "not_executed_capability",
+    "future_profiles_and_adapters": "not_executed_capability"
+  },
+  "execution": {
+    "independent_run_count": 2,
+    "process_model": "two separate go run command invocations",
+    "database_model": "one new temporary SQLite database per process",
+    "shared_process_state": "forbidden",
+    "shared_database": "forbidden",
+    "existing_output": "refuse",
+    "output_write": "atomic_non_overwriting",
+    "windows_commands": [
+      "go test -v -count=1 ./bench/common ./bench/cortex ./bench/fixtures/cortex-native",
+      "go run ./bench/cortex/cmd/baseline verify --root bench/evidence/cortex-native/v1",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out ../cortex-baseline-staging/run-001",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out ../cortex-baseline-staging/run-002",
+      "go run ./bench/cortex/cmd/baseline repro --run ../cortex-baseline-staging/run-001/report.json --run ../cortex-baseline-staging/run-002/report.json --protocol <approved-repro-protocol.json> --out ../cortex-baseline-staging/repro.json"
+    ],
+    "linux_commands": [
+      "go test -v -count=1 ./bench/common ./bench/cortex ./bench/fixtures/cortex-native",
+      "go run ./bench/cortex/cmd/baseline verify --root bench/evidence/cortex-native/v1",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-001 --out ../cortex-baseline-staging/run-001",
+      "go run ./bench/cortex/cmd/baseline run --root bench/evidence/cortex-native/v1 --run-id run-002 --out ../cortex-baseline-staging/run-002",
+      "go run ./bench/cortex/cmd/baseline repro --run ../cortex-baseline-staging/run-001/report.json --run ../cortex-baseline-staging/run-002/report.json --protocol <approved-repro-protocol.json> --out ../cortex-baseline-staging/repro.json"
+    ]
+  },
+  "measurement": {
+    "wall_time": {
+      "method": "process_monotonic_clock/v1",
+      "unit": "nanoseconds"
+    },
+    "linux_process_resources": {
+      "method": "linux-procfs/v1",
+      "metrics": [
+        "cpu_nanoseconds",
+        "peak_rss_bytes"
+      ]
+    },
+    "windows_process_resources": {
+      "method": "windows-process-api/v1",
+      "metrics": [
+        "cpu_nanoseconds",
+        "peak_rss_bytes"
+      ]
+    },
+    "go_allocations": {
+      "method": "go-runtime-memstats/v1",
+      "metrics": [
+        "heap_alloc_bytes",
+        "total_alloc_bytes"
+      ]
+    },
+    "sqlite_storage": {
+      "method": "fresh-sqlite-file-size/v1",
+      "metrics": [
+        "storage_bytes",
+        "index_bytes"
+      ]
+    },
+    "latency": {
+      "method": "nearest-rank/v1",
+      "unit": "nanoseconds",
+      "statistics": [
+        "p50",
+        "p95",
+        "p99"
+      ]
+    },
+    "throughput": {
+      "method": "completed_queries_per_wall_second/v1",
+      "unit": "queries_per_second"
+    },
+    "dispersion": {
+      "method": "retain-all-samples-min-max-mean-range-sample-standard-deviation/v1",
+      "outlier_policy": "retain_and_disclose_never_discard"
+    },
+    "unavailable_measurement_policy": "explicit_unavailable_never_numeric_zero",
+    "unsupported_platform_policy": "refuse_representative_materialization"
+  },
+  "deterministic_comparison": {
+    "exact_fields": [
+      "effective_query_inputs",
+      "query_errors",
+      "eligible_stable_ids",
+      "returned_stable_ids",
+      "ranks",
+      "strategies",
+      "scores"
+    ],
+    "measured_fields": [
+      "latency_p50_nanoseconds",
+      "latency_p95_nanoseconds",
+      "latency_p99_nanoseconds",
+      "throughput_queries_per_second",
+      "cpu_nanoseconds",
+      "peak_rss_bytes",
+      "heap_alloc_bytes",
+      "total_alloc_bytes",
+      "storage_bytes",
+      "index_bytes"
+    ]
+  },
+  "gates": {
+    "universal": [
+      {
+        "id": "zero-isolation-leakage",
+        "metric": "isolation_violations",
+        "rule": "zero_violations",
+        "required_value": 0,
+        "blocking": "universal",
+        "waivable": false
+      },
+      {
+        "id": "exact-filter-correctness",
+        "metric": "filter_eligibility_exact",
+        "rule": "exact_filter_match",
+        "required_value": true,
+        "blocking": "universal",
+        "waivable": false
+      }
+    ],
+    "evidence_dependent": [
+      {
+        "id": "ranking-quality",
+        "metrics": [
+          "recall_at_k",
+          "mean_reciprocal_rank",
+          "ndcg_at_k",
+          "evidence_recall",
+          "no_answer_behavior"
+        ],
+        "direction": "metric_defined",
+        "threshold": null,
+        "tolerance": null,
+        "status": "unset_pending_representative_evidence_and_human_approval"
+      },
+      {
+        "id": "latency-throughput",
+        "metrics": [
+          "latency_p50_nanoseconds",
+          "latency_p95_nanoseconds",
+          "latency_p99_nanoseconds",
+          "throughput_queries_per_second"
+        ],
+        "direction": "metric_defined",
+        "threshold": null,
+        "tolerance": null,
+        "status": "unset_pending_representative_evidence_and_human_approval"
+      },
+      {
+        "id": "process-and-storage-resources",
+        "metrics": [
+          "cpu_nanoseconds",
+          "peak_rss_bytes",
+          "heap_alloc_bytes",
+          "total_alloc_bytes",
+          "storage_bytes",
+          "index_bytes"
+        ],
+        "direction": "lower_is_better",
+        "threshold": null,
+        "tolerance": null,
+        "status": "unset_pending_representative_evidence_and_human_approval"
+      }
+    ],
+    "revision_policy": "new_version_written_rationale_human_approval_and_fresh_held_out_evaluation"
+  },
+  "limitations": [
+    "This protocol preregisters inputs and methods; it contains no representative results or approvals.",
+    "Two runs are the minimum reproducibility sample and do not establish cross-hardware portability.",
+    "Capabilities labelled not_executed_capability are not XINV successes.",
+    "Answer judging is outside retrieval relevance and cannot replace stable-ID or evidence-span labels."
+  ]
+}

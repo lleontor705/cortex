@@ -1,11 +1,54 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+func TestServerModelsMarshalOpaquePublicID(t *testing.T) {
+	data, err := json.Marshal(domain.Observation{ID: 42, PublicID: "550e8400-e29b-41d4-a716-446655440000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("id=%v", got["id"])
+	}
+}
+
+func TestEdgeAndEntityJSONHideInternalIDs(t *testing.T) {
+	edge, err := json.Marshal(domain.Edge{ID: 7, PublicID: "edge-public", FromObsID: 11, ToObsID: 12, FromPublicID: "from-public", ToPublicID: "to-public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edgeJSON map[string]any
+	if err := json.Unmarshal(edge, &edgeJSON); err != nil {
+		t.Fatal(err)
+	}
+	if edgeJSON["id"] != "edge-public" || edgeJSON["from_id"] != "from-public" || edgeJSON["to_id"] != "to-public" {
+		t.Fatalf("edge JSON=%v", edgeJSON)
+	}
+	if _, ok := edgeJSON["from_obs_id"]; ok {
+		t.Fatal("edge leaked internal from_obs_id")
+	}
+	link, err := json.Marshal(domain.EntityLink{ID: 8, PublicID: "entity-public", ObservationID: 13, ObservationPublicID: "observation-public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linkJSON map[string]any
+	if err := json.Unmarshal(link, &linkJSON); err != nil {
+		t.Fatal(err)
+	}
+	if linkJSON["id"] != "entity-public" || linkJSON["observation_id"] != "observation-public" {
+		t.Fatalf("entity JSON=%v", linkJSON)
+	}
+}
 
 func TestObservationModel(t *testing.T) {
 	now := time.Now()

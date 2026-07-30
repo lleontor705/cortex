@@ -563,18 +563,22 @@ func TestSearchStore_SearchScoreBreakdown(t *testing.T) {
 	})
 }
 
-// TestSearchEnhanced_RecencyBoost tests that recency boost is applied and differs by access time.
+// TestSearchEnhanced_RecencyBoost pins that recency (0.995^hours from the
+// observation's OWN timestamp, per REQ-RET-002 design decision #2) is applied as
+// a FINAL multiplicative re-rank. Two observations with identical content differ
+// only by UpdatedAt; the more recent one receives the higher recency factor and
+// ranks above the older one.
+//
+// NOTE: The legacy pipeline sourced recency from importance_scores.last_accessed
+// and folded it into RRF input ordering. The corrected source is the
+// observation's timestamp (UpdatedAt) applied as a final multiplier. This test
+// pins the new, correct behavior (the legacy order was the bug).
 func TestSearchEnhanced_RecencyBoost(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Identical content so BM25 scores are equal -- only recency differs
-	insertTestObservation(t, db, 1, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project")
-	insertTestObservation(t, db, 2, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project")
-
-	// Old: last accessed 30 days ago
-	insertImportanceScore(t, db, 1, 2.0, 5, time.Now().Add(-30*24*time.Hour))
-	// New: last accessed 1 hour ago
-	insertImportanceScore(t, db, 2, 2.0, 5, time.Now().Add(-1*time.Hour))
+	// Identical content so BM25 scores are equal -- only recency differs.
+	insertTestObservationUpdatedAt(t, db, 1, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project", time.Now().Add(-30*24*time.Hour)) // 30 days old
+	insertTestObservationUpdatedAt(t, db, 2, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project", time.Now().Add(-1*time.Hour)) // 1 hour old
 
 	store := NewStore(db)
 	results, err := store.Search(context.Background(), "auth design", domain.SearchOptions{
@@ -588,7 +592,7 @@ func TestSearchEnhanced_RecencyBoost(t *testing.T) {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
 
-	// Verify RecencyBoost is populated and recently accessed has higher boost
+	// Verify RecencyBoost is populated and recently updated has higher boost.
 	var boostOld, boostNew float64
 	for _, r := range results {
 		if r.ID == 1 {
@@ -604,7 +608,22 @@ func TestSearchEnhanced_RecencyBoost(t *testing.T) {
 	}
 
 	if boostNew > 0 && boostOld > 0 && boostNew <= boostOld {
-		t.Errorf("recently accessed obs should have higher recency boost: new=%.4f, old=%.4f", boostNew, boostOld)
+		t.Errorf("recently updated obs should have higher recency boost: new=%.4f, old=%.4f", boostNew, boostOld)
+	}
+
+	// The newer observation (id 2) must outrank the older one (id 1) after the
+	// multiplicative re-rank, despite identical BM25 relevance.
+	rank1, rank2 := -1, -1
+	for i, r := range results {
+		if r.ID == 1 {
+			rank1 = i
+		}
+		if r.ID == 2 {
+			rank2 = i
+		}
+	}
+	if rank1 >= 0 && rank2 >= 0 && rank2 > rank1 {
+		t.Errorf("expected recently-updated obs2 to outrank old obs1: rank2=%d, rank1=%d", rank2, rank1)
 	}
 }
 
@@ -877,6 +896,24 @@ func insertTestObservationWithTopicKey(t *testing.T, db *sql.DB, id int64, title
 	`, id, obsType, title, content, project, scope, topicKey, now, now)
 	if err != nil {
 		t.Fatalf("insert test observation with topic key: %v", err)
+	}
+}
+
+// insertTestObservationUpdatedAt inserts an observation with an explicit
+// updated_at (and created_at), so recency (0.995^hours from the observation's
+// timestamp) can be exercised deterministically (REQ-RET-002).
+func insertTestObservationUpdatedAt(t *testing.T, db *sql.DB, id int64, title, content, obsType, project, scope string, updatedAt time.Time) {
+	t.Helper()
+
+	ensureTestSession(t, db)
+
+	ts := updatedAt.UTC().Format(time.RFC3339)
+	_, err := db.Exec(`
+		INSERT INTO observations (id, session_id, type, title, content, project, scope, created_at, updated_at)
+		VALUES (?, 'test-session', ?, ?, ?, ?, ?, ?, ?)
+	`, id, obsType, title, content, project, scope, ts, ts)
+	if err != nil {
+		t.Fatalf("insert test observation with updated_at: %v", err)
 	}
 }
 

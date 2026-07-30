@@ -499,8 +499,11 @@ func TestStore_Save_Deduplication(t *testing.T) {
 	}
 
 	err = store.Save(ctx, obs2)
-	if err != nil {
-		t.Fatalf("Save() second error = %v", err)
+	if err == nil {
+		t.Fatal("Save() second: expected ClassDedupSkipped, got nil")
+	}
+	if !domain.IsClass(err, domain.ClassDedupSkipped) {
+		t.Fatalf("Save() second error = %v, want ClassDedupSkipped", err)
 	}
 
 	// Should have same ID (duplicate detected)
@@ -551,8 +554,11 @@ func TestStore_Save_DeduplicationNormalizesContent(t *testing.T) {
 	}
 
 	err = store.Save(ctx, obs2)
-	if err != nil {
-		t.Fatalf("Save() second error = %v", err)
+	if err == nil {
+		t.Fatal("Save() second: expected ClassDedupSkipped, got nil")
+	}
+	if !domain.IsClass(err, domain.ClassDedupSkipped) {
+		t.Fatalf("Save() second error = %v, want ClassDedupSkipped", err)
 	}
 
 	// Should have same ID (duplicate detected after normalization)
@@ -1538,5 +1544,200 @@ func TestNullableString(t *testing.T) {
 				t.Errorf("nullableString(%q) isNil = %v, want %v", tt.input, isNil, tt.isNil)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// W2.1 — TxParticipant seam + SaveInTx (RED phase)
+//
+// These tests pin REQ-TX-001's prerequisite: the Store MUST be able to enlist
+// in an EXTERNAL *sql.Tx (the UnitOfWork's shared transaction) instead of
+// opening its own. The existing Save() path is byte-identical (local mode);
+// SaveInTx is the new atomic-path seam.
+// ---------------------------------------------------------------------------
+
+// TestStoreImplementsTxParticipant proves the Store satisfies the
+// domain.TxParticipant port (compile-time gate).
+func TestStoreImplementsTxParticipant(t *testing.T) {
+	var _ domain.TxParticipant = (*Store)(nil)
+}
+
+// TestStore_WithinTx_ThreadsSharedTx verifies that WithinTx stashes the shared
+// *sql.Tx into the context so that tx-aware methods (SaveInTx) can use it.
+func TestStore_WithinTx_ThreadsSharedTx(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createTestSession(t, db, "session-tx", "test-project")
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// WithinTx MUST stash the tx so txFromContext finds it.
+	called := false
+	err = store.WithinTx(ctx, tx, func(enlistedCtx context.Context) error {
+		got := txFromContext(enlistedCtx)
+		if got == nil {
+			t.Fatal("txFromContext returned nil — WithinTx did not stash the tx")
+		}
+		if got != tx {
+			t.Fatal("txFromContext returned a different tx than the one passed to WithinTx")
+		}
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithinTx: %v", err)
+	}
+	if !called {
+		t.Fatal("WithinTx did not invoke fn")
+	}
+}
+
+// TestStore_WithinTx_RejectsInvalidHandle verifies a non-*sql.Tx handle is
+// rejected with a clear error (prevents silent misuse in a multi-backend UoW).
+func TestStore_WithinTx_RejectsInvalidHandle(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	err := store.WithinTx(ctx, "not-a-tx", func(context.Context) error {
+		t.Fatal("fn should not be called for an invalid handle")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("WithinTx expected error for invalid handle type, got nil")
+	}
+}
+
+// TestStore_SaveInTx_WritesWithinSharedTx verifies SaveInTx persists an
+// observation using the stashed shared transaction, WITHOUT opening its own.
+// The write is visible only after the caller commits the shared tx.
+func TestStore_SaveInTx_WritesWithinSharedTx(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createTestSession(t, db, "session-tx", "test-project")
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	obs := &domain.Observation{
+		SessionID: "session-tx",
+		Title:     "Atomic Save Test",
+		Content:   "Saved via shared transaction",
+		Project:   "test-project",
+	}
+
+	// Enlist the store and save within the shared tx.
+	err = store.WithinTx(ctx, tx, func(enlistedCtx context.Context) error {
+		return store.SaveInTx(enlistedCtx, obs)
+	})
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("WithinTx+SaveInTx: %v", err)
+	}
+
+	// Before commit: the row is NOT visible outside the tx (different connection).
+	// We verify via a fresh read on db (autocommit) — it should NOT find the row
+	// because SQLite serializes and the write tx holds the lock.
+	//
+	// NOTE: with a single-connection in-memory pool the row MAY be visible
+	// through the same connection. The authoritative atomicity test is in
+	// bundle_test.go (inject-failure). Here we focus on the commit visibility.
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// After commit: the row MUST be visible.
+	got, err := store.GetByID(ctx, obs.ID)
+	if err != nil {
+		t.Fatalf("GetByID after commit: %v", err)
+	}
+	if got.Title != "Atomic Save Test" {
+		t.Errorf("GetByID Title = %q, want %q", got.Title, "Atomic Save Test")
+	}
+}
+
+// TestStore_SaveInTx_RequiresActiveTx verifies SaveInTx fails clearly when no
+// shared transaction is stashed in the context (misuse guard).
+func TestStore_SaveInTx_RequiresActiveTx(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	obs := &domain.Observation{
+		SessionID: "s",
+		Title:     "T",
+		Content:   "C",
+	}
+	err := store.SaveInTx(ctx, obs)
+	if err == nil {
+		t.Fatal("SaveInTx without a stashed tx should error, got nil")
+	}
+}
+
+// TestStore_SaveInTx_RollbackProvesNoPartialState verifies that if the shared
+// tx is rolled back after SaveInTx, NO observation row persists. This is the
+// Store-level atomicity pin (the full multi-participant version is in
+// bundle_test.go).
+func TestStore_SaveInTx_RollbackProvesNoPartialState(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createTestSession(t, db, "session-rb", "test-project")
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	obs := &domain.Observation{
+		SessionID: "session-rb",
+		Title:     "Should Roll Back",
+		Content:   "This write must not persist",
+		Project:   "test-project",
+	}
+
+	err = store.WithinTx(ctx, tx, func(enlistedCtx context.Context) error {
+		return store.SaveInTx(enlistedCtx, obs)
+	})
+	if err != nil {
+		t.Fatalf("WithinTx+SaveInTx: %v", err)
+	}
+
+	savedID := obs.ID
+
+	// Roll back — the observation MUST NOT persist.
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	// The row must not exist.
+	_, err = store.GetByID(ctx, savedID)
+	if err == nil {
+		t.Fatal("GetByID after rollback should fail (no partial state), got nil error")
+	}
+	if !domain.IsNotFoundError(err) {
+		t.Errorf("GetByID after rollback err = %v, want NotFoundError", err)
+	}
+
+	// Confirm via raw count.
+	var count int
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM observations WHERE id = ?", savedID).Scan(&count)
+	if err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("observations count after rollback = %d, want 0 (no partial state)", count)
 	}
 }

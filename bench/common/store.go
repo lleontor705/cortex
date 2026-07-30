@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/lleontor705/cortex/internal/app"
@@ -12,8 +13,8 @@ import (
 
 // BenchStores wraps a Cortex app instance for benchmark evaluation.
 type BenchStores struct {
-	App       *app.App
-	Embedder  embedding.Service
+	App      *app.App
+	Embedder embedding.Service
 }
 
 // NewBenchStores creates an in-memory Cortex instance for benchmarking.
@@ -43,8 +44,16 @@ func NewBenchStoresWithEmbeddings(cfg embedding.Config) (*BenchStores, error) {
 	return bs, nil
 }
 
-// Close cleans up the benchmark database.
+// Close cleans up the benchmark database and embedding service idle HTTP
+// connections. The embedding backend (if configured) implements io.Closer;
+// type-asserting here reaps its Transport's persistConn goroutines without
+// bloating the embedding.Service interface.
 func (bs *BenchStores) Close() error {
+	if bs.Embedder != nil {
+		if closer, ok := bs.Embedder.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
 	return bs.App.Close()
 }
 
@@ -75,12 +84,20 @@ func (bs *BenchStores) IngestSession(ctx context.Context, sessionID, project str
 			return fmt.Errorf("bench: save observation %d: %w", i, err)
 		}
 
-		// Auto-embed if embeddings are enabled
-		if bs.Embedder != nil && bs.App.Stores.Vectors != nil && bs.App.Stores.Vectors.IsAvailable() {
+		// Auto-embed if embeddings are enabled. W8.1: stores.Vectors is a
+		// domain.VectorIndex; availability is checked via Health.
+		if bs.Embedder != nil && domain.IsVectorIndexHealthy(ctx, bs.App.Stores.Vectors) {
 			text := observations[i].Title + "\n" + observations[i].Content
 			vec, embErr := bs.Embedder.Embed(ctx, text)
 			if embErr == nil && len(vec) > 0 {
-				_ = bs.App.Stores.Vectors.StoreEmbedding(ctx, observations[i].ID, vec, bs.Embedder.Model())
+				_ = bs.App.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
+					ID:     observations[i].ID,
+					Vector: vec,
+					ModelInfo: domain.ModelInfo{
+						Name:      bs.Embedder.Model(),
+						Dimension: bs.Embedder.Dimensions(),
+					},
+				}})
 			}
 		}
 	}

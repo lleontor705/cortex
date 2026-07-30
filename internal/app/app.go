@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/database"
+	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/internal/embedding"
 	"github.com/lleontor705/cortex/internal/migration"
@@ -24,6 +26,7 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
 )
 
 // Options controls how the application is opened.
@@ -39,6 +42,7 @@ type App struct {
 	Migrator       *migration.Migrator
 	Stores         *bundle.Stores
 	archivalCancel context.CancelFunc
+	workerCancel   context.CancelFunc // embedding worker drain (W4.1, REQ-EMB-001)
 }
 
 // Open loads configuration, opens the database, applies migrations, and wires stores.
@@ -52,6 +56,15 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	if opts.InMemory || cfg.Database.InMemory {
 		dbCfg = database.InMemoryConfig()
 	} else {
+		// READ-ONLY COMPATIBILITY PROBE (W3.2, REQ-DB-002): inspect the
+		// configured database file STRICTLY READ-ONLY before any
+		// write-capable open or pragma. Old Cortex v1, Engram, corrupt,
+		// ambiguous, or partially-initialized databases are refused without
+		// mutation (byte-identical SHA-256, no WAL/journal sidecar, no
+		// replacement database). A fresh or cortex-v2-compatible path proceeds.
+		if _, err := migration.ProbeCompatibility(ctx, cfg.Database.Path); err != nil {
+			return nil, fmt.Errorf("app: %w", err)
+		}
 		// Ensure parent directory exists for the database file
 		if dir := filepath.Dir(cfg.Database.Path); dir != "." {
 			if err := os.MkdirAll(dir, 0700); err != nil {
@@ -69,14 +82,30 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
-	migrator, err := migration.NewMigrator(manager.DB(), migrationsDir())
+	// Apply the v2 schema baseline (consolidated final-state schema of v1
+	// 001-014 plus v2 corrections, recorded in cortex_meta). On a fresh target
+	// this creates the full schema in one transaction; on an existing cortex-v2
+	// database it is an idempotent no-op. Incompatible databases were already
+	// refused read-only by the probe above. The v1 migrator (001-014) is RETIRED
+	// on the v2 line and MUST NOT drive startup schema (ADR-03, REQ-DB-001).
+	baseline, err := migration.NewV2Baseline()
 	if err != nil {
 		_ = manager.Close()
 		return nil, err
 	}
-	if err := migrator.Up(ctx); err != nil {
+	if err := baseline.Apply(ctx, manager.DB()); err != nil {
 		_ = manager.Close()
-		return nil, fmt.Errorf("app: apply migrations: %w", err)
+		return nil, fmt.Errorf("app: apply v2 schema baseline: %w", err)
+	}
+
+	// The migrator remains available for the CLI `migrate status/up/down`
+	// commands. It is v2-aware: on a cortex-v2 database it treats v1 001-014 as
+	// retired (Up is a no-op; Status reports them consolidated into the v2
+	// baseline). It does NOT drive startup schema — the baseline above does.
+	migrator, err := migration.NewMigrator(manager.DB(), migrationsDir())
+	if err != nil {
+		_ = manager.Close()
+		return nil, err
 	}
 
 	stores := &bundle.Stores{
@@ -86,15 +115,25 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		Prompts:           prompt.NewStore(manager.DB()),
 		Graph:             graphstore.NewStore(manager.DB()),
 		Scoring:           scoringstore.NewStore(manager.DB()),
-		Vectors:           sqlitestore.NewVectorStore(manager.DB()),
+		Vectors:           sqlite_blob.New(manager.DB()),
 		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(manager.DB()),
 		Entities:          entitystore.NewStore(manager.DB()),
 		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
 		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
 	}
 
+	// Wire the UnitOfWork for atomic cross-store saves (W2.1, W4.1). Always
+	// wired — it is harmless when the outbox is not used (zero-embedding mode).
+	stores.UnitOfWork = bundle.NewSQLiteUnitOfWork(manager.DB(), domain.DefaultBusyRetryConfig())
+
 	// Wire graph store into search for temporal-aware graph expansion
 	stores.Search.Graph = stores.Graph
+
+	// Wire request-scoped search feedback attribution (W5.1, REQ-RET-001):
+	// search.Store.RecordFeedback persists via Observations.RecordSearchFeedback,
+	// attributed to the originating SearchID. This replaces the removed shared
+	// mutable search-query field.
+	bundle.WireSearchFeedback(stores)
 
 	// Auto-start Ollama if configured
 	if cfg.Search.EmbeddingProvider == "ollama" && cfg.Search.OllamaAutoStart {
@@ -117,6 +156,26 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		DB:       manager,
 		Migrator: migrator,
 		Stores:   stores,
+	}
+
+	// Start the durable embedding worker when embeddings AND vector storage are
+	// available (ADR-04, W4.1, REQ-EMB-001). In zero-embedding mode (no provider
+	// configured, or vec extension unavailable), the worker is NOT started and
+	// the outbox stays nil — the local save path is byte-for-byte unchanged.
+	//
+	// W8.1: stores.Vectors is now a domain.VectorIndex (the sqlite_blob adapter).
+	// Availability is checked via Health (the adapter reports degraded when the
+	// cortex_vectors tag is not set, preserving the exact zero-CGO default).
+	if stores.Embeddings != nil && domain.IsVectorIndexHealthy(context.Background(), stores.Vectors) {
+		stores.Outbox = sqlitestore.NewOutboxStore(manager.DB())
+		stores.Worker = embedding.NewWorker(
+			stores.Outbox,
+			stores.Observations,
+			stores.Embeddings,
+			stores.Vectors,
+			embedding.WorkerConfig{},
+		)
+		a.workerCancel = stores.Worker.Start(ctx)
 	}
 
 	// Start auto-archival if enabled
@@ -174,8 +233,24 @@ func (a *App) Close() error {
 	if a == nil {
 		return nil
 	}
+	// Drain the embedding worker BEFORE closing the DB: in-flight intents must
+	// finalize (or be left leased for crash recovery) with no goroutine touching
+	// the DB after Close (REQ-EMB-001: no detached fire-and-forget goroutines).
+	if a.workerCancel != nil {
+		a.workerCancel()
+	}
 	if a.archivalCancel != nil {
 		a.archivalCancel()
+	}
+	// Close the embedding service's idle HTTP connections so the Transport's
+	// persistConn goroutines are reaped (Task A: no HTTP keepalive goroutine
+	// leak). The concrete embedding backends (*ollamaService, *openAIService)
+	// implement io.Closer; test fakes and the nil case do not. Type-asserting
+	// here avoids bloating the embedding.Service interface with Close().
+	if a.Stores != nil && a.Stores.Embeddings != nil {
+		if closer, ok := a.Stores.Embeddings.(io.Closer); ok {
+			_ = closer.Close()
+		}
 	}
 	if a.DB == nil {
 		return nil

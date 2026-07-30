@@ -233,20 +233,20 @@ type TemporalSnapshotRepository interface {
 
 // SystemMetrics represents aggregated system metrics.
 type SystemMetrics struct {
-	SessionID         string          `json:"session_id"`
-	TimeRange         *TimeRange      `json:"time_range"`
-	TotalOperations   int             `json:"total_operations"`
-	SuccessfulOps     int             `json:"successful_ops"`
-	FailedOps         int             `json:"failed_ops"`
-	AvgDurationMs     float64         `json:"avg_duration_ms"`
-	TotalMemoryUsage  int64           `json:"total_memory_usage"`
-	TotalObservations int             `json:"total_observations"`
-	TotalEdges        int             `json:"total_edges"`
-	AvgQueryComplexity float64         `json:"avg_query_complexity"`
-	AvgConfidence     float64         `json:"avg_confidence"`
-	EvaluatedAt       time.Time       `json:"evaluated_at"`
-	OperationBreakdown map[string]int  `json:"operation_breakdown"`
-	TopSlowOperations []string        `json:"top_slow_operations"`
+	SessionID          string         `json:"session_id"`
+	TimeRange          *TimeRange     `json:"time_range"`
+	TotalOperations    int            `json:"total_operations"`
+	SuccessfulOps      int            `json:"successful_ops"`
+	FailedOps          int            `json:"failed_ops"`
+	AvgDurationMs      float64        `json:"avg_duration_ms"`
+	TotalMemoryUsage   int64          `json:"total_memory_usage"`
+	TotalObservations  int            `json:"total_observations"`
+	TotalEdges         int            `json:"total_edges"`
+	AvgQueryComplexity float64        `json:"avg_query_complexity"`
+	AvgConfidence      float64        `json:"avg_confidence"`
+	EvaluatedAt        time.Time      `json:"evaluated_at"`
+	OperationBreakdown map[string]int `json:"operation_breakdown"`
+	TopSlowOperations  []string       `json:"top_slow_operations"`
 }
 
 // TimeRange represents a time range with start and end.
@@ -257,11 +257,245 @@ type TimeRange struct {
 
 // HealthCheck represents system health status.
 type HealthCheck struct {
-	Status           string    `json:"status"`           // healthy, degraded, critical
+	Status           string    `json:"status"` // healthy, degraded, critical
 	CheckTime        time.Time `json:"check_time"`
 	TotalOperations  int       `json:"total_operations"`
 	FailedOperations int       `json:"failed_operations"`
 	SlowOperations   int       `json:"slow_operations"`
-	AvgDurationMs   float64   `json:"avg_duration_ms"`
+	AvgDurationMs    float64   `json:"avg_duration_ms"`
 	Message          string    `json:"message"`
 }
+
+// ---------------------------------------------------------------------------
+// Platform Mode Seams (W1 — REQ-FOUND-001)
+//
+// These ports enable a moded binary: local (SQLite, nil TenantContext) and
+// server (Postgres, resolved Principal). They compile and unit-test in
+// isolation. NO caller adopts them in W1 — adoption is deferred to dependent
+// waves (W2+). See design ADR-01/ADR-02/ADR-05.
+// ---------------------------------------------------------------------------
+
+// TenantContext carries the resolved tenant/workspace/owner for a request.
+// In local mode this is nil; in server mode it is resolved from the
+// authenticated Principal (NEVER from client input — ADR-06/ADR-07).
+type TenantContext struct {
+	TenantID     string
+	WorkspaceID  string
+	OwnerSubject string
+}
+
+// SearchID is a request/session-scoped identifier for retrieval feedback
+// attribution (REQ-RET-001). Replaces the removed shared mutable search-query
+// field.
+type SearchID string
+
+// Tx abstracts a backend transaction. The concrete handle is exposed via
+// Handle() so TxParticipant implementations can enlist in it.
+type Tx interface {
+	Commit() error
+	Rollback() error
+	// Handle returns the backend-specific transaction handle.
+	// For SQLite this is *sql.Tx; for Postgres it is pgx.Tx.
+	// The `any` return type is intentional: it keeps domain free of any
+	// backend import (database/sql, pgx) so the port compiles in both
+	// local-only and server builds without build tags.
+	Handle() any
+}
+
+// TxParticipant enlists a store or service in a shared transaction.
+// Each participant runs its work via WithinTx using the same handle.
+type TxParticipant interface {
+	// WithinTx enlists this participant in the given transaction handle and
+	// runs fn within it. handle is the value returned by Tx.Handle().
+	WithinTx(ctx context.Context, handle any, fn func(context.Context) error) error
+}
+
+// UnitOfWork coordinates multiple TxParticipants within one logical transaction,
+// ensuring atomic cross-store saves (ADR-02, REQ-TX-001).
+type UnitOfWork interface {
+	// Do runs fn with all participants sharing ONE logical transaction.
+	// On any participant failure, all prior work is rolled back (REQ-TX-001).
+	// On SQLITE_BUSY, Do retries up to BusyRetryConfig.MaxRetries with capped
+	// backoff before returning a stable retryable error (REQ-TX-002).
+	Do(ctx context.Context, tctx *TenantContext, participants []TxParticipant, fn func(context.Context) error) error
+}
+
+// BusyRetryConfig bounds the SQLITE_BUSY retry behavior of a UnitOfWork
+// implementation (REQ-TX-002). A save MUST NOT block unbounded; the retry cap
+// and backoff ceiling keep latency within a measurable envelope (the envelope
+// itself is registered separately by the latency-budget task).
+type BusyRetryConfig struct {
+	// MaxRetries is the maximum number of application-level retries on a
+	// SQLITE_BUSY error after the driver-level busy_timeout has been exceeded.
+	// Default: 3. A value of 0 disables application-level retry (the driver
+	// busy_timeout is the only bound).
+	MaxRetries int
+
+	// BaseBackoff is the initial backoff duration before the first retry.
+	// Default: 5ms. Each subsequent retry multiplies the backoff by 2
+	// (exponential) up to MaxBackoff.
+	BaseBackoff time.Duration
+
+	// MaxBackoff caps the backoff duration for any single retry.
+	// Default: 50ms. This prevents a single retry from sleeping too long.
+	MaxBackoff time.Duration
+
+	// JitterFactor is the fraction of randomness added to each backoff
+	// (0.0–1.0) to decorrelate concurrent retries. Default: 0.2 (±20%).
+	JitterFactor float64
+}
+
+// DefaultBusyRetryConfig returns a BusyRetryConfig with the W2 defaults:
+// 3 retries, 5ms base backoff, 50ms cap, ±20% jitter. These keep total
+// worst-case retry latency well under the 5s driver busy_timeout.
+func DefaultBusyRetryConfig() BusyRetryConfig {
+	return BusyRetryConfig{
+		MaxRetries:   3,
+		BaseBackoff:  5 * time.Millisecond,
+		MaxBackoff:   50 * time.Millisecond,
+		JitterFactor: 0.2,
+	}
+}
+
+// Storage is the narrow port every backend (SQLite, Postgres) implements.
+// It provides backend identification, transaction initiation, and health.
+type Storage interface {
+	// Backend returns the backend identifier: "sqlite" or "postgres".
+	Backend() string
+	// BeginTx starts a new transaction.
+	BeginTx(ctx context.Context) (Tx, error)
+	// Health reports the current backend health status.
+	Health(ctx context.Context) Health
+}
+
+// Principal is the immutable authenticated identity resolved from a token
+// (REQ-ID-001). It is NEVER populated from client input — always from the
+// verified credential (ADR-08).
+type Principal struct {
+	Subject      string
+	Type         string // user, service_account, agent
+	OrgID        string
+	WorkspaceIDs []string
+	Roles        []string
+	Scopes       []string
+	AuthMethod   string // oidc, client_credentials, api_key, static
+	GrantDigest  string
+	GrantVersion int64
+	// ProjectIDs and ClassificationClearance are verified grants. They are
+	// intentionally separate from OAuth scopes: a client supplied project
+	// selector can never create either grant.
+	ProjectIDs              []string
+	ClassificationClearance []string
+}
+
+// ScopesCopy returns a defensive copy of the granted scopes.
+func (p Principal) ScopesCopy() []string { return append([]string(nil), p.Scopes...) }
+
+// WorkspacesCopy returns a defensive copy of the workspace grants.
+func (p Principal) WorkspacesCopy() []string { return append([]string(nil), p.WorkspaceIDs...) }
+
+// RolesCopy returns a defensive copy of the role grants.
+func (p Principal) RolesCopy() []string    { return append([]string(nil), p.Roles...) }
+func (p Principal) ProjectsCopy() []string { return append([]string(nil), p.ProjectIDs...) }
+func (p Principal) ClassificationClearanceCopy() []string {
+	return append([]string(nil), p.ClassificationClearance...)
+}
+
+// ModelInfo describes the embedding model that produced a vector.
+// Used for model-version namespacing to prevent dimension-mismatch
+// corruption (ADR-05, REQ-VEC-001).
+type ModelInfo struct {
+	Name       string
+	Dimension  int
+	Version    string
+	Normalized bool
+}
+
+// Health is the lightweight health status returned by Storage, VectorIndex,
+// and EmbeddingProvider ports.
+type Health struct {
+	Status  string // healthy, degraded, unhealthy
+	Message string
+}
+
+// EmbeddingProvider abstracts the embedding model (local Ollama, remote API).
+// Declared as a port so the retrieval engine and worker depend on the
+// interface, not a concrete provider (ADR-04/ADR-05).
+type EmbeddingProvider interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, ModelInfo, error)
+	ModelInfo() ModelInfo
+	Health(ctx context.Context) Health
+}
+
+// VectorIndex abstracts vector storage backends (sqlite_blob, qdrant,
+// pgvector). Each adapter declares Capabilities for strategy selection
+// (ADR-05, REQ-VEC-001).
+type VectorIndex interface {
+	ID() string
+	Upsert(ctx context.Context, points []VectorPoint) error
+	Search(ctx context.Context, q VectorQuery) ([]VectorCandidate, error)
+	Delete(ctx context.Context, ids []int64) error
+	Health(ctx context.Context) Health
+	Capabilities(ctx context.Context) (Capabilities, error)
+	Close() error
+}
+
+// Capabilities declares what a VectorIndex adapter supports, enabling
+// capability-driven strategy selection (filter push-down, batch size, etc.).
+type Capabilities struct {
+	IndexType       string   // sqlite_blob, qdrant, pgvector
+	DistanceMetrics []string // cosine, dot, euclidean
+	MaxDimensions   int
+	Filters         string // PreFilter, PostFilter, none
+	Hybrid          string // enabled, disabled
+	Namespaces      string // supported, unsupported
+	Consistency     string // strong, eventual
+	BatchUpsert     bool
+	MaxBatchSize    int
+}
+
+// VectorPoint is a single vector to upsert into a VectorIndex.
+type VectorPoint struct {
+	ID        int64
+	Vector    []float32
+	ModelInfo ModelInfo
+	Metadata  map[string]any
+}
+
+// VectorQuery is a similarity search request against a VectorIndex.
+type VectorQuery struct {
+	Vector    []float32
+	Limit     int
+	Threshold float64
+	Filters   map[string]any
+	Namespace string
+}
+
+// VectorCandidate is a single search result from a VectorIndex.
+type VectorCandidate struct {
+	ID         int64
+	Score      float64
+	Provenance string // adapter that produced this candidate
+}
+
+// IsVectorIndexHealthy reports whether idx is non-nil and reports a healthy
+// status. It is the W8 replacement for the legacy VectorRepository.IsAvailable()
+// bool: consumers gate expensive work (embedding generation, reindex loops) on
+// this check before calling Upsert/Search. A nil index or a degraded/unhealthy
+// adapter returns false (REQ-VEC-001 zero-CGO default: the sqlite_blob stub
+// reports unhealthy and operations return ErrVectorSearchDisabled).
+func IsVectorIndexHealthy(ctx context.Context, idx VectorIndex) bool {
+	if idx == nil {
+		return false
+	}
+	return idx.Health(ctx).Status == StatusHealthy
+}
+
+// Health status constants used by Storage, VectorIndex, and EmbeddingProvider
+// ports. Keeping them as typed constants (not magic strings) lets adapters and
+// consumers compare deterministically.
+const (
+	StatusHealthy   = "healthy"
+	StatusDegraded  = "degraded"
+	StatusUnhealthy = "unhealthy"
+)

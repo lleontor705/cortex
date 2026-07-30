@@ -12,18 +12,18 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/ollama"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/internal/ollama"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
+	"github.com/lleontor705/cortex/internal/projection/obsidian"
 	"github.com/lleontor705/cortex/internal/setup"
 	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/tui"
 	"github.com/lleontor705/cortex/internal/update"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -122,9 +122,9 @@ Commands:
   context [project]      Show recent memory context
   stats                  Show memory statistics
   setup [agent]          Install agent integration
-  import --from-engram   Import data from an Engram database
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
+  export --to-obsidian --vault PATH  Export a read-only Obsidian projection
   sync                   Sync memories via git-friendly chunks
   merge-projects         Merge project name variants into one canonical name
   reindex [--project P]  Generate vector embeddings for all observations
@@ -640,54 +640,17 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 
 func runImport(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		writeln(stderr, "usage: cortex import --from-engram --path PATH\n       cortex import --from-json --path FILE")
+		writeln(stderr, "usage: cortex import --from-json --path FILE")
 		return 1
 	}
 
 	switch args[0] {
-	case "--from-engram":
-		return importFromEngram(args[1:], stdout, stderr)
 	case "--from-json":
 		return importFromJSON(args[1:], stdout, stderr)
 	default:
-		writef(stderr, "unknown import source: %s (use --from-engram or --from-json)\n", args[0])
+		writef(stderr, "unknown import source: %s (use --from-json)\n", args[0])
 		return 1
 	}
-}
-
-func importFromEngram(args []string, stdout, stderr io.Writer) int {
-	path := ""
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--path" && i+1 < len(args) {
-			path = args[i+1]
-			i++
-		}
-	}
-	if path == "" {
-		writeln(stderr, "cortex: --path is required for --from-engram")
-		return 1
-	}
-
-	a, err := openApp()
-	if err != nil {
-		writef(stderr, "cortex: %v\n", err)
-		return 1
-	}
-	defer func() { _ = a.Close() }()
-
-	result, err := migration.ImportFromEngram(context.Background(), path, migration.EngramImportTarget{
-		Observations: a.Stores.Observations,
-		Sessions:     a.Stores.Sessions,
-		Prompts:      a.Stores.Prompts,
-	})
-	if err != nil {
-		writef(stderr, "cortex: %v\n", err)
-		return 1
-	}
-
-	writef(stdout, "Imported from Engram\n  Sessions:     %d\n  Observations: %d\n  Prompts:      %d\n",
-		result.Sessions, result.Observations, result.Prompts)
-	return 0
 }
 
 func importFromJSON(args []string, stdout, stderr io.Writer) int {
@@ -811,6 +774,11 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 }
 
 func runExport(args []string, stdout, stderr io.Writer) int {
+	for _, arg := range args {
+		if arg == "--to-obsidian" {
+			return runObsidianExport(args, stdout, stderr)
+		}
+	}
 	project := ""
 	output := ""
 
@@ -863,6 +831,47 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		writeln(stdout, string(data))
 	}
 
+	return 0
+}
+
+func runObsidianExport(args []string, stdout, stderr io.Writer) int {
+	vault, project := "", ""
+	includePersonal := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--vault":
+			if i+1 < len(args) {
+				vault = args[i+1]
+				i++
+			}
+		case "--project":
+			if i+1 < len(args) {
+				project = args[i+1]
+				i++
+			}
+		case "--include-personal":
+			includePersonal = true
+		}
+	}
+	if vault == "" {
+		writeln(stderr, "usage: cortex export --to-obsidian --vault PATH [--project PROJECT] [--include-personal]")
+		return 1
+	}
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+	r, err := obsidian.NewWriter(a.Stores.Observations, a.Stores.Graph, a.Stores.Entities, a.Stores.Scoring).Export(context.Background(), obsidian.Options{Vault: vault, Project: project, IncludePersonal: includePersonal})
+	if err != nil {
+		writef(stderr, "cortex: obsidian export: %v\n", err)
+		return 1
+	}
+	for _, warning := range r.Warnings {
+		writef(stderr, "warning: %s\n", warning)
+	}
+	writef(stdout, "Exported %d observations to Obsidian (%d skipped, %d stale)\n", r.Written, r.Skipped, r.Stale)
 	return 0
 }
 
@@ -1091,7 +1100,7 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if a.Stores.Vectors == nil || !a.Stores.Vectors.IsAvailable() {
+	if a.Stores.Vectors == nil || !domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
 		writef(stderr, "cortex: vector store not available.\nBuild with: go build -tags cortex_vectors ./cmd/cortex\n")
 		return 1
 	}
@@ -1156,7 +1165,14 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 			errors++
 			continue
 		}
-		if storeErr := a.Stores.Vectors.StoreEmbedding(ctx, o.ID, vec, a.Stores.Embeddings.Model()); storeErr != nil {
+		if storeErr := a.Stores.Vectors.Upsert(ctx, []domain.VectorPoint{{
+			ID:     o.ID,
+			Vector: vec,
+			ModelInfo: domain.ModelInfo{
+				Name:      a.Stores.Embeddings.Model(),
+				Dimension: a.Stores.Embeddings.Dimensions(),
+			},
+		}}); storeErr != nil {
 			errors++
 			continue
 		}
@@ -1214,7 +1230,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 	}
 
 	// 4. Vector store
-	if a.Stores.Vectors != nil && a.Stores.Vectors.IsAvailable() {
+	if domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
 		writef(stdout, "  [OK]   Vector store: enabled\n")
 	} else {
 		writef(stdout, "  [WARN] Vector store: disabled (build with -tags cortex_vectors)\n")
@@ -1236,7 +1252,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 				pct = float64(len(orphans)) / float64(stats.TotalObservations) * 100
 			}
 			if pct > 50 {
-				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use mem_relate to connect observations\n", len(orphans), pct)
+				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use cortex_relate to connect observations\n", len(orphans), pct)
 			} else {
 				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", len(orphans), pct)
 			}

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/lleontor705/cortex/internal/app"
 	"github.com/lleontor705/cortex/internal/domain"
-	_ "modernc.org/sqlite"
 )
 
 func TestRunSaveThenSearch(t *testing.T) {
@@ -108,37 +106,6 @@ func TestRunSetupCodexWritesConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "[mcp_servers.cortex]") {
 		t.Fatalf("config.toml missing [mcp_servers.cortex]: %q", string(raw))
-	}
-}
-
-func TestRunImportFromEngram(t *testing.T) {
-	engramPath := filepath.Join(t.TempDir(), "engram.db")
-	createEngramFixtureDB(t, engramPath)
-
-	cortexPath := filepath.Join(t.TempDir(), "cortex.db")
-	t.Setenv("CORTEX_DATABASE_PATH", cortexPath)
-	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-
-	code := Run([]string{"cortex", "import", "--from-engram", "--path", engramPath}, stdout, stderr)
-	if code != 0 {
-		t.Fatalf("import code = %d, stderr = %q", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Imported from Engram") {
-		t.Fatalf("import stdout = %q", stdout.String())
-	}
-
-	stdout.Reset()
-	stderr.Reset()
-
-	code = Run([]string{"cortex", "search", "JWT", "--project", "demo"}, stdout, stderr)
-	if code != 0 {
-		t.Fatalf("post-import search code = %d, stderr = %q", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "JWT migration") {
-		t.Fatalf("post-import search stdout = %q", stdout.String())
 	}
 }
 
@@ -347,68 +314,5 @@ func TestRunMergeProjectsMissingArgs(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("merge-projects stderr = %q", stderr.String())
-	}
-}
-
-func createEngramFixtureDB(t *testing.T, path string) {
-	t.Helper()
-
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	stmts := []string{
-		`CREATE TABLE sessions (
-			id TEXT PRIMARY KEY,
-			project TEXT NOT NULL,
-			directory TEXT NOT NULL,
-			started_at TEXT NOT NULL,
-			ended_at TEXT,
-			summary TEXT
-		);`,
-		`CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			sync_id TEXT,
-			session_id TEXT NOT NULL,
-			type TEXT NOT NULL,
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			tool_name TEXT,
-			project TEXT,
-			scope TEXT NOT NULL DEFAULT 'project',
-			topic_key TEXT,
-			normalized_hash TEXT,
-			revision_count INTEGER NOT NULL DEFAULT 1,
-			duplicate_count INTEGER NOT NULL DEFAULT 1,
-			last_seen_at TEXT,
-			confidence REAL NOT NULL DEFAULT 1.0,
-			source TEXT NOT NULL DEFAULT 'manual',
-			tags TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			deleted_at TEXT
-		);`,
-		`CREATE TABLE user_prompts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			sync_id TEXT,
-			session_id TEXT NOT NULL,
-			content TEXT NOT NULL,
-			project TEXT,
-			created_at TEXT NOT NULL
-		);`,
-		`INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
-		 VALUES ('s1', 'demo', '.', '2026-03-27T10:00:00Z', NULL, 'summary');`,
-		`INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, created_at, updated_at)
-		 VALUES ('s1', 'decision', 'JWT migration', 'Moved auth to JWT tokens', 'demo', 'project', 'architecture/auth', '2026-03-27T10:05:00Z', '2026-03-27T10:05:00Z');`,
-		`INSERT INTO user_prompts (session_id, content, project, created_at)
-		 VALUES ('s1', 'please migrate auth', 'demo', '2026-03-27T10:01:00Z');`,
-	}
-
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("db.Exec(%q) error = %v", stmt, err)
-		}
 	}
 }

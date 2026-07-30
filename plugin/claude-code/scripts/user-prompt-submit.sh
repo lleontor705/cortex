@@ -31,10 +31,10 @@ fi
 STATE_FILE="/tmp/${SESSION_KEY}"
 
 if [ ! -f "$STATE_FILE" ]; then
-  # First message — inject ToolSearch + mem_context instruction
+  # First message — inject ToolSearch + cortex_context instruction
   touch "$STATE_FILE" 2>/dev/null || true
 
-  TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__mem_save,mcp__plugin_cortex_cortex__mem_search,mcp__plugin_cortex_cortex__mem_context,mcp__plugin_cortex_cortex__mem_session_summary,mcp__plugin_cortex_cortex__mem_get_observation,mcp__plugin_cortex_cortex__mem_save_prompt,mcp__plugin_cortex_cortex__mem_relate,mcp__plugin_cortex_cortex__mem_graph,mcp__plugin_cortex_cortex__mem_search_hybrid,mcp__plugin_cortex_cortex__mem_revision_history"$'\n\n'"After loading tools, call mem_context to check for prior session history before responding."
+  TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__cortex_save,mcp__plugin_cortex_cortex__cortex_search,mcp__plugin_cortex_cortex__cortex_context,mcp__plugin_cortex_cortex__cortex_session_summary,mcp__plugin_cortex_cortex__cortex_get_observation,mcp__plugin_cortex_cortex__cortex_save_prompt,mcp__plugin_cortex_cortex__cortex_relate,mcp__plugin_cortex_cortex__cortex_graph,mcp__plugin_cortex_cortex__cortex_search_hybrid,mcp__plugin_cortex_cortex__cortex_revision_history"$'\n\n'"After loading tools, call cortex_context to check for prior session history before responding."
   OUTPUT=$(jq -n --arg msg "$TOOL_MSG" '{"systemMessage": $msg}')
 
   printf '%s\n' "$OUTPUT"
@@ -94,7 +94,7 @@ ELAPSED=$(( NOW_EPOCH - LAST_EPOCH ))
 # Nudge if > 15 minutes since last save
 if [ "$ELAPSED" -gt 900 ]; then
   OUTPUT=$(jq -n \
-    '{"systemMessage": "MEMORY REMINDER: It'\''s been over 15 minutes since your last save. If you'\''ve made decisions, discoveries, or completed significant work, call mem_save now."}')
+    '{"systemMessage": "MEMORY REMINDER: It'\''s been over 15 minutes since your last save. If you'\''ve made decisions, discoveries, or completed significant work, call cortex_save now."}')
 fi
 
 echo "$OUTPUT"
