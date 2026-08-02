@@ -1,2 +1,24 @@
+#!/usr/bin/env sh
+set -eu
+
+# Git Bash on Windows does not always inherit the machine Go PATH.
+if [ -d "/c/Program Files/Go/bin" ]; then
+  PATH="/c/Program Files/Go/bin:$PATH"
+fi
+if [ -d "$HOME/go/bin" ]; then
+  PATH="$HOME/go/bin:$PATH"
+fi
+export PATH
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "pre-push: Go is not available in PATH. Restart the shell or add the Go bin directory to PATH." >&2
+  exit 1
+fi
+
+if ! command -v golangci-lint >/dev/null 2>&1; then
+  echo "pre-push: golangci-lint is not available in PATH. Install v2.11.4 and add its bin directory to PATH." >&2
+  exit 1
+fi
+
 golangci-lint run ./...
 go test -v ./...
