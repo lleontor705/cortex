@@ -16,8 +16,8 @@ const (
 	// This is byte-identical to pre-v2 behavior.
 	ModeLocal Mode = "local"
 
-	// ModeServer runs the multi-tenant Postgres + OAuth + HTTP path.
-	// In W1 this is a compiled-but-inert stub; full wiring arrives in W11.
+	// ModeServer runs the multi-tenant PostgreSQL + authenticated HTTP path.
+	// cmd/cortex is the sole bridge to the server composition root.
 	ModeServer Mode = "server"
 )
 
@@ -26,11 +26,11 @@ const DefaultMode Mode = ModeLocal
 
 // Runtime holds the wired services for the selected Mode.
 //
-// In W1 only the Local path is populated. Server-mode fields (Postgres pool,
-// OIDC verifier, RBAC engine, audit chain, quota limiter, etc.) are added in W11.
+// This type is the local composition selector. The server runtime is owned by
+// internal/platform/server and wired directly by cmd/cortex.
 type Runtime struct {
 	// App is the local-mode composition root from internal/app.
-	// Non-nil when Mode == ModeLocal; nil for server mode (W11+).
+	// Non-nil when Mode == ModeLocal; nil for server mode.
 	App *app.App
 }
 
@@ -48,19 +48,14 @@ func (r *Runtime) Close() error {
 //
 //	(same SQLite database, same stores, same config defaults).
 //
-// ModeServer → W1 STUB: returns an error without starting any goroutine,
-//
-//	opening any listener, or constructing any Postgres/OIDC client.
-//	The full server composition root lands in W11.
+// ModeServer returns an error because this local-only API intentionally cannot
+// import the server composition root. cmd/cortex performs that bridge.
 func Select(mode Mode, ctx context.Context, opts app.Options) (*Runtime, error) {
 	switch mode {
 	case ModeLocal:
 		return Local(ctx, opts)
 	case ModeServer:
-		// W1 stub: server mode is compiled but completely inert.
-		// No goroutine, no network listener, no Postgres/OIDC client.
-		// Full wiring arrives in W11.
-		return nil, fmt.Errorf("server mode is not yet implemented in W1; use --mode local")
+		return nil, fmt.Errorf("server mode is wired by cmd/cortex, not platform.Select")
 	default:
 		return nil, fmt.Errorf("unknown mode %q: use --mode local or --mode server", mode)
 	}

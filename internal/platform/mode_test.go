@@ -85,16 +85,16 @@ func TestSelectLocalDelegatesToAppOpen(t *testing.T) {
 	}
 }
 
-// --- Select: server inert ---
+// --- Select: server boundary ---
 
 func TestSelectServerReturnsError(t *testing.T) {
 	ctx := context.Background()
 	_, err := Select(ModeServer, ctx, app.Options{InMemory: true})
 	if err == nil {
-		t.Fatal("Select(ModeServer) should return an error in W1")
+		t.Fatal("Select(ModeServer) should preserve the local/server boundary")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "not yet implemented") {
-		t.Errorf("Select(ModeServer) error = %q, want 'not yet implemented'", err.Error())
+	if !strings.Contains(strings.ToLower(err.Error()), "cmd/cortex") {
+		t.Errorf("Select(ModeServer) error = %q, want cmd/cortex bridge guidance", err.Error())
 	}
 }
 
@@ -102,7 +102,7 @@ func TestSelectServerReturnsNilRuntime(t *testing.T) {
 	ctx := context.Background()
 	rt, _ := Select(ModeServer, ctx, app.Options{InMemory: true})
 	if rt != nil {
-		t.Error("Select(ModeServer) should return nil Runtime in W1")
+		t.Error("Select(ModeServer) should return nil local Runtime")
 	}
 }
 

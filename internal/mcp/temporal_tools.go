@@ -54,10 +54,65 @@ func registerTemporalTools(srv *server.MCPServer, stores *Stores, allowlist map[
 			continue
 		}
 		fn := td.fn // capture for closure
-		tool := protocol.NewTool(td.name, protocol.WithDescription(td.desc))
+		tool := temporalTool(td.name, td.desc)
 		srv.AddTool(tool, func(ctx context.Context, req protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 			return fn(ctx, &req)
 		})
+	}
+}
+
+func temporalTool(name, description string) protocol.Tool {
+	desc := protocol.WithDescription(description)
+	requiredNumber := func(name, description string) protocol.ToolOption {
+		return protocol.WithNumber(name, protocol.Required(), protocol.Description(description))
+	}
+	requiredString := func(name, description string) protocol.ToolOption {
+		return protocol.WithString(name, protocol.Required(), protocol.Description(description))
+	}
+	switch name {
+	case "cortex_temporal_create_edge":
+		return protocol.NewTool(name, desc,
+			requiredNumber("from_obs_id", "Source observation ID"),
+			requiredNumber("to_obs_id", "Target observation ID"),
+			requiredString("relation_type", "references, relates_to, follows, supersedes, or contradicts"),
+			protocol.WithNumber("weight", protocol.Description("Relationship strength 0-10")),
+			protocol.WithNumber("confidence", protocol.Description("Confidence 0-1")),
+			protocol.WithString("source", protocol.Description("Edge source")),
+			protocol.WithString("reasoning", protocol.Description("Relationship rationale")),
+			protocol.WithString("valid_from", protocol.Description("RFC3339 validity start")),
+			protocol.WithString("invalid_at", protocol.Description("RFC3339 invalidation time")),
+			protocol.WithString("evolution_type", protocol.Description("original, modified, superseded, or contradicted")),
+			protocol.WithString("fact_state", protocol.Description("current, historical, deprecated, or superseded")),
+			protocol.WithString("change_reason", protocol.Description("Reason for the change")))
+	case "cortex_temporal_get_edges":
+		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"))
+	case "cortex_temporal_get_relevant":
+		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"), protocol.WithNumber("depth", protocol.Description("Traversal depth")))
+	case "cortex_temporal_create_snapshot":
+		return protocol.NewTool(name, desc, requiredString("snapshot_key", "Stable snapshot key"), requiredNumber("root_observation_id", "Root observation ID"), protocol.WithString("description", protocol.Description("Snapshot description")))
+	case "cortex_temporal_record_operation":
+		return protocol.NewTool(name, desc,
+			requiredString("session_id", "Session ID"), requiredString("operation_type", "Operation type"),
+			requiredString("timestamp", "RFC3339 operation timestamp"),
+			protocol.WithNumber("duration_ms", protocol.Description("Duration in milliseconds")),
+			protocol.WithNumber("result_count", protocol.Description("Result count")),
+			protocol.WithBoolean("success", protocol.Description("Whether the operation succeeded")),
+			protocol.WithString("error", protocol.Description("Error message")),
+			protocol.WithNumber("memory_usage_bytes", protocol.Description("Memory usage in bytes")),
+			protocol.WithNumber("observation_count", protocol.Description("Observation count")),
+			protocol.WithNumber("edge_count", protocol.Description("Edge count")),
+			protocol.WithNumber("query_complexity", protocol.Description("Query complexity score")),
+			protocol.WithNumber("confidence_score", protocol.Description("Confidence score")))
+	case "cortex_temporal_evaluate_quality":
+		return protocol.NewTool(name, desc, requiredString("session_id", "Session ID"), requiredString("evaluation_type", "relevance, completeness, consistency, temporal_accuracy, or overall"))
+	case "cortex_temporal_system_metrics":
+		return protocol.NewTool(name, desc, requiredString("session_id", "Session ID"), requiredString("from", "RFC3339 range start"), requiredString("to", "RFC3339 range end"))
+	case "cortex_temporal_evolution_path":
+		return protocol.NewTool(name, desc, requiredNumber("edge_id", "Edge ID"))
+	case "cortex_temporal_fact_state":
+		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"))
+	default:
+		return protocol.NewTool(name, desc)
 	}
 }
 
@@ -81,18 +136,18 @@ func NewTemporalToolsHandler(
 // CreateTemporalEdge creates an edge with temporal validity and evolution tracking.
 func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		FromObsID    int64   `json:"from_obs_id"`
-		ToObsID      int64   `json:"to_obs_id"`
-		RelationType string  `json:"relation_type"`
-		Weight       float64 `json:"weight"`
-		Confidence   float64 `json:"confidence"`
-		Source       string  `json:"source"`
-		Reasoning    string  `json:"reasoning"`
-		ValidFrom    string  `json:"valid_from"`    // ISO format string
-		InvalidAt    string  `json:"invalid_at"`    // ISO format string, optional
-		EvolutionType string `json:"evolution_type"`
-		FactState     string `json:"fact_state"`
-		ChangeReason  string `json:"change_reason"`
+		FromObsID     int64   `json:"from_obs_id"`
+		ToObsID       int64   `json:"to_obs_id"`
+		RelationType  string  `json:"relation_type"`
+		Weight        float64 `json:"weight"`
+		Confidence    float64 `json:"confidence"`
+		Source        string  `json:"source"`
+		Reasoning     string  `json:"reasoning"`
+		ValidFrom     string  `json:"valid_from"` // ISO format string
+		InvalidAt     string  `json:"invalid_at"` // ISO format string, optional
+		EvolutionType string  `json:"evolution_type"`
+		FactState     string  `json:"fact_state"`
+		ChangeReason  string  `json:"change_reason"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -118,15 +173,15 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	}
 
 	edge := &domain.Edge{
-		FromObsID:    params.FromObsID,
-		ToObsID:      params.ToObsID,
-		RelationType: params.RelationType,
-		Weight:       params.Weight,
-		Confidence:   params.Confidence,
-		Source:       params.Source,
-		Reasoning:    params.Reasoning,
-		ValidFrom:    validFrom,
-		InvalidAt:    invalidAt,
+		FromObsID:     params.FromObsID,
+		ToObsID:       params.ToObsID,
+		RelationType:  params.RelationType,
+		Weight:        params.Weight,
+		Confidence:    params.Confidence,
+		Source:        params.Source,
+		Reasoning:     params.Reasoning,
+		ValidFrom:     validFrom,
+		InvalidAt:     invalidAt,
 		EvolutionType: params.EvolutionType,
 		FactState:     params.FactState,
 		ChangeReason:  params.ChangeReason,
@@ -174,8 +229,8 @@ func (h *TemporalToolsHandler) GetTemporalEdges(ctx context.Context, req *protoc
 func (h *TemporalToolsHandler) GetTemporalRelevant(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
 		ObservationID int64  `json:"observation_id"`
-		At            string `json:"at"`           // ISO format string
-		Depth         int    `json:"depth"`        // Traversal depth
+		At            string `json:"at"`    // ISO format string
+		Depth         int    `json:"depth"` // Traversal depth
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -205,9 +260,9 @@ func (h *TemporalToolsHandler) GetTemporalRelevant(ctx context.Context, req *pro
 // CreateTemporalSnapshot creates a point-in-time snapshot of the knowledge graph.
 func (h *TemporalToolsHandler) CreateTemporalSnapshot(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SnapshotKey     string `json:"snapshot_key"`
+		SnapshotKey       string `json:"snapshot_key"`
 		RootObservationID int64  `json:"root_observation_id"`
-		Description     string `json:"description"`
+		Description       string `json:"description"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -231,18 +286,18 @@ func (h *TemporalToolsHandler) CreateTemporalSnapshot(ctx context.Context, req *
 // RecordOperation records an operation with performance metrics.
 func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SessionID          string    `json:"session_id"`
-		OperationType      string    `json:"operation_type"`
-		Duration           int64     `json:"duration_ms"`
-		ResultCount        int       `json:"result_count"`
-		Success            bool      `json:"success"`
-		Error              string    `json:"error"`
-		MemoryUsage        int64     `json:"memory_usage_bytes"`
-		Timestamp          string    `json:"timestamp"`  // ISO format
-		ObservationCount   int       `json:"observation_count"`
-		EdgeCount          int       `json:"edge_count"`
-		QueryComplexity    float64   `json:"query_complexity"`
-		ConfidenceScore    float64   `json:"confidence_score"`
+		SessionID        string  `json:"session_id"`
+		OperationType    string  `json:"operation_type"`
+		Duration         int64   `json:"duration_ms"`
+		ResultCount      int     `json:"result_count"`
+		Success          bool    `json:"success"`
+		Error            string  `json:"error"`
+		MemoryUsage      int64   `json:"memory_usage_bytes"`
+		Timestamp        string  `json:"timestamp"` // ISO format
+		ObservationCount int     `json:"observation_count"`
+		EdgeCount        int     `json:"edge_count"`
+		QueryComplexity  float64 `json:"query_complexity"`
+		ConfidenceScore  float64 `json:"confidence_score"`
 	}
 
 	if err := req.BindArguments(&params); err != nil {
@@ -256,18 +311,18 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 	}
 
 	metric := &domain.Metrics{
-		SessionID:         params.SessionID,
-		OperationType:     params.OperationType,
-		Duration:          params.Duration,
-		ResultCount:       params.ResultCount,
-		Success:           params.Success,
-		Error:             params.Error,
-		MemoryUsage:       params.MemoryUsage,
-		Timestamp:         timestamp,
-		ObservationCount:  params.ObservationCount,
-		EdgeCount:         params.EdgeCount,
-		QueryComplexity:   params.QueryComplexity,
-		ConfidenceScore:   params.ConfidenceScore,
+		SessionID:        params.SessionID,
+		OperationType:    params.OperationType,
+		Duration:         params.Duration,
+		ResultCount:      params.ResultCount,
+		Success:          params.Success,
+		Error:            params.Error,
+		MemoryUsage:      params.MemoryUsage,
+		Timestamp:        timestamp,
+		ObservationCount: params.ObservationCount,
+		EdgeCount:        params.EdgeCount,
+		QueryComplexity:  params.QueryComplexity,
+		ConfidenceScore:  params.ConfidenceScore,
 	}
 
 	if err := h.observabilityService.RecordOperation(ctx, metric); err != nil {
@@ -280,7 +335,7 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 // EvaluateMemoryQuality evaluates the quality of the memory system.
 func (h *TemporalToolsHandler) EvaluateMemoryQuality(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
-		SessionID    string `json:"session_id"`
+		SessionID      string `json:"session_id"`
 		EvaluationType string `json:"evaluation_type"` // relevance, completeness, consistency, temporal_accuracy, overall
 	}
 
@@ -306,8 +361,8 @@ func (h *TemporalToolsHandler) EvaluateMemoryQuality(ctx context.Context, req *p
 func (h *TemporalToolsHandler) GetSystemMetrics(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	var params struct {
 		SessionID string `json:"session_id"`
-		From      string `json:"from"`  // ISO format
-		To        string `json:"to"`    // ISO format
+		From      string `json:"from"` // ISO format
+		To        string `json:"to"`   // ISO format
 	}
 
 	if err := req.BindArguments(&params); err != nil {

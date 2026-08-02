@@ -346,8 +346,9 @@ func (r *SessionRepository) End(ctx context.Context, id, summary string) error {
 	})
 }
 func (r *SessionRepository) List(ctx context.Context, project string) (out []*domain.Session, err error) {
+	out = make([]*domain.Session, 0)
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) ORDER BY started_at DESC`, project, r.tenant.WorkspaceID)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND ($1='' OR project_key=$1) AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) ORDER BY started_at DESC`, project, r.tenant.WorkspaceID)
 		if e != nil {
 			return e
 		}

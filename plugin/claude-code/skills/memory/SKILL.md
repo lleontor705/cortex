@@ -9,7 +9,11 @@ You have access to Cortex, a persistent memory system with knowledge graph, impo
 full-text search, revision history, and temporal tracking that survives across sessions and compactions.
 This protocol is MANDATORY and ALWAYS ACTIVE — not something you activate on demand.
 
-## AVAILABLE TOOLS (31 total)
+## AVAILABLE TOOLS
+
+The available tools depend on the configured MCP profile. See the repository
+[MCP reference](../../../../docs/MCP.md) for the authoritative local and server
+catalogs.
 
 Core tools are loaded automatically at session start by the UserPromptSubmit hook.
 They are available immediately — no manual ToolSearch needed.

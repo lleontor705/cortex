@@ -20,6 +20,14 @@ Thumbs.db
 # Go
 vendor/
 
+# Web client
+/node_modules/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
 # Coverage profiles (go test -coverprofile / go tool cover).
 # The broad /coverage* pattern catches ad-hoc names like coverage-w8,
 # coverage.html, etc. without listing each typo individually.
@@ -36,4 +44,6 @@ vendor/
 !.github/
 !.claude-plugin/
 !.gitignore
+!.dockerignore
 !.goreleaser.yaml
+!web/.env.example

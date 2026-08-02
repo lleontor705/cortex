@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/internal/authz"
@@ -78,6 +79,9 @@ func (s *AuthorizedStore) UpdateObservation(ctx context.Context, o *domain.Obser
 	if err := s.authorizeObservation(ctx, authz.ActionWrite, o.ID); err != nil {
 		return err
 	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
+		return err
+	}
 	return s.store.observations().Update(ctx, o)
 }
 func (s *AuthorizedStore) DeleteObservation(ctx context.Context, id int64) error {
@@ -113,6 +117,111 @@ func (s *AuthorizedStore) BulkSaveObservations(ctx context.Context, observations
 	return s.store.observations().SaveBulk(ctx, observations)
 }
 
+// CreateSession creates a session in the authorized workspace context.
+func (s *AuthorizedStore) CreateSession(ctx context.Context, session *domain.Session) error {
+	if session == nil {
+		return domain.ErrInvalidInput
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, session.Project, s.store.principal.Subject, ""); err != nil {
+		return err
+	}
+	if session.StartedAt.IsZero() {
+		session.StartedAt = time.Now().UTC()
+	}
+	return (&SessionRepository{Store: s.store}).Create(ctx, session)
+}
+
+// ListSessions returns sessions visible in the authorized workspace.
+func (s *AuthorizedStore) ListSessions(ctx context.Context, project string) ([]*domain.Session, error) {
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, project, "", ""); err != nil {
+		return nil, err
+	}
+	return (&SessionRepository{Store: s.store}).List(ctx, project)
+}
+
+// GetServerStats returns counters scoped by the configured tenant and workspace.
+func (s *AuthorizedStore) GetServerStats(ctx context.Context) (*domain.ServerStats, error) {
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	if err := s.authorize(ctx, authz.ResourceGraph, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	stats := new(domain.ServerStats)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT
+				(SELECT count(*) FROM observations o JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND se.workspace_id=w.id),
+				(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id),
+				(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND ended_at IS NULL),
+				(SELECT count(*) FROM edges e JOIN observations o ON o.tenant_id=e.tenant_id AND o.id=e.from_observation_id JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE e.tenant_id=public.cortex_current_tenant() AND se.workspace_id=w.id),
+				(SELECT count(DISTINCT project_key) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND project_key <> '')
+			FROM workspaces w WHERE w.tenant_id=public.cortex_current_tenant() AND w.public_id=$1::uuid`, s.store.tenant.WorkspaceID).
+			Scan(&stats.Observations, &stats.Sessions, &stats.ActiveSessions, &stats.Edges, &stats.Projects)
+	})
+	return stats, err
+}
+
+// ListAuditEvents returns recent administrative audit entries for the workspace tenant.
+func (s *AuthorizedStore) ListAuditEvents(ctx context.Context, limit int) ([]*domain.AuditEntry, error) {
+	if err := s.authorize(ctx, authz.ResourceAdmin, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	entries := make([]*domain.AuditEntry, 0)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT public_id::text,COALESCE(actor_subject,''),action,resource_type,COALESCE(resource_id,''),COALESCE(reason,''),allowed,created_at FROM audit_events WHERE tenant_id=public.cortex_current_tenant() ORDER BY created_at DESC LIMIT $1`, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			entry := new(domain.AuditEntry)
+			if err := rows.Scan(&entry.ID, &entry.ActorSubject, &entry.Action, &entry.ResourceType, &entry.ResourceID, &entry.Reason, &entry.Allowed, &entry.CreatedAt); err != nil {
+				return err
+			}
+			entries = append(entries, entry)
+		}
+		return rows.Err()
+	})
+	return entries, err
+}
+
+// ListProjects returns project keys visible to the configured principal.
+func (s *AuthorizedStore) ListProjects(ctx context.Context) ([]string, error) {
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	projects := make([]string, 0)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT DISTINCT project_key FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND project_key <> '' ORDER BY project_key`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var project string
+			if err := rows.Scan(&project); err != nil {
+				return err
+			}
+			visible := false
+			for _, granted := range s.store.principal.ProjectIDs {
+				if granted == "*" || granted == project {
+					visible = true
+					break
+				}
+			}
+			if visible {
+				projects = append(projects, project)
+			}
+		}
+		return rows.Err()
+	})
+	return projects, err
+}
+
 func (s *AuthorizedStore) CreateGraphEdge(ctx context.Context, e *domain.Edge) error {
 	if e == nil {
 		return domain.ErrInvalidInput
@@ -145,6 +254,14 @@ func (s *AuthorizedStore) GetGraphEdge(ctx context.Context, id int64) (*domain.E
 		return nil, err
 	}
 	return s.store.graph().GetEdge(ctx, id)
+}
+
+func (s *AuthorizedStore) GetGraphEdgeByPublicID(ctx context.Context, publicID string) (*domain.Edge, error) {
+	edge, err := (&GraphRepository{Store: s.store}).GetEdgeByPublicID(ctx, publicID)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetGraphEdge(ctx, edge.ID)
 }
 func (s *AuthorizedStore) GetRelatedObservations(ctx context.Context, id int64, depth int) ([]*domain.Observation, error) {
 	if err := s.authorizeObservation(ctx, authz.ActionRead, id); err != nil {

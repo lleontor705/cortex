@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -131,5 +132,19 @@ func TestEmbeddingDimensions(t *testing.T) {
 		if got := embeddingDimensions(provider); got != want {
 			t.Errorf("%s=%d want %d", provider, got, want)
 		}
+	}
+}
+
+func TestServeStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := &Runtime{httpServer: &http.Server{Addr: "127.0.0.1:0", Handler: http.NewServeMux()}}
+	done := make(chan error, 1)
+	go func() { done <- rt.Serve(ctx) }()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close() after Serve = %v", err)
 	}
 }

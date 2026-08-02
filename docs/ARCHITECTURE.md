@@ -1,217 +1,104 @@
 # Architecture
 
-## How It Works
+## Runtime Modes
 
-```
-1. Agent completes significant work (bugfix, architecture decision, etc.)
-2. Agent calls mem_save → title, type, What/Why/Where/Learned
-3. Cortex persists to SQLite with FTS5 indexing + entity extraction
-4. Importance score auto-calculated (access + recency + edges + type - age)
-5. Optional: Agent calls mem_relate to create knowledge graph edges
-6. Next session: agent searches memory, gets relevant context + related observations
-```
+`cmd/cortex/main.go` is the only production entrypoint.
 
-## Session Lifecycle
+- Local mode is the default. `internal/cli` opens `internal/app`, which wires SQLite, domain services, stores, MCP stdio, local HTTP, and TUI.
+- Server mode is selected with `cortex --mode server`. `internal/platform/server` applies the PostgreSQL schema, creates an authorized store, and serves authenticated HTTP plus Streamable HTTP MCP.
+- `cmd/cortex` is the only package allowed to bridge local composition to `internal/platform/server`.
+- Local packages must remain zero-CGO and must not import PostgreSQL, authz/identity, Qdrant/pgvector, or server composition. `internal/app/arch_test.go` enforces this.
 
-```
-Session Start
-    ↓
-Agent works → proactive mem_save after decisions, bugs, discoveries
-    ↓
-Agent uses mem_search / mem_context to recall prior work
-    ↓
-Agent calls mem_relate to connect related observations
-    ↓
-Before ending: mem_session_summary (mandatory)
-    ↓
-Session End
+## Local Data Flow
+
+```text
+cmd/cortex -> internal/cli -> internal/app -> SQLite database
+                                      -> store/bundle
+                                      -> domain services
+                                      -> MCP stdio / local HTTP / TUI
 ```
 
-## Knowledge Graph
+`internal/domain` owns models, ports, and business services. `internal/store/*`
+implements persistence. `internal/store/bundle` coordinates cross-store local
+writes through `domain.UnitOfWork`.
 
-Observations can be connected with typed relationships:
+## Server Data Flow
 
-| Relation | Meaning |
-|----------|---------|
-| `references` | Direct reference to another observation |
-| `relates_to` | Related topic or concept |
-| `follows` | Sequential relationship |
-| `supersedes` | Replaces an older observation |
-| `contradicts` | Conflicting information |
-
-Use `mem_graph` to traverse connections from any observation with configurable depth (1-10).
-
-## Importance Scoring
-
-Each observation has a computed importance score (0.0 to 5.0):
-
-```
-score = base(0.5) + accessBonus + recencyBonus + edgeBonus + typeBonus - agePenalty
-
-accessBonus:  +0.1 per access (max 1.0)
-recencyBonus: +0.5 if accessed in last 24 hours
-edgeBonus:    +0.2 per incoming edge (max 1.0)
-typeBonus:    decision(+0.5), bugfix(+0.3), pattern(+0.2), discovery(+0.15)
-agePenalty:   -0.01 per day (max 0.5)
+```text
+HTTP or MCP request
+  -> bearer authentication
+  -> configured service principal and grants
+  -> authz.AuthorizedContext
+  -> postgres.AuthorizedStore operations
+  -> PostgreSQL transaction with tenant binding and RLS
 ```
 
-## Entity Linking
+Server transports receive operation capabilities only. They must not receive raw
+PostgreSQL repositories, transactions, scoring primitives, or client-selected
+tenant authority.
 
-When observations are saved, Cortex extracts entities from the content:
+The current server transport represents one configured service account; the
+bearer secret authenticates callers as that account. Tenant comes from its
+configured organization. Workspace, project, role, scope, ownership, and
+classification are checked as grants. PostgreSQL remains
+behind `AuthorizedStore`; architecture tests reject raw accessors.
 
-| Entity Type | Examples |
-|-------------|----------|
-| `file` | `src/auth/middleware.ts`, `internal/store/store.go` |
-| `url` | `https://api.example.com/docs` |
-| `package` | `github.com/spf13/viper`, `@scope/package` |
-| `symbol` | `func HandleSave`, `type Config` |
+## Storage And Migrations
 
-## Progressive Disclosure (3-Layer Pattern)
+Local startup is driven by the embedded forward-only baseline
+`migrations/v2/001_init.sql`:
 
-Token-efficient memory retrieval:
+1. `app.Open` probes an existing file read-only.
+2. v1, Engram, foreign, corrupt, partial, and checksum-mismatched databases are refused without mutation.
+3. The v2 baseline is applied atomically and records its SHA-256 identity in `cortex_meta`.
+4. Existing v2 databases must retain the same baseline checksum.
 
-1. **`mem_search`** — titles + 300-char previews (low token cost)
-2. **`mem_timeline`** — chronological context around a result (medium)
-3. **`mem_get_observation`** — full untruncated content (high)
+The root `migrations/001-014` files are retired v1 history. They do not drive
+local startup and must not be edited as a way to change the v2 schema. PostgreSQL
+uses the separate embedded `migrations/v2/100_server.sql` and its server ledger.
 
-## Memory Hygiene
+The v2 baseline is forward-only. Do not document or implement destructive local
+rollback as a normal upgrade path.
 
-- **Deduplication**: SHA-256 hash prevents duplicate observations within a time window
-- **Soft delete**: `deleted_at` field; hard delete requires explicit `hard_delete=true`
-- **Topic key upsert**: Same `topic_key` in same project updates existing observation
-- **Scope filtering**: `project` (shared) vs `personal` (private)
-- **Auto-archival**: Old observations with low importance scores are archived periodically
+## MCP
 
-## MCP Tools
+The supported namespace is `cortex_*`. Legacy `mem_*` names and Engram framing
+are intentionally rejected by tests.
 
-### Agent Profile (15 tools)
+Profiles are defined in `internal/mcp/server.go`:
 
-| Tool | Purpose | Loading |
-|------|---------|---------|
-| `mem_save` | Save observation | Eager |
-| `mem_search` | Full-text search | Eager |
-| `mem_context` | Recent session context | Eager |
-| `mem_session_summary` | End-of-session save | Eager |
-| `mem_get_observation` | Full content by ID | Eager |
-| `mem_save_prompt` | Save user prompt | Eager |
-| `mem_update` | Update by ID | Deferred |
-| `mem_suggest_topic_key` | Stable key for upserts | Deferred |
-| `mem_session_start` | Register session start | Deferred |
-| `mem_session_end` | Mark session complete | Deferred |
-| `mem_capture_passive` | Extract learnings | Deferred |
-| `mem_relate` | Create graph edge | Deferred |
-| `mem_graph` | Traverse graph | Deferred |
-| `mem_score` | Get importance score | Deferred |
-| `mem_search_hybrid` | FTS5 + vector search | Deferred |
+- `agent` contains ordinary memory, graph, scoring, revision, and project tools.
+- `admin` contains destructive and curation tools.
+- `temporal` contains temporal graph and observability tools.
 
-### Admin Profile (4 tools)
+Local MCP uses stdio. Server MCP uses Streamable HTTP at `/mcp` and requires the
+server bearer token.
 
-| Tool | Purpose |
-|------|---------|
-| `mem_delete` | Soft or hard delete |
-| `mem_stats` | Memory statistics |
-| `mem_timeline` | Chronological drill-in |
-| `mem_archive` | Archive observation |
+## HTTP
 
-### Tool Profiles
+Local `cortex serve` uses SQLite stores and binds to the configured local HTTP
+address. It refuses non-loopback binding without `http.token`; `/health` stays
+public.
 
-```bash
-cortex mcp                        # All 19 tools (default)
-cortex mcp --tools=agent          # 15 agent tools
-cortex mcp --tools=admin          # 4 admin tools
-cortex mcp --tools=agent,admin    # Combine profiles
-cortex mcp --tools=mem_save,mem_search  # Individual tools
-```
+Server HTTP uses PostgreSQL authorized operations. `/health` is public; `/api/*`
+and `/mcp` require a bearer token. Request bodies and result limits are bounded.
+The web dashboard uses read-only authorized operations for workspace statistics,
+sessions, visible project keys, and audit events. Project grants remain server-side
+principal authority and cannot be changed through the dashboard.
 
-## Topic Key Workflow
+## Vectors
 
-Topic keys enable evolving observations that update instead of creating duplicates:
+The default local build wires a degraded `sqlite_blob` stub so it remains
+zero-CGO. Build with `-tags cortex_vectors` for SQLite BLOB cosine scanning.
+Release artifacts enable this tag. Qdrant and pgvector are external,
+server-only adapters with separate integration build tags.
 
-```
-1. Agent saves "JWT auth middleware" with topic_key: architecture/auth-model
-2. Later, agent saves update with same topic_key → upsert (updates existing)
-3. Different topic? Use different key → new observation
-```
+## Configuration
 
-Use `mem_suggest_topic_key` to auto-generate stable keys with family heuristic:
-- `architecture/*` for design decisions
-- `bug/*` for fixes and incidents
-- `decision/*` for tradeoff choices
-- `pattern/*` for conventions
-- `config/*` for setup and infrastructure
+Configuration is YAML plus `CORTEX_*` environment overrides. Local defaults use
+`~/.cortex/cortex.db`. Server storage has separate fields for:
 
-## Project Structure
+- `server.storage.dsn`: non-superuser runtime connection.
+- `server.storage.migration_dsn`: privileged schema migration connection; falls back to `dsn` when omitted.
 
-```
-cmd/cortex/              CLI entry point
-internal/
-  app/                   Dependency wiring (config, DB, stores, archival)
-  cli/                   Command dispatch
-  config/                YAML + env var config (8 sections)
-  database/              SQLite connection manager (WAL, pure Go)
-  domain/
-    models.go            Core types (Observation, Session, Edge, EntityLink, ImportanceScore)
-    interfaces.go        Repository interfaces
-    memory/              Observation CRUD service
-    scoring/             Importance scoring formula
-    search/              FTS5 query sanitization
-    graph/               Knowledge graph BFS traversal
-    session/             Session lifecycle
-    lifecycle/           Auto-archival service
-    entity/              Entity extraction (regex-based)
-  store/
-    sqlite/              Observation + vector stores
-    session/             Session store
-    search/              FTS5 search (BM25 ranking)
-    prompt/              Prompt store
-    graph/               Knowledge graph store
-    scoring/             Importance scoring store
-    entity/              Entity link store
-  mcp/                   MCP server + 19 tool handlers
-  http/                  REST API (net/http stdlib)
-  tui/                   Terminal UI
-  migration/             Migration framework (up/down)
-  setup/                 Agent integration setup
-migrations/              SQL migrations (001-006)
-plugin/
-  claude-code/           Hooks, scripts, skills for Claude Code
-  opencode/              TypeScript plugin adapter
-testutil/                Test helpers (in-memory DB, fixtures, assertions)
-```
-
-## Database Schema
-
-6 migrations:
-
-| Migration | Tables |
-|-----------|--------|
-| 001_init | sessions, observations |
-| 002_fts | observations_fts (FTS5 virtual table + triggers) |
-| 003_graph | edges (knowledge graph relationships) |
-| 004_scoring | importance_scores (with auto-init trigger) |
-| 005_vectors | observation_embeddings (384-dim, optional) |
-| 006_entities | entity_links (extracted entities) |
-
-SQLite config: WAL mode, NORMAL sync, 64MB cache, foreign keys ON.
-
-## HTTP API
-
-Port: **7438** (env: `CORTEX_PORT`)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/health` | Health check |
-| GET | `/api/observations` | List observations |
-| POST | `/api/observations` | Create observation |
-| GET | `/api/observations/{id}` | Get by ID |
-| PUT | `/api/observations/{id}` | Update |
-| DELETE | `/api/observations/{id}` | Delete |
-| GET | `/api/sessions` | List sessions |
-| POST | `/api/sessions` | Create session |
-| POST | `/api/sessions/{id}/end` | End session |
-| GET | `/api/search?q=...` | Full-text search |
-| POST | `/api/graph/edges` | Create edge |
-| GET | `/api/graph/{id}/related` | Get related |
-| DELETE | `/api/graph/edges/{id}` | Delete edge |
-| GET | `/api/scores/{id}` | Get score |
-| POST | `/api/scores/{id}/recalculate` | Recalculate score |
+Never log DSNs, API keys, bearer tokens, grant digests, or other secrets.

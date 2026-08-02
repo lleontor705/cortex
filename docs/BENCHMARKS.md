@@ -2,6 +2,8 @@
 
 # Benchmarks
 
+> Historical result tables in this document are not release evidence unless they include a reproducible command, fixture/version, commit, and environment. Use the offline gate below as the current repository verification contract.
+
 ## What the baseline proves
 
 The committed baseline contracts prove that Cortex can validate a versioned,

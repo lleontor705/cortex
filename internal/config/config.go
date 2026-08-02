@@ -52,24 +52,30 @@ type Config struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Name             string               `yaml:"name" mapstructure:"name"`
-	Version          string               `yaml:"version" mapstructure:"version"`
-	Storage          ServerStorageConfig  `yaml:"storage" mapstructure:"storage"`
-	Provider         ServerProviderConfig `yaml:"provider" mapstructure:"provider"`
-	Secrets          ServerSecretsConfig  `yaml:"secrets" mapstructure:"secrets"`
-	TenantID         string               `yaml:"tenant_id" mapstructure:"tenant_id"`
-	WorkspaceID      string               `yaml:"workspace_id" mapstructure:"workspace_id"`
-	PrincipalSubject string               `yaml:"principal_subject" mapstructure:"principal_subject"`
-	GrantDigest      string               `yaml:"grant_digest" mapstructure:"grant_digest"`
-	GrantVersion     int64                `yaml:"grant_version" mapstructure:"grant_version"`
+	Name                    string               `yaml:"name" mapstructure:"name"`
+	Version                 string               `yaml:"version" mapstructure:"version"`
+	Storage                 ServerStorageConfig  `yaml:"storage" mapstructure:"storage"`
+	Provider                ServerProviderConfig `yaml:"provider" mapstructure:"provider"`
+	Secrets                 ServerSecretsConfig  `yaml:"secrets" mapstructure:"secrets"`
+	TenantID                string               `yaml:"tenant_id" mapstructure:"tenant_id"`
+	WorkspaceID             string               `yaml:"workspace_id" mapstructure:"workspace_id"`
+	PrincipalSubject        string               `yaml:"principal_subject" mapstructure:"principal_subject"`
+	GrantDigest             string               `yaml:"grant_digest" mapstructure:"grant_digest"`
+	GrantVersion            int64                `yaml:"grant_version" mapstructure:"grant_version"`
+	Roles                   []string             `yaml:"roles" mapstructure:"roles"`
+	Scopes                  []string             `yaml:"scopes" mapstructure:"scopes"`
+	ProjectIDs              []string             `yaml:"project_ids" mapstructure:"project_ids"`
+	ClassificationClearance []string             `yaml:"classification_clearance" mapstructure:"classification_clearance"`
+	BootstrapDevelopment    bool                 `yaml:"bootstrap_development" mapstructure:"bootstrap_development"`
 }
 
 // ServerStorageConfig contains server-only PostgreSQL connection settings.
 // It is intentionally separate from the local SQLite database config.
 type ServerStorageConfig struct {
-	Driver   string `yaml:"driver" mapstructure:"driver"`
-	DSN      string `yaml:"dsn" mapstructure:"dsn"`
-	MaxConns int32  `yaml:"max_conns" mapstructure:"max_conns"`
+	Driver       string `yaml:"driver" mapstructure:"driver"`
+	DSN          string `yaml:"dsn" mapstructure:"dsn"`
+	MigrationDSN string `yaml:"migration_dsn" mapstructure:"migration_dsn"`
+	MaxConns     int32  `yaml:"max_conns" mapstructure:"max_conns"`
 }
 
 // ServerProviderConfig selects server-side providers without constructing them.
@@ -109,10 +115,11 @@ type MCPConfig struct {
 
 // HTTPConfig holds HTTP server configuration
 type HTTPConfig struct {
-	Enabled bool   `yaml:"enabled" mapstructure:"enabled"`
-	Port    int    `yaml:"port" mapstructure:"port"`
-	Host    string `yaml:"host" mapstructure:"host"`
-	Token   string `yaml:"token" mapstructure:"token"`
+	Enabled        bool     `yaml:"enabled" mapstructure:"enabled"`
+	Port           int      `yaml:"port" mapstructure:"port"`
+	Host           string   `yaml:"host" mapstructure:"host"`
+	Token          string   `yaml:"token" mapstructure:"token"`
+	AllowedOrigins []string `yaml:"allowed_origins" mapstructure:"allowed_origins"`
 }
 
 // LoggingConfig holds logging configuration
@@ -359,12 +366,18 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.version", defaults.Server.Version)
 	v.SetDefault("server.storage.driver", defaults.Server.Storage.Driver)
 	v.SetDefault("server.storage.dsn", defaults.Server.Storage.DSN)
+	v.SetDefault("server.storage.migration_dsn", defaults.Server.Storage.MigrationDSN)
 	v.SetDefault("server.storage.max_conns", defaults.Server.Storage.MaxConns)
 	v.SetDefault("server.provider.embedding", defaults.Server.Provider.Embedding)
 	v.SetDefault("server.provider.vector", defaults.Server.Provider.Vector)
 	v.SetDefault("server.tenant_id", "")
 	v.SetDefault("server.grant_digest", "")
 	v.SetDefault("server.grant_version", int64(0))
+	v.SetDefault("server.roles", []string{})
+	v.SetDefault("server.scopes", []string{})
+	v.SetDefault("server.project_ids", []string{})
+	v.SetDefault("server.classification_clearance", []string{})
+	v.SetDefault("server.bootstrap_development", false)
 	v.SetDefault("server.workspace_id", "")
 	v.SetDefault("server.principal_subject", "")
 	v.SetDefault("server.secrets.signing_key", "")
@@ -385,6 +398,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http.port", defaults.HTTP.Port)
 	v.SetDefault("http.host", defaults.HTTP.Host)
 	v.SetDefault("http.token", defaults.HTTP.Token)
+	v.SetDefault("http.allowed_origins", []string{})
 
 	v.SetDefault("logging.level", defaults.Logging.Level)
 	v.SetDefault("logging.format", defaults.Logging.Format)
@@ -702,6 +716,7 @@ func (c *Config) String() string {
 	}
 	server := c.Server
 	server.Storage.DSN = redactDSNPassword(server.Storage.DSN)
+	server.Storage.MigrationDSN = redactDSNPassword(server.Storage.MigrationDSN)
 	server.Secrets.SigningKey = ""
 	server.Secrets.OIDCClientSecret = ""
 	httpCfg := c.HTTP

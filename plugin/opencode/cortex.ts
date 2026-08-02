@@ -52,6 +52,8 @@ const CORTEX_TOOLS = new Set([
   "cortex_search_hybrid",
   // Cortex additions
   "cortex_revision_history",
+  "cortex_consolidate",
+  "cortex_project_dna",
   "cortex_merge_projects",
   // Temporal (advanced)
   "cortex_temporal_create_edge",

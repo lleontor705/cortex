@@ -18,10 +18,17 @@ import (
 var cortexMCPTools = []string{
 	"mcp__plugin_cortex_cortex__cortex_capture_passive",
 	"mcp__plugin_cortex_cortex__cortex_context",
+	"mcp__plugin_cortex_cortex__cortex_consolidate",
 	"mcp__plugin_cortex_cortex__cortex_get_observation",
+	"mcp__plugin_cortex_cortex__cortex_graph",
+	"mcp__plugin_cortex_cortex__cortex_project_dna",
+	"mcp__plugin_cortex_cortex__cortex_relate",
+	"mcp__plugin_cortex_cortex__cortex_revision_history",
 	"mcp__plugin_cortex_cortex__cortex_save",
 	"mcp__plugin_cortex_cortex__cortex_save_prompt",
 	"mcp__plugin_cortex_cortex__cortex_search",
+	"mcp__plugin_cortex_cortex__cortex_search_hybrid",
+	"mcp__plugin_cortex_cortex__cortex_score",
 	"mcp__plugin_cortex_cortex__cortex_session_end",
 	"mcp__plugin_cortex_cortex__cortex_session_start",
 	"mcp__plugin_cortex_cortex__cortex_session_summary",
@@ -376,4 +383,3 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
-

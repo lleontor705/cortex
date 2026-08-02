@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -23,19 +24,23 @@ import (
 	"github.com/lleontor705/cortex/internal/migration"
 	"github.com/lleontor705/cortex/internal/server/external"
 	postgresstore "github.com/lleontor705/cortex/internal/store/postgres"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // Runtime owns every resource created by Open. Close is idempotent and follows
-// the dependency order: background lifecycle, vector client, SQL pool, then
-// migration handle. No transport or identity service is started in W11.
+// the dependency order: HTTP transport, background lifecycle, vector client,
+// SQL pool, then migration handle.
 type Runtime struct {
 	Config        *config.Config
-	MigrationDB   *sql.DB
 	Pool          *pgxpool.Pool
 	Vectors       domain.VectorIndex
 	Embeddings    embedding.Service
 	Lifecycle     *lifecycle.ArchivalService
+	httpServer    *http.Server
+	mcpTransport  *mcpserver.StreamableHTTPServer
 	stopLifecycle context.CancelFunc
+	transportOnce sync.Once
+	transportErr  error
 	closeOnce     sync.Once
 	closeErr      error
 }
@@ -48,7 +53,11 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	storage := cfg.Server.Storage
-	migrationDB, err := sql.Open("pgx", storage.DSN)
+	migrationDSN := storage.MigrationDSN
+	if migrationDSN == "" {
+		migrationDSN = storage.DSN
+	}
+	migrationDB, err := sql.Open("pgx", migrationDSN)
 	if err != nil {
 		return nil, fmt.Errorf("server: open PostgreSQL migration handle: %w", err)
 	}
@@ -66,6 +75,15 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	if err := m.Apply(ctx, migrationDB); err != nil {
 		return nil, fmt.Errorf("server: apply migration: %w", err)
 	}
+	if cfg.Server.BootstrapDevelopment {
+		if err := bootstrapDevelopmentData(ctx, migrationDB, cfg); err != nil {
+			return nil, fmt.Errorf("server: bootstrap development data: %w", err)
+		}
+	}
+	if err := migrationDB.Close(); err != nil {
+		return nil, fmt.Errorf("server: close PostgreSQL migration handle: %w", err)
+	}
+	cleanupSQL = false
 
 	poolCfg, err := pgxpool.ParseConfig(storage.DSN)
 	if err != nil {
@@ -83,7 +101,17 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("server: PostgreSQL health check: %w", err)
 	}
 
-	principal := domain.Principal{Subject: cfg.Server.PrincipalSubject, Type: "service_account", OrgID: cfg.Server.TenantID, WorkspaceIDs: []string{cfg.Server.WorkspaceID}, Scopes: []string{"workspaces:read"}, GrantDigest: cfg.Server.GrantDigest, GrantVersion: cfg.Server.GrantVersion}
+	roles := append([]string(nil), cfg.Server.Roles...)
+	scopes := append([]string(nil), cfg.Server.Scopes...)
+	projectIDs := append([]string(nil), cfg.Server.ProjectIDs...)
+	clearance := append([]string(nil), cfg.Server.ClassificationClearance...)
+	if cfg.Server.BootstrapDevelopment {
+		roles = []string{string(authz.RoleOwner)}
+		scopes = []string{"workspaces:read"}
+		projectIDs = []string{"*"}
+		clearance = []string{"*"}
+	}
+	principal := domain.Principal{Subject: cfg.Server.PrincipalSubject, Type: "service_account", OrgID: cfg.Server.TenantID, WorkspaceIDs: []string{cfg.Server.WorkspaceID}, ProjectIDs: projectIDs, Roles: roles, Scopes: scopes, ClassificationClearance: clearance, GrantDigest: cfg.Server.GrantDigest, GrantVersion: cfg.Server.GrantVersion}
 	audit, err := postgresstore.NewAuditSink(pool, cfg.Server.PrincipalSubject, cfg.Server.GrantDigest, cfg.Server.GrantVersion)
 	if err != nil {
 		pool.Close()
@@ -125,7 +153,22 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct system service: %w", err)
 	}
-	rt := &Runtime{Config: &cfg, MigrationDB: migrationDB, Pool: pool, Vectors: vec, Embeddings: emb}
+	handler, transport := newHTTPHandler(cfg, store, pool.Ping)
+	rt := &Runtime{
+		Config:     &cfg,
+		Pool:       pool,
+		Vectors:    vec,
+		Embeddings: emb,
+		httpServer: &http.Server{
+			Addr:              listenAddress(cfg.HTTP),
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      0, // Streamable HTTP MCP may keep SSE responses open.
+			IdleTimeout:       90 * time.Second,
+		},
+		mcpTransport: transport,
+	}
 	interval, parseErr := time.ParseDuration(cfg.Lifecycle.ArchiveCheckInterval)
 	if parseErr != nil || interval <= 0 {
 		interval = time.Hour
@@ -134,8 +177,44 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	if cfg.Lifecycle.EnableAutoArchive {
 		rt.stopLifecycle = rt.Lifecycle.Start(ctx)
 	}
-	cleanupSQL = false
 	return rt, nil
+}
+
+// bootstrapDevelopmentData creates the minimum tenant fixtures needed by the
+// Docker smoke stack. It is opt-in and uses the privileged migration handle;
+// production deployments must provision these records through their control
+// plane instead of enabling this flag.
+func bootstrapDevelopmentData(ctx context.Context, db *sql.DB, cfg config.Config) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `GRANT cortex_app TO cortex_test`); err != nil {
+		return fmt.Errorf("application role: %w", err)
+	}
+
+	var organizationID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO organizations (public_id, tenant_id, name)
+		VALUES ($1::uuid, $2::uuid, 'Cortex Docker Development')
+		ON CONFLICT (tenant_id) DO UPDATE SET public_id = EXCLUDED.public_id
+		RETURNING id`, cfg.Server.TenantID, cfg.Server.TenantID).Scan(&organizationID); err != nil {
+		return fmt.Errorf("organization: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workspaces (public_id, tenant_id, organization_id, name)
+		VALUES ($1::uuid, $2::uuid, $3, 'Cortex Docker Workspace')
+		ON CONFLICT (tenant_id, public_id) DO UPDATE SET organization_id = EXCLUDED.organization_id`, cfg.Server.WorkspaceID, cfg.Server.TenantID, organizationID); err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO actor_subjects (public_id, tenant_id, subject, actor_type, grant_version, grant_digest)
+		VALUES ($1::uuid, $2::uuid, 'cortex-docker-service', 'service_account', $3, $4)
+		ON CONFLICT (tenant_id, subject) DO UPDATE SET public_id = EXCLUDED.public_id, active = true, revoked_at = NULL, grant_version = EXCLUDED.grant_version, grant_digest = EXCLUDED.grant_digest`, cfg.Server.PrincipalSubject, cfg.Server.TenantID, cfg.Server.GrantVersion, cfg.Server.GrantDigest); err != nil {
+		return fmt.Errorf("actor subject: %w", err)
+	}
+	return tx.Commit()
 }
 
 func validateConfig(cfg config.Config) error {
@@ -162,6 +241,18 @@ func validateConfig(cfg config.Config) error {
 	if cfg.Server.GrantVersion <= 0 {
 		return errors.New("server: grant_version is required")
 	}
+	if !cfg.Server.BootstrapDevelopment && len(cfg.Server.Roles) == 0 && len(cfg.Server.Scopes) == 0 {
+		return errors.New("server: at least one configured role or scope is required")
+	}
+	if cfg.HTTP.Port < 1 || cfg.HTTP.Port > 65535 {
+		return errors.New("server: http.port must be between 1 and 65535")
+	}
+	if !cfg.HTTP.Enabled {
+		return errors.New("server: http.enabled must be true for HTTP and MCP transports")
+	}
+	if cfg.HTTP.Token == "" {
+		return errors.New("server: http.token is required")
+	}
 	return nil
 }
 
@@ -183,6 +274,16 @@ func (r *Runtime) Close() error {
 	}
 	r.closeOnce.Do(func() {
 		var errs []error
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := r.shutdownTransport(shutdownCtx); err != nil {
+			errs = append(errs, err)
+		}
+		if r.httpServer != nil {
+			if err := r.httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs = append(errs, err)
+			}
+		}
 		if r.stopLifecycle != nil {
 			r.stopLifecycle()
 			if r.Lifecycle != nil {
@@ -204,12 +305,19 @@ func (r *Runtime) Close() error {
 		if r.Pool != nil {
 			r.Pool.Close()
 		}
-		if r.MigrationDB != nil {
-			if err := r.MigrationDB.Close(); err != nil {
-				errs = append(errs, err)
-			}
-		}
 		r.closeErr = errors.Join(errs...)
 	})
 	return r.closeErr
+}
+
+func (r *Runtime) shutdownTransport(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.transportOnce.Do(func() {
+		if r.mcpTransport != nil {
+			r.transportErr = r.mcpTransport.Shutdown(ctx)
+		}
+	})
+	return r.transportErr
 }

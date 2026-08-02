@@ -1,5 +1,5 @@
 -- Bootstrap test logins before the server migration runs.
--- Role creation is idempotent because the migration owns the NOLOGIN roles too.
+-- Role creation is idempotent because the migration also owns the NOLOGIN roles.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cortex_admin') THEN

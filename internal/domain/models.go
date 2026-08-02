@@ -56,6 +56,27 @@ type Session struct {
 	Summary   string     `json:"summary,omitempty"`
 }
 
+// ServerStats contains tenant/workspace-scoped counters for the server dashboard.
+type ServerStats struct {
+	Observations   int `json:"observations"`
+	Sessions       int `json:"sessions"`
+	ActiveSessions int `json:"active_sessions"`
+	Edges          int `json:"edges"`
+	Projects       int `json:"projects"`
+}
+
+// AuditEntry is the public, non-hash portion of an authorization audit event.
+type AuditEntry struct {
+	ID           string    `json:"id"`
+	ActorSubject string    `json:"actor_subject"`
+	Action       string    `json:"action"`
+	ResourceType string    `json:"resource_type"`
+	ResourceID   string    `json:"resource_id"`
+	Reason       string    `json:"reason"`
+	Allowed      bool      `json:"allowed"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 // Edge represents a relationship between two observations in the knowledge graph.
 // Edges enable semantic navigation and discovery of related knowledge with temporal awareness.
 type Edge struct {

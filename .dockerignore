@@ -1,0 +1,9 @@
+.git
+.github
+.husky
+node_modules
+web/node_modules
+web/dist
+bin
+coverage*
+*.db

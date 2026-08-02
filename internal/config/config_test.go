@@ -80,11 +80,12 @@ logging:
 			name:       "environment variable override",
 			configYAML: "",
 			envVars: map[string]string{
-				"CORTEX_SERVER_NAME":   "env-server",
-				"CORTEX_HTTP_PORT":     "3000",
-				"CORTEX_HTTP_TOKEN":    "env-token",
-				"CORTEX_LOGGING_LEVEL": "error",
-				"CORTEX_DATABASE_PATH": "/custom/path.db",
+				"CORTEX_SERVER_NAME":          "env-server",
+				"CORTEX_HTTP_PORT":            "3000",
+				"CORTEX_HTTP_TOKEN":           "env-token",
+				"CORTEX_HTTP_ALLOWED_ORIGINS": "http://localhost:5173",
+				"CORTEX_LOGGING_LEVEL":        "error",
+				"CORTEX_DATABASE_PATH":        "/custom/path.db",
 			},
 			wantErr: false,
 			checkFunc: func(t *testing.T, cfg *Config) {
@@ -96,6 +97,9 @@ logging:
 				}
 				if cfg.HTTP.Token != "env-token" {
 					t.Errorf("expected HTTP token 'env-token', got '%s'", cfg.HTTP.Token)
+				}
+				if len(cfg.HTTP.AllowedOrigins) != 1 || cfg.HTTP.AllowedOrigins[0] != "http://localhost:5173" {
+					t.Errorf("expected browser origin, got %v", cfg.HTTP.AllowedOrigins)
 				}
 				if cfg.Logging.Level != "error" {
 					t.Errorf("expected logging level 'error', got '%s'", cfg.Logging.Level)
@@ -825,12 +829,13 @@ func TestConfigStringRedactsAllCredentialFields(t *testing.T) {
 	cfg := validBaseline()
 	cfg.HTTP.Token = "http-secret"
 	cfg.Server.Storage.DSN = "postgres://u:storage-secret@db/cortex"
+	cfg.Server.Storage.MigrationDSN = "postgres://u:migration-secret@db/cortex"
 	cfg.Server.Secrets.SigningKey = "signing-secret"
 	cfg.Server.Secrets.OIDCClientSecret = "oidc-secret"
 	cfg.Vector.Qdrant.APIKey = "qdrant-secret"
 	cfg.Vector.Pgvector.DSN = "postgres://u:vector-secret@db/cortex"
 	s := cfg.String()
-	for _, secret := range []string{"http-secret", "storage-secret", "signing-secret", "oidc-secret", "qdrant-secret", "vector-secret"} {
+	for _, secret := range []string{"http-secret", "storage-secret", "migration-secret", "signing-secret", "oidc-secret", "qdrant-secret", "vector-secret"} {
 		if strings.Contains(s, secret) {
 			t.Fatalf("secret %q leaked: %s", secret, s)
 		}

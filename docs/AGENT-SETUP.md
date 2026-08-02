@@ -106,9 +106,15 @@ Add to your agent's MCP configuration:
 Control which tools are loaded:
 
 ```bash
-cortex mcp                          # All 19 tools (default)
-cortex mcp --tools=agent            # 15 agent tools (for coding sessions)
-cortex mcp --tools=admin            # 4 admin tools (delete, stats, timeline, archive)
-cortex mcp --tools=agent,admin      # Combine profiles
-cortex mcp --tools=mem_save,mem_search  # Individual tools
+  cortex mcp                          # All local tools (default)
+  cortex mcp --tools=agent            # Agent profile for coding sessions
+  cortex mcp --tools=admin            # Admin profile for curation
+  cortex mcp --tools=temporal         # Temporal and observability profile
+  cortex mcp --tools=agent,admin      # Combine profiles
+  cortex mcp --tools=cortex_save,cortex_search  # Individual tools
 ```
+
+Server deployments expose an authenticated subset of the Cortex-native namespace
+through Streamable HTTP at `/mcp`. The server does not load the local profiles;
+see [MCP.md](MCP.md) for its exact nine-tool catalog. Use a bearer token and do
+not send `mem_*` tool names.

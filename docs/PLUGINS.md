@@ -64,8 +64,8 @@ The SKILL.md file defines mandatory behaviors for the agent:
 
 - **Proactive saves**: After decisions, bugfixes, discoveries, patterns, preferences
 - **Search triggers**: When user recalls, when starting related work, on first message
-- **Session close**: Mandatory `mem_session_summary` with Goal/Discoveries/Accomplished/Next Steps/Relevant Files
-- **Knowledge graph**: Use `mem_relate` to connect related observations
+- **Session close**: Mandatory `cortex_session_summary` with Goal/Discoveries/Accomplished/Next Steps/Relevant Files
+- **Knowledge graph**: Use `cortex_relate` to connect related observations
 - **Compaction recovery**: 4-step mandatory protocol
 
 ## OpenCode Plugin
@@ -96,9 +96,7 @@ The system prompt is appended to the last existing system message (not pushed as
 
 ## Privacy
 
-Content wrapped in `<private>...</private>` tags is stripped before storage:
-- **Plugin level**: `stripPrivateTags()` redacts before HTTP call
-- **Store level**: Go binary also strips as double safety
+Content wrapped in `<private>...</private>` tags is stripped by the OpenCode plugin before its HTTP call. This is plugin-specific behavior; other MCP/HTTP clients do not automatically redact those tags.
 
 ```
 <private>API_KEY=sk-1234</private>  →  [REDACTED]

@@ -1,245 +1,54 @@
-# Cortex — Agent Skills Index
+# Cortex Agent Guide
 
-When working on this project, load the relevant skill(s) BEFORE writing any code.
+## Sources Of Truth
 
-## How to Use
+- This is a Go repository; `package.json` exists only to install Husky. `npm test` intentionally fails. Use the Makefile, Go commands, and `.github/workflows/ci.yml` for verification.
+- Use Go 1.26.5 (pinned by `go.mod` and CI) and golangci-lint v2.11.4 (pinned by CI).
+- `AGENTS.md` is the canonical engineering guide. `CLAUDE.md` only points here; current product references live under `docs/`.
 
-1. Check the trigger column to find skills that match your current task
-2. Load the skill by reading the SKILL.md file at the listed path
-3. Follow ALL patterns and rules from the loaded skill
-4. Multiple skills can apply simultaneously
+## Runtime Boundaries
 
-## Project Overview
+- `cmd/cortex/main.go` is the production entrypoint. Default/local mode dispatches to `internal/cli`, whose commands open the SQLite composition in `internal/app`.
+- `internal/domain` owns models, ports, and business services; `internal/store/*` implements persistence; `internal/store/bundle` is the dependency bundle used by local CLI, MCP, HTTP, and TUI paths.
+- Preserve the architecture gate in `internal/app/arch_test.go`: local code must remain zero-CGO and must not import PostgreSQL, authz/identity, Qdrant/pgvector, or `internal/platform/server`. `cmd/cortex` is the sole allowed bridge to server composition.
+- `cortex --mode server` serves the PostgreSQL composition over authenticated HTTP (`/api/*`) and Streamable HTTP MCP (`/mcp`); it is distinct from the SQLite-backed local `serve` command.
+- Server persistence must remain behind `AuthorizedStore`/`AuthorizedContext`. Tenant and workspace come from verified principal grants, never client input; do not expose raw PostgreSQL repositories or transaction/scoring accessors from the server runtime.
+- Local MCP tools and profiles are defined in `internal/mcp/server.go`; server MCP is a separate authenticated subset in `internal/platform/server/http.go`. The supported namespace is `cortex_*`; tests explicitly reject legacy `mem_*` names and Engram framing. Profiles are local-only: `agent`, `admin`, and `temporal`.
 
-Cortex is a next-generation memory server for AI coding assistants, built on Engram's foundation with enhanced features:
+## Schema And Vectors
 
-- **Core**: SQLite + FTS5 full-text search (Engram-compatible)
-- **New**: Knowledge graph, importance scoring, auto-archival, vector search
-- **Interface**: MCP server, HTTP API, CLI, TUI
-- **Goal**: 100% API compatibility with Engram + advanced memory features
+- Local startup is driven by the embedded, forward-only `migrations/v2/001_init.sql` baseline. The root `migrations/001-014` files are retired v1 history and do not drive startup.
+- `app.Open` performs a read-only compatibility probe before opening SQLite for writes. Existing v1, Engram, foreign, corrupt, or checksum-mismatched databases must be refused without mutation; there is no automatic v1 upgrade.
+- The raw v2 SQL is SHA-256 identified in `cortex_meta`. Editing `migrations/v2/001_init.sql` changes the identity and makes existing v2 databases fail validation. PostgreSQL uses the separate embedded `migrations/v2/100_server.sql` and migration ledger.
+- Default builds wire a degraded `sqlite_blob` vector stub. Build/test with `-tags cortex_vectors` for the functional SQLite BLOB cosine-scan adapter. Release artifacts enable this tag; ordinary `make build` does not.
+- External vector adapters are server-only. Their opt-in suites use `qdrant_integration` and `pgvector_integration`; do not silently fall back between providers.
 
-## Architecture Principles
+## Commands
 
-1. **Compatibility First**: All 14 Engram MCP tools must produce identical outputs
-2. **Single Binary**: Zero external runtime dependencies
-3. **SQLite-First**: All data in SQLite with FTS5, relationships via foreign keys
-4. **Configuration Flexibility**: YAML + environment variables with sensible defaults
-5. **Test Coverage**: Minimum 70% coverage, integration tests for critical paths
-6. **Performance**: Sub-10ms search on 10K+ observations
+```bash
+go mod download
+make build                 # bin/cortex; default zero-CGO vector stub
+make fmt                   # gofmt -s -w .
+golangci-lint run ./...
+go test -v -count=1 ./...  # CI unit/default gate
+```
 
-## Package Responsibilities
+- Run one package/test with `go test -v -count=1 ./internal/<pkg> -run '^TestName$'`.
+- Run a benchmark with `go test -bench=. -run '^$' ./path/to/package`.
+- The Husky pre-push order is lint, then `go test -v ./...`. Before broad changes, also use the CI race gate: `go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp`.
+- Retrieval changes must pass the offline gate: `go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline`. It needs no model, dataset download, or network.
+- Obsidian/path changes need the Windows/macOS portability gate: `go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'`.
 
-| Package | Responsibility | Key Types |
-|---------|---------------|-----------|
-| `cmd/cortex` | CLI entry point, command routing | CLI flags, subcommands |
-| `internal/store` | SQLite storage layer, migrations | Store, Observation, Session |
-| `internal/search` | FTS5 + vector search, RRF fusion | Searcher, HybridSearcher |
-| `internal/graph` | Knowledge graph, relationships, entities | GraphStore, Relationship, Entity |
-| `internal/lifecycle` | Importance scoring, archival | Scorer, Archiver |
-| `internal/mcp` | MCP server implementation | Server, Tool handlers |
-| `internal/http` | REST API endpoints | Handler, routes |
-| `internal/config` | Configuration management | Config, validation |
-| `internal/tui` | Terminal UI (BubbleTea) | Model, views |
+## Integration Tests
 
-## Key Patterns
+- Complete tagged CI suite: `go test -v -count=1 -tags "integration postgres_integration" ./...`. The meaningful build constraint is `postgres_integration`; MCP and sync files named `integration_test.go` already run in the default suite.
+- PostgreSQL integration requires PostgreSQL 16 plus `CORTEX_TEST_POSTGRES_DSN`, `CORTEX_TEST_POSTGRES_MIGRATION_DSN`, and `CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN`. Missing DSNs fail rather than skip. Bootstrap the non-superuser/RLS roles with `scripts/postgres/bootstrap-authz.sql` as CI does.
+- CI's coverage gate includes PostgreSQL: `go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...`; total coverage must be at least 70%.
+- Optional adapter checks: `go test -v -count=1 -tags cortex_vectors ./internal/vector/sqlite_blob`, `go test -v -count=1 -tags qdrant_integration ./internal/vector/qdrant`, and `go test -v -count=1 -tags pgvector_integration ./internal/vector/pgvector`.
 
-### Storage Layer
-- Use `internal/store` for all database operations
-- Transaction boundaries: one transaction per business operation
-- Soft delete by default (hard delete requires explicit flag)
-- FTS5 triggers keep index synchronized automatically
+## Change Conventions
 
-### Search
-- FTS5 is primary search mechanism (always available)
-- Vector search is optional (requires sqlite-vec compile flag)
-- Hybrid search uses Reciprocal Rank Fusion (RRF) with k=60
-- Query sanitization: wrap terms in double quotes to prevent FTS5 syntax errors
-
-### Knowledge Graph
-- Relationships: `related_to`, `contradicts`, `supersedes`, `depends_on`, `derived_from`
-- Entity types: `file`, `package`, `symbol`, `url`, `concept`
-- Traversal: depth-limited BFS with visited set to prevent cycles
-- Relationships persist even if observations are soft-deleted
-
-### Importance Scoring
-- Score = base_weight × time_decay × reference_factor
-- Time decay: exponential with configurable half-life (default 30 days)
-- Reference counting: increment on search result or direct retrieval
-- Scoring is lazy (calculated on demand, not stored)
-
-### MCP Tools
-- 14 Engram tools: identical signatures, identical response formats
-- 5 Cortex-exclusive tools: graph, scoring, archival, hybrid search
-- Tool profiles: `agent` (11 tools), `admin` (3 tools), or custom combinations
-- Response format: human-readable text, not JSON
-
-### Configuration
-- YAML file at `~/.cortex/config.yaml`
-- Environment variables: `CORTEX_<SECTION>_<KEY>` (e.g., `CORTEX_DATABASE_PATH`)
-- Validation: fail-fast on invalid config, clear error messages
-- Defaults: all values have sensible defaults
-
-## Testing Requirements
-
-### Unit Tests
-- Test coverage >= 70%
-- Test edge cases: empty results, invalid inputs, boundary conditions
-- Use table-driven tests for multiple scenarios
-
-### Integration Tests
-- Generic integration tests use `integration`; PostgreSQL integration tests use
-  `postgres_integration`. Run the complete tagged suite with
-  `go test -tags "integration postgres_integration" ./...` and provide
-  `CORTEX_TEST_POSTGRES_DSN`.
-- Test against real SQLite database
-- Cover: migrations, FTS5 triggers, graph relationships, archival
-
-### Benchmark Tests
-- Located in `*_test.go` files with `Benchmark` prefix
-- Run with `go test -bench=.`
-- Focus on: search performance, scoring calculation, graph traversal
-
-### Compatibility Tests
-- Compare Cortex vs Engram outputs for identical inputs
-- Test all 14 MCP tools with various parameter combinations
-- Verify response format matches exactly (including whitespace)
-
-## Documentation Standards
-
-### Code Comments
-- Exported types/functions: document purpose, parameters, return values
-- Complex algorithms: explain the "why" not just the "what"
-- SQL queries: document expected columns and their types
-
-### README.md
-- Keep Quick Start section up to date
-- Include examples for common use cases
-- Link to detailed docs for advanced topics
-
-### API Documentation
-- MCP tools: description, parameters, examples in tool schema
-- HTTP endpoints: request/response schemas, error codes
-- Configuration: all options with types and defaults
-
-### Migration Guides
-- Document breaking changes between versions
-- Provide step-by-step upgrade instructions
-- Include rollback procedures when applicable
-
-## Skills
-
-| Skill | Trigger | Path |
-|-------|---------|------|
-| `cortex-architecture-guardrails` | Any change affecting system boundaries, ownership, state flow, or cross-package responsibilities | [`skills/architecture-guardrails/SKILL.md`](skills/architecture-guardrails/SKILL.md) |
-| `cortex-mcp-parity` | Changes to MCP tool signatures, response formats, or behavior | [`skills/mcp-parity/SKILL.md`](skills/mcp-parity/SKILL.md) |
-| `cortex-knowledge-graph` | Working with relationships, entities, or graph traversal | [`skills/knowledge-graph/SKILL.md`](skills/knowledge-graph/SKILL.md) |
-| `cortex-search-engine` | FTS5 queries, vector search, hybrid search, or result ranking | [`skills/search-engine/SKILL.md`](skills/search-engine/SKILL.md) |
-| `cortex-lifecycle` | Importance scoring, auto-archival, or reference counting | [`skills/lifecycle/SKILL.md`](skills/lifecycle/SKILL.md) |
-| `cortex-storage-layer` | SQLite schema changes, migrations, or store methods | [`skills/storage-layer/SKILL.md`](skills/storage-layer/SKILL.md) |
-| `cortex-configuration` | Config file changes, environment variables, or validation | [`skills/configuration/SKILL.md`](skills/configuration/SKILL.md) |
-| `cortex-testing` | Writing or modifying tests, improving coverage | [`skills/testing/SKILL.md`](skills/testing/SKILL.md) |
-| `cortex-migration` | Engram migration logic, data transformation, or compatibility | [`skills/migration/SKILL.md`](skills/migration/SKILL.md) |
-| `cortex-http-api` | HTTP routes, handlers, request/response formats | [`skills/http-api/SKILL.md`](skills/http-api/SKILL.md) |
-| `cortex-cli` | CLI commands, flags, or help text | [`skills/cli/SKILL.md`](skills/cli/SKILL.md) |
-| `cortex-tui` | Terminal UI screens, navigation, or rendering | [`skills/tui/SKILL.md`](skills/tui/SKILL.md) |
-
-## Common Workflows
-
-### Adding a New MCP Tool
-1. Load `cortex-mcp-parity` skill
-2. Define tool schema in `internal/mcp/tools.go`
-3. Implement handler in `internal/mcp/handlers.go`
-4. Add to appropriate tool profile (agent/admin/custom)
-5. Write unit tests for handler
-6. Update README.md MCP tools table
-7. Add integration test for full workflow
-
-### Modifying Storage Schema
-1. Load `cortex-storage-layer` skill
-2. Create new migration file in `migrations/`
-3. Implement Up() and Down() SQL
-4. Update `internal/store` types if needed
-5. Add migration test case
-6. Update REQ-032/REQ-033 specs if structure changes
-
-### Adding Knowledge Graph Feature
-1. Load `cortex-knowledge-graph` skill
-2. Add methods to `internal/graph` package
-3. Ensure FTS5 triggers updated if needed
-4. Add graph-specific MCP tool if user-facing
-5. Write integration tests with graph fixtures
-6. Update graph traversal documentation
-
-### Optimizing Search Performance
-1. Load `cortex-search-engine` skill
-2. Write benchmark for current performance
-3. Implement optimization
-4. Verify benchmark improvement
-5. Ensure FTS5 triggers still work
-6. Test with large dataset (10K+ observations)
-7. Document performance characteristics
-
-### Adding Configuration Option
-1. Load `cortex-configuration` skill
-2. Add field to `internal/config` Config struct
-3. Set default value in defaults
-4. Add YAML parsing support
-5. Add environment variable mapping
-6. Add validation logic
-7. Write unit tests for config loading
-8. Update docs/CONFIGURATION.md
-
-## Debugging Tips
-
-### FTS5 Issues
-- Check triggers are installed: `SELECT * FROM sqlite_master WHERE type='trigger'`
-- Verify FTS5 table exists: `.tables` in sqlite3 CLI
-- Test query directly: `SELECT * FROM observations_fts WHERE observations_fts MATCH '"term"'`
-
-### Knowledge Graph Issues
-- Check relationship exists: `SELECT * FROM observation_relationships WHERE source_id = X`
-- Verify entity extraction: `SELECT * FROM observation_entities WHERE observation_id = X`
-- Test traversal: use `mem_graph` tool with small depth first
-
-### Importance Scoring Issues
-- Calculate manually: base_weight × 0.5^(age/30) × (1 + log(1 + ref_count))
-- Check reference count: `SELECT id, reference_count FROM observations WHERE id = X`
-- Verify time decay formula matches REQ-021
-
-### Migration Issues
-- Check current version: `SELECT * FROM _cortex_migrations ORDER BY version DESC LIMIT 1`
-- Verify migration checksums match expected SHA-256
-- Test rollback with `--down` flag on test database first
-
-## Performance Guidelines
-
-- **Batch Operations**: Use transactions for multiple inserts/updates
-- **Search**: Limit queries to MaxSearchResults (default 100)
-- **Graph Traversal**: Limit depth to prevent exponential blowup
-- **Importance Scoring**: Calculate lazily, don't pre-compute for all observations
-- **Archival**: Run during low-usage periods (configurable interval)
-
-## Security Considerations
-
-- **Private Data**: Content with `<private>...</private>` tags is redacted before storage
-- **SQL Injection**: Use parameterized queries exclusively
-- **File Paths**: Validate database path is absolute and accessible
-- **Auth Token**: HTTP API supports optional token-based auth
-- **Input Validation**: Truncate content to MaxObservationLength, validate types/scopes
-
-## Getting Help
-
-1. Check relevant skill file for patterns and rules
-2. Review REQ specifications in delta-specs.md
-3. Look at existing implementations in similar packages
-4. Run tests to understand expected behavior
-5. Check Engram codebase for reference implementation (when adding Engram-compatible features)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Code style guidelines
-- Commit message format
-- Pull request process
-- Testing requirements
-- Documentation standards
+- Use repository interfaces for domain services and concrete stores only at composition boundaries. Cross-store local writes use `domain.UnitOfWork` through `internal/store/bundle`.
+- Store tests commonly use `testutil.NewTestDBWithMigrations` with an inline `migration.Registry`; `testutil.NewTestDB` alone opens an empty in-memory database.
+- Local HTTP refuses non-loopback binding without `http.token`; `/health` remains unauthenticated. Preserve this when changing server or auth behavior.
+- PR validation targets `develop` and `master`: the body must contain `Closes #N`, `Fixes #N`, or `Resolves #N` for an issue labeled `status:approved`, and the PR needs exactly one `type:*` label. Note that ordinary CI currently targets `main` and `develop`, while release runs on pushes to `master`; inspect workflows instead of assuming branch names are consistent.

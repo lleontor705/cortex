@@ -47,8 +47,8 @@ var ProfileAgent = map[string]bool{
 	"cortex_search_hybrid":     true,
 	"cortex_revision_history":  true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate":  true,
-	"cortex_project_dna":  true,
+	"cortex_consolidate": true,
+	"cortex_project_dna": true,
 }
 
 // ProfileAdmin contains admin/diagnostic tools for manual curation
@@ -111,9 +111,6 @@ func ResolveTools(input string) map[string]bool {
 		} else {
 			result[token] = true
 		}
-	}
-	if len(result) == 0 {
-		return nil
 	}
 	return result
 }
@@ -203,4 +200,3 @@ func textResult(format string, args ...any) (*mcp.CallToolResult, error) {
 func errorResult(format string, args ...any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(fmt.Sprintf(format, args...)), nil
 }
-

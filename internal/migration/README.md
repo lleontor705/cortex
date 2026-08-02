@@ -1,12 +1,15 @@
 # Migration Framework
 
-Database migration framework for SQLite with version tracking, transaction support, and rollback capabilities.
+Database migration framework used by tests and the legacy SQLite migrator. Local
+startup uses the separate embedded forward-only v2 baseline in
+`migrations/v2/001_init.sql`; the root `migrations/001-014` files do not drive
+startup. PostgreSQL uses `migrations/v2/100_server.sql` and its own ledger.
 
 ## Features
 
 - ✅ **Version Tracking**: Automatically tracks applied migrations in `_migrations` table
 - ✅ **Transaction Safety**: Each migration runs in a transaction for atomicity
-- ✅ **Rollback Support**: Can rollback to any specific version
+- ✅ **Rollback Support**: Available to registered/legacy migrations; the v2 baseline is forward-only
 - ✅ **Status Reporting**: Query which migrations are applied/pending
 - ✅ **Flexible Loading**: Load migrations from disk or register programmatically
 - ✅ **Concurrent Safe**: Thread-safe operations with proper locking

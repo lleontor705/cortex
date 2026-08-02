@@ -50,7 +50,7 @@ go run ./bench/locomo -data bench/datasets/locomo10.json -report bench/results/l
 ## Evaluation Methodology
 
 1. **Ingest** — Parse dataset conversations into Cortex sessions + observations
-2. **Query** — For each question, run `mem_search` (FTS5 + optional graph boost)
+2. **Query** — For each question, run `cortex_search` (FTS5 + optional graph boost)
 3. **Score** — F1 token overlap (always) + optional local answer evaluation
 4. **Aggregate** — Per-type and overall accuracy
 

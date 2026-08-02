@@ -202,15 +202,20 @@ func TestEngramCompatibilitySurfaceRemoved(t *testing.T) {
 		}
 		// W18-owned broader release docs (REQ-REL-001 owns the full sweep).
 		w18Docs := map[string]bool{
-			"README.md":               true,
-			"AGENTS.md":               true,
-			"CLAUDE.md":               true,
-			"docs/COMPARISON.md":      true,
-			"docs/RECOMMENDATIONS.md": true,
-			"docs/ARCHITECTURE.md":    true,
-			"docs/AGENT-SETUP.md":     true,
-			"docs/INSTALLATION.md":    true,
-			"docs/PLUGINS.md":         true,
+			"README.md":             true,
+			"AGENTS.md":             true,
+			"CLAUDE.md":             true,
+			"docs/README.md":        true,
+			"docs/ARCHITECTURE.md":  true,
+			"docs/AGENT-SETUP.md":   true,
+			"docs/INSTALLATION.md":  true,
+			"docs/PLUGINS.md":       true,
+			"docs/BENCHMARKS.md":    true,
+			"docs/CLI.md":           true,
+			"docs/CONFIGURATION.md": true,
+			"docs/HTTP-API.md":      true,
+			"docs/MCP.md":           true,
+			"docs/SERVER.md":        true,
 		}
 		return w18Docs[rel]
 	}

@@ -4,7 +4,24 @@
 # Server identification
 server:
   name: cortex
-  version: 0.1.0
+  version: 2.0.0
+  storage:
+    driver: postgres
+    # Runtime DSN. Keep this login NOSUPERUSER/NOBYPASSRLS.
+    dsn: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
+    # Optional privileged DSN used only for server schema migration.
+    migration_dsn: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+  tenant_id: "00000000-0000-0000-0000-000000000001"
+  workspace_id: "00000000-0000-0000-0000-000000000002"
+  principal_subject: "00000000-0000-0000-0000-000000000003"
+  grant_digest: local-development-grant
+  grant_version: 1
+  roles: [owner]
+  scopes: [workspaces:read]
+  project_ids: [demo]
+  classification_clearance: [project]
+  # Docker smoke tests set this true to provision their fixed development tenant.
+  bootstrap_development: false
 
 # Database configuration
 database:
@@ -45,13 +62,16 @@ http:
   enabled: true
   
   # Port to listen on
-  port: 8080
+  port: 7438
   
   # Host to bind to (use 0.0.0.0 for all interfaces)
-  host: localhost
+  host: 127.0.0.1
 
   # Optional API token. Required if you bind the API to a non-local host.
-  token: ""
+  token: change-me
+
+  # Browser origins allowed to call the API (comma-separated via environment).
+  allowed_origins: []
 
 # Logging configuration
 logging:
