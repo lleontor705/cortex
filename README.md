@@ -15,8 +15,21 @@ The local and server runtimes share the `cortex_*` naming convention but do not 
 
 ### Local
 
+Install Cortex with Homebrew:
+
+```bash
+brew install lleontor705/tap/cortex
+```
+
+Alternatively, install it directly with Go:
+
 ```bash
 go install github.com/lleontor705/cortex/cmd/cortex@latest
+```
+
+Then configure Cortex for your coding agent:
+
+```bash
 cortex setup claude-code
 cortex search "database decision"
 cortex tui
