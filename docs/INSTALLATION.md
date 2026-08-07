@@ -28,15 +28,19 @@ cd cortex
 
 ```bash
 cortex setup claude-code
+cortex setup opencode
 cortex doctor
 cortex search "example query"
 ```
 
 The local database defaults to `~/.cortex/cortex.db`. Configuration is read from `~/.cortex/cortex.yaml` when present.
 
+`cortex setup opencode` installs its TypeScript event plugin from content embedded in the binary. Claude Code's native lifecycle plugin is installed separately through its marketplace; `cortex setup claude-code` configures MCP and tool permissions.
+
 ## Server Docker
 
 ```bash
+docker compose up --build
 ```
 
 The development server listens on `http://localhost:7438`. The Compose token is intentionally for development only. For production, provide separate migration/runtime DSNs and an external secret/identity system; see [SERVER.md](SERVER.md).

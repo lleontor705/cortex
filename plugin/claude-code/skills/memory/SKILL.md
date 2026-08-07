@@ -24,6 +24,8 @@ They are available immediately — no manual ToolSearch needed.
 - `cortex_session_start`, `cortex_session_end`, `cortex_save_prompt`
 - `cortex_stats`, `cortex_delete`, `cortex_timeline`, `cortex_capture_passive`
 
+**Transport IDs:** Follow the active MCP tool schema. Local observations and graph records use numeric IDs; Cortex Server uses public UUID strings. Never convert or reuse IDs across transports.
+
 **Knowledge graph (Cortex-exclusive):**
 - `cortex_relate` — create typed relationships between observations
 - `cortex_graph` — traverse the knowledge graph from an observation

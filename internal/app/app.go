@@ -26,13 +26,15 @@ import (
 	"github.com/lleontor705/cortex/internal/store/search"
 	"github.com/lleontor705/cortex/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
 )
 
 // Options controls how the application is opened.
 type Options struct {
-	InMemory   bool
-	ConfigPath string
+	InMemory          bool
+	ConfigPath        string
+	DisableRemoteSync bool
 }
 
 // App bundles the runtime dependencies needed by CLI and MCP entrypoints.
@@ -43,6 +45,8 @@ type App struct {
 	Stores         *bundle.Stores
 	archivalCancel context.CancelFunc
 	workerCancel   context.CancelFunc // embedding worker drain (W4.1, REQ-EMB-001)
+	syncCancel     context.CancelFunc
+	syncDone       <-chan struct{}
 }
 
 // Open loads configuration, opens the database, applies migrations, and wires stores.
@@ -193,6 +197,38 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		a.archivalCancel = archivalSvc.Start(ctx)
 	}
 
+	if cfg.Sync.Enabled && !opts.DisableRemoteSync {
+		token := os.Getenv(cfg.Sync.TokenEnv)
+		remote, syncErr := cortsync.NewRemoteSyncer(manager.DB(), cfg.Sync.URL, token, cfg.Sync.Timeout)
+		if syncErr != nil {
+			log.Printf("warning: remote sync disabled: %v", syncErr)
+		} else {
+			syncCtx, cancel := context.WithCancel(ctx)
+			a.syncCancel = cancel
+			done := make(chan struct{})
+			a.syncDone = done
+			go func() {
+				defer close(done)
+				run := func() {
+					if _, err := remote.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
+						log.Printf("warning: remote sync failed; local writes remain available: %v", err)
+					}
+				}
+				run()
+				ticker := time.NewTicker(cfg.Sync.Interval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-syncCtx.Done():
+						return
+					case <-ticker.C:
+						run()
+					}
+				}
+			}()
+		}
+	}
+
 	return a, nil
 }
 
@@ -232,6 +268,10 @@ func (a *App) ReloadConfig() error {
 func (a *App) Close() error {
 	if a == nil {
 		return nil
+	}
+	if a.syncCancel != nil {
+		a.syncCancel()
+		<-a.syncDone
 	}
 	// Drain the embedding worker BEFORE closing the DB: in-flight intents must
 	// finalize (or be left leased for crash recovery) with no goroutine touching

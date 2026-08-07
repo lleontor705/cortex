@@ -14,6 +14,8 @@ import (
 // PostgresServerMigration is the isolated server-wave migration. It must not
 // be registered with the SQLite migrator: the SQL uses PostgreSQL-only DDL.
 type PostgresServerMigration struct {
+	version  int
+	name     string
 	sql      string
 	checksum string
 }
@@ -25,13 +27,68 @@ func NewPostgresServerMigration() (*PostgresServerMigration, error) {
 	}
 	sum := sha256.Sum256([]byte(servermigrations.ServerSQL))
 	return &PostgresServerMigration{
+		version:  100,
+		name:     "server",
 		sql:      servermigrations.ServerSQL,
 		checksum: hex.EncodeToString(sum[:]),
 	}, nil
 }
 
-func (m *PostgresServerMigration) Version() int     { return 100 }
-func (m *PostgresServerMigration) Name() string     { return "server" }
+// NewPostgresServerMigrations returns every immutable server migration in
+// application order. Existing databases apply only versions missing from the
+// ledger; checksum mismatches continue to fail closed.
+func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
+	baseline, err := NewPostgresServerMigration()
+	if err != nil {
+		return nil, err
+	}
+	if servermigrations.ServerIdentityGraphSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL identity/graph SQL is empty")
+	}
+	sum := sha256.Sum256([]byte(servermigrations.ServerIdentityGraphSQL))
+	identityGraph := &PostgresServerMigration{
+		version:  101,
+		name:     "identity_graph",
+		sql:      servermigrations.ServerIdentityGraphSQL,
+		checksum: hex.EncodeToString(sum[:]),
+	}
+	if servermigrations.ServerSyncSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL sync SQL is empty")
+	}
+	sum = sha256.Sum256([]byte(servermigrations.ServerSyncSQL))
+	syncMigration := &PostgresServerMigration{
+		version:  102,
+		name:     "sync",
+		sql:      servermigrations.ServerSyncSQL,
+		checksum: hex.EncodeToString(sum[:]),
+	}
+	if servermigrations.ServerSyncIdentitySQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL sync identity SQL is empty")
+	}
+	sum = sha256.Sum256([]byte(servermigrations.ServerSyncIdentitySQL))
+	return []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
+		version:  103,
+		name:     "sync_identity",
+		sql:      servermigrations.ServerSyncIdentitySQL,
+		checksum: hex.EncodeToString(sum[:]),
+	}}, nil
+}
+
+func ApplyPostgresServerMigrations(ctx context.Context, db *sql.DB) error {
+	migrations, err := NewPostgresServerMigrations()
+	if err != nil {
+		return err
+	}
+	for _, migration := range migrations {
+		if err := migration.Apply(ctx, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *PostgresServerMigration) Version() int     { return m.version }
+func (m *PostgresServerMigration) Name() string     { return m.name }
 func (m *PostgresServerMigration) SQL() string      { return m.sql }
 func (m *PostgresServerMigration) Checksum() string { return m.checksum }
 

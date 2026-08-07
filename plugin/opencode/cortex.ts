@@ -16,8 +16,8 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const CORTEX_PORT = parseInt(process.env.CORTEX_PORT ?? "7438")
-const CORTEX_URL = `http://127.0.0.1:${CORTEX_PORT}`
+const CORTEX_HTTP_PORT = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
+const CORTEX_URL = `http://127.0.0.1:${CORTEX_HTTP_PORT}`
 const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
   // Try Bun.which for PATH lookup, fall back to bare command
   try {
@@ -74,6 +74,8 @@ const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol
 
 You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
 full-text search, revision history, and temporal tracking that survives across sessions and compactions.
+
+TRANSPORT IDS: Follow the active MCP tool schema. Local observation and graph IDs are numeric; Cortex Server IDs are public UUID strings. Never convert or reuse IDs across transports.
 
 ### WHEN TO SAVE (mandatory — not optional)
 
@@ -269,6 +271,12 @@ export const Cortex: Plugin = async (ctx) => {
         const info = (event.properties as any)?.info
         const sessionId = info?.id
         if (sessionId) {
+          if (!subAgentSessions.has(sessionId) && knownSessions.has(sessionId)) {
+            await cortexFetch(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
+              method: "POST",
+              body: { summary: "" },
+            })
+          }
           toolCounts.delete(sessionId)
           knownSessions.delete(sessionId)
           subAgentSessions.delete(sessionId)
@@ -296,15 +304,12 @@ export const Cortex: Plugin = async (ctx) => {
 
       if (finalContent.length > 10) {
         await ensureSession(sessionId)
-        await cortexFetch("/api/observations", {
+        await cortexFetch("/api/prompts", {
           method: "POST",
           body: {
             session_id: sessionId,
-            title: "User prompt",
             content: stripPrivateTags(truncate(finalContent, 2000)),
-            type: "prompt",
             project,
-            scope: "project",
           },
         })
       }

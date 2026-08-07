@@ -23,7 +23,6 @@ The Claude Code plugin adds lifecycle hooks that automate memory management.
 ```
 plugin/claude-code/
   .claude-plugin/plugin.json    Plugin descriptor
-  .mcp.json                     MCP server config
   hooks/hooks.json              5 lifecycle hooks
   scripts/
     _helpers.sh                 Shared helpers (project detection)
@@ -58,6 +57,8 @@ plugin/claude-code/
 #### Stop (async)
 - Marks session as ended via HTTP API
 
+All hooks use `CORTEX_HTTP_PORT` (default `7438`). `CORTEX_PORT` is not supported.
+
 ### Memory Protocol
 
 The SKILL.md file defines mandatory behaviors for the agent:
@@ -76,8 +77,9 @@ The TypeScript plugin (`plugin/opencode/cortex.ts`) connects OpenCode's event sy
 
 - **Auto-start**: Detects if cortex server is running, starts it if not
 - **Session tracking**: Creates sessions on `session.created` events
+- **Session lifecycle**: Ends primary sessions on `session.deleted`
 - **Sub-agent suppression**: Detects Task() sub-agents and skips session registration
-- **User prompt capture**: Saves prompts via `chat.message` hook
+- **User prompt capture**: Saves prompts to `user_prompts` via `chat.message`
 - **Tool tracking**: Counts non-Cortex tool calls per session
 - **Passive capture**: Extracts learnings from Task tool output
 - **Memory Protocol injection**: Appends to system prompt via `experimental.chat.system.transform`
@@ -89,6 +91,8 @@ The plugin uses a 3-tier fallback for the cortex binary:
 1. `CORTEX_BIN` environment variable (explicit override)
 2. `Bun.which("cortex")` (runtime PATH lookup)
 3. Absolute baked-in path (headless/systemd fallback)
+
+`cortex setup opencode` installs both the MCP registration and the managed `plugins/cortex.ts`. The TypeScript source is embedded in every Cortex binary, including release archives and `go install` builds. Running setup again replaces the managed plugin with the version embedded in the current binary.
 
 ### Local Model Compatibility
 

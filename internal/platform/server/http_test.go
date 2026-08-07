@@ -11,13 +11,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 type fakeOperations struct {
-	observations map[int64]*domain.Observation
-	nextID       int64
+	observations  map[int64]*domain.Observation
+	nextID        int64
+	subgraph      *domain.GraphSubgraph
+	subgraphID    string
+	subgraphDepth int
+	subgraphMax   int
+	createdEdge   *domain.Edge
+	issuedToken   identity.TokenIssue
+	issueTokenErr error
 }
 
 func newFakeOperations() *fakeOperations {
@@ -73,6 +84,12 @@ func (f *fakeOperations) DeleteObservation(_ context.Context, id int64) error {
 }
 
 func (f *fakeOperations) CreateSession(_ context.Context, _ *domain.Session) error { return nil }
+func (f *fakeOperations) PushSync(_ context.Context, batch *domain.SyncBatch) (*domain.SyncResult, error) {
+	return &domain.SyncResult{Accepted: len(batch.Sessions) + len(batch.Observations) + len(batch.Prompts) + len(batch.Edges)}, nil
+}
+func (f *fakeOperations) PullSync(_ context.Context, cursor int64, _ int) (*domain.SyncPage, error) {
+	return &domain.SyncPage{Cursor: cursor}, nil
+}
 func (f *fakeOperations) ListSessions(context.Context, string) ([]*domain.Session, error) {
 	return []*domain.Session{}, nil
 }
@@ -97,7 +114,11 @@ func (f *fakeOperations) SearchObservations(context.Context, string, domain.Sear
 	return []*domain.SearchResult{}, nil
 }
 
-func (f *fakeOperations) CreateGraphEdge(context.Context, *domain.Edge) error { return nil }
+func (f *fakeOperations) CreateGraphEdge(_ context.Context, edge *domain.Edge) error {
+	copy := *edge
+	f.createdEdge = &copy
+	return nil
+}
 func (f *fakeOperations) GetGraphEdgeByPublicID(context.Context, string) (*domain.Edge, error) {
 	return &domain.Edge{ID: 1, PublicID: "00000000-0000-0000-0000-000000000020"}, nil
 }
@@ -107,6 +128,47 @@ func (f *fakeOperations) GetRelatedObservations(context.Context, int64, int) ([]
 func (f *fakeOperations) DeleteGraphEdge(context.Context, int64) error { return nil }
 func (f *fakeOperations) GetImportanceScore(context.Context, int64) (*domain.ImportanceScore, error) {
 	return &domain.ImportanceScore{Score: 1}, nil
+}
+func (f *fakeOperations) GetGraphSubgraph(_ context.Context, id string, depth, maxNodes int) (*domain.GraphSubgraph, error) {
+	f.subgraphID, f.subgraphDepth, f.subgraphMax = id, depth, maxNodes
+	if f.subgraph != nil {
+		return f.subgraph, nil
+	}
+	return &domain.GraphSubgraph{}, nil
+}
+
+func callServerTool(t *testing.T, handler mcpserver.ToolHandlerFunc, arguments map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = arguments
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func serverToolText(result *mcp.CallToolResult) string {
+	for _, content := range result.Content {
+		if text, ok := content.(mcp.TextContent); ok {
+			return text.Text
+		}
+	}
+	return ""
+}
+func (f *fakeOperations) CreateUser(context.Context, identity.UserCreate) (identity.UserRecord, error) {
+	return identity.UserRecord{}, nil
+}
+func (f *fakeOperations) ListUsers(context.Context) ([]identity.UserRecord, error) { return nil, nil }
+func (f *fakeOperations) SetUserActive(context.Context, string, bool) error        { return nil }
+func (f *fakeOperations) IssueToken(_ context.Context, input identity.TokenIssue) (identity.IssuedToken, error) {
+	f.issuedToken = input
+	return identity.IssuedToken{}, f.issueTokenErr
+}
+func (f *fakeOperations) ListTokens(context.Context) ([]identity.TokenRecord, error) { return nil, nil }
+func (f *fakeOperations) RevokeToken(context.Context, string) error                  { return nil }
+func (f *fakeOperations) RotateToken(context.Context, string) (identity.IssuedToken, error) {
+	return identity.IssuedToken{}, nil
 }
 
 func testHandler(health healthCheck) http.Handler {
@@ -127,6 +189,45 @@ func TestHTTPHealthIsPublicAndChecksDatabase(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unhealthy status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestIssueTokenRejectsInvalidSubjectUUID(t *testing.T) {
+	ops := newFakeOperations()
+	h, _ := newHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/tokens", strings.NewReader(`{"subject":"not-a-uuid","name":"agent"}`))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
+	}
+	if ops.issuedToken.Subject != "" {
+		t.Fatal("invalid subject reached token operations")
+	}
+}
+
+func TestIssueTokenMapsMissingSubjectToNotFound(t *testing.T) {
+	ops := newFakeOperations()
+	ops.issueTokenErr = domain.ErrNotFound
+	h, _ := newHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/tokens", strings.NewReader(`{"subject":"00000000-0000-0000-0000-000000000123","name":"agent"}`))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
+		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTokenResponseUsesNullForUnsetLifecycleTimes(t *testing.T) {
+	response := tokenResponse(identity.TokenRecord{})
+	for _, field := range []string{"expires_at", "revoked_at", "last_used_at"} {
+		if response[field] != nil {
+			t.Errorf("%s = %v, want nil", field, response[field])
+		}
 	}
 }
 
@@ -161,6 +262,21 @@ func TestHTTPAPIBearerAuthAndObservationREST(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "use postgres") {
 		t.Fatalf("get response = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPGraphSubgraphRoute(t *testing.T) {
+	ops := newFakeOperations()
+	ops.subgraph = &domain.GraphSubgraph{Root: "observation:00000000-0000-0000-0000-000000000001"}
+	h, _ := newHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/graph/00000000-0000-0000-0000-000000000001/subgraph?depth=2&max_nodes=50", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), ops.subgraph.Root) {
+		t.Fatalf("subgraph response = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -219,13 +335,51 @@ func TestMCPInitializeAndListServerTools(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tools/list response = %d %s", rec.Code, rec.Body.String())
 	}
-	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_score"} {
+	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_graph_subgraph", "cortex_score"} {
 		if !strings.Contains(rec.Body.String(), `"name":"`+name+`"`) {
 			t.Errorf("tools/list missing %s: %s", name, rec.Body.String())
 		}
 	}
 	if strings.Contains(rec.Body.String(), `"mem_`) {
 		t.Fatalf("tools/list exposed legacy namespace: %s", rec.Body.String())
+	}
+}
+
+func TestMCPGraphSubgraphToolDelegatesBounds(t *testing.T) {
+	ops := newFakeOperations()
+	ops.subgraph = &domain.GraphSubgraph{Root: "observation:root", Truncated: true}
+	result := callServerTool(t, graphSubgraphTool(ops), map[string]any{"observation_id": "root", "depth": float64(3), "max_nodes": float64(40)})
+
+	if ops.subgraphID != "root" || ops.subgraphDepth != 3 || ops.subgraphMax != 40 {
+		t.Fatalf("subgraph arguments = %q, %d, %d", ops.subgraphID, ops.subgraphDepth, ops.subgraphMax)
+	}
+	if text := serverToolText(result); !strings.Contains(text, `"root":"observation:root"`) || !strings.Contains(text, `"truncated":true`) {
+		t.Fatalf("subgraph result = %s", text)
+	}
+}
+
+func TestMCPRelateToolPreservesMetadataAndRejectsInvalidRanges(t *testing.T) {
+	ops := newFakeOperations()
+	from := &domain.Observation{Title: "from", Content: "from"}
+	to := &domain.Observation{Title: "to", Content: "to"}
+	if err := ops.SaveObservation(context.Background(), from); err != nil {
+		t.Fatal(err)
+	}
+	if err := ops.SaveObservation(context.Background(), to); err != nil {
+		t.Fatal(err)
+	}
+	result := callServerTool(t, relateTool(ops), map[string]any{"from_id": from.PublicID, "to_id": to.PublicID, "relation_type": "references", "weight": 2.5, "confidence": 0.7, "source": "ai", "reasoning": "shared contract"})
+	if ops.createdEdge == nil || ops.createdEdge.Weight != 2.5 || ops.createdEdge.Confidence != 0.7 || ops.createdEdge.Source != "ai" || ops.createdEdge.Reasoning != "shared contract" {
+		t.Fatalf("created edge = %+v", ops.createdEdge)
+	}
+	if text := serverToolText(result); !strings.Contains(text, `"weight":2.5`) || !strings.Contains(text, `"reasoning":"shared contract"`) {
+		t.Fatalf("relate result = %s", text)
+	}
+
+	invalid := newFakeOperations()
+	invalidResult := callServerTool(t, relateTool(invalid), map[string]any{"from_id": "from", "to_id": "to", "relation_type": "references", "confidence": 1.2})
+	if invalid.createdEdge != nil || !strings.Contains(serverToolText(invalidResult), "confidence") {
+		t.Fatalf("invalid result = %s, edge = %+v", serverToolText(invalidResult), invalid.createdEdge)
 	}
 }
 
@@ -246,6 +400,14 @@ func TestEdgeResponseOmitsInternalIdentifiers(t *testing.T) {
 		if strings.Contains(response, internal) {
 			t.Errorf("edge response exposed %s: %s", internal, response)
 		}
+	}
+}
+
+func TestRespondOperationErrorMapsAuthorizationDenialToForbidden(t *testing.T) {
+	rec := httptest.NewRecorder()
+	respondOperationError(rec, errors.New(authz.DenyRole))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"forbidden"`) {
+		t.Fatalf("authorization denial response = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

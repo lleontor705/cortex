@@ -48,7 +48,8 @@ type Deps struct {
 
 // Options configures optional HTTP hardening behavior.
 type Options struct {
-	AuthToken string
+	AuthToken      string
+	AllowedOrigins []string
 }
 
 // Server wraps an http.Server with Cortex handlers.
@@ -65,7 +66,7 @@ func NewServer(addr string, deps *Deps, opts Options) *Server {
 	s := &Server{
 		httpServer: &http.Server{
 			Addr:         addr,
-			Handler:      withAuth(mux, opts.AuthToken),
+			Handler:      corsHandler(opts.AllowedOrigins, withAuth(mux, opts.AuthToken)),
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,
 		},
@@ -88,7 +89,11 @@ func NewServer(addr string, deps *Deps, opts Options) *Server {
 	// Sessions
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("POST /api/sessions/{id}/end", s.handleEndSession)
+
+	// Prompts
+	mux.HandleFunc("POST /api/prompts", s.handleCreatePrompt)
 
 	// Search
 	mux.HandleFunc("GET /api/search", s.handleSearch)
@@ -289,6 +294,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, sess)
 }
 
+func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.deps.Sessions.GetByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		mapDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
@@ -304,6 +318,27 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ended"})
+}
+
+func (s *Server) handleCreatePrompt(w http.ResponseWriter, r *http.Request) {
+	var value domain.Prompt
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&value); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(value.SessionID) == "" || strings.TrimSpace(value.Content) == "" || strings.TrimSpace(value.Project) == "" {
+		writeError(w, http.StatusBadRequest, "session_id, content, and project are required")
+		return
+	}
+	if _, err := s.deps.Sessions.GetByID(r.Context(), value.SessionID); err != nil {
+		mapDomainError(w, err)
+		return
+	}
+	if err := s.deps.Prompts.Save(r.Context(), &value); err != nil {
+		mapDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, value)
 }
 
 // --- Search -----------------------------------------------------------------
@@ -618,4 +653,27 @@ func requestAuthorized(r *http.Request, token string) bool {
 		return subtle.ConstantTimeCompare([]byte(apiKey), []byte(token)) == 1
 	}
 	return false
+}
+
+func corsHandler(allowedOrigins []string, next http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		if origin = strings.TrimSpace(origin); origin != "" && origin != "*" {
+			allowed[origin] = struct{}{}
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if _, ok := allowed[origin]; ok && origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

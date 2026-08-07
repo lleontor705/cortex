@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	minVisibleItems = 3  // Minimum items shown in any list
-	linesPerItem    = 2  // Lines per observation item (title + preview)
+	minVisibleItems = 3   // Minimum items shown in any list
+	linesPerItem    = 2   // Lines per observation item (title + preview)
 	maxScrollOffset = 500 // Upper bound for scroll values
 )
 
@@ -79,6 +79,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.Screen == ScreenEmbeddingConfig && m.EmbCfgModel.Focused() {
 			return m.handleEmbeddingModelInput(msg)
+		}
+		if m.Screen == ScreenLocalConfig && m.localConfigInputFocused() {
+			return m.handleLocalConfigInput(msg)
 		}
 
 		// For list screens, pass key messages to list component for navigation
@@ -365,6 +368,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case localConfigSavedMsg:
+		m.LocalCfgSaving = false
+		if msg.err != nil {
+			m.LocalCfgError = msg.err.Error()
+			return m, nil
+		}
+		m.LocalCfgSaved, m.LocalCfgDirty, m.LocalCfgError = true, false, ""
+		m.LocalCfgFocusField = 11
+		return m, nil
+
 	case reindexProgressMsg:
 		m.EmbCfgReindexing = false
 		m.ReindexTotal = msg.total
@@ -474,6 +487,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.EmbCfgSpinner, cmd = m.EmbCfgSpinner.Update(msg)
 			return m, cmd
 		}
+		if m.LocalCfgSaving {
+			var cmd tea.Cmd
+			m.LocalCfgSpinner, cmd = m.LocalCfgSpinner.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.MouseMsg:
@@ -511,7 +529,7 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 	}
 
 	// Global help key — skip for screens with text input
-	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenHelp {
+	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
 		m.PrevScreen = m.Screen
 		m.Screen = ScreenHelp
 		return m, nil
@@ -525,7 +543,6 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		m.CmdPaletteInput.Focus()
 		return m, nil
 	}
-
 
 	switch m.Screen {
 	case ScreenHelp:
@@ -556,6 +573,8 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m.handleHealthKeys(key)
 	case ScreenEmbeddingConfig:
 		return m.handleEmbeddingConfigKeys(key)
+	case ScreenLocalConfig:
+		return m.handleLocalConfigKeys(key)
 	}
 	return m, nil
 }
@@ -570,6 +589,7 @@ var dashboardMenuItems = []string{
 	"Memory health",
 	"Archived observations",
 	"Embedding settings",
+	"Local settings",
 	"Setup agent plugin",
 	"Quit",
 }
@@ -685,7 +705,9 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.EmbCfgOriginalProvider = m.EmbCfgProvider
 		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
 		return m, nil
-	case 7: // Setup
+	case 7: // Local settings
+		return m.openLocalConfig(), nil
+	case 8: // Setup
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSetup
 		m.Cursor = 0
@@ -699,7 +721,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.SetupAllowlistApplied = false
 		m.SetupAllowlistError = ""
 		return m, nil
-	case 8: // Quit
+	case 9: // Quit
 		return m, tea.Quit
 	}
 	return m, nil
@@ -1299,6 +1321,190 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 
 // ──�� Embedding Config ───────────────────────────────────────────────────────
 
+func (m Model) openLocalConfig() Model {
+	m.PrevScreen, m.Screen, m.LocalCfgFocusField = ScreenDashboard, ScreenLocalConfig, 0
+	m.LocalCfgDirty, m.LocalCfgSaving, m.LocalCfgSaved, m.LocalCfgError = false, false, false, ""
+	if m.deps == nil || m.deps.Config == nil {
+		m.LocalCfgError = "config not available"
+		return m
+	}
+	cfg := m.deps.Config
+	m.LocalCfgDatabasePath.SetValue(cfg.Database.Path)
+	m.LocalCfgHTTPEnabled = cfg.HTTP.Enabled
+	m.LocalCfgHTTPHost.SetValue(cfg.HTTP.Host)
+	m.LocalCfgHTTPPort.SetValue(fmt.Sprintf("%d", cfg.HTTP.Port))
+	m.LocalCfgMCPRemote = cfg.MCP.Remote.Enabled
+	m.LocalCfgMCPURL.SetValue(cfg.MCP.Remote.URL)
+	m.LocalCfgMCPTokenEnv.SetValue(cfg.MCP.Remote.TokenEnv)
+	m.LocalCfgSyncEnabled = cfg.Sync.Enabled
+	m.LocalCfgSyncURL.SetValue(cfg.Sync.URL)
+	m.LocalCfgSyncTokenEnv.SetValue(cfg.Sync.TokenEnv)
+	m.LocalCfgSyncInterval.SetValue(cfg.Sync.Interval.String())
+	return m
+}
+
+func (m Model) localConfigInputFocused() bool {
+	switch m.LocalCfgFocusField {
+	case 0:
+		return m.LocalCfgDatabasePath.Focused()
+	case 2:
+		return m.LocalCfgHTTPHost.Focused()
+	case 3:
+		return m.LocalCfgHTTPPort.Focused()
+	case 5:
+		return m.LocalCfgMCPURL.Focused()
+	case 6:
+		return m.LocalCfgMCPTokenEnv.Focused()
+	case 8:
+		return m.LocalCfgSyncURL.Focused()
+	case 9:
+		return m.LocalCfgSyncTokenEnv.Focused()
+	case 10:
+		return m.LocalCfgSyncInterval.Focused()
+	default:
+		return false
+	}
+}
+
+func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "enter" || msg.String() == "esc" {
+		switch m.LocalCfgFocusField {
+		case 0:
+			m.LocalCfgDatabasePath.Blur()
+		case 2:
+			m.LocalCfgHTTPHost.Blur()
+		case 3:
+			m.LocalCfgHTTPPort.Blur()
+		case 5:
+			m.LocalCfgMCPURL.Blur()
+		case 6:
+			m.LocalCfgMCPTokenEnv.Blur()
+		case 8:
+			m.LocalCfgSyncURL.Blur()
+		case 9:
+			m.LocalCfgSyncTokenEnv.Blur()
+		case 10:
+			m.LocalCfgSyncInterval.Blur()
+		}
+		return m, nil
+	}
+	m.LocalCfgDirty = true
+	var cmd tea.Cmd
+	switch m.LocalCfgFocusField {
+	case 0:
+		m.LocalCfgDatabasePath, cmd = m.LocalCfgDatabasePath.Update(msg)
+	case 2:
+		m.LocalCfgHTTPHost, cmd = m.LocalCfgHTTPHost.Update(msg)
+	case 3:
+		m.LocalCfgHTTPPort, cmd = m.LocalCfgHTTPPort.Update(msg)
+	case 5:
+		m.LocalCfgMCPURL, cmd = m.LocalCfgMCPURL.Update(msg)
+	case 6:
+		m.LocalCfgMCPTokenEnv, cmd = m.LocalCfgMCPTokenEnv.Update(msg)
+	case 8:
+		m.LocalCfgSyncURL, cmd = m.LocalCfgSyncURL.Update(msg)
+	case 9:
+		m.LocalCfgSyncTokenEnv, cmd = m.LocalCfgSyncTokenEnv.Update(msg)
+	case 10:
+		m.LocalCfgSyncInterval, cmd = m.LocalCfgSyncInterval.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
+	if m.LocalCfgSaving {
+		return m, nil
+	}
+	if m.LocalCfgSaved {
+		if key == "esc" || key == "q" || key == "enter" {
+			m.Screen, m.Cursor = ScreenDashboard, 0
+			return m, loadStats(m.deps)
+		}
+		return m, nil
+	}
+	switch key {
+	case "left", "h", "shift+tab":
+		m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
+	case "right", "l", "tab":
+		m.LocalCfgFocusField = localConfigSectionStart(min(4, localConfigSection(m.LocalCfgFocusField)+1))
+	case "up", "k":
+		if m.LocalCfgFocusField > 0 {
+			m.LocalCfgFocusField--
+		}
+	case "down", "j":
+		if m.LocalCfgFocusField < 11 {
+			m.LocalCfgFocusField++
+		}
+	case " ":
+		switch m.LocalCfgFocusField {
+		case 1:
+			m.LocalCfgHTTPEnabled = !m.LocalCfgHTTPEnabled
+		case 4:
+			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
+		case 7:
+			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
+		default:
+			return m, nil
+		}
+		m.LocalCfgDirty = true
+	case "enter":
+		switch m.LocalCfgFocusField {
+		case 0:
+			m.LocalCfgDatabasePath.Focus()
+		case 2:
+			m.LocalCfgHTTPHost.Focus()
+		case 3:
+			m.LocalCfgHTTPPort.Focus()
+		case 5:
+			m.LocalCfgMCPURL.Focus()
+		case 6:
+			m.LocalCfgMCPTokenEnv.Focus()
+		case 8:
+			m.LocalCfgSyncURL.Focus()
+		case 9:
+			m.LocalCfgSyncTokenEnv.Focus()
+		case 10:
+			m.LocalCfgSyncInterval.Focus()
+		case 11:
+			return m.startLocalConfigSave()
+		}
+		return m, nil
+	case "s", "S":
+		return m.startLocalConfigSave()
+	case "r", "R":
+		return m.openLocalConfig(), nil
+	case "esc", "q":
+		m.Screen, m.Cursor = ScreenDashboard, 0
+		return m, loadStats(m.deps)
+	}
+	return m, nil
+}
+
+func localConfigSection(field int) int {
+	switch {
+	case field <= 0:
+		return 0
+	case field <= 3:
+		return 1
+	case field <= 6:
+		return 2
+	case field <= 10:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func localConfigSectionStart(section int) int {
+	return []int{0, 1, 4, 7, 11}[section]
+}
+
+func (m Model) startLocalConfigSave() (tea.Model, tea.Cmd) {
+	m.LocalCfgSaving, m.LocalCfgSaved, m.LocalCfgError = true, false, ""
+	values := localConfigValues{m.LocalCfgDatabasePath.Value(), m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value(), m.LocalCfgHTTPPort.Value(), m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value(), m.LocalCfgMCPTokenEnv.Value(), m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value(), m.LocalCfgSyncTokenEnv.Value(), m.LocalCfgSyncInterval.Value()}
+	return m, tea.Batch(m.LocalCfgSpinner.Tick, saveLocalConfig(m.deps, values))
+}
+
 func (m Model) handleEmbeddingModelInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "esc":
@@ -1478,6 +1684,9 @@ func allCommands() []paletteCommand {
 			m.Screen = ScreenEmbeddingConfig
 			return m, nil
 		}},
+		{"Local settings", "", func(m Model) (Model, tea.Cmd) {
+			return m.openLocalConfig(), nil
+		}},
 		{"Setup agent plugin", "", func(m Model) (Model, tea.Cmd) {
 			m.Screen = ScreenSetup
 			return m, nil
@@ -1542,7 +1751,6 @@ func (m Model) handleCmdPaletteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-
 // ─── Detail Content Builder ────────────────────────────────────────────────
 
 // buildDetailContent constructs the full text content for the observation
@@ -1586,7 +1794,6 @@ func buildDetailContent(obs *domain.Observation, score *domain.ImportanceScore, 
 
 	return content.String()
 }
-
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

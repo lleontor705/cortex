@@ -37,7 +37,7 @@ cortex setup opencode
 
 This creates:
 - `~/.config/opencode/cortex-mcp.json` — MCP server registration
-- `~/.config/opencode/plugins/cortex.ts` — TypeScript plugin (if available)
+- `~/.config/opencode/plugins/cortex.ts` — managed TypeScript plugin embedded in the Cortex binary
 
 The OpenCode plugin provides:
 - Session tracking via event hooks
@@ -46,6 +46,8 @@ The OpenCode plugin provides:
 - Compaction recovery
 - Passive capture from Task tool output
 - Sub-agent session suppression
+
+Setup always writes both files, including when Cortex was installed from a release archive or with `go install`. Re-run setup after upgrading Cortex to install the matching plugin version.
 
 ## Gemini CLI
 
@@ -116,5 +118,5 @@ Control which tools are loaded:
 
 Server deployments expose an authenticated subset of the Cortex-native namespace
 through Streamable HTTP at `/mcp`. The server does not load the local profiles;
-see [MCP.md](MCP.md) for its exact nine-tool catalog. Use a bearer token and do
+see [MCP.md](MCP.md) for its exact ten-tool catalog. Use a bearer token and do
 not send `mem_*` tool names.

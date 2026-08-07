@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lleontor705/cortex/internal/app"
+	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	cortexhttp "github.com/lleontor705/cortex/internal/http"
 	"github.com/lleontor705/cortex/internal/mcp"
@@ -125,7 +126,7 @@ Commands:
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
   export --to-obsidian --vault PATH  Export a read-only Obsidian projection
-  sync                   Sync memories via git-friendly chunks
+  sync                   Sync via file chunks or --remote server replication
   merge-projects         Merge project name variants into one canonical name
   reindex [--project P]  Generate vector embeddings for all observations
   doctor                 Run health checks on the database
@@ -525,6 +526,26 @@ func runRevisions(args []string, stdout, stderr io.Writer) int {
 }
 
 func runMCP(args []string, stdout, stderr io.Writer) int {
+	cfg, err := config.Load("")
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	if cfg.MCP.Remote.Enabled {
+		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: cfg.MCP.Remote.URL, TokenEnv: cfg.MCP.Remote.TokenEnv, Timeout: cfg.MCP.Remote.Timeout})
+		if err != nil {
+			writef(stderr, "cortex: %v\n", err)
+			return 1
+		}
+		defer func() { _ = proxy.Close() }()
+		if err := server.ServeStdio(proxy.Server); err != nil {
+			writef(stderr, "cortex: %v\n", err)
+			return 1
+		}
+		_ = stdout
+		return 0
+	}
+
 	a, err := openApp()
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -609,7 +630,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	srv := cortexhttp.NewServer(addr, deps, cortexhttp.Options{
-		AuthToken: a.Config.HTTP.Token,
+		AuthToken:      a.Config.HTTP.Token,
+		AllowedOrigins: a.Config.HTTP.AllowedOrigins,
 	})
 	writef(stdout, "Cortex HTTP server listening on %s\n", addr)
 
@@ -876,7 +898,7 @@ func runObsidianExport(args []string, stdout, stderr io.Writer) int {
 }
 
 func runSync(args []string, stdout, stderr io.Writer) int {
-	var doImport, doStatus, syncAll bool
+	var doImport, doStatus, syncAll, remoteSync bool
 	var project string
 
 	for i := 0; i < len(args); i++ {
@@ -887,6 +909,8 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 			doStatus = true
 		case "--all":
 			syncAll = true
+		case "--remote":
+			remoteSync = true
 		case "--project":
 			if i+1 < len(args) {
 				project = args[i+1]
@@ -895,7 +919,7 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	a, err := openApp()
+	a, err := app.Open(context.Background(), app.Options{DisableRemoteSync: true})
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
@@ -906,6 +930,25 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 	transport := cortsync.NewFileTransport(syncDir)
 	syncer := cortsync.NewSyncer(a.Stores.Observations, transport)
 	ctx := context.Background()
+	if remoteSync {
+		if strings.TrimSpace(a.Config.Sync.URL) == "" {
+			writef(stderr, "sync remote: sync.url is not configured\n")
+			return 1
+		}
+		token := os.Getenv(a.Config.Sync.TokenEnv)
+		remote, err := cortsync.NewRemoteSyncer(a.DB.DB(), a.Config.Sync.URL, token, a.Config.Sync.Timeout)
+		if err != nil {
+			writef(stderr, "sync remote: %v\n", err)
+			return 1
+		}
+		result, err := remote.Sync(ctx)
+		if err != nil {
+			writef(stderr, "sync remote: %v\n", err)
+			return 1
+		}
+		writef(stdout, "Remote sync complete: %d pushed, %d pulled, cursor %d\n", result.Pushed, result.Pulled, result.Cursor)
+		return 0
+	}
 
 	if doStatus {
 		local, remote, pending, err := syncer.Status(ctx)

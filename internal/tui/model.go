@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
@@ -35,6 +36,7 @@ const (
 	ScreenArchive
 	ScreenHealth
 	ScreenEmbeddingConfig
+	ScreenLocalConfig
 	ScreenHelp
 )
 
@@ -150,6 +152,8 @@ type configReloadedMsg struct {
 	err error
 }
 
+type localConfigSavedMsg struct{ err error }
+
 type reindexProgressMsg struct {
 	progress string
 	done     bool
@@ -246,7 +250,7 @@ type Model struct {
 	HealthEdgeCount  int
 	HealthObsCount   int
 	HealthCandidates []healthCandidate
-	HealthSection    int  // 0=stale, 1=orphans, 2=candidates
+	HealthSection    int // 0=stale, 1=orphans, 2=candidates
 	HealthExpanded   bool
 
 	// Setup
@@ -287,6 +291,25 @@ type Model struct {
 	ReindexProgressBar     progress.Model
 	ReindexTotal           int
 	ReindexDone            int
+
+	// Local-first configuration. Values are staged until Save is selected.
+	LocalCfgDatabasePath textinput.Model
+	LocalCfgHTTPEnabled  bool
+	LocalCfgHTTPHost     textinput.Model
+	LocalCfgHTTPPort     textinput.Model
+	LocalCfgMCPRemote    bool
+	LocalCfgMCPURL       textinput.Model
+	LocalCfgMCPTokenEnv  textinput.Model
+	LocalCfgSyncEnabled  bool
+	LocalCfgSyncURL      textinput.Model
+	LocalCfgSyncTokenEnv textinput.Model
+	LocalCfgSyncInterval textinput.Model
+	LocalCfgFocusField   int
+	LocalCfgDirty        bool
+	LocalCfgSaving       bool
+	LocalCfgSaved        bool
+	LocalCfgError        string
+	LocalCfgSpinner      spinner.Model
 
 	// Activity sparkline (7-day observation counts)
 	ActivityData []int
@@ -337,6 +360,24 @@ func New(deps *Deps) Model {
 	embModel.Placeholder = "e.g. qwen3-embedding:8b"
 	embModel.CharLimit = 128
 	embModel.Width = 40
+	localInput := func(placeholder string, limit int) textinput.Model {
+		input := textinput.New()
+		input.Placeholder = placeholder
+		input.CharLimit = limit
+		input.Width = 54
+		return input
+	}
+	localSp := spinner.New()
+	localSp.Spinner = spinner.Dot
+	localSp.Style = lipgloss.NewStyle().Foreground(colorCyan)
+	databasePath := localInput("~/.cortex/cortex.db", 512)
+	httpHost := localInput("127.0.0.1", 255)
+	httpPort := localInput("7438", 5)
+	mcpURL := localInput("https://server.example/mcp", 512)
+	mcpTokenEnv := localInput("CORTEX_REMOTE_TOKEN", 128)
+	syncURL := localInput("https://server.example", 512)
+	syncTokenEnv := localInput("CORTEX_REMOTE_TOKEN", 128)
+	syncInterval := localInput("30s", 32)
 
 	cmdInput := textinput.New()
 	cmdInput.Placeholder = "Type a command..."
@@ -357,6 +398,14 @@ func New(deps *Deps) Model {
 		embModel.SetValue(deps.Config.Search.EmbeddingModel)
 		embVector = deps.Config.Search.Vector
 		embAutoStart = deps.Config.Search.OllamaAutoStart
+		databasePath.SetValue(deps.Config.Database.Path)
+		httpHost.SetValue(deps.Config.HTTP.Host)
+		httpPort.SetValue(fmt.Sprintf("%d", deps.Config.HTTP.Port))
+		mcpURL.SetValue(deps.Config.MCP.Remote.URL)
+		mcpTokenEnv.SetValue(deps.Config.MCP.Remote.TokenEnv)
+		syncURL.SetValue(deps.Config.Sync.URL)
+		syncTokenEnv.SetValue(deps.Config.Sync.TokenEnv)
+		syncInterval.SetValue(deps.Config.Sync.Interval.String())
 	}
 
 	// Create empty list models with default delegate
@@ -371,23 +420,35 @@ func New(deps *Deps) Model {
 	}
 
 	return Model{
-		deps:               deps,
-		Version:            deps.Version,
-		Screen:             ScreenDashboard,
-		SearchInput:        ti,
-		SetupSpinner:       sp,
-		EmbCfgSpinner:      embSp,
-		EmbCfgModel:        embModel,
-		EmbCfgProvider:     embProvider,
-		EmbCfgVector:       embVector,
-		EmbCfgAutoStart:    embAutoStart,
-		ReindexProgressBar: progress.New(progress.WithDefaultGradient()),
-		CmdPaletteInput:    cmdInput,
-		SearchListModel:    newEmptyList(),
-		RecentList:         newEmptyList(),
-		SessionListModel:   newEmptyList(),
-		GraphListModel:     newEmptyList(),
-		ArchiveList:        newEmptyList(),
+		deps:                 deps,
+		Version:              deps.Version,
+		Screen:               ScreenDashboard,
+		SearchInput:          ti,
+		SetupSpinner:         sp,
+		EmbCfgSpinner:        embSp,
+		EmbCfgModel:          embModel,
+		LocalCfgDatabasePath: databasePath,
+		LocalCfgHTTPEnabled:  deps.Config != nil && deps.Config.HTTP.Enabled,
+		LocalCfgHTTPHost:     httpHost,
+		LocalCfgHTTPPort:     httpPort,
+		LocalCfgMCPRemote:    deps.Config != nil && deps.Config.MCP.Remote.Enabled,
+		LocalCfgMCPURL:       mcpURL,
+		LocalCfgMCPTokenEnv:  mcpTokenEnv,
+		LocalCfgSyncEnabled:  deps.Config != nil && deps.Config.Sync.Enabled,
+		LocalCfgSyncURL:      syncURL,
+		LocalCfgSyncTokenEnv: syncTokenEnv,
+		LocalCfgSyncInterval: syncInterval,
+		LocalCfgSpinner:      localSp,
+		EmbCfgProvider:       embProvider,
+		EmbCfgVector:         embVector,
+		EmbCfgAutoStart:      embAutoStart,
+		ReindexProgressBar:   progress.New(progress.WithDefaultGradient()),
+		CmdPaletteInput:      cmdInput,
+		SearchListModel:      newEmptyList(),
+		RecentList:           newEmptyList(),
+		SessionListModel:     newEmptyList(),
+		GraphListModel:       newEmptyList(),
+		ArchiveList:          newEmptyList(),
 	}
 }
 

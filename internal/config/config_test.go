@@ -185,6 +185,62 @@ database:
 	}
 }
 
+func TestSavePreservesCommentsAndUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cortex.yaml")
+	original := "# operator notes\ndatabase:\n  # keep this path note\n  path: old.db\n  custom_driver_option: keep-me\ncustom_section:\n  enabled: true\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	cfg.LoadedFrom = path
+	cfg.Database.Path = "new.db"
+	if err := Save(&cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"# operator notes", "# keep this path note", "path: new.db", "custom_driver_option: keep-me", "custom_section:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("saved config missing %q:\n%s", want, text)
+		}
+	}
+	if err := Save(&cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "custom_driver_option:") != 1 {
+		t.Fatalf("save duplicated unknown key:\n%s", data)
+	}
+}
+
+func TestSaveRejectsInvalidExistingYAMLWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cortex.yaml")
+	original := []byte("database: [unterminated\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaults
+	if err := Save(&cfg, path); err == nil {
+		t.Fatal("Save accepted invalid existing YAML")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("Save mutated invalid config")
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file remains: %v", err)
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	// Clear environment variables
 	clearEnvVars(t)
@@ -220,6 +276,72 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.Logging.Level != "warn" {
 		t.Errorf("expected logging level 'warn', got '%s'", cfg.Logging.Level)
+	}
+}
+
+func TestMCPRemoteConfiguration(t *testing.T) {
+	clearEnvVars(t)
+	path := filepath.Join(t.TempDir(), "cortex.yaml")
+	yaml := `
+mcp:
+  enabled: true
+  remote:
+    enabled: true
+    url: https://cortex.example/mcp
+    token_env: CORTEX_TEST_REMOTE_TOKEN
+    timeout: 45s
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.MCP.Remote.Enabled || cfg.MCP.Remote.URL != "https://cortex.example/mcp" || cfg.MCP.Remote.TokenEnv != "CORTEX_TEST_REMOTE_TOKEN" || cfg.MCP.Remote.Timeout != 45*time.Second {
+		t.Fatalf("remote MCP config = %+v", cfg.MCP.Remote)
+	}
+}
+
+func TestLoadFindsGlobalConfigThroughUserProfile(t *testing.T) {
+	clearEnvVars(t)
+	home := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", home)
+	t.Chdir(t.TempDir())
+	configDir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "mcp:\n  remote:\n    enabled: true\n    url: https://global.example/mcp\n    token_env: GLOBAL_TOKEN\n    timeout: 30s\n"
+	if err := os.WriteFile(filepath.Join(configDir, "cortex.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LoadedFrom != filepath.Join(configDir, "cortex.yaml") || cfg.MCP.Remote.URL != "https://global.example/mcp" {
+		t.Fatalf("global config loaded from %q with remote %+v", cfg.LoadedFrom, cfg.MCP.Remote)
+	}
+}
+
+func TestMCPRemoteConfigurationValidation(t *testing.T) {
+	for name, remote := range map[string]string{
+		"relative URL":      "url: /mcp\n    token_env: TOKEN\n    timeout: 30s",
+		"missing token env": "url: https://example.test/mcp\n    token_env: ''\n    timeout: 30s",
+		"invalid timeout":   "url: https://example.test/mcp\n    token_env: TOKEN\n    timeout: 0s",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cortex.yaml")
+			content := "mcp:\n  remote:\n    enabled: true\n    " + remote + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected remote MCP validation error")
+			}
+		})
 	}
 }
 
@@ -885,6 +1007,10 @@ func clearEnvVars(t *testing.T) {
 		"CORTEX_DATABASE_PRAGMA_TEMP_STORE",
 		"CORTEX_DATABASE_PRAGMA_MMAP_SIZE",
 		"CORTEX_MCP_ENABLED",
+		"CORTEX_MCP_REMOTE_ENABLED",
+		"CORTEX_MCP_REMOTE_URL",
+		"CORTEX_MCP_REMOTE_TOKEN_ENV",
+		"CORTEX_MCP_REMOTE_TIMEOUT",
 		"CORTEX_HTTP_ENABLED",
 		"CORTEX_HTTP_PORT",
 		"CORTEX_HTTP_HOST",

@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -77,6 +79,38 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleGraph(stores),
+		)
+	}
+
+	if shouldRegister("cortex_graph_relationships", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_graph_relationships",
+				mcp.WithTitleAnnotation("List Graph Relationships"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithDescription("List incoming and outgoing relationships for an observation, including type, weight, confidence, provenance, and temporal metadata."),
+				mcp.WithNumber("observation_id", mcp.Required(), mcp.Description("Observation ID")),
+			),
+			handleGraphRelationships(stores),
+		)
+	}
+
+	if shouldRegister("cortex_graph_path", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_graph_path",
+				mcp.WithTitleAnnotation("Find Graph Path"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithDescription("Find the shortest observation path between two nodes using bounded breadth-first traversal."),
+				mcp.WithNumber("from_id", mcp.Required(), mcp.Description("Starting observation ID")),
+				mcp.WithNumber("to_id", mcp.Required(), mcp.Description("Destination observation ID")),
+				mcp.WithNumber("max_depth", mcp.Description("Maximum traversal depth 1-10 (default: 5)")),
+			),
+			handleGraphPath(stores),
 		)
 	}
 
@@ -302,6 +336,56 @@ func handleGraph(stores *Stores) server.ToolHandlerFunc {
 
 		return textResult("%s", sb.String())
 	}
+}
+
+func handleGraphRelationships(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		obsID, ok := positiveIntegerArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
+		}
+
+		edges, err := graphdomain.NewService(stores.Graph).GetRelationships(ctx, obsID)
+		if err != nil {
+			return errorResult("Failed to get graph relationships: %s", err)
+		}
+		if edges == nil {
+			edges = []*domain.Edge{}
+		}
+		return jsonTextResult(edges)
+	}
+}
+
+func handleGraphPath(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		fromID, fromOK := positiveIntegerArg(req, "from_id")
+		toID, toOK := positiveIntegerArg(req, "to_id")
+		if !fromOK || !toOK {
+			return errorResult("from_id and to_id must be positive integers")
+		}
+
+		path, err := graphdomain.NewService(stores.Graph).FindPath(ctx, fromID, toID, intArg(req, "max_depth", graphdomain.DefaultMaxDepth))
+		if err != nil {
+			return errorResult("Failed to find graph path: %s", err)
+		}
+		if path == nil {
+			path = []int64{}
+		}
+		return jsonTextResult(path)
+	}
+}
+
+func positiveIntegerArg(req mcp.CallToolRequest, key string) (int64, bool) {
+	value, ok := req.GetArguments()[key].(float64)
+	return int64(value), ok && value > 0 && value == math.Trunc(value)
+}
+
+func jsonTextResult(value any) (*mcp.CallToolResult, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return mcp.NewToolResultText(string(encoded)), nil
 }
 
 func handleScore(stores *Stores) server.ToolHandlerFunc {

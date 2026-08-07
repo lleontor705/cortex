@@ -30,22 +30,24 @@ type Stores = bundle.Stores
 // and knowledge-graph workflows. Temporal and admin tools are intentionally
 // absent — they belong to separate profiles (REQ-MCP-002).
 var ProfileAgent = map[string]bool{
-	"cortex_save":              true,
-	"cortex_search":            true,
-	"cortex_context":           true,
-	"cortex_session_summary":   true,
-	"cortex_session_start":     true,
-	"cortex_session_end":       true,
-	"cortex_get_observation":   true,
-	"cortex_suggest_topic_key": true,
-	"cortex_capture_passive":   true,
-	"cortex_save_prompt":       true,
-	"cortex_update":            true,
-	"cortex_relate":            true,
-	"cortex_graph":             true,
-	"cortex_score":             true,
-	"cortex_search_hybrid":     true,
-	"cortex_revision_history":  true,
+	"cortex_save":                true,
+	"cortex_search":              true,
+	"cortex_context":             true,
+	"cortex_session_summary":     true,
+	"cortex_session_start":       true,
+	"cortex_session_end":         true,
+	"cortex_get_observation":     true,
+	"cortex_suggest_topic_key":   true,
+	"cortex_capture_passive":     true,
+	"cortex_save_prompt":         true,
+	"cortex_update":              true,
+	"cortex_relate":              true,
+	"cortex_graph":               true,
+	"cortex_graph_relationships": true,
+	"cortex_graph_path":          true,
+	"cortex_score":               true,
+	"cortex_search_hybrid":       true,
+	"cortex_revision_history":    true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
 	"cortex_consolidate": true,
 	"cortex_project_dna": true,
@@ -131,6 +133,8 @@ CORE MEMORY:
 KNOWLEDGE GRAPH & SCORING:
   cortex_relate - create relationship between observations
   cortex_graph - traverse knowledge graph from an observation
+  cortex_graph_relationships - inspect typed incoming and outgoing edges
+  cortex_graph_path - find a bounded shortest path between observations
   cortex_score - get/recalculate importance score
   cortex_search_hybrid - FTS5 + vector search with Reciprocal Rank Fusion
   cortex_revision_history - structured revision snapshots for an observation

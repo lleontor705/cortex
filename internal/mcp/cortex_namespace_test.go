@@ -102,14 +102,14 @@ func TestRemovedBareTemporalNamesReturnUnknownTool(t *testing.T) {
 	}
 }
 
-// The 16 tools required in the ordinary agent profile (design Part 2 §9).
+// Tools required in the ordinary agent profile (design Part 2 §9).
 var requiredOrdinaryAgentTools = []string{
 	"cortex_save", "cortex_search", "cortex_context",
 	"cortex_session_summary", "cortex_session_start", "cortex_session_end",
 	"cortex_get_observation", "cortex_suggest_topic_key", "cortex_capture_passive",
 	"cortex_save_prompt", "cortex_update", "cortex_relate",
 	"cortex_graph", "cortex_score", "cortex_search_hybrid",
-	"cortex_revision_history",
+	"cortex_revision_history", "cortex_graph_relationships", "cortex_graph_path",
 }
 
 // The 5 tools required in the admin profile (design Part 2 §9).

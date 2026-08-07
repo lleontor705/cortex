@@ -101,10 +101,44 @@ type Edge struct {
 	CreatedAt    time.Time  `json:"created_at"`
 
 	// Enhanced temporal graph fields
-	EvolutionID   *int64 `json:"evolution_id,omitempty"`  // Track edge evolution (NULL = original)
-	EvolutionType string `json:"evolution_type"`          // evolution types: original, modified, superseded, contradicted
-	FactState     string `json:"fact_state"`              // fact states: current, historical, deprecated, superseded
-	ChangeReason  string `json:"change_reason,omitempty"` // Why the edge changed
+	EvolutionID     *int64 `json:"evolution_id,omitempty"`  // Track edge evolution (NULL = original)
+	EvolutionType   string `json:"evolution_type"`          // evolution types: original, modified, superseded, contradicted
+	FactState       string `json:"fact_state"`              // fact states: current, historical, deprecated, superseded
+	ChangeReason    string `json:"change_reason,omitempty"` // Why the edge changed
+	AssertionKind   string `json:"assertion_kind,omitempty"`
+	AssertionStatus string `json:"assertion_status,omitempty"`
+}
+
+// GraphNode and GraphLink form the transport-neutral heterogeneous graph read
+// model. IDs are kind-prefixed so independently stored aggregates cannot
+// collide when projected into one graph.
+type GraphNode struct {
+	ID       string         `json:"id"`
+	Kind     string         `json:"kind"`
+	Subtype  string         `json:"subtype,omitempty"`
+	Label    string         `json:"label"`
+	Project  string         `json:"project,omitempty"`
+	Hop      int            `json:"hop"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type GraphLink struct {
+	ID              string         `json:"id"`
+	Source          string         `json:"source"`
+	Target          string         `json:"target"`
+	Type            string         `json:"type"`
+	Weight          float64        `json:"weight,omitempty"`
+	Confidence      float64        `json:"confidence,omitempty"`
+	AssertionKind   string         `json:"assertion_kind,omitempty"`
+	AssertionStatus string         `json:"assertion_status,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type GraphSubgraph struct {
+	Root      string      `json:"root"`
+	Nodes     []GraphNode `json:"nodes"`
+	Edges     []GraphLink `json:"edges"`
+	Truncated bool        `json:"truncated"`
 }
 
 func (e Edge) MarshalJSON() ([]byte, error) {

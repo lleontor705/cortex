@@ -56,6 +56,23 @@ mcp:
   # Enable MCP server
   enabled: true
 
+  # Optional remote proxy. When enabled, `cortex mcp` does not open SQLite;
+  # it forwards the published MCP tools over local stdio instead.
+  remote:
+    enabled: false
+    url: ""
+    token_env: CORTEX_REMOTE_TOKEN
+    timeout: 30s
+
+# Optional local-first replication. Cortex continues serving SQLite while a
+# background worker pushes local changes and pulls server changes.
+sync:
+  enabled: false
+  url: "https://cortex.example.com"
+  token_env: CORTEX_REMOTE_TOKEN
+  interval: 30s
+  timeout: 30s
+
 # HTTP API server configuration
 http:
   # Enable HTTP API server

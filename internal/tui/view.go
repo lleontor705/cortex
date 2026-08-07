@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/lleontor705/cortex/internal/domain"
@@ -22,7 +23,7 @@ func (m Model) renderLogo() string {
 			MarginBottom(1)
 		title := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("CORTEX")
 		tagline := lipgloss.NewStyle().Foreground(colorSubtext).Italic(true).Render(" " + m.Version + " — your brain never forgets")
-		return compactStyle.Render(title + tagline) + "\n"
+		return compactStyle.Render(title+tagline) + "\n"
 	}
 
 	logoText := []string{
@@ -101,6 +102,8 @@ func (m Model) View() string {
 		content = m.viewHealth()
 	case ScreenEmbeddingConfig:
 		content = m.viewEmbeddingConfig()
+	case ScreenLocalConfig:
+		content = m.viewLocalConfig()
 	case ScreenHelp:
 		content = m.viewHelp()
 	default:
@@ -335,7 +338,7 @@ func (m Model) viewSearchResults() string {
 		scrollPct := fmt.Sprintf(" %3.f%% ", m.PreviewViewport.ScrollPercent()*100)
 		previewPane := lipgloss.NewStyle().
 			Width(previewWidth).
-			Height(m.Height - 8).
+			Height(m.Height-8).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderForeground(colorOverlay).
 			PaddingLeft(1).
@@ -390,7 +393,7 @@ func (m Model) viewRecent() string {
 		scrollPct := fmt.Sprintf(" %3.f%% ", m.PreviewViewport.ScrollPercent()*100)
 		previewPane := lipgloss.NewStyle().
 			Width(previewWidth).
-			Height(m.Height - 8).
+			Height(m.Height-8).
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderForeground(colorOverlay).
 			PaddingLeft(1).
@@ -969,6 +972,8 @@ func (m Model) screenName() string {
 		return "Health"
 	case ScreenEmbeddingConfig:
 		return "Embedding Settings"
+	case ScreenLocalConfig:
+		return "Local Settings"
 	case ScreenHelp:
 		return "Help"
 	default:
@@ -1086,7 +1091,7 @@ func (m Model) viewHelp() string {
 	b.WriteString("\n\n")
 
 	section := func(title string, bindings [][2]string) {
-		b.WriteString(sectionHeadingStyle.Render("  "+title))
+		b.WriteString(sectionHeadingStyle.Render("  " + title))
 		b.WriteString("\n")
 		keyStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Width(16)
 		descStyle := lipgloss.NewStyle().Foreground(colorText)
@@ -1231,6 +1236,148 @@ func entityIcon(entityType string) string {
 }
 
 // ─── Embedding Config ──────────────────────────────────────────────────────
+
+func (m Model) viewLocalConfig() string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("  Configuration Center"))
+	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorSubtext).Render("A guided setup for local storage, connectivity and replication."))
+
+	mode, modeDetail, modeColor := "LOCAL ONLY", "SQLite stays local on this device.", colorSubtext
+	if m.LocalCfgMCPRemote {
+		mode, modeDetail, modeColor = "REMOTE MCP", "MCP calls bypass SQLite and run on Cortex Server.", colorPurple
+	} else if m.LocalCfgSyncEnabled {
+		mode, modeDetail, modeColor = "LOCAL-FIRST + SYNC", "SQLite stays local; changes flow both ways in the background.", colorGreen
+	}
+	b.WriteString("\n\n  " + lipgloss.NewStyle().Background(modeColor).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(mode))
+	b.WriteString("  " + lipgloss.NewStyle().Foreground(colorText).Render(modeDetail))
+	if m.LocalCfgDirty {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("UNSAVED"))
+	}
+	b.WriteString("\n\n")
+
+	section := localConfigSection(m.LocalCfgFocusField)
+	tabs := []string{"1  Local", "2  HTTP", "3  MCP", "4  Sync", "5  Review"}
+	for i, tab := range tabs {
+		style := lipgloss.NewStyle().Foreground(colorSubtext).Padding(0, 1)
+		if i == section {
+			style = style.Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true)
+		}
+		b.WriteString(style.Render(tab))
+		if i < len(tabs)-1 {
+			b.WriteString(" ")
+		}
+	}
+	b.WriteString("\n")
+
+	marker := func(field int) string {
+		if m.LocalCfgFocusField == field {
+			return listSelectedStyle.Render("▸ ")
+		}
+		return "  "
+	}
+	label := lipgloss.NewStyle().Width(19).Foreground(colorText)
+	value := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(colorSubtext)
+	var panel strings.Builder
+	sectionTitle := lipgloss.NewStyle().Foreground(colorPurple).Bold(true)
+	switch section {
+	case 0:
+		panel.WriteString(sectionTitle.Render("Local database") + "\n")
+		panel.WriteString(dim.Render("Where Cortex stores sessions and memories on this device.") + "\n\n")
+		textLineTo(&panel, marker, label, value, dim, 0, "Database path:", m.LocalCfgDatabasePath)
+		panel.WriteString("\n" + dim.Render("Changing this path does not move an existing database."))
+	case 1:
+		panel.WriteString(sectionTitle.Render("Local HTTP API") + "\n")
+		panel.WriteString(dim.Render("Used by local plugins and REST clients.") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 1, "HTTP API:", m.LocalCfgHTTPEnabled)
+		textLineTo(&panel, marker, label, value, dim, 2, "Bind host:", m.LocalCfgHTTPHost)
+		textLineTo(&panel, marker, label, value, dim, 3, "Port:", m.LocalCfgHTTPPort)
+		panel.WriteString("\n" + dim.Render("Endpoint preview: http://"+m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value()))
+	case 2:
+		panel.WriteString(sectionTitle.Render("MCP transport") + "\n")
+		panel.WriteString(dim.Render("Choose where agent tool calls execute.") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 4, "Remote proxy:", m.LocalCfgMCPRemote)
+		textLineTo(&panel, marker, label, value, dim, 5, "MCP endpoint:", m.LocalCfgMCPURL)
+		textLineTo(&panel, marker, label, value, dim, 6, "Token env name:", m.LocalCfgMCPTokenEnv)
+		panel.WriteString("\n" + dim.Render("When enabled, MCP bypasses local SQLite."))
+	case 3:
+		panel.WriteString(sectionTitle.Render("Bidirectional sync") + "\n")
+		panel.WriteString(dim.Render("Keep working locally while sharing changes with Cortex Server.") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 7, "Background sync:", m.LocalCfgSyncEnabled)
+		textLineTo(&panel, marker, label, value, dim, 8, "Server URL:", m.LocalCfgSyncURL)
+		textLineTo(&panel, marker, label, value, dim, 9, "Token env name:", m.LocalCfgSyncTokenEnv)
+		textLineTo(&panel, marker, label, value, dim, 10, "Sync interval:", m.LocalCfgSyncInterval)
+		panel.WriteString("\n" + dim.Render("Only the environment variable name is saved, never its secret."))
+	case 4:
+		panel.WriteString(sectionTitle.Render("Review and apply") + "\n")
+		panel.WriteString(dim.Render("Confirm the resulting runtime mode before saving.") + "\n\n")
+		panel.WriteString(configSummaryLine("Storage", m.LocalCfgDatabasePath.Value()))
+		panel.WriteString(configSummaryLine("HTTP", enabledSummary(m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value())))
+		panel.WriteString(configSummaryLine("MCP", enabledSummary(m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value())))
+		panel.WriteString(configSummaryLine("Sync", enabledSummary(m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value()+" every "+m.LocalCfgSyncInterval.Value())))
+		panel.WriteString("\n")
+		if m.LocalCfgFocusField == 11 {
+			panel.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("Validate & save"))
+		} else {
+			panel.WriteString(lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay).Padding(0, 2).Render("Validate & save"))
+		}
+	}
+	panelWidth := 72
+	if m.Width > 0 && m.Width < 82 {
+		panelWidth = max(44, m.Width-8)
+	}
+	b.WriteString("\n" + lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorOverlay).Padding(1, 2).Width(panelWidth).Render(panel.String()))
+	if m.LocalCfgSaving {
+		b.WriteString("\n\n  " + m.LocalCfgSpinner.View() + " Validating and saving...")
+	}
+	if m.LocalCfgError != "" {
+		b.WriteString("\n\n  " + errorStyle.Render("Error: "+m.LocalCfgError))
+	}
+	if m.LocalCfgSaved {
+		b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("Configuration saved."))
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Restart Cortex and running agents to apply these settings."))
+	}
+	if m.localConfigInputFocused() {
+		b.WriteString(helpStyle.Render("\n\n  type value • enter confirm • esc stop editing"))
+	} else {
+		b.WriteString(helpStyle.Render("\n\n  h/l or tab sections • j/k fields • space toggle • enter edit • s save • r reset • esc back"))
+	}
+	return b.String()
+}
+
+func textLineTo(b *strings.Builder, marker func(int) string, label, value, dim lipgloss.Style, field int, name string, input textinput.Model) {
+	shown := input.Value()
+	if input.Focused() {
+		shown = input.View()
+	} else if shown == "" {
+		shown = dim.Render("(not set)")
+	} else {
+		shown = value.Render(shown)
+	}
+	b.WriteString(marker(field) + label.Render(name) + " " + shown + "\n")
+}
+
+func toggleLineTo(b *strings.Builder, marker func(int) string, label, dim lipgloss.Style, field int, name string, enabled bool) {
+	shown := dim.Render("[ ] Off")
+	if enabled {
+		shown = lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("[x] On")
+	}
+	b.WriteString(marker(field) + label.Render(name) + " " + shown + "\n")
+}
+
+func configSummaryLine(label, value string) string {
+	return lipgloss.NewStyle().Foreground(colorSubtext).Width(11).Render(label) + lipgloss.NewStyle().Foreground(colorText).Render(value) + "\n"
+}
+
+func enabledSummary(enabled bool, detail string) string {
+	if !enabled {
+		return "Off"
+	}
+	if strings.TrimSpace(detail) == "" {
+		return "On"
+	}
+	return "On · " + detail
+}
 
 func (m Model) viewEmbeddingConfig() string {
 	var b strings.Builder

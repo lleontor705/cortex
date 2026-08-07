@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/identity"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
@@ -45,13 +47,27 @@ type Operations interface {
 	CreateGraphEdge(context.Context, *domain.Edge) error
 	GetGraphEdgeByPublicID(context.Context, string) (*domain.Edge, error)
 	GetRelatedObservations(context.Context, int64, int) ([]*domain.Observation, error)
+	GetGraphSubgraph(context.Context, string, int, int) (*domain.GraphSubgraph, error)
 	DeleteGraphEdge(context.Context, int64) error
 	GetImportanceScore(context.Context, int64) (*domain.ImportanceScore, error)
+	CreateUser(context.Context, identity.UserCreate) (identity.UserRecord, error)
+	ListUsers(context.Context) ([]identity.UserRecord, error)
+	SetUserActive(context.Context, string, bool) error
+	IssueToken(context.Context, identity.TokenIssue) (identity.IssuedToken, error)
+	ListTokens(context.Context) ([]identity.TokenRecord, error)
+	RevokeToken(context.Context, string) error
+	RotateToken(context.Context, string) (identity.IssuedToken, error)
+	PushSync(context.Context, *domain.SyncBatch) (*domain.SyncResult, error)
+	PullSync(context.Context, int64, int) (*domain.SyncPage, error)
 }
 
 type healthCheck func(context.Context) error
 
 func newHTTPHandler(cfg config.Config, ops Operations, health healthCheck) (http.Handler, *mcpserver.StreamableHTTPServer) {
+	return newHTTPHandlerWithAuth(cfg, ops, health, func(next http.Handler) http.Handler { return bearerAuth(cfg.HTTP.Token, next) })
+}
+
+func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler) (http.Handler, *mcpserver.StreamableHTTPServer) {
 	mcpCore := newServerMCP(ops)
 	transport := mcpserver.NewStreamableHTTPServer(mcpCore)
 	mux := http.NewServeMux()
@@ -66,8 +82,8 @@ func newHTTPHandler(cfg config.Config, ops Operations, health healthCheck) (http
 	})
 
 	api := &apiHandler{ops: ops, defaultLimit: boundedDefault(cfg.Search.DefaultLimit), maxLimit: boundedMax(cfg.Search.MaxLimit)}
-	mux.Handle("/api/", bearerAuth(cfg.HTTP.Token, api.routes()))
-	mux.Handle("/mcp", bearerAuth(cfg.HTTP.Token, transport))
+	mux.Handle("/api/", protect(api.routes()))
+	mux.Handle("/mcp", protect(transport))
 	return corsHandler(cfg.HTTP.AllowedOrigins, mux), transport
 }
 
@@ -111,6 +127,15 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("GET /api/stats", a.stats)
 	mux.HandleFunc("GET /api/audit", a.audit)
 	mux.HandleFunc("GET /api/projects", a.projects)
+	mux.HandleFunc("GET /api/me", a.me)
+	mux.HandleFunc("GET /api/admin/users", a.listUsers)
+	mux.HandleFunc("POST /api/admin/users", a.createUser)
+	mux.HandleFunc("POST /api/admin/users/{id}/enable", a.enableUser)
+	mux.HandleFunc("POST /api/admin/users/{id}/disable", a.disableUser)
+	mux.HandleFunc("GET /api/admin/tokens", a.listTokens)
+	mux.HandleFunc("POST /api/admin/tokens", a.issueToken)
+	mux.HandleFunc("POST /api/admin/tokens/{id}/rotate", a.rotateToken)
+	mux.HandleFunc("DELETE /api/admin/tokens/{id}", a.revokeToken)
 	mux.HandleFunc("GET /api/observations/{id}", a.getObservation)
 	mux.HandleFunc("PUT /api/observations/{id}", a.updateObservation)
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
@@ -118,8 +143,183 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("POST /api/graph/edges", a.createEdge)
 	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
 	mux.HandleFunc("GET /api/graph/{id}/related", a.related)
+	mux.HandleFunc("GET /api/graph/{id}/subgraph", a.subgraph)
 	mux.HandleFunc("GET /api/scores/{id}", a.score)
+	mux.HandleFunc("POST /api/sync/push", a.pushSync)
+	mux.HandleFunc("GET /api/sync/changes", a.pullSync)
 	return mux
+}
+
+func (a *apiHandler) pushSync(w http.ResponseWriter, r *http.Request) {
+	var batch domain.SyncBatch
+	if !decodeBody(w, r, &batch) {
+		return
+	}
+	result, err := a.ops.PushSync(r.Context(), &batch)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *apiHandler) pullSync(w http.ResponseWriter, r *http.Request) {
+	cursor, err := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	if err != nil && r.URL.Query().Get("cursor") != "" {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be a non-negative integer")
+		return
+	}
+	limit := queryInt(r.URL.Query().Get("limit"), a.defaultLimit, 1, a.maxLimit)
+	page, err := a.ops.PullSync(r.Context(), cursor, limit)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (a *apiHandler) me(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		writeUnauthorized(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, principalResponse(principal))
+}
+
+func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email       string   `json:"email"`
+		DisplayName string   `json:"display_name"`
+		Roles       []string `json:"roles"`
+		Workspaces  []string `json:"workspaces"`
+		Projects    []string `json:"projects"`
+		Scopes      []string `json:"scopes"`
+		Clearance   []string `json:"classification_clearance"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	principal, _ := principalFromContext(r.Context())
+	if len(input.Workspaces) == 0 {
+		input.Workspaces = principal.WorkspacesCopy()
+	}
+	if hasString(input.Roles, string(authz.RoleOwner)) || hasString(input.Roles, string(authz.RoleAdmin)) {
+		if len(input.Projects) == 0 {
+			input.Projects = []string{"*"}
+		}
+		if len(input.Clearance) == 0 {
+			input.Clearance = []string{"*"}
+		}
+	}
+	user, err := a.ops.CreateUser(r.Context(), identity.UserCreate{Email: input.Email, DisplayName: input.DisplayName, Roles: input.Roles, Workspaces: input.Workspaces, Projects: input.Projects, Scopes: input.Scopes, ClassificationClearance: input.Clearance})
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, userResponse(user))
+}
+
+func (a *apiHandler) listUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := a.ops.ListUsers(r.Context())
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		out = append(out, userResponse(user))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *apiHandler) enableUser(w http.ResponseWriter, r *http.Request) {
+	a.setUserActive(w, r, true)
+}
+
+func (a *apiHandler) disableUser(w http.ResponseWriter, r *http.Request) {
+	a.setUserActive(w, r, false)
+}
+
+func (a *apiHandler) setUserActive(w http.ResponseWriter, r *http.Request, active bool) {
+	id, ok := pathPublicID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.ops.SetUserActive(r.Context(), id, active); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *apiHandler) issueToken(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Subject    string     `json:"subject"`
+		Name       string     `json:"name"`
+		Scopes     []string   `json:"scopes"`
+		Workspaces []string   `json:"workspaces"`
+		ExpiresAt  *time.Time `json:"expires_at"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if _, err := uuid.Parse(strings.TrimSpace(input.Subject)); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid operation input")
+		return
+	}
+	principal, _ := principalFromContext(r.Context())
+	if len(input.Workspaces) == 0 {
+		input.Workspaces = principal.WorkspacesCopy()
+	}
+	var expires time.Time
+	if input.ExpiresAt != nil {
+		expires = *input.ExpiresAt
+	}
+	issued, err := a.ops.IssueToken(r.Context(), identity.TokenIssue{Subject: input.Subject, PrincipalType: "user", OrgID: principal.OrgID, Name: input.Name, Workspaces: input.Workspaces, Scopes: input.Scopes, ExpiresAt: expires})
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, issuedTokenResponse(issued))
+}
+
+func (a *apiHandler) listTokens(w http.ResponseWriter, r *http.Request) {
+	tokens, err := a.ops.ListTokens(r.Context())
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(tokens))
+	for _, token := range tokens {
+		out = append(out, tokenResponse(token))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *apiHandler) rotateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathPublicID(w, r)
+	if !ok {
+		return
+	}
+	issued, err := a.ops.RotateToken(r.Context(), id)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, issuedTokenResponse(issued))
+}
+
+func (a *apiHandler) revokeToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathPublicID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.ops.RevokeToken(r.Context(), id); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *apiHandler) createSession(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +517,19 @@ func (a *apiHandler) related(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, observationListResponse(result))
 }
 
+func (a *apiHandler) subgraph(w http.ResponseWriter, r *http.Request) {
+	publicID, ok := pathPublicID(w, r)
+	if !ok {
+		return
+	}
+	result, err := a.ops.GetGraphSubgraph(r.Context(), publicID, queryInt(r.URL.Query().Get("depth"), 2, 1, maxGraphDepth), queryInt(r.URL.Query().Get("max_nodes"), 100, 1, 200))
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (a *apiHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
 	publicID, ok := pathPublicID(w, r)
 	if !ok {
@@ -419,12 +632,29 @@ func boundedMax(limit int) int {
 
 func respondOperationError(w http.ResponseWriter, err error) {
 	switch {
+	case isAuthorizationDenial(err):
+		writeError(w, http.StatusForbidden, "forbidden", "principal is not authorized for this operation")
 	case errors.Is(err, domain.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid operation input")
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 	default:
 		writeError(w, http.StatusInternalServerError, "operation_failed", "operation failed")
+	}
+}
+
+func isAuthorizationDenial(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, authz.ErrForbidden) {
+		return true
+	}
+	switch err.Error() {
+	case authz.DenyRole, authz.DenyScope, authz.DenyTenantMismatch, authz.DenyWorkspace, authz.DenyProject, authz.DenyOwnership, authz.DenyClassification:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -488,13 +718,48 @@ func observationListResponse(observations []*domain.Observation) []map[string]an
 	return out
 }
 
+func principalResponse(principal domain.Principal) map[string]any {
+	return map[string]any{"id": principal.Subject, "type": principal.Type, "org_id": principal.OrgID, "workspaces": principal.WorkspacesCopy(), "projects": principal.ProjectsCopy(), "roles": principal.RolesCopy(), "scopes": principal.ScopesCopy(), "classification_clearance": principal.ClassificationClearanceCopy(), "auth_method": principal.AuthMethod}
+}
+
+func userResponse(user identity.UserRecord) map[string]any {
+	return map[string]any{"id": user.ID, "email": user.Email, "display_name": user.DisplayName, "active": user.Active, "roles": user.Roles, "workspaces": user.Workspaces, "projects": user.Projects, "scopes": user.Scopes, "classification_clearance": user.ClassificationClearance, "grant_version": user.GrantVersion, "created_at": user.CreatedAt}
+}
+
+func tokenResponse(token identity.TokenRecord) map[string]any {
+	return map[string]any{"id": token.ID, "name": token.Name, "prefix": token.Prefix, "subject": token.Subject, "principal_type": token.PrincipalType, "scopes": token.Scopes, "workspaces": token.Workspaces, "expires_at": nullableAPITime(token.ExpiresAt), "revoked_at": nullableAPITime(token.RevokedAt), "last_used_at": nullableAPITime(token.LastUsedAt)}
+}
+
+func nullableAPITime(value time.Time) any {
+	if value.IsZero() || value.Unix() <= 0 {
+		return nil
+	}
+	return value
+}
+
+func issuedTokenResponse(issued identity.IssuedToken) map[string]any {
+	response := tokenResponse(issued.Record)
+	response["secret"] = issued.Secret
+	return response
+}
+
+func hasString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func edgeResponse(edge *domain.Edge) map[string]any {
 	if edge == nil {
 		return nil
 	}
 	return map[string]any{
 		"id": edge.PublicID, "from_id": edge.FromPublicID, "to_id": edge.ToPublicID,
-		"relation_type": edge.RelationType, "valid_from": edge.ValidFrom,
+		"relation_type": edge.RelationType, "weight": edge.Weight, "confidence": edge.Confidence,
+		"source": edge.Source, "reasoning": edge.Reasoning, "valid_from": edge.ValidFrom,
 		"invalid_at": edge.InvalidAt, "valid_until": edge.ValidUntil, "tx_from": edge.TxFrom,
 		"tx_until": edge.TxUntil, "created_at": edge.CreatedAt,
 		"evolution_type": edge.EvolutionType, "fact_state": edge.FactState, "change_reason": edge.ChangeReason,
@@ -559,8 +824,9 @@ func registerServerTools(srv *mcpserver.MCPServer, ops Operations) {
 	add(mcp.NewTool("cortex_get_observation", mcp.WithDescription("Get an observation by public UUID."), mcp.WithString("id", mcp.Required())), getTool(ops))
 	add(mcp.NewTool("cortex_update", mcp.WithDescription("Update fields on an observation."), mcp.WithString("id", mcp.Required()), mcp.WithString("title"), mcp.WithString("content"), mcp.WithString("type"), mcp.WithString("project"), mcp.WithString("scope"), mcp.WithString("topic_key")), updateTool(ops))
 	add(mcp.NewTool("cortex_delete", mcp.WithDescription("Delete an observation."), mcp.WithString("id", mcp.Required())), deleteTool(ops))
-	add(mcp.NewTool("cortex_relate", mcp.WithDescription("Create a graph relationship."), mcp.WithString("from_id", mcp.Required()), mcp.WithString("to_id", mcp.Required()), mcp.WithString("relation_type", mcp.Required())), relateTool(ops))
+	add(mcp.NewTool("cortex_relate", mcp.WithDescription("Create a graph relationship with provenance metadata."), mcp.WithString("from_id", mcp.Required()), mcp.WithString("to_id", mcp.Required()), mcp.WithString("relation_type", mcp.Required()), mcp.WithNumber("weight"), mcp.WithNumber("confidence"), mcp.WithString("source"), mcp.WithString("reasoning")), relateTool(ops))
 	add(mcp.NewTool("cortex_graph", mcp.WithDescription("Get related observations."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth")), graphTool(ops))
+	add(mcp.NewTool("cortex_graph_subgraph", mcp.WithDescription("Get a bounded heterogeneous graph containing observations, entities, actors, sessions, and projects."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth"), mcp.WithNumber("max_nodes")), graphSubgraphTool(ops))
 	add(mcp.NewTool("cortex_score", mcp.WithDescription("Get an observation importance score."), mcp.WithString("observation_id", mcp.Required())), scoreTool(ops))
 }
 
@@ -583,6 +849,13 @@ func toolInt(req mcp.CallToolRequest, key string, fallback int) int {
 		return fallback
 	}
 	return int(v)
+}
+func toolFloat(req mcp.CallToolRequest, key string, fallback float64) float64 {
+	v, ok := toolArgs(req)[key].(float64)
+	if !ok {
+		return fallback
+	}
+	return v
 }
 func toolResult(value any, err error) (*mcp.CallToolResult, error) {
 	if err != nil {
@@ -645,17 +918,40 @@ func deleteTool(ops Operations) mcpserver.ToolHandlerFunc {
 }
 func relateTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		from, err := ops.GetObservationByPublicID(ctx, toolString(req, "from_id"))
+		fromID, toID, relation := toolString(req, "from_id"), toolString(req, "to_id"), toolString(req, "relation_type")
+		weight, confidence := toolFloat(req, "weight", 1), toolFloat(req, "confidence", 1)
+		if fromID == "" || toID == "" || relation == "" {
+			return mcp.NewToolResultError("from_id, to_id, and relation_type are required"), nil
+		}
+		if weight < 0 || weight > 10 {
+			return mcp.NewToolResultError("weight must be between 0.0 and 10.0"), nil
+		}
+		if confidence < 0 || confidence > 1 {
+			return mcp.NewToolResultError("confidence must be between 0.0 and 1.0"), nil
+		}
+		from, err := ops.GetObservationByPublicID(ctx, fromID)
 		if err != nil {
 			return toolResult(nil, err)
 		}
-		to, err := ops.GetObservationByPublicID(ctx, toolString(req, "to_id"))
+		to, err := ops.GetObservationByPublicID(ctx, toID)
 		if err != nil {
 			return toolResult(nil, err)
 		}
-		e := &domain.Edge{FromObsID: from.ID, ToObsID: to.ID, FromPublicID: from.PublicID, ToPublicID: to.PublicID, RelationType: toolString(req, "relation_type")}
+		e := &domain.Edge{FromObsID: from.ID, ToObsID: to.ID, FromPublicID: from.PublicID, ToPublicID: to.PublicID, RelationType: relation, Weight: weight, Confidence: confidence, Source: toolString(req, "source"), Reasoning: toolString(req, "reasoning")}
 		err = ops.CreateGraphEdge(ctx, e)
 		return toolResult(edgeResponse(e), err)
+	}
+}
+func graphSubgraphTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		observationID := toolString(req, "observation_id")
+		if observationID == "" {
+			return mcp.NewToolResultError("observation_id is required"), nil
+		}
+		depth := queryInt(strconv.Itoa(toolInt(req, "depth", 2)), 2, 1, maxGraphDepth)
+		maxNodes := queryInt(strconv.Itoa(toolInt(req, "max_nodes", 100)), 100, 1, 200)
+		value, err := ops.GetGraphSubgraph(ctx, observationID, depth, maxNodes)
+		return toolResult(value, err)
 	}
 }
 func graphTool(ops Operations) mcpserver.ToolHandlerFunc {
