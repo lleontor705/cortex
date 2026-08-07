@@ -22,6 +22,9 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	if _, err := h.admin.Exec(ctx, `INSERT INTO service_accounts(tenant_id,public_id,name) VALUES($1,$2,$3)`, tenant, sa, "token-service"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := h.admin.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'service_account',$3,'token-test-digest',1)`, tenant, sa.String(), sa); err != nil {
+		t.Fatal(err)
+	}
 	store := newAuthorizedTestStore(t, h, tenant, uuid.Nil, uuid.New())
 	issued, err := store.tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}})
 	if err != nil {

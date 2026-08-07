@@ -302,6 +302,17 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if !strings.Contains(ciText, "go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp") {
 		t.Error("CI must include a race detector gate over concurrent store packages (search, bundle, mcp)")
 	}
+	if !strings.Contains(ciText, "go test -v -count=1 -tags cortex_vectors ./...") {
+		t.Error("CI must test the vector-enabled release build")
+	}
+	if strings.Count(ciText, `GOFLAGS: "-p=1"`) < 2 {
+		t.Error("CI PostgreSQL coverage and E2E jobs must serialize packages that share the test database")
+	}
+	for _, command := range []string{"npm ci", "npm test", "npm run build"} {
+		if !strings.Contains(ciText, command) {
+			t.Errorf("CI web gate missing %q", command)
+		}
+	}
 
 	if !strings.Contains(ciText, "  coverage:") {
 		t.Error("CI must define a dedicated coverage job")
@@ -320,6 +331,23 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	}
 	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
 		t.Error("CI coverage threshold must not promote rounded percentages")
+	}
+
+	release, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	releaseText := strings.ReplaceAll(string(release), "\r\n", "\n")
+	for _, command := range []string{"go test -v -count=1 -tags cortex_vectors ./...", "npm ci", "npm test", "npm run build"} {
+		if !strings.Contains(releaseText, command) {
+			t.Errorf("release gate missing %q", command)
+		}
+	}
+	if !strings.Contains(releaseText, "needs: [unit-tests, vector-tests, web-tests, e2e-tests, lint]") {
+		t.Error("release approval must depend on vector and web gates")
+	}
+	if !strings.Contains(releaseText, `GOFLAGS: "-p=1"`) {
+		t.Error("release PostgreSQL E2E job must serialize packages that share the test database")
 	}
 
 	protocol, err := os.ReadFile(filepath.Join(repositoryRoot, "bench", "evidence", "cortex-native", "v1", "protocol.json"))

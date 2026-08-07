@@ -277,7 +277,7 @@ func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	m, err := migration.NewPostgresServerMigration()
 	if err != nil {
 		t.Fatal(err)
@@ -309,6 +309,20 @@ func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
 		t.Fatal("advisory lock contention unexpectedly succeeded")
 	}
 	_ = lockTx.Rollback()
+	restoreSchema := func() error {
+		if _, err := db.Exec(`DELETE FROM cortex_server_migrations WHERE version > $1`, m.Version()); err != nil {
+			return err
+		}
+		return migration.ApplyPostgresServerMigrations(context.Background(), db)
+	}
+	downStarted := true
+	t.Cleanup(func() {
+		if downStarted {
+			if err := restoreSchema(); err != nil {
+				t.Errorf("restore PostgreSQL schema after Down test: %v", err)
+			}
+		}
+	})
 	if err := m.Down(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
@@ -319,9 +333,10 @@ func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
 	if exists {
 		t.Fatal("Down left server tables behind")
 	}
-	if err := m.Apply(context.Background(), db); err != nil {
+	if err := restoreSchema(); err != nil {
 		t.Fatal(err)
 	}
+	downStarted = false
 }
 
 func TestPostgresW11ParameterizedInputIsData(t *testing.T) {

@@ -1148,36 +1148,6 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Auto-start Ollama if configured
-	if a.Config.Search.EmbeddingProvider == "ollama" {
-		ctx := context.Background()
-		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
-		if !mgr.IsRunning(ctx) {
-			writeln(stdout, "Starting Ollama...")
-			if err := mgr.EnsureRunning(ctx); err != nil {
-				writef(stderr, "cortex: failed to start ollama: %v\n", err)
-				return 1
-			}
-			writeln(stdout, "Ollama is ready.")
-		}
-		// Check if model exists, pull if needed
-		model := a.Config.Search.EmbeddingModel
-		if model == "" {
-			model = "nomic-embed-text"
-		}
-		has, _ := mgr.HasModel(ctx, model)
-		if !has {
-			writef(stdout, "Pulling model %s...\n", model)
-			if err := mgr.PullModel(ctx, model, func(p string) {
-				writef(stdout, "  %s\n", p)
-			}); err != nil {
-				writef(stderr, "cortex: failed to pull model: %v\n", err)
-				return 1
-			}
-			writef(stdout, "Model %s pulled successfully.\n", model)
-		}
-	}
-
 	project := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--project" && i+1 < len(args) {
@@ -1199,6 +1169,38 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 	}
 
 	writef(stdout, "Reindexing %d observations with %s...\n", len(obs), a.Stores.Embeddings.Model())
+	if len(obs) == 0 {
+		writeln(stdout, "Done. Indexed: 0, Skipped: 0, Errors: 0")
+		return 0
+	}
+
+	// Manage the local Ollama process and model only when auto-start is enabled.
+	if a.Config.Search.EmbeddingProvider == "ollama" && a.Config.Search.OllamaAutoStart {
+		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
+		if !mgr.IsRunning(ctx) {
+			writeln(stdout, "Starting Ollama...")
+			if err := mgr.EnsureRunning(ctx); err != nil {
+				writef(stderr, "cortex: failed to start ollama: %v\n", err)
+				return 1
+			}
+			writeln(stdout, "Ollama is ready.")
+		}
+		model := a.Config.Search.EmbeddingModel
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		has, _ := mgr.HasModel(ctx, model)
+		if !has {
+			writef(stdout, "Pulling model %s...\n", model)
+			if err := mgr.PullModel(ctx, model, func(p string) {
+				writef(stdout, "  %s\n", p)
+			}); err != nil {
+				writef(stderr, "cortex: failed to pull model: %v\n", err)
+				return 1
+			}
+			writef(stdout, "Model %s pulled successfully.\n", model)
+		}
+	}
 
 	indexed, skipped, errors := 0, 0, 0
 	for i, o := range obs {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,14 +23,16 @@ import (
 // Test infrastructure
 // ---------------------------------------------------------------------------
 
-// setupWorkerDB creates an in-memory DB with the v2 baseline schema and returns
+// setupWorkerDB creates an isolated DB with the v2 baseline schema and returns
 // real outbox + observation stores for integration-level worker tests. The
 // returned cleanup function closes the DB — callers MUST defer it (not
 // t.Cleanup) so that in goleak tests db.Close runs BEFORE goleak.VerifyNone
 // (LIFO defer ordering kills the database/sql.connectionOpener goroutine first).
 func setupWorkerDB(t *testing.T) (*sql.DB, *sqlitestore.OutboxStore, *sqlitestore.Store, func()) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	// A file-backed database survives database/sql replacing a connection after
+	// context cancellation during worker drain; plain :memory: would reopen empty.
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "worker.db"))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
