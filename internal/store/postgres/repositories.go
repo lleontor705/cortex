@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/internal/domain"
+	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
 )
 
 type ObservationRepository struct{ *Store }
@@ -47,7 +48,7 @@ func (r *ObservationRepository) Save(ctx context.Context, o *domain.Observation)
 		if _, err := tx.Exec(ctx, `UPDATE observations SET owner_subject=$1,classification=COALESCE(NULLIF(scope,''),'project') WHERE tenant_id=public.cortex_current_tenant() AND id=$2`, r.principal.Subject, id); err != nil {
 			return fmt.Errorf("postgres observations: metadata: %w", err)
 		}
-		return nil
+		return r.replaceEntityLinksInTx(ctx, tx, o)
 	})
 }
 
@@ -86,6 +87,9 @@ func (r *ObservationRepository) SaveBulk(ctx context.Context, observations []*do
 			if _, err := tx.Exec(ctx, `UPDATE observations SET owner_subject=$1,classification=COALESCE(NULLIF(scope,''),'project') WHERE tenant_id=public.cortex_current_tenant() AND id=$2`, r.principal.Subject, o.ID); err != nil {
 				return err
 			}
+			if err := r.replaceEntityLinksInTx(ctx, tx, o); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -111,6 +115,22 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 		return fmt.Errorf("postgres observations: revision: %w", err)
 	}
 	o.ID, o.CreatedAt, o.UpdatedAt = id, created, now
+	return r.replaceEntityLinksInTx(ctx, tx, o)
+}
+
+func (r *ObservationRepository) replaceEntityLinksInTx(ctx context.Context, tx pgx.Tx, observation *domain.Observation) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM observation_entities WHERE tenant_id=public.cortex_current_tenant() AND observation_id=$1`, observation.ID); err != nil {
+		return err
+	}
+	for _, link := range domainentity.Extract(observation) {
+		var entityID int64
+		if err := tx.QueryRow(ctx, `INSERT INTO entities(tenant_id,entity_type,entity_key,normalized_value,provenance,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$5) ON CONFLICT(tenant_id,entity_type,entity_key) DO UPDATE SET normalized_value=EXCLUDED.normalized_value,provenance=EXCLUDED.provenance,updated_at=now(),updated_by=EXCLUDED.updated_by RETURNING id`, link.EntityType, link.EntityValue, link.NormalizedValue, link.Provenance, actorFromContext(ctx)).Scan(&entityID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO observation_entities(tenant_id,observation_id,entity_id,confidence,created_by) VALUES(public.cortex_current_tenant(),$1,$2,1,$3)`, observation.ID, entityID, actorFromContext(ctx)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 func (r *ObservationRepository) Update(ctx context.Context, o *domain.Observation) error {

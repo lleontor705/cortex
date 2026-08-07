@@ -20,6 +20,34 @@ func TestPostgresServerMigrationMetadata(t *testing.T) {
 	}
 }
 
+func TestPostgresServerMigrationSequence(t *testing.T) {
+	migrations, err := NewPostgresServerMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) != 4 {
+		t.Fatalf("migration count = %d, want 4", len(migrations))
+	}
+	if migrations[0].Version() != 100 || migrations[1].Version() != 101 || migrations[2].Version() != 102 || migrations[3].Version() != 103 {
+		t.Fatalf("migration versions = %d, %d, %d, %d", migrations[0].Version(), migrations[1].Version(), migrations[2].Version(), migrations[3].Version())
+	}
+	for _, token := range []string{"principal_grants", "assertion_kind", "normalized_value"} {
+		if !strings.Contains(migrations[1].SQL(), token) {
+			t.Errorf("migration 101 missing %q", token)
+		}
+	}
+	for _, token := range []string{"sync_changes", "client_id", "cortex_record_sync_change"} {
+		if !strings.Contains(migrations[2].SQL(), token) {
+			t.Errorf("migration 102 missing %q", token)
+		}
+	}
+	for _, token := range []string{"cortex_default_sync_client_id", "BEFORE INSERT"} {
+		if !strings.Contains(migrations[3].SQL(), token) {
+			t.Errorf("migration 103 missing %q", token)
+		}
+	}
+}
+
 func TestPostgresServerMigrationIsServerOnly(t *testing.T) {
 	m, err := NewPostgresServerMigration()
 	if err != nil {

@@ -16,7 +16,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const CORTEX_PORT = parseInt(process.env.CORTEX_PORT ?? "7438")
+const CORTEX_PORT = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
 const CORTEX_URL = `http://127.0.0.1:${CORTEX_PORT}`
 const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
   // Try Bun.which for PATH lookup, fall back to bare command

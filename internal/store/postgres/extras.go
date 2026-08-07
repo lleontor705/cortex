@@ -74,8 +74,22 @@ func (r *GraphRepository) CreateEdge(ctx context.Context, e *domain.Edge) error 
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var id int64
-		err := tx.QueryRow(ctx, `INSERT INTO edges(tenant_id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$6) RETURNING id,public_id::text`, e.FromObsID, e.ToObsID, e.RelationType, e.ValidFrom, e.ValidUntil, actorFromContext(ctx)).Scan(&id, &e.PublicID)
+		kind, status := e.AssertionKind, e.AssertionStatus
+		if kind == "" {
+			kind = "asserted"
+		}
+		if status == "" {
+			status = "accepted"
+		}
+		if e.Weight == 0 {
+			e.Weight = 1
+		}
+		if e.Confidence == 0 {
+			e.Confidence = 1
+		}
+		err := tx.QueryRow(ctx, `INSERT INTO edges(tenant_id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,assertion_kind,assertion_status,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,COALESCE(NULLIF($6,''),'manual'),$7,$8,$9,$10,$11,$12,$13,$13) RETURNING id,public_id::text,tx_from`, e.FromObsID, e.ToObsID, e.RelationType, e.Weight, e.Confidence, e.Source, e.Reasoning, e.ValidFrom, e.InvalidAt, e.ValidUntil, kind, status, actorFromContext(ctx)).Scan(&id, &e.PublicID, &e.TxFrom)
 		e.ID = id
+		e.AssertionKind, e.AssertionStatus = kind, status
 		if err == nil {
 			err = r.populateEdgeEndpoints(ctx, tx, e)
 		}
@@ -97,7 +111,7 @@ func (r *GraphRepository) DeleteEdge(ctx context.Context, id int64) error {
 func (r *GraphRepository) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 	var e domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND id=$1`, id).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tx_until,assertion_kind,assertion_status,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND id=$1`, id).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.Weight, &e.Confidence, &e.Source, &e.Reasoning, &e.ValidFrom, &e.InvalidAt, &e.ValidUntil, &e.TxFrom, &e.TxUntil, &e.AssertionKind, &e.AssertionStatus, &e.CreatedAt)
 		if err == nil {
 			err = r.populateEdgeEndpoints(ctx, tx, &e)
 		}
@@ -112,7 +126,7 @@ func (r *GraphRepository) GetEdge(ctx context.Context, id int64) (*domain.Edge, 
 func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string) (*domain.Edge, error) {
 	var e domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, publicID).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.ValidFrom, &e.ValidUntil, &e.CreatedAt)
+		err := tx.QueryRow(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tx_until,assertion_kind,assertion_status,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, publicID).Scan(&e.PublicID, &e.ID, &e.FromObsID, &e.ToObsID, &e.RelationType, &e.Weight, &e.Confidence, &e.Source, &e.Reasoning, &e.ValidFrom, &e.InvalidAt, &e.ValidUntil, &e.TxFrom, &e.TxUntil, &e.AssertionKind, &e.AssertionStatus, &e.CreatedAt)
 		if err == nil {
 			err = r.populateEdgeEndpoints(ctx, tx, &e)
 		}
@@ -125,14 +139,14 @@ func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string
 }
 func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) (out []*domain.Edge, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND EXISTS (SELECT 1 FROM observations a WHERE a.tenant_id=public.cortex_current_tenant() AND a.id=edges.from_observation_id AND a.deleted_at IS NULL) AND EXISTS (SELECT 1 FROM observations b WHERE b.tenant_id=public.cortex_current_tenant() AND b.id=edges.to_observation_id AND b.deleted_at IS NULL)`, id)
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tx_until,assertion_kind,assertion_status,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND EXISTS (SELECT 1 FROM observations a WHERE a.tenant_id=public.cortex_current_tenant() AND a.id=edges.from_observation_id AND a.deleted_at IS NULL) AND EXISTS (SELECT 1 FROM observations b WHERE b.tenant_id=public.cortex_current_tenant() AND b.id=edges.to_observation_id AND b.deleted_at IS NULL)`, id)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			x := new(domain.Edge)
-			if e := rows.Scan(&x.PublicID, &x.ID, &x.FromObsID, &x.ToObsID, &x.RelationType, &x.ValidFrom, &x.ValidUntil, &x.CreatedAt); e != nil {
+			if e := rows.Scan(&x.PublicID, &x.ID, &x.FromObsID, &x.ToObsID, &x.RelationType, &x.Weight, &x.Confidence, &x.Source, &x.Reasoning, &x.ValidFrom, &x.InvalidAt, &x.ValidUntil, &x.TxFrom, &x.TxUntil, &x.AssertionKind, &x.AssertionStatus, &x.CreatedAt); e != nil {
 				return e
 			}
 			out = append(out, x)
@@ -252,7 +266,7 @@ func (r *GraphRepository) UpdateEdge(ctx context.Context, e *domain.Edge) error 
 		return ErrInvalidTimeRange
 	}
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE edges SET relation_type=$1,valid_from=$2,valid_until=$3,updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND id=$4`, e.RelationType, e.ValidFrom, e.ValidUntil, e.ID)
+		tag, err := tx.Exec(ctx, `UPDATE edges SET relation_type=$1,weight=$2,confidence=$3,source=$4,reasoning=$5,valid_from=$6,invalid_at=$7,valid_until=$8,assertion_kind=$9,assertion_status=$10,updated_at=now(),updated_by=$11 WHERE tenant_id=public.cortex_current_tenant() AND id=$12`, e.RelationType, e.Weight, e.Confidence, e.Source, e.Reasoning, e.ValidFrom, e.InvalidAt, e.ValidUntil, e.AssertionKind, e.AssertionStatus, actorFromContext(ctx), e.ID)
 		if err != nil {
 			return err
 		}

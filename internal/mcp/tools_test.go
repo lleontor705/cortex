@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,69 @@ func TestHandleGraph(t *testing.T) {
 	text := resultText(result)
 	if !strings.Contains(text, "Graph Obs 2") {
 		t.Errorf("expected to find 'Graph Obs 2', got %q", text)
+	}
+}
+
+func TestHandleGraphRelationshipsAndPath(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	obs1 := saveObs(t, stores, "Path 1", "demo", "s1")
+	obs2 := saveObs(t, stores, "Path 2", "demo", "s1")
+	obs3 := saveObs(t, stores, "Path 3", "demo", "s1")
+	for _, edge := range []*domain.Edge{
+		{FromObsID: obs1.ID, ToObsID: obs2.ID, RelationType: "references", Weight: 2, Confidence: 0.8, Source: "test"},
+		{FromObsID: obs2.ID, ToObsID: obs3.ID, RelationType: "follows", Weight: 1},
+	} {
+		if err := stores.Graph.CreateEdge(context.Background(), edge); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	relationships := callTool(t, handleGraphRelationships(stores), map[string]interface{}{"observation_id": float64(obs1.ID)})
+	var edges []domain.Edge
+	if err := json.Unmarshal([]byte(resultText(relationships)), &edges); err != nil {
+		t.Fatalf("relationships result is not JSON: %v", err)
+	}
+	if len(edges) != 1 || edges[0].RelationType != "references" || edges[0].Source != "test" {
+		t.Fatalf("relationships = %+v", edges)
+	}
+
+	pathResult := callTool(t, handleGraphPath(stores), map[string]interface{}{"from_id": float64(obs1.ID), "to_id": float64(obs3.ID), "max_depth": float64(2)})
+	var path []int64
+	if err := json.Unmarshal([]byte(resultText(pathResult)), &path); err != nil {
+		t.Fatalf("path result is not JSON: %v", err)
+	}
+	if len(path) != 3 || path[0] != obs1.ID || path[1] != obs2.ID || path[2] != obs3.ID {
+		t.Fatalf("path = %v", path)
+	}
+}
+
+func TestHandleGraphRelationshipsAndPathEmptyResults(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	obs1 := saveObs(t, stores, "Isolated 1", "demo", "s1")
+	obs2 := saveObs(t, stores, "Isolated 2", "demo", "s1")
+
+	if got := resultText(callTool(t, handleGraphRelationships(stores), map[string]interface{}{"observation_id": float64(obs1.ID)})); got != "[]" {
+		t.Fatalf("empty relationships = %q", got)
+	}
+	if got := resultText(callTool(t, handleGraphPath(stores), map[string]interface{}{"from_id": float64(obs1.ID), "to_id": float64(obs2.ID)})); got != "[]" {
+		t.Fatalf("missing path = %q", got)
+	}
+	if got := resultText(callTool(t, handleGraphPath(stores), map[string]interface{}{"from_id": float64(obs1.ID), "to_id": float64(obs1.ID)})); got != fmt.Sprintf("[%d]", obs1.ID) {
+		t.Fatalf("identity path = %q", got)
+	}
+}
+
+func TestHandleGraphStructuredToolsRejectFractionalIDs(t *testing.T) {
+	stores := setupTestStores(t)
+	for name, result := range map[string]*mcp.CallToolResult{
+		"relationships": callTool(t, handleGraphRelationships(stores), map[string]interface{}{"observation_id": 1.5}),
+		"path":          callTool(t, handleGraphPath(stores), map[string]interface{}{"from_id": 1.5, "to_id": 2.0}),
+	} {
+		if text := resultText(result); !strings.Contains(text, "positive integer") {
+			t.Fatalf("%s result = %q", name, text)
+		}
 	}
 }
 

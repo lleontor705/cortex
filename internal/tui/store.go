@@ -12,6 +12,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -354,6 +356,46 @@ func loadHealthData(d *Deps, project string) tea.Cmd {
 // ─── Embedding Config Commands ─────────────────────────────────────────────
 
 var embeddingProviders = []string{"none", "ollama", "openai"}
+
+type localConfigValues struct {
+	databasePath          string
+	httpEnabled           bool
+	httpHost, httpPort    string
+	mcpRemote             bool
+	mcpURL, mcpTokenEnv   string
+	syncEnabled           bool
+	syncURL, syncTokenEnv string
+	syncInterval          string
+}
+
+func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Config == nil {
+			return localConfigSavedMsg{err: fmt.Errorf("config not available")}
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(values.httpPort))
+		if err != nil {
+			return localConfigSavedMsg{err: fmt.Errorf("HTTP port must be a number between 1 and 65535")}
+		}
+		interval, err := time.ParseDuration(strings.TrimSpace(values.syncInterval))
+		if err != nil {
+			return localConfigSavedMsg{err: fmt.Errorf("sync interval must be a duration such as 30s or 5m")}
+		}
+		next := *d.Config
+		next.Database.Path = strings.TrimSpace(values.databasePath)
+		next.HTTP.Enabled, next.HTTP.Host, next.HTTP.Port = values.httpEnabled, strings.TrimSpace(values.httpHost), port
+		next.MCP.Remote.Enabled, next.MCP.Remote.URL, next.MCP.Remote.TokenEnv = values.mcpRemote, strings.TrimSpace(values.mcpURL), strings.TrimSpace(values.mcpTokenEnv)
+		next.Sync.Enabled, next.Sync.URL, next.Sync.TokenEnv, next.Sync.Interval = values.syncEnabled, strings.TrimSpace(values.syncURL), strings.TrimSpace(values.syncTokenEnv), interval
+		if err := config.Validate(&next); err != nil {
+			return localConfigSavedMsg{err: err}
+		}
+		if err := config.Save(&next, ""); err != nil {
+			return localConfigSavedMsg{err: err}
+		}
+		d.Config = &next
+		return localConfigSavedMsg{}
+	}
+}
 
 func saveEmbeddingConfig(d *Deps, provider int, model string, vector, autoStart bool) tea.Cmd {
 	return func() tea.Msg {

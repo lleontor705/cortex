@@ -270,7 +270,17 @@ func (s *AuthorizedStore) GetRelatedObservations(ctx context.Context, id int64, 
 	if err := s.authorize(ctx, authz.ResourceGraph, authz.ActionRead, "", "", ""); err != nil {
 		return nil, err
 	}
-	return s.store.graph().GetRelated(ctx, id, depth)
+	related, err := s.store.graph().GetRelated(ctx, id, depth)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]*domain.Observation, 0, len(related))
+	for _, observation := range related {
+		if err := s.authorizeObservation(ctx, authz.ActionRead, observation.ID); err == nil {
+			visible = append(visible, observation)
+		}
+	}
+	return visible, nil
 }
 func (s *AuthorizedStore) DeleteGraphEdge(ctx context.Context, id int64) error {
 	e, err := s.GetGraphEdge(ctx, id)
@@ -318,6 +328,24 @@ func (s *AuthorizedStore) SetImportanceScore(ctx context.Context, id int64, scor
 		return err
 	}
 	return s.store.SetScore(ctx, id, score)
+}
+func (s *AuthorizedStore) CreateUser(ctx context.Context, in identity.UserCreate) (identity.UserRecord, error) {
+	if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionManage, "", "", ""); err != nil {
+		return identity.UserRecord{}, err
+	}
+	return s.store.users().Create(ctx, in)
+}
+func (s *AuthorizedStore) ListUsers(ctx context.Context) ([]identity.UserRecord, error) {
+	if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionManage, "", "", ""); err != nil {
+		return nil, err
+	}
+	return s.store.users().List(ctx)
+}
+func (s *AuthorizedStore) SetUserActive(ctx context.Context, id string, active bool) error {
+	if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionManage, "", "", ""); err != nil {
+		return err
+	}
+	return s.store.users().SetActive(ctx, id, active)
 }
 func (s *AuthorizedStore) IssueToken(ctx context.Context, in identity.TokenIssue) (identity.IssuedToken, error) {
 	if err := s.authorize(ctx, authz.ResourceTokens, authz.ActionManage, "", in.Subject, ""); err != nil {

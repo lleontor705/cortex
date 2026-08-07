@@ -45,6 +45,12 @@ type Runtime struct {
 	closeErr      error
 }
 
+type principalOperationsFactoryFunc func(context.Context, domain.Principal) (Operations, error)
+
+func (f principalOperationsFactoryFunc) ForPrincipal(ctx context.Context, principal domain.Principal) (Operations, error) {
+	return f(ctx, principal)
+}
+
 // Open validates server-only configuration, applies the PostgreSQL migration,
 // and constructs tenant-scoped repositories. It performs no work for local
 // mode; callers select this root explicitly.
@@ -68,11 +74,7 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		}
 	}()
 
-	m, err := migration.NewPostgresServerMigration()
-	if err != nil {
-		return nil, err
-	}
-	if err := m.Apply(ctx, migrationDB); err != nil {
+	if err := migration.ApplyPostgresServerMigrations(ctx, migrationDB); err != nil {
 		return nil, fmt.Errorf("server: apply migration: %w", err)
 	}
 	if cfg.Server.BootstrapDevelopment {
@@ -153,7 +155,21 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct system service: %w", err)
 	}
-	handler, transport := newHTTPHandler(cfg, store, pool.Ping)
+	factory := principalOperationsFactoryFunc(func(ctx context.Context, requestPrincipal domain.Principal) (Operations, error) {
+		audit, err := postgresstore.NewAuditSink(pool, requestPrincipal.Subject, requestPrincipal.GrantDigest, requestPrincipal.GrantVersion)
+		if err != nil {
+			return nil, err
+		}
+		policy := authz.NewPolicy()
+		policy.Audit = audit
+		requestContext, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: requestPrincipal, Tenant: authz.Tenant{ID: requestPrincipal.OrgID, WorkspaceID: cfg.Server.WorkspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
+		if err != nil {
+			return nil, err
+		}
+		return postgresstore.NewAuthorizedStore(pool, requestContext)
+	})
+	authenticator := requestAuthenticator{bootstrapToken: cfg.HTTP.Token, bootstrapPrincipal: principal, verifier: store, factory: factory}
+	handler, transport := newHTTPHandlerWithAuth(cfg, requestOperations{}, pool.Ping, authenticator.middleware)
 	rt := &Runtime{
 		Config:     &cfg,
 		Pool:       pool,

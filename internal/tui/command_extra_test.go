@@ -63,6 +63,7 @@ func TestScreenNameAllScreens(t *testing.T) {
 		{ScreenArchive, "Archive"},
 		{ScreenHealth, "Health"},
 		{ScreenEmbeddingConfig, "Embedding Settings"},
+		{ScreenLocalConfig, "Local Settings"},
 		{ScreenHelp, "Help"},
 	}
 	for _, tc := range cases {

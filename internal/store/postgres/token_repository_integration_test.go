@@ -23,9 +23,12 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newAuthorizedTestStore(t, h, tenant, uuid.Nil, uuid.New())
-	issued, err := store.tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)})
+	issued, err := store.tokens().Issue(ctx, identity.TokenIssue{Subject: sa.String(), PrincipalType: "service_account", OrgID: tenant.String(), Scopes: []string{"read"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !issued.Record.ExpiresAt.IsZero() {
+		t.Fatalf("non-expiring token has expiration %v", issued.Record.ExpiresAt)
 	}
 	if _, err := store.tokens().Verify(ctx, issued.Secret, "read"); err != nil {
 		t.Fatal(err)
@@ -33,6 +36,9 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	verifyTx, err := store.store.BeginTx(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !rotated.Record.ExpiresAt.IsZero() {
+		t.Fatalf("rotated non-expiring token has expiration %v", rotated.Record.ExpiresAt)
 	}
 	var lastUsed time.Time
 	if err := verifyTx.Handle().(pgx.Tx).QueryRow(ctx, `SELECT last_used_at FROM api_tokens WHERE public_id=$1::uuid`, issued.Record.ID).Scan(&lastUsed); err != nil || lastUsed.IsZero() {

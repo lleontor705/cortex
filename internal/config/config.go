@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +46,7 @@ type Config struct {
 	Memory    MemoryConfig    `yaml:"memory" mapstructure:"memory"`
 	Lifecycle LifecycleConfig `yaml:"lifecycle" mapstructure:"lifecycle"`
 	Vector    VectorConfig    `yaml:"vector" mapstructure:"vector"`
+	Sync      SyncConfig      `yaml:"sync" mapstructure:"sync"`
 
 	// LoadedFrom is the path of the config file that was loaded.
 	// Used by Save() and ReloadConfig() to always use the same file.
@@ -110,7 +114,26 @@ type PragmaConfig struct {
 
 // MCPConfig holds MCP (Model Context Protocol) configuration
 type MCPConfig struct {
-	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	Enabled bool            `yaml:"enabled" mapstructure:"enabled"`
+	Remote  MCPRemoteConfig `yaml:"remote" mapstructure:"remote"`
+}
+
+// MCPRemoteConfig makes the local stdio MCP process proxy an authenticated
+// Streamable HTTP MCP server instead of opening the local SQLite composition.
+type MCPRemoteConfig struct {
+	Enabled  bool          `yaml:"enabled" mapstructure:"enabled"`
+	URL      string        `yaml:"url" mapstructure:"url"`
+	TokenEnv string        `yaml:"token_env" mapstructure:"token_env"`
+	Timeout  time.Duration `yaml:"timeout" mapstructure:"timeout"`
+}
+
+// SyncConfig controls optional bidirectional SQLite/server replication.
+type SyncConfig struct {
+	Enabled  bool          `yaml:"enabled" mapstructure:"enabled"`
+	URL      string        `yaml:"url" mapstructure:"url"`
+	TokenEnv string        `yaml:"token_env" mapstructure:"token_env"`
+	Interval time.Duration `yaml:"interval" mapstructure:"interval"`
+	Timeout  time.Duration `yaml:"timeout" mapstructure:"timeout"`
 }
 
 // HTTPConfig holds HTTP server configuration
@@ -239,6 +262,7 @@ var defaults = Config{
 	},
 	MCP: MCPConfig{
 		Enabled: true,
+		Remote:  MCPRemoteConfig{TokenEnv: "CORTEX_REMOTE_TOKEN", Timeout: 30 * time.Second},
 	},
 	HTTP: HTTPConfig{
 		Enabled: true,
@@ -313,7 +337,7 @@ func Load(configPath string) (*Config, error) {
 		// Add search paths
 		v.AddConfigPath(".")
 		v.AddConfigPath("./config")
-		v.AddConfigPath("$HOME/.cortex")
+		v.AddConfigPath(CortexDir())
 		v.AddConfigPath("/etc/cortex")
 	}
 
@@ -393,6 +417,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.pragma.mmap_size", defaults.Database.Pragma.MmapSize)
 
 	v.SetDefault("mcp.enabled", defaults.MCP.Enabled)
+	v.SetDefault("mcp.remote.enabled", defaults.MCP.Remote.Enabled)
+	v.SetDefault("mcp.remote.url", defaults.MCP.Remote.URL)
+	v.SetDefault("mcp.remote.token_env", defaults.MCP.Remote.TokenEnv)
+	v.SetDefault("mcp.remote.timeout", defaults.MCP.Remote.Timeout)
+	v.SetDefault("sync.enabled", false)
+	v.SetDefault("sync.url", "")
+	v.SetDefault("sync.token_env", "CORTEX_REMOTE_TOKEN")
+	v.SetDefault("sync.interval", 30*time.Second)
+	v.SetDefault("sync.timeout", 30*time.Second)
 
 	v.SetDefault("http.enabled", defaults.HTTP.Enabled)
 	v.SetDefault("http.port", defaults.HTTP.Port)
@@ -471,6 +504,31 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("invalid HTTP port: %d (must be 1-65535)", cfg.HTTP.Port)
 	}
 
+	if cfg.MCP.Remote.Enabled {
+		remoteURL, err := url.Parse(cfg.MCP.Remote.URL)
+		if err != nil || remoteURL.Host == "" || (remoteURL.Scheme != "https" && remoteURL.Scheme != "http") {
+			return fmt.Errorf("invalid mcp.remote.url: must be an absolute HTTP(S) URL")
+		}
+		if strings.TrimSpace(cfg.MCP.Remote.TokenEnv) == "" {
+			return fmt.Errorf("invalid mcp.remote.token_env: environment variable name is required")
+		}
+		if cfg.MCP.Remote.Timeout <= 0 {
+			return fmt.Errorf("invalid mcp.remote.timeout: must be greater than zero")
+		}
+	}
+	if cfg.Sync.Enabled {
+		remoteURL, err := url.Parse(cfg.Sync.URL)
+		if err != nil || remoteURL.Host == "" || (remoteURL.Scheme != "https" && remoteURL.Scheme != "http") {
+			return fmt.Errorf("invalid sync.url: must be an absolute HTTP(S) URL")
+		}
+		if strings.TrimSpace(cfg.Sync.TokenEnv) == "" {
+			return fmt.Errorf("invalid sync.token_env: environment variable name is required")
+		}
+		if cfg.Sync.Interval <= 0 || cfg.Sync.Timeout <= 0 {
+			return fmt.Errorf("invalid sync interval and timeout: both must be greater than zero")
+		}
+	}
+
 	// Validate database path when not in memory
 	if !cfg.Database.InMemory && cfg.Database.Path == "" {
 		return fmt.Errorf("database path is required when not using in-memory mode")
@@ -546,6 +604,14 @@ func validate(cfg *Config) error {
 	}
 
 	return nil
+}
+
+// Validate checks a configuration without reading or writing a file.
+func Validate(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("configuration is nil")
+	}
+	return validate(cfg)
 }
 
 // validVectorProviders is the scoped enum of recognized vector providers. An
@@ -777,6 +843,9 @@ func redactDSNPassword(dsn string) string {
 // If path is empty, writes to ~/.cortex/cortex.yaml.
 // The write is atomic: data goes to a .tmp file first, then renamed.
 func Save(cfg *Config, path string) error {
+	if cfg == nil {
+		return fmt.Errorf("save config: configuration is nil")
+	}
 	if path == "" {
 		// Use the same file that was loaded, or default to ~/.cortex/cortex.yaml
 		if cfg.LoadedFrom != "" {
@@ -791,13 +860,13 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	data, err := yaml.Marshal(cfg)
+	data, err := marshalConfigPreservingExisting(cfg, path)
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return err
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -807,4 +876,71 @@ func Save(cfg *Config, path string) error {
 	}
 
 	return nil
+}
+
+func marshalConfigPreservingExisting(cfg *Config, path string) ([]byte, error) {
+	desiredData, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+	var desired yaml.Node
+	if err := yaml.Unmarshal(desiredData, &desired); err != nil {
+		return nil, fmt.Errorf("parse generated config: %w", err)
+	}
+	existingData, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return desiredData, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read existing config: %w", err)
+	}
+	var existing yaml.Node
+	if err := yaml.Unmarshal(existingData, &existing); err != nil {
+		return nil, fmt.Errorf("parse existing config: %w", err)
+	}
+	if len(existing.Content) != 1 || existing.Content[0].Kind != yaml.MappingNode || len(desired.Content) != 1 || desired.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("parse existing config: document root must be a mapping")
+	}
+	mergeYAMLNode(existing.Content[0], desired.Content[0])
+	var output bytes.Buffer
+	encoder := yaml.NewEncoder(&output)
+	encoder.SetIndent(4)
+	if err := encoder.Encode(&existing); err != nil {
+		return nil, fmt.Errorf("encode config: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("close config encoder: %w", err)
+	}
+	return output.Bytes(), nil
+}
+
+func mergeYAMLNode(existing, desired *yaml.Node) {
+	if existing.Kind == yaml.MappingNode && desired.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(desired.Content); i += 2 {
+			key, value := desired.Content[i], desired.Content[i+1]
+			found := false
+			for j := 0; j+1 < len(existing.Content); j += 2 {
+				if existing.Content[j].Value == key.Value {
+					mergeYAMLNode(existing.Content[j+1], value)
+					found = true
+					break
+				}
+			}
+			if !found {
+				existing.Content = append(existing.Content, key, value)
+			}
+		}
+		return
+	}
+	head, line, foot := existing.HeadComment, existing.LineComment, existing.FootComment
+	*existing = *desired
+	if head != "" {
+		existing.HeadComment = head
+	}
+	if line != "" {
+		existing.LineComment = line
+	}
+	if foot != "" {
+		existing.FootComment = foot
+	}
 }

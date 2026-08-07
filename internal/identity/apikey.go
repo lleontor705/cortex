@@ -20,6 +20,7 @@ var (
 
 type TokenRecord struct {
 	ID            string
+	Name          string
 	Prefix        string
 	Digest        string
 	Subject       string
@@ -34,6 +35,7 @@ type TokenRecord struct {
 
 type TokenIssue struct {
 	Subject, PrincipalType, OrgID string
+	Name                          string
 	Workspaces, Scopes            []string
 	ExpiresAt                     time.Time
 }
@@ -74,7 +76,7 @@ func (s *MemoryTokenStore) Issue(_ context.Context, in TokenIssue) (IssuedToken,
 		return IssuedToken{}, err
 	}
 	secret := "ctx_" + base64.RawURLEncoding.EncodeToString(secretBytes)
-	r := TokenRecord{ID: randomID(), Prefix: secret[:12], Digest: s.digest(secret), Subject: in.Subject, PrincipalType: in.PrincipalType, OrgID: in.OrgID, Workspaces: cloneStrings(in.Workspaces), Scopes: cloneStrings(in.Scopes), ExpiresAt: in.ExpiresAt}
+	r := TokenRecord{ID: randomID(), Name: in.Name, Prefix: secret[:12], Digest: s.digest(secret), Subject: in.Subject, PrincipalType: in.PrincipalType, OrgID: in.OrgID, Workspaces: cloneStrings(in.Workspaces), Scopes: cloneStrings(in.Scopes), ExpiresAt: in.ExpiresAt}
 	s.mu.Lock()
 	s.tokens[r.ID] = r
 	s.byPrefix[r.Prefix] = r.ID
@@ -137,7 +139,7 @@ func (s *MemoryTokenStore) Rotate(ctx context.Context, id string) (IssuedToken, 
 	if !ok {
 		return IssuedToken{}, ErrInvalidToken
 	}
-	return s.Issue(ctx, TokenIssue{Subject: r.Subject, PrincipalType: r.PrincipalType, OrgID: r.OrgID, Workspaces: r.Workspaces, Scopes: r.Scopes, ExpiresAt: r.ExpiresAt})
+	return s.Issue(ctx, TokenIssue{Subject: r.Subject, PrincipalType: r.PrincipalType, OrgID: r.OrgID, Name: r.Name, Workspaces: r.Workspaces, Scopes: r.Scopes, ExpiresAt: r.ExpiresAt})
 }
 
 func (s *MemoryTokenStore) digest(secret string) string {
