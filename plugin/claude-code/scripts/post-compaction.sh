@@ -4,8 +4,8 @@
 # When compaction happens, inject Memory Protocol + context and instruct
 # the agent to persist the compacted summary via cortex_session_summary.
 
-CORTEX_PORT="${CORTEX_PORT:-7438}"
-CORTEX_URL="http://127.0.0.1:${CORTEX_PORT}"
+CORTEX_HTTP_PORT="${CORTEX_HTTP_PORT:-7438}"
+CORTEX_URL="http://127.0.0.1:${CORTEX_HTTP_PORT}"
 
 # Load shared helpers
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

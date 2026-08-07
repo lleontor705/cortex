@@ -161,10 +161,8 @@ func TestInstallOpenCode_ExactContentAndResult(t *testing.T) {
 	if res.Destination != mcpPath {
 		t.Errorf("Result.Destination = %q, want %q", res.Destination, mcpPath)
 	}
-	// In an isolated tree the plugin source is absent, so exactly one file is
-	// produced by the primary writer.
-	if res.Files != 1 {
-		t.Errorf("Result.Files = %d, want 1", res.Files)
+	if res.Files != 2 {
+		t.Errorf("Result.Files = %d, want 2", res.Files)
 	}
 
 	raw := assertFile(t, mcpPath)
@@ -196,6 +194,15 @@ func TestInstallOpenCode_ExactContentAndResult(t *testing.T) {
 	}
 	if entry.Command[1] != "mcp" || entry.Command[2] != "--tools=agent" {
 		t.Errorf("mcp.cortex.command = %v, want [<bin> mcp --tools=agent]", entry.Command)
+	}
+	plugin := string(assertFile(t, filepath.Join(home, ".config", "opencode", "plugins", "cortex.ts")))
+	if strings.Contains(plugin, `return "cortex"`) {
+		t.Fatal("installed plugin kept unresolved binary fallback")
+	}
+	for _, want := range []string{jsonString(entry.Command[0]), "/api/prompts", "session.deleted"} {
+		if !strings.Contains(plugin, want) {
+			t.Errorf("installed plugin missing %q", want)
+		}
 	}
 }
 

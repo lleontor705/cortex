@@ -630,7 +630,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 
 	srv := cortexhttp.NewServer(addr, deps, cortexhttp.Options{
-		AuthToken: a.Config.HTTP.Token,
+		AuthToken:      a.Config.HTTP.Token,
+		AllowedOrigins: a.Config.HTTP.AllowedOrigins,
 	})
 	writef(stdout, "Cortex HTTP server listening on %s\n", addr)
 

@@ -3,8 +3,8 @@
 #
 # Marks the session as ended via the HTTP API.
 
-CORTEX_PORT="${CORTEX_PORT:-7438}"
-CORTEX_URL="http://127.0.0.1:${CORTEX_PORT}"
+CORTEX_HTTP_PORT="${CORTEX_HTTP_PORT:-7438}"
+CORTEX_URL="http://127.0.0.1:${CORTEX_HTTP_PORT}"
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')

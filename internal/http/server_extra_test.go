@@ -98,6 +98,71 @@ func createObservation(t *testing.T, srv *Server, title, content, obsType, proje
 	return obs.ID
 }
 
+func TestGetSessionAndCreatePromptContracts(t *testing.T) {
+	srv := setupTestServer(t)
+	createSession(t, srv, "session/with space", "demo")
+
+	rec := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions/session%2Fwith%20space", nil, nil)
+	assertStatus(t, rec, http.StatusOK)
+	var sess domain.Session
+	decodeJSON(t, rec, &sess)
+	if sess.ID != "session/with space" {
+		t.Fatalf("session id = %q", sess.ID)
+	}
+
+	rec = doJSON(t, srv.httpServer.Handler, http.MethodPost, "/api/prompts", map[string]any{"session_id": "session/with space", "content": "remember this", "project": "demo"}, nil)
+	assertStatus(t, rec, http.StatusCreated)
+	var saved domain.Prompt
+	decodeJSON(t, rec, &saved)
+	if saved.ID <= 0 || saved.SessionID != "session/with space" || saved.Content != "remember this" {
+		t.Fatalf("prompt = %+v", saved)
+	}
+	persisted, err := srv.deps.Prompts.GetByID(t.Context(), saved.ID)
+	if err != nil || persisted.Content != saved.Content {
+		t.Fatalf("persisted prompt = %+v, %v", persisted, err)
+	}
+	observations, err := srv.deps.Observations.List(t.Context(), domain.ObservationFilter{Limit: 10})
+	if err != nil || len(observations) != 0 {
+		t.Fatalf("prompt created observations: %d, %v", len(observations), err)
+	}
+}
+
+func TestSessionAndPromptErrors(t *testing.T) {
+	srv := setupTestServer(t)
+	assertStatus(t, doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions/missing", nil, nil), http.StatusNotFound)
+	for _, body := range []any{
+		map[string]any{"session_id": "", "content": "text", "project": "demo"},
+		map[string]any{"session_id": "missing", "content": "text", "project": "demo"},
+	} {
+		rec := doJSON(t, srv.httpServer.Handler, http.MethodPost, "/api/prompts", body, nil)
+		if rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestLocalCORSKeepsAuthentication(t *testing.T) {
+	const origin = "https://app.example"
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret", AllowedOrigins: []string{" " + origin + " ", "*"}})
+	preflight := doRaw(t, srv.httpServer.Handler, http.MethodOptions, "/api/sessions", nil, map[string]string{"Origin": origin})
+	assertStatus(t, preflight, http.StatusNoContent)
+	if preflight.Header().Get("Access-Control-Allow-Origin") != origin || !strings.Contains(preflight.Header().Get("Access-Control-Allow-Headers"), "X-API-Key") {
+		t.Fatalf("preflight headers=%v", preflight.Header())
+	}
+
+	unauthorized := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions", nil, map[string]string{"Origin": origin})
+	assertStatus(t, unauthorized, http.StatusUnauthorized)
+	if unauthorized.Header().Get("Access-Control-Allow-Origin") != origin {
+		t.Fatal("authenticated response lost CORS")
+	}
+
+	disallowed := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/health", nil, map[string]string{"Origin": "https://other.example"})
+	assertStatus(t, disallowed, http.StatusOK)
+	if disallowed.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("disallowed origin received CORS")
+	}
+}
+
 // --- malformed / oversized bodies ------------------------------------------
 
 func TestCreateObservation_MalformedJSON(t *testing.T) {

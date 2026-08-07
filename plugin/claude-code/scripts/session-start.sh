@@ -5,8 +5,8 @@
 # 2. Creates a session in cortex
 # 3. Injects Memory Protocol instructions + memory context
 
-CORTEX_PORT="${CORTEX_PORT:-7438}"
-CORTEX_URL="http://127.0.0.1:${CORTEX_PORT}"
+CORTEX_HTTP_PORT="${CORTEX_HTTP_PORT:-7438}"
+CORTEX_URL="http://127.0.0.1:${CORTEX_HTTP_PORT}"
 
 # Load shared helpers
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

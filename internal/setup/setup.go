@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	opencodeplugin "github.com/lleontor705/cortex/plugin/opencode"
 )
 
 // cortexMCPTools lists the tool permission names for Claude Code's settings.json.
@@ -40,6 +42,8 @@ var cortexMCPTools = []string{
 const memoryProtocol = `## Cortex Persistent Memory -- Protocol
 
 You have cortex memory tools. Save decisions, bugs, discoveries PROACTIVELY -- do NOT wait.
+
+TRANSPORT IDS: Follow the active MCP tool schema. Local observation/graph IDs are numeric; Cortex Server IDs are public UUID strings. Never convert or reuse IDs across transports.
 
 ### WHEN TO SAVE (mandatory after each):
 - Architecture/design decision made
@@ -240,38 +244,19 @@ func installOpenCode(home, bin string) (*Result, error) {
 		return nil, err
 	}
 
-	files := 1
-	// Copy plugin file if available (from plugin/opencode/cortex.ts relative to binary)
 	pluginDir := filepath.Join(configDir, "plugins")
 	pluginDst := filepath.Join(pluginDir, "cortex.ts")
-
-	// Try to find plugin source relative to the binary
-	binDir := filepath.Dir(bin)
-	candidates := []string{
-		filepath.Join(binDir, "..", "plugin", "opencode", "cortex.ts"),
-		filepath.Join(binDir, "plugin", "opencode", "cortex.ts"),
+	source := opencodeplugin.Source()
+	const binaryFallback = `return "cortex"`
+	if strings.Count(source, binaryFallback) != 1 {
+		return nil, fmt.Errorf("setup opencode: embedded plugin binary fallback is missing or ambiguous")
+	}
+	patched := strings.Replace(source, binaryFallback, fmt.Sprintf(`return %s`, jsonString(bin)), 1)
+	if err := writeFile(pluginDst, patched); err != nil {
+		return nil, err
 	}
 
-	for _, src := range candidates {
-		data, err := os.ReadFile(src)
-		if err == nil {
-			// Patch CORTEX_BIN with resolved binary path
-			patched := strings.Replace(
-				string(data),
-				`return "cortex"`,
-				fmt.Sprintf(`return %s`, jsonString(bin)),
-				1,
-			)
-			if wErr := writeFile(pluginDst, patched); wErr != nil {
-				log.Printf("setup: failed to write plugin %s: %v", pluginDst, wErr)
-			} else {
-				files++
-			}
-			break
-		}
-	}
-
-	return &Result{Agent: "opencode", Destination: mcpPath, Files: files}, nil
+	return &Result{Agent: "opencode", Destination: mcpPath, Files: 2}, nil
 }
 
 // --- Gemini CLI -------------------------------------------------------------

@@ -6,7 +6,18 @@ Local HTTP protects non-loopback bindings with `http.token`. Server mode require
 
 ## Local SQLite
 
-Local HTTP is implemented in `internal/http`. It provides local CRUD, search, graph, scoring, temporal, prompt, project, sync, and health operations. Its integer IDs are local database identifiers.
+Local HTTP is implemented in `internal/http`. Observation, prompt, and edge IDs are local integers. Session IDs are opaque strings supplied by the agent. These local identifiers are not server UUIDs.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/health` | Local process health; always public |
+| `GET/POST` | `/api/sessions` | List or create local sessions |
+| `GET` | `/api/sessions/{id}` | Read one session by opaque agent ID |
+| `POST` | `/api/sessions/{id}/end` | End a local session |
+| `POST` | `/api/prompts` | Save user input in `user_prompts` |
+| `GET/POST` | `/api/observations` | List or create observations |
+
+`POST /api/prompts` accepts `session_id`, `content`, and `project`. Browser access uses exact origins from `http.allowed_origins`; CORS does not replace API-token authentication.
 
 ## Server PostgreSQL
 
