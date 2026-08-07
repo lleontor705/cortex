@@ -37,9 +37,6 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rotated.Record.ExpiresAt.IsZero() {
-		t.Fatalf("rotated non-expiring token has expiration %v", rotated.Record.ExpiresAt)
-	}
 	var lastUsed time.Time
 	if err := verifyTx.Handle().(pgx.Tx).QueryRow(ctx, `SELECT last_used_at FROM api_tokens WHERE public_id=$1::uuid`, issued.Record.ID).Scan(&lastUsed); err != nil || lastUsed.IsZero() {
 		t.Fatalf("last_used_at not persisted: %v %v", lastUsed, err)
@@ -50,6 +47,9 @@ func TestPostgresTokenRepositoryLifecycleAndRLS(t *testing.T) {
 	rotated, err := store.tokens().Rotate(ctx, issued.Record.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !rotated.Record.ExpiresAt.IsZero() {
+		t.Fatalf("rotated non-expiring token has expiration %v", rotated.Record.ExpiresAt)
 	}
 	if _, err := store.tokens().Verify(ctx, issued.Secret, "read"); err == nil {
 		t.Fatal("rotated token remained valid")
