@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -24,8 +26,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
+	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/migration"
+	postgresstore "github.com/lleontor705/cortex/internal/store/postgres"
 	cortsync "github.com/lleontor705/cortex/internal/sync"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
@@ -461,4 +466,466 @@ func isolatedCortexEnvironment(home string) []string {
 		}
 	}
 	return append(environment, "HOME="+home, "USERPROFILE="+home)
+}
+
+// --- R7: authorized compound handoff end-to-end (REM-AUTH-001, REM-MCP-001) ---
+
+// mcpStreamClient is a minimal JSON-RPC client for the Streamable HTTP MCP
+// transport used by the E2E suite.
+type mcpStreamClient struct {
+	baseURL string
+	token   string
+	session string
+	client  *http.Client
+}
+
+func (c *mcpStreamClient) rpc(t *testing.T, method string, params any) json.RawMessage {
+	t.Helper()
+	envelope, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, c.baseURL+"/mcp", bytes.NewReader(envelope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	if c.session != "" {
+		request.Header.Set("Mcp-Session-Id", c.session)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		t.Fatalf("mcp %s: %v", method, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("mcp %s body: %v", method, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("mcp %s: status %d body %s", method, response.StatusCode, body)
+	}
+	if session := response.Header.Get("Mcp-Session-Id"); session != "" {
+		c.session = session
+	}
+	return jsonRPCResult(t, method, body)
+}
+
+func jsonRPCResult(t *testing.T, method string, body []byte) json.RawMessage {
+	t.Helper()
+	probe := struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}{}
+	if err := json.Unmarshal(body, &probe); err == nil && (len(probe.Result) > 0 || probe.Error != nil) {
+		if probe.Error != nil {
+			t.Fatalf("mcp %s error: %s", method, probe.Error.Message)
+		}
+		return probe.Result
+	}
+	var last json.RawMessage
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+			continue
+		}
+		if probe.Error != nil {
+			t.Fatalf("mcp %s error: %s", method, probe.Error.Message)
+		}
+		if len(probe.Result) > 0 {
+			last = probe.Result
+		}
+	}
+	if last == nil {
+		t.Fatalf("mcp %s produced no JSON-RPC result: %s", method, body)
+	}
+	return last
+}
+
+type mcpToolCall struct {
+	IsError           bool           `json:"isError"`
+	StructuredContent map[string]any `json:"structuredContent"`
+	Content           []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+func (c *mcpStreamClient) callTool(t *testing.T, name string, arguments map[string]any) mcpToolCall {
+	t.Helper()
+	raw := c.rpc(t, "tools/call", map[string]any{"name": name, "arguments": arguments})
+	var call mcpToolCall
+	if err := json.Unmarshal(raw, &call); err != nil {
+		t.Fatalf("tools/call %s result: %v (%s)", name, err, raw)
+	}
+	return call
+}
+
+func (c *mcpStreamClient) structuredRef(t *testing.T, call mcpToolCall) (string, string) {
+	t.Helper()
+	if call.IsError {
+		t.Fatalf("tool call failed: %+v", call)
+	}
+	payload := call.StructuredContent
+	ref, ok := payload["observation_ref"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want observation_ref", payload)
+	}
+	publicID, _ := ref["public_id"].(string)
+	status, _ := payload["status"].(string)
+	if publicID == "" || status == "" {
+		t.Fatalf("structuredContent = %#v, want public_id and status", payload)
+	}
+	if _, err := uuid.Parse(publicID); err != nil {
+		t.Fatalf("public_id = %q, want UUID", publicID)
+	}
+	if _, hasLocal := ref["local_id"]; hasLocal {
+		t.Fatalf("server namespace leaked local_id: %#v", ref)
+	}
+	return publicID, status
+}
+
+func (c *mcpStreamClient) structuredErrorCode(t *testing.T, call mcpToolCall) string {
+	t.Helper()
+	if !call.IsError {
+		t.Fatalf("tool call unexpectedly succeeded: %+v", call)
+	}
+	payload := call.StructuredContent
+	if _, hasRef := payload["observation_ref"]; hasRef {
+		t.Fatalf("error result carries a reference: %#v", payload)
+	}
+	errBody, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want error body", payload)
+	}
+	code, _ := errBody["code"].(string)
+	if code == "" {
+		t.Fatalf("error body = %#v, want stable code", errBody)
+	}
+	return code
+}
+
+func (f *postgresE2EFixture) count(t *testing.T, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := f.admin.QueryRow(t.Context(), query, args...).Scan(&count); err != nil {
+		t.Fatalf("count %q: %v", query, err)
+	}
+	return count
+}
+
+// TestE2EServerAuthorizedHandoffEndToEnd drives cortex_save and cortex_handoff
+// over the authenticated Streamable HTTP MCP transport and the AuthorizedStore
+// matrix directly: structured public-id results, idempotent replay, conflict
+// with zero effects, partial-permission fail-closed, and cross-tenant RLS
+// invisibility (REM-AUTH-001, REM-HANDOFF-001/002, REM-MCP-001).
+func TestE2EServerAuthorizedHandoffEndToEnd(t *testing.T) {
+	port := reserveLoopbackPort(t)
+	fixture := newPostgresE2EFixture(t, port)
+	server := startE2EServer(t, fixture.config)
+	baseURL := "http://" + server.runtime.Address()
+	if err := waitForHTTPStatus(baseURL+"/health", http.StatusOK, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unauthenticated MCP calls are rejected before any operation runs.
+	unauthenticated := &http.Client{Timeout: 5 * time.Second}
+	request, _ := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	response, err := unauthenticated.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated tools/list status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+
+	client := &mcpStreamClient{baseURL: baseURL, token: fixture.token, client: &http.Client{Timeout: 10 * time.Second}}
+	client.rpc(t, "initialize", map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "e2e", "version": "1"}})
+	list := client.rpc(t, "tools/list", map[string]any{})
+	for _, name := range []string{"cortex_save", "cortex_handoff"} {
+		if !strings.Contains(string(list), `"name":"`+name+`"`) {
+			t.Fatalf("tools/list missing %s: %s", name, list)
+		}
+	}
+
+	// Seed a session for the interactive save inside the fixture workspace.
+	sessionPublic := uuid.NewString()
+	if _, err := fixture.admin.Exec(t.Context(), `INSERT INTO sessions(tenant_id, workspace_id, public_id, project_key) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'e2e')`, fixture.tenant, fixture.workspace, sessionPublic); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// cortex_save returns the exclusive public-namespace structured result.
+	save := client.callTool(t, "cortex_save", map[string]any{
+		"title": "E2E save", "content": "authorized save", "type": "decision",
+		"session_id": sessionPublic, "project": "e2e",
+	})
+	saveID, saveStatus := client.structuredRef(t, save)
+	if saveStatus != string(domain.WriteStatusCreated) {
+		t.Fatalf("save status = %q, want created", saveStatus)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1 AND public_id=$2`, fixture.tenant, saveID); got != 1 {
+		t.Fatalf("saved observation rows = %d, want 1", got)
+	}
+
+	handoffArgs := func(key, content string, relation map[string]any) map[string]any {
+		args := map[string]any{
+			"idempotency_key": key,
+			"observation": map[string]any{
+				"title": "E2E handoff", "content": content, "project": "e2e", "type": "decision",
+			},
+		}
+		if relation != nil {
+			args["relation"] = relation
+		}
+		return args
+	}
+	relation := map[string]any{
+		"target":    map[string]any{"public_id": saveID},
+		"type":      "references",
+		"reasoning": "e2e compound authorization",
+	}
+
+	handoff := client.callTool(t, "cortex_handoff", handoffArgs("e2e-key-1", "durable handoff", relation))
+	handoffID, handoffStatus := client.structuredRef(t, handoff)
+	if handoffStatus != string(domain.WriteStatusCreated) {
+		t.Fatalf("handoff status = %q, want created", handoffStatus)
+	}
+	if handoffID == saveID {
+		t.Fatal("handoff reused the save observation instead of materializing its own")
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM edges WHERE tenant_id=$1`, fixture.tenant); got != 1 {
+		t.Fatalf("edges after handoff = %d, want 1", got)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1 AND state='committed'`); got < 1 {
+		t.Fatalf("committed receipts = %d, want at least 1", got)
+	}
+	var receiptScope string
+	if err := fixture.admin.QueryRow(t.Context(), `SELECT scope FROM handoff_receipts WHERE tenant_id=$1 AND key='e2e-key-1'`, fixture.tenant).Scan(&receiptScope); err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	if !strings.HasPrefix(receiptScope, "tenant/"+fixture.tenant.String()+"/workspace/"+fixture.workspace.String()) {
+		t.Fatalf("receipt scope = %q, want principal-derived tenant/workspace scope", receiptScope)
+	}
+
+	// Identical replay returns the same reference with status replayed.
+	replay := client.callTool(t, "cortex_handoff", handoffArgs("e2e-key-1", "durable handoff", relation))
+	replayID, replayStatus := client.structuredRef(t, replay)
+	if replayID != handoffID || replayStatus != string(domain.WriteStatusReplayed) {
+		t.Fatalf("replay = %q/%q, want %q/replayed", replayID, replayStatus, handoffID)
+	}
+
+	observationsBefore := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1`, fixture.tenant)
+	edgesBefore := fixture.count(t, `SELECT count(*) FROM edges WHERE tenant_id=$1`, fixture.tenant)
+	receiptsBefore := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant)
+
+	// Same key with a different payload conflicts without any effect.
+	conflict := client.callTool(t, "cortex_handoff", handoffArgs("e2e-key-1", "mutated handoff", relation))
+	if code := client.structuredErrorCode(t, conflict); code != string(domain.HandoffErrorConflict) {
+		t.Fatalf("conflict code = %q, want %q", code, domain.HandoffErrorConflict)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1`, fixture.tenant); got != observationsBefore {
+		t.Fatalf("conflict mutated observations: %d -> %d", observationsBefore, got)
+	}
+
+	// --- AuthorizedStore matrix (partial permission, cross-tenant RLS) ---
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	newStore := func(t *testing.T, principal domain.Principal) *postgresstore.AuthorizedStore {
+		t.Helper()
+		policy := authz.NewPolicy()
+		ac, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: principal, Tenant: authz.Tenant{ID: fixture.tenant.String(), WorkspaceID: fixture.workspace.String()}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
+		if err != nil {
+			t.Fatalf("authorize %s: %v", principal.Subject, err)
+		}
+		store, err := postgresstore.NewAuthorizedStore(server.runtime.Pool, ac)
+		if err != nil {
+			t.Fatalf("authorized store: %v", err)
+		}
+		return store
+	}
+	restrictedPrincipal := domain.Principal{
+		Subject:      fixture.subject.String(),
+		Type:         "service_account",
+		OrgID:        fixture.tenant.String(),
+		WorkspaceIDs: []string{fixture.workspace.String()},
+		Scopes:       []string{"workspaces:read", "memory:write"},
+		GrantDigest:  "e2e-grant", GrantVersion: 1,
+	}
+	restricted := newStore(t, restrictedPrincipal)
+
+	// Save allowed, relation denied: the compound handoff fails closed with
+	// zero effects (REM-AUTH-001 edge).
+	_, err = restricted.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-restricted-relation",
+		Observation:    domain.SaveObservationInput{Title: "restricted", Content: "relation denied", Project: "e2e"},
+		Relation:       &domain.HandoffRelationInput{Target: mustPublicRef(t, saveID), Type: domain.RelationReferences},
+	})
+	var denial *domain.HandoffError
+	if !errors.As(err, &denial) || denial.Code != domain.HandoffErrorForbidden {
+		t.Fatalf("partial permission error = %v, want forbidden handoff error", err)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1`, fixture.tenant); got != observationsBefore {
+		t.Fatalf("denied handoff mutated observations: %d -> %d", observationsBefore, got)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM edges WHERE tenant_id=$1`, fixture.tenant); got != edgesBefore {
+		t.Fatalf("denied handoff mutated edges: %d -> %d", edgesBefore, got)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant); got != receiptsBefore {
+		t.Fatalf("denied handoff mutated receipts: %d -> %d", receiptsBefore, got)
+	}
+
+	// The same restricted principal succeeds without the relation.
+	restrictedResult, err := restricted.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-restricted-plain",
+		Observation:    domain.SaveObservationInput{Title: "restricted", Content: "plain handoff", Project: "e2e"},
+	})
+	if err != nil {
+		t.Fatalf("restricted plain handoff: %v", err)
+	}
+	if restrictedResult.Status != domain.WriteStatusCreated || restrictedResult.Ref.PublicID == nil {
+		t.Fatalf("restricted result = %+v, want created public ref", restrictedResult)
+	}
+
+	// Cross-tenant relation targets are invisible under RLS: validation, no
+	// oracle, zero effects.
+	foreignTenant, foreignWorkspace, foreignSession, foreignObservation := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,'foreign')`, foreignTenant); err != nil {
+		t.Fatalf("seed foreign org: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'foreign')`, foreignTenant, foreignWorkspace); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,public_id,project_key) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'foreign')`, foreignTenant, foreignWorkspace, foreignSession); err != nil {
+		t.Fatalf("seed foreign session: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO observations(tenant_id,session_id,public_id,type,title,content,project_key) VALUES($1,(SELECT id FROM sessions WHERE tenant_id=$1 AND public_id=$3),$2,'decision','foreign','foreign content','foreign')`, foreignTenant, foreignObservation, foreignSession); err != nil {
+		t.Fatalf("seed foreign observation: %v", err)
+	}
+	owner := newStore(t, domain.Principal{
+		Subject: fixture.subject.String(), Type: "service_account", OrgID: fixture.tenant.String(),
+		WorkspaceIDs: []string{fixture.workspace.String()}, Roles: []string{"owner"},
+		ProjectIDs: []string{"*"}, ClassificationClearance: []string{"*"},
+		GrantDigest: "e2e-grant", GrantVersion: 1,
+	})
+	observationsAfterRestricted := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1`, fixture.tenant)
+	_, err = owner.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-cross-tenant",
+		Observation:    domain.SaveObservationInput{Title: "cross", Content: "tenant isolation", Project: "e2e"},
+		Relation:       &domain.HandoffRelationInput{Target: mustPublicRef(t, foreignObservation.String()), Type: domain.RelationReferences},
+	})
+	if !errors.As(err, &denial) || denial.Code != domain.HandoffErrorValidation {
+		t.Fatalf("cross-tenant error = %v, want validation handoff error", err)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM observations WHERE tenant_id=$1`, fixture.tenant); got != observationsAfterRestricted {
+		t.Fatalf("cross-tenant attempt mutated observations: %d -> %d", observationsAfterRestricted, got)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1 AND key='e2e-cross-tenant'`); got != 0 {
+		t.Fatalf("cross-tenant attempt left %d receipts, want 0", got)
+	}
+
+	// --- Review R7 fix 1: workspace-scoped, in-transaction revalidation ---
+	memberish := newStore(t, domain.Principal{
+		Subject:      uuid.NewString(),
+		Type:         "service_account",
+		OrgID:        fixture.tenant.String(),
+		WorkspaceIDs: []string{fixture.workspace.String()},
+		Scopes:       []string{"workspaces:read", "memory:write", "graph:write"},
+		ProjectIDs:   []string{"*"},
+		GrantDigest:  "e2e-grant", GrantVersion: 1,
+	})
+
+	// A sibling workspace of the SAME tenant is invisible to the
+	// workspace-scoped relation resolution even for an owner: validation,
+	// zero effects.
+	siblingWorkspace, siblingSession, siblingObservation := uuid.New(), uuid.New(), uuid.New()
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'e2e sibling')`, fixture.tenant, siblingWorkspace); err != nil {
+		t.Fatalf("seed sibling workspace: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,public_id,project_key) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'e2e-sibling')`, fixture.tenant, siblingWorkspace, siblingSession); err != nil {
+		t.Fatalf("seed sibling session: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO observations(tenant_id,session_id,public_id,type,title,content,project_key) VALUES($1,(SELECT id FROM sessions WHERE tenant_id=$1 AND public_id=$3),$2,'decision','sibling','sibling content','e2e-sibling')`, fixture.tenant, siblingObservation, siblingSession); err != nil {
+		t.Fatalf("seed sibling observation: %v", err)
+	}
+	beforeSibling := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant)
+	_, err = owner.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-cross-workspace",
+		Observation:    domain.SaveObservationInput{Title: "sibling", Content: "workspace isolation", Project: "e2e"},
+		Relation:       &domain.HandoffRelationInput{Target: mustPublicRef(t, siblingObservation.String()), Type: domain.RelationReferences},
+	})
+	if !errors.As(err, &denial) || denial.Code != domain.HandoffErrorValidation {
+		t.Fatalf("cross-workspace error = %v, want validation handoff error", err)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant); got != beforeSibling {
+		t.Fatalf("cross-workspace attempt mutated receipts: %d -> %d", beforeSibling, got)
+	}
+
+	// A committed concurrent attribute change is revalidated at execution
+	// time against the locked row: restricted classification denies the
+	// member-ish principal with zero effects.
+	if _, err := fixture.admin.Exec(ctx, `UPDATE observations SET classification='restricted' WHERE tenant_id=$1 AND public_id=$2`, fixture.tenant, saveID); err != nil {
+		t.Fatalf("restrict target classification: %v", err)
+	}
+	beforeRestricted := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant)
+	_, err = memberish.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-attribute-drift",
+		Observation:    domain.SaveObservationInput{Title: "drift", Content: "attribute revalidation", Project: "e2e"},
+		Relation:       &domain.HandoffRelationInput{Target: mustPublicRef(t, saveID), Type: domain.RelationReferences},
+	})
+	if !errors.As(err, &denial) || denial.Code != domain.HandoffErrorForbidden {
+		t.Fatalf("attribute-drift error = %v, want forbidden revalidation of locked attributes", err)
+	}
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant); got != beforeRestricted {
+		t.Fatalf("attribute-drift attempt mutated receipts: %d -> %d", beforeRestricted, got)
+	}
+
+	// A live uncommitted attribute change holds the target row: the FOR
+	// SHARE revalidation must block on it and fail closed as bounded
+	// contention (retryable unavailable) rather than authorize stale
+	// attributes — then zero effects after the blocker rolls back.
+	conn, err := fixture.admin.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire admin connection: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `BEGIN`); err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `UPDATE observations SET classification='confidential' WHERE tenant_id=$1 AND public_id=$2`, fixture.tenant, saveID); err != nil {
+		t.Fatalf("hold target row lock: %v", err)
+	}
+	beforeLock := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant)
+	_, err = memberish.ExecuteHandoff(ctx, domain.HandoffRequest{
+		IdempotencyKey: "e2e-live-lock",
+		Observation:    domain.SaveObservationInput{Title: "live", Content: "lock contention", Project: "e2e"},
+		Relation:       &domain.HandoffRelationInput{Target: mustPublicRef(t, saveID), Type: domain.RelationReferences},
+	})
+	var contention *domain.HandoffError
+	if !errors.As(err, &contention) || contention.Code != domain.HandoffErrorUnavailable || !contention.Retryable {
+		t.Fatalf("live-lock error = %v, want retryable unavailable contention", err)
+	}
+	if _, err := conn.Exec(ctx, `ROLLBACK`); err != nil {
+		t.Fatalf("rollback blocker: %v", err)
+	}
+	conn.Release()
+	if got := fixture.count(t, `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1`, fixture.tenant); got != beforeLock {
+		t.Fatalf("live-lock attempt mutated receipts: %d -> %d", beforeLock, got)
+	}
+}
+
+func mustPublicRef(t *testing.T, id string) domain.ObservationRef {
+	t.Helper()
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		t.Fatalf("public id %q: %v", id, err)
+	}
+	return domain.ObservationRef{PublicID: &parsed}
 }

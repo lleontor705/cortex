@@ -18,14 +18,12 @@ import (
 
 // Durable handoff receipts (REM-HANDOFF-001/002). Every primitive below is
 // transaction scoped: it must run inside store.transaction or WithinTx so the
-// tenant RLS binding from cortex_bind_principal is active. Receipts are keyed
-// by (tenant, scope, key); comparison always uses the SHA-256 and the full
+// tenant RLS binding from cortex_bind_principal is active and the workspace
+// bigint from bindWorkspace is resolved. Receipts are keyed by (tenant,
+// workspace, scope, key) — two workspaces of one tenant hold independent
+// idempotent namespaces — and comparison always uses the SHA-256 and the full
 // canonical bytes so a hash collision can never silently replay different
 // content.
-
-// handoffLockTimeout bounds every explicit row lock a receipt acquires. A
-// handoff must never wait on a lock indefinitely.
-const handoffLockTimeout = "5s"
 
 type handoffReceiptState string
 
@@ -38,9 +36,10 @@ var errHandoffTxRequired = errors.New("postgres handoff: transaction context is 
 
 // handoffFailpoints, when replaced, is consulted at named execution seams so
 // tests can prove rollback atomicity without a database. Inside the claimed
-// path the seams are, in order: "after-edge" (optional relation written,
-// receipt still pending) and "before-commit" (receipt finalized, transaction
-// about to commit). The default never fails.
+// path the seams are, in order: "after-save" (observation materialized, no
+// relation yet), "after-edge" (optional relation written, receipt still
+// pending), and "before-commit" (receipt finalized, transaction about to
+// commit). The default never fails.
 var handoffFailpoints = func(seam string) error { return nil }
 
 type handoffReceipt struct {
@@ -112,21 +111,37 @@ func handoffTx(ctx context.Context) (pgx.Tx, error) {
 
 // setHandoffLockTimeout bounds lock waits for the rest of the transaction.
 func setHandoffLockTimeout(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, handoffLockTimeout); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, boundedLockTimeout); err != nil {
 		return &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "receipt", Context: "lock timeout could not be installed"}
 	}
 	return nil
 }
 
-// claimHandoffReceipt inserts a pending receipt for (current tenant, scope,
-// key) or observes the durable one. claimed is true only for the transaction
-// that materialized the pending row; otherwise the receipt describes the
-// committed outcome to replay. Conflicting bytes never mutate anything.
+// workspaceFromTx returns the transaction-resolved workspace bigint or a
+// fail-closed error: receipts without a resolved workspace binding would
+// silently fall back to a tenant-wide namespace, which migration 105 removed.
+func workspaceFromTx(ctx context.Context, operation string) (int64, error) {
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return 0, &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: operation, Context: "workspace binding is not resolved in this transaction"}
+	}
+	return ws, nil
+}
+
+// claimHandoffReceipt inserts a pending receipt for (current tenant, bound
+// workspace, scope, key) or observes the durable one. claimed is true only
+// for the transaction that materialized the pending row; otherwise the
+// receipt describes the committed outcome to replay. Conflicting bytes never
+// mutate anything.
 func (s *Store) claimHandoffReceipt(ctx context.Context, scope domain.HandoffScope, key string, hash [32]byte, payload []byte) (handoffReceipt, bool, error) {
 	if scope == "" || key == "" {
 		return handoffReceipt{}, false, domain.ErrHandoffValidation
 	}
 	tx, err := handoffTx(ctx)
+	if err != nil {
+		return handoffReceipt{}, false, err
+	}
+	ws, err := workspaceFromTx(ctx, "claim")
 	if err != nil {
 		return handoffReceipt{}, false, err
 	}
@@ -137,10 +152,10 @@ func (s *Store) claimHandoffReceipt(ctx context.Context, scope domain.HandoffSco
 	// transaction inserts and becomes the materializer; the others fall
 	// through to the durable row once the winner commits or aborts.
 	rows, err := tx.Query(ctx, `
-		INSERT INTO handoff_receipts (tenant_id, scope, key, payload_hash, canonical_payload, state)
-		VALUES (public.cortex_current_tenant(), $1, $2, $3, $4, 'pending')
-		ON CONFLICT (tenant_id, scope, key) DO NOTHING
-		RETURNING `+handoffReceiptColumns, scope, key, hash[:], payload)
+		INSERT INTO handoff_receipts (tenant_id, workspace_id, scope, key, payload_hash, canonical_payload, state)
+		VALUES (public.cortex_current_tenant(), $1, $2, $3, $4, $5, 'pending')
+		ON CONFLICT (tenant_id, workspace_id, scope, key) DO NOTHING
+		RETURNING `+handoffReceiptColumns, ws, scope, key, hash[:], payload)
 	if err != nil {
 		return handoffReceipt{}, false, handoffPgError(err, "claim")
 	}
@@ -157,8 +172,8 @@ func (s *Store) claimHandoffReceipt(ctx context.Context, scope domain.HandoffSco
 	}
 	receipt, err := scanHandoffReceipt(tx.QueryRow(ctx, `
 		SELECT `+handoffReceiptColumns+` FROM handoff_receipts
-		WHERE tenant_id=public.cortex_current_tenant() AND scope=$1 AND key=$2
-		FOR UPDATE`, scope, key))
+		WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND scope=$2 AND key=$3
+		FOR UPDATE`, ws, scope, key))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return handoffReceipt{}, false, &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "claim", Context: "receipt disappeared after conflict"}
 	}
@@ -177,7 +192,9 @@ func (s *Store) claimHandoffReceipt(ctx context.Context, scope domain.HandoffSco
 }
 
 // readHandoffReceipt returns the durable receipt visible to the current
-// tenant. RLS hides other tenants' receipts, which surface as not-found.
+// tenant inside the bound workspace. RLS hides other tenants' receipts and
+// the workspace predicate hides sibling workspaces; both surface as
+// not-found.
 //
 //nolint:unused // exercised by the postgres_integration suite, which is the only caller namespace
 func (s *Store) readHandoffReceipt(ctx context.Context, scope domain.HandoffScope, key string) (handoffReceipt, error) {
@@ -188,9 +205,13 @@ func (s *Store) readHandoffReceipt(ctx context.Context, scope domain.HandoffScop
 	if err != nil {
 		return handoffReceipt{}, err
 	}
+	ws, err := workspaceFromTx(ctx, "read")
+	if err != nil {
+		return handoffReceipt{}, err
+	}
 	receipt, err := scanHandoffReceipt(tx.QueryRow(ctx, `
 		SELECT `+handoffReceiptColumns+` FROM handoff_receipts
-		WHERE tenant_id=public.cortex_current_tenant() AND scope=$1 AND key=$2`, scope, key))
+		WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND scope=$2 AND key=$3`, ws, scope, key))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return handoffReceipt{}, notFound("handoff receipt", key)
 	}
@@ -202,7 +223,7 @@ func (s *Store) readHandoffReceipt(ctx context.Context, scope domain.HandoffScop
 
 // finalizeHandoffReceipt commits a claimed receipt together with the durable
 // effects of the same transaction. Finalizing a receipt owned by another
-// tenant or scope matches zero rows and fails closed.
+// tenant, workspace, or scope matches zero rows and fails closed.
 func (s *Store) finalizeHandoffReceipt(ctx context.Context, scope domain.HandoffScope, key string, observationID int64, status domain.WriteStatus) (handoffReceipt, error) {
 	if scope == "" || key == "" || observationID <= 0 || !validHandoffWriteStatus(status) {
 		return handoffReceipt{}, domain.ErrHandoffValidation
@@ -211,14 +232,18 @@ func (s *Store) finalizeHandoffReceipt(ctx context.Context, scope domain.Handoff
 	if err != nil {
 		return handoffReceipt{}, err
 	}
+	ws, err := workspaceFromTx(ctx, "finalize")
+	if err != nil {
+		return handoffReceipt{}, err
+	}
 	if err := setHandoffLockTimeout(ctx, tx); err != nil {
 		return handoffReceipt{}, err
 	}
 	receipt, err := scanHandoffReceipt(tx.QueryRow(ctx, `
 		UPDATE handoff_receipts
-		SET state='committed', observation_id=$3, initial_status=$4::text, committed_at=now()
-		WHERE tenant_id=public.cortex_current_tenant() AND scope=$1 AND key=$2 AND state='pending'
-		RETURNING `+handoffReceiptColumns, scope, key, observationID, string(status)))
+		SET state='committed', observation_id=$4, initial_status=$5::text, committed_at=now()
+		WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND scope=$2 AND key=$3 AND state='pending'
+		RETURNING `+handoffReceiptColumns, ws, scope, key, observationID, string(status)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return handoffReceipt{}, &domain.HandoffError{Code: domain.HandoffErrorConflict, Message: domain.ErrHandoffConflict.Message, Operation: "finalize", Context: "receipt is not claimable"}
 	}
@@ -232,11 +257,30 @@ func validHandoffWriteStatus(status domain.WriteStatus) bool {
 	return status == domain.WriteStatusCreated || status == domain.WriteStatusReplayed || status == domain.WriteStatusUpdated
 }
 
+// handoffRelationAuthorizer revalidates the optional relation target INSIDE
+// the executor transaction: it must resolve the target with a row lock in the
+// transaction-bound workspace and authorize the locked attributes before the
+// executor proceeds. The type is unexported so no raw transaction or
+// repository escapes the package boundary (REM-AUTH-001, review R7 fix 1).
+type handoffRelationAuthorizer func(ctx context.Context, tx pgx.Tx, relation *domain.HandoffRelationInput) error
+
 // ExecuteHandoff implements domain.HandoffExecutor for the PostgreSQL
 // namespace. Claim/read, observation materialization, optional relation, and
 // receipt finalize all share one authorized transaction: any failure rolls
 // every effect back, and a retry with the same key replays the receipt.
+// Relation targets are not revalidated here; use executeHandoff with an
+// in-transaction authorizer (the AuthorizedStore path) for that.
 func (s *Store) ExecuteHandoff(ctx context.Context, scope domain.HandoffScope, key string, canonical domain.CanonicalHandoff, hash [32]byte) (domain.ObservationWriteResult, error) {
+	return s.executeHandoff(ctx, scope, key, canonical, hash, nil)
+}
+
+// executeHandoff runs the executor with an optional in-transaction relation
+// authorization callback. When the callback is set and the canonical request
+// carries a relation, it runs FIRST inside the transaction — target row
+// locked, attributes revalidated — so the receipt claim, the observation
+// materialization, and the relation write all happen under the very
+// attributes that were authorized: no resolve-authorize-mutate TOCTOU window.
+func (s *Store) executeHandoff(ctx context.Context, scope domain.HandoffScope, key string, canonical domain.CanonicalHandoff, hash [32]byte, authorizeRelation handoffRelationAuthorizer) (domain.ObservationWriteResult, error) {
 	if scope == "" || key == "" || strings.TrimSpace(canonical.Observation.Title) == "" || strings.TrimSpace(canonical.Observation.Content) == "" {
 		return domain.ObservationWriteResult{}, domain.ErrHandoffValidation
 	}
@@ -258,12 +302,17 @@ func (s *Store) ExecuteHandoff(ctx context.Context, scope domain.HandoffScope, k
 	}
 	var result domain.ObservationWriteResult
 	txErr := s.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if authorizeRelation != nil && canonical.Relation != nil {
+			if err := authorizeRelation(ctx, tx, canonical.Relation); err != nil {
+				return err
+			}
+		}
 		receipt, claimed, err := s.claimHandoffReceipt(ctx, scope, key, hash, payload)
 		if err != nil {
 			return err
 		}
 		if !claimed {
-			publicID, err := handoffObservationPublicID(ctx, tx, *receipt.ObservationID, s.tenant.WorkspaceID)
+			publicID, err := handoffObservationPublicID(ctx, tx, *receipt.ObservationID)
 			if err != nil {
 				return err
 			}
@@ -276,6 +325,9 @@ func (s *Store) ExecuteHandoff(ctx context.Context, scope domain.HandoffScope, k
 		}
 		effect, err := s.materializeHandoffObservation(ctx, tx, canonical.Observation)
 		if err != nil {
+			return err
+		}
+		if err := handoffFailpoints("after-save"); err != nil {
 			return err
 		}
 		if canonical.Relation != nil {
@@ -341,10 +393,12 @@ func (s *Store) materializeHandoffObservation(ctx context.Context, tx pgx.Tx, in
 // invisible and fail closed as validation errors.
 func (s *Store) resolveHandoffSession(ctx context.Context, tx pgx.Tx, project, sessionPublicID string) (string, error) {
 	validation := &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "session", Context: "handoff session could not be resolved"}
-	workspace := s.tenant.WorkspaceID
 	if sessionPublicID != "" {
+		query := `SELECT public_id::text FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`
+		args := []any{sessionPublicID}
+		filter, args := s.workspaceSessionPredicate(ctx, args)
 		var publicID string
-		err := tx.QueryRow(ctx, `SELECT public_id::text FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) AND public_id=$1::uuid`, sessionPublicID, workspace).Scan(&publicID)
+		err := tx.QueryRow(ctx, query+filter, args...).Scan(&publicID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", validation
 		}
@@ -353,8 +407,11 @@ func (s *Store) resolveHandoffSession(ctx context.Context, tx pgx.Tx, project, s
 		}
 		return publicID, nil
 	}
+	query := `SELECT public_id::text FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1`
+	args := []any{project}
+	filter, args := s.workspaceSessionPredicate(ctx, args)
 	var publicID string
-	err := tx.QueryRow(ctx, `SELECT public_id::text FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) AND project_key=$1 ORDER BY started_at DESC, id DESC LIMIT 1`, project, workspace).Scan(&publicID)
+	err := tx.QueryRow(ctx, query+filter+` ORDER BY started_at DESC, id DESC LIMIT 1`, args...).Scan(&publicID)
 	if err == nil {
 		return publicID, nil
 	}
@@ -364,10 +421,18 @@ func (s *Store) resolveHandoffSession(ctx context.Context, tx pgx.Tx, project, s
 	if s.tenant == nil || s.tenant.WorkspaceID == "" {
 		return "", validation
 	}
+	// The session is created directly in the transaction-resolved workspace
+	// when available; ambient transactions fall back to the UUID subquery.
+	insertWorkspace := `(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)`
+	insertArgs := []any{s.tenant.WorkspaceID, project, actorFromContext(ctx)}
+	if ws, ok := workspaceFromContext(ctx); ok {
+		insertWorkspace = `$1::bigint`
+		insertArgs[0] = ws
+	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO sessions (tenant_id, workspace_id, project_key, started_at, created_by, updated_by)
-		VALUES (public.cortex_current_tenant(), (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid), $2, now(), $3, $3)
-		RETURNING public_id::text`, s.tenant.WorkspaceID, project, actorFromContext(ctx)).Scan(&publicID); err != nil {
+		VALUES (public.cortex_current_tenant(), `+insertWorkspace+`, $2, now(), $3, $3)
+		RETURNING public_id::text`, insertArgs...).Scan(&publicID); err != nil {
 		return "", handoffPgError(err, "session")
 	}
 	return publicID, nil
@@ -383,8 +448,9 @@ var handoffRelationTypes = map[string]bool{
 
 // createHandoffRelationInTx writes the optional relation edge inside the same
 // transaction. Server handoffs address targets only in the public namespace
-// and only inside the bound workspace; no relation means no implicit edge is
-// created.
+// and only inside the bound workspace, isolated by the explicit
+// observations.workspace_id column (migration 105); no relation means no
+// implicit edge is created.
 func (s *Store) createHandoffRelationInTx(ctx context.Context, tx pgx.Tx, fromID int64, relation *domain.HandoffRelationInput) error {
 	if relation == nil || relation.Target.PublicID == nil || relation.Target.LocalID != nil {
 		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target must use the public namespace"}
@@ -392,8 +458,12 @@ func (s *Store) createHandoffRelationInTx(ctx context.Context, tx pgx.Tx, fromID
 	if !handoffRelationTypes[relation.Type] {
 		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation type is not permitted"}
 	}
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "relation", Context: "workspace binding is not resolved in this transaction"}
+	}
 	var targetID int64
-	err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid AND deleted_at IS NULL AND session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid))`, relation.Target.PublicID.String(), s.tenant.WorkspaceID).Scan(&targetID)
+	err := tx.QueryRow(ctx, `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid AND deleted_at IS NULL AND workspace_id=$2`, relation.Target.PublicID.String(), ws).Scan(&targetID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target was not found"}
 	}
@@ -420,11 +490,17 @@ func (s *Store) createHandoffRelationInTx(ctx context.Context, tx pgx.Tx, fromID
 }
 
 // handoffObservationPublicID resolves the replayed observation reference
-// inside the bound workspace: an observation that left the workspace (or the
-// tenant) is reported as a retryable persistence failure, never replayed.
-func handoffObservationPublicID(ctx context.Context, tx pgx.Tx, observationID int64, workspace string) (uuid.UUID, error) {
+// inside the bound workspace, isolated by the explicit
+// observations.workspace_id column (migration 105): an observation that left
+// the workspace (or the tenant) is reported as a retryable persistence
+// failure, never replayed.
+func handoffObservationPublicID(ctx context.Context, tx pgx.Tx, observationID int64) (uuid.UUID, error) {
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return uuid.Nil, &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "replay", Context: "workspace binding is not resolved in this transaction"}
+	}
 	var publicID string
-	err := tx.QueryRow(ctx, `SELECT public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL AND session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid))`, observationID, workspace).Scan(&publicID)
+	err := tx.QueryRow(ctx, `SELECT public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL AND workspace_id=$2`, observationID, ws).Scan(&publicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "replay", Context: "receipt observation no longer exists"}
 	}

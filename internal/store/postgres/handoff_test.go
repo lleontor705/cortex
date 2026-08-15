@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 )
 
@@ -174,6 +175,11 @@ type stubPgTx struct {
 	observationID   int64
 	observationUUID string
 	relationTarget  int64
+
+	relationProject        string
+	relationOwner          string
+	relationClassification string
+	relationTargetMissing  bool
 }
 
 func (t *stubPgTx) record(sql string, args []any) {
@@ -242,6 +248,16 @@ func (r *stubRow) Scan(dest ...any) error {
 		id, now := r.tx.observationID, time.Now().UTC()
 		status := "created"
 		return assignReceipt(dest, "project:stub", "stub-key", r.tx.claimHash, r.tx.claimPayload, "committed", &id, &status, &now)
+	case strings.Contains(r.sql, "FOR SHARE"):
+		// in-transaction relation target lock: workspace-scoped resolution
+		// answering with the authorizable attributes
+		if r.tx.relationTargetMissing {
+			return pgx.ErrNoRows
+		}
+		*dest[0].(*string) = r.tx.relationProject
+		*dest[1].(*string) = r.tx.relationOwner
+		*dest[2].(*string) = r.tx.relationClassification
+		return nil
 	case strings.Contains(r.sql, "FOR UPDATE"):
 		id, now := r.tx.observationID, time.Now().UTC()
 		status := "created"
@@ -335,6 +351,31 @@ func ctxWithStubTx(tx pgx.Tx) context.Context {
 	return context.WithValue(context.Background(), txKey{}, tx)
 }
 
+// stubWorkspaceID mirrors the bigint a real transaction resolves once in
+// Store.bindWorkspace; offline workspace-bound stubs install it directly so
+// receipt and topic statements can consume the resolved binding.
+const stubWorkspaceID int64 = 4242
+
+func ctxWithStubTxAndWorkspace(tx pgx.Tx) context.Context {
+	return context.WithValue(ctxWithStubTx(tx), workspaceKey{}, stubWorkspaceID)
+}
+
+func hasWorkspaceArg(args []any) bool {
+	for _, a := range args {
+		switch v := a.(type) {
+		case int64:
+			if v == stubWorkspaceID {
+				return true
+			}
+		case *int64:
+			if v != nil && *v == stubWorkspaceID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func stubCanonical(t *testing.T, relation bool) (domain.CanonicalHandoff, [32]byte) {
 	t.Helper()
 	c := domain.CanonicalHandoff{
@@ -390,19 +431,20 @@ func TestPostgresHandoffExecutorRequiresWorkspaceBoundStore(t *testing.T) {
 
 // Session resolution and relation targets must be workspace scoped: the
 // executor may only resolve sessions and address targets inside the bound
-// workspace of the same tenant.
+// workspace of the same tenant, using the transaction-resolved workspace
+// bigint instead of per-statement UUID subqueries.
 func TestPostgresHandoffExecutorScopesQueriesToWorkspace(t *testing.T) {
 	store, tx, canonical, hash := stubExecutorReady(t, true)
-	if _, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash); err != nil {
+	if _, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash); err != nil {
 		t.Fatalf("ExecuteHandoff error=%v\nissued=%s", err, tx.issuedSQL())
 	}
 	session := tx.requireQuery(t, "FROM sessions")
-	if !strings.Contains(session.sql, "workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$") {
-		t.Fatalf("session resolution is not workspace scoped: %s", session.sql)
+	if !strings.Contains(session.sql, "workspace_id=$") || !hasWorkspaceArg(session.args) {
+		t.Fatalf("session resolution is not workspace scoped by the resolved binding: %s %v", session.sql, session.args)
 	}
 	relation := tx.requireQuery(t, "SELECT id FROM observations")
-	if !strings.Contains(relation.sql, "session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=") {
-		t.Fatalf("relation target lookup is not workspace scoped: %s", relation.sql)
+	if !strings.Contains(relation.sql, "workspace_id=$") || !hasWorkspaceArg(relation.args) {
+		t.Fatalf("relation target lookup is not workspace scoped by the resolved binding: %s %v", relation.sql, relation.args)
 	}
 }
 
@@ -412,7 +454,7 @@ func TestPostgresHandoffExecutorScopesQueriesToWorkspace(t *testing.T) {
 func TestPostgresSaveLegacyPathPreservesBaselineObservable(t *testing.T) {
 	store, tx := stubStore(t, true)
 	repo := store.observations()
-	ctx := ctxWithStubTx(tx)
+	ctx := ctxWithStubTxAndWorkspace(tx)
 	first := &domain.Observation{SessionID: tx.newestSession, Project: "p", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeManual, Title: "legacy duplicate", Content: "same bytes"}
 	effect, err := repo.SaveWithEffect(ctx, first)
 	if err != nil || effect.Status != domain.WriteStatusCreated {
@@ -438,7 +480,7 @@ func TestPostgresSaveNormalizesTopicKeyAndSerializesTopicUpserts(t *testing.T) {
 	store, tx := stubStore(t, true)
 	repo := store.observations()
 	obs := &domain.Observation{SessionID: tx.newestSession, Project: "p", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeDecision, Title: "topic", Content: "v1", TopicKey: "  topic/key  "}
-	effect, err := repo.SaveWithEffect(ctxWithStubTx(tx), obs)
+	effect, err := repo.SaveWithEffect(ctxWithStubTxAndWorkspace(tx), obs)
 	if err != nil || effect.Status != domain.WriteStatusCreated {
 		t.Fatalf("topic save effect=%+v err=%v", effect, err)
 	}
@@ -457,6 +499,100 @@ func TestPostgresSaveNormalizesTopicKeyAndSerializesTopicUpserts(t *testing.T) {
 	if obs.TopicKey != "topic/key" {
 		t.Fatalf("observable TopicKey=%q, want normalized", obs.TopicKey)
 	}
+}
+
+// The topic lock must be bounded, workspace framed, and normalization-
+// single-sourced: a lock_timeout is installed before the advisory lock, the
+// lock key covers tenant, workspace, project, and topic through framed JSON
+// with the workspace binding mandatory (no NULL fallback), and the project
+// and topic arguments carry the same normalized bytes the lookup and the
+// write will use.
+func TestPostgresTopicLockBoundedAndWorkspaceFramed(t *testing.T) {
+	store, tx := stubStore(t, true)
+	repo := store.observations()
+	obs := &domain.Observation{SessionID: tx.newestSession, Project: " p ", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeDecision, Title: "topic", Content: "v1", TopicKey: " topic/framed "}
+	if _, err := repo.SaveWithEffect(ctxWithStubTxAndWorkspace(tx), obs); err != nil {
+		t.Fatalf("topic save error=%v\nissued=%s", err, tx.issuedSQL())
+	}
+	timeoutIdx := tx.queryIndex("set_config('lock_timeout'")
+	lockIdx := tx.queryIndex("pg_advisory_xact_lock")
+	if timeoutIdx < 0 || lockIdx < 0 || timeoutIdx > lockIdx {
+		t.Fatalf("bounded lock ordering violated: timeout=%d lock=%d; issued=%s", timeoutIdx, lockIdx, tx.issuedSQL())
+	}
+	timeout := tx.queries[timeoutIdx]
+	if wait, _ := timeout.args[0].(string); wait != "5s" {
+		t.Fatalf("lock_timeout=%v, want 5s (args=%v)", timeout.args[0], timeout.args)
+	}
+	lock := tx.queries[lockIdx]
+	if !strings.Contains(lock.sql, "jsonb_build_array") {
+		t.Fatalf("advisory lock key is not JSON framed: %s", lock.sql)
+	}
+	if ws, ok := lock.args[0].(int64); !ok || ws != stubWorkspaceID {
+		t.Fatalf("lock workspace arg=%v (%T), want resolved bigint %d", lock.args[0], lock.args[0], stubWorkspaceID)
+	}
+	if project, _ := lock.args[1].(string); project != "p" {
+		t.Fatalf("lock project arg=%q, want normalized %q", project, "p")
+	}
+	if topic, _ := lock.args[2].(string); topic != "topic/framed" {
+		t.Fatalf("lock topic arg=%q, want normalized topic bytes", topic)
+	}
+	if obs.Project != "p" || obs.TopicKey != "topic/framed" {
+		t.Fatalf("observable normalization Project=%q TopicKey=%q, want trimmed once", obs.Project, obs.TopicKey)
+	}
+	insert := tx.requireQuery(t, "INSERT INTO observations")
+	if !strings.Contains(insert.sql, "workspace_id") {
+		t.Fatalf("bound insert does not write observations.workspace_id explicitly: %s", insert.sql)
+	}
+	if !hasWorkspaceArg(insert.args) {
+		t.Fatalf("bound insert lacks the resolved workspace argument: %v", insert.args)
+	}
+}
+
+// A topic save without the transaction-resolved workspace binding must fail
+// closed before any advisory lock: after migration 105 there is no tenant-
+// wide fallback namespace for topic isolation.
+func TestPostgresTopicSaveRequiresWorkspaceBindingBeforeLock(t *testing.T) {
+	store, tx := stubStore(t, true)
+	repo := store.observations()
+	obs := &domain.Observation{SessionID: tx.newestSession, Project: "p", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeDecision, Title: "t", Content: "c", TopicKey: "unbound/topic"}
+	_, err := repo.SaveWithEffect(ctxWithStubTx(tx), obs)
+	if err == nil || !strings.Contains(err.Error(), "workspace binding is required") {
+		t.Fatalf("error=%v, want fail-closed workspace binding requirement", err)
+	}
+	tx.forbidQuery(t, "pg_advisory_xact_lock")
+	tx.forbidQuery(t, "INSERT INTO observations")
+}
+
+// A bounded topic-lock timeout (SQLSTATE 55P03) must surface from the public
+// SaveWithEffect API as a redacted, retryable-unavailable save error — the
+// classification is part of the save path itself, not a caller concern.
+func TestPostgresTopicLockTimeoutIsRetryableContention(t *testing.T) {
+	store, tx := stubStore(t, true)
+	failing := &lockTimeoutTx{stubPgTx: tx}
+	repo := store.observations()
+	obs := &domain.Observation{SessionID: failing.newestSession, Project: "p", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeDecision, Title: "t", Content: "c", TopicKey: "k"}
+	_, err := repo.SaveWithEffect(ctxWithStubTxAndWorkspace(failing), obs)
+	if err == nil {
+		t.Fatal("lock timeout unexpectedly succeeded")
+	}
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorUnavailable || !typed.Retryable {
+		t.Fatalf("SaveWithEffect error=%v (%T), want retryable unavailable contention", err, err)
+	}
+	if !errors.Is(err, domain.ErrHandoffUnavailable) {
+		t.Fatalf("error %v does not match the unavailable sentinel", err)
+	}
+}
+
+// lockTimeoutTx answers the advisory topic lock with SQLSTATE 55P03 and
+// delegates every other statement to the recording stub.
+type lockTimeoutTx struct{ *stubPgTx }
+
+func (t *lockTimeoutTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "pg_advisory_xact_lock") {
+		return pgconn.NewCommandTag(""), &pgconn.PgError{Code: "55P03", Message: "lock timeout"}
+	}
+	return t.stubPgTx.Exec(ctx, sql, args...)
 }
 
 // The fresh-transaction path of Store.transaction must install the pgx.Tx in
@@ -495,7 +631,7 @@ func TestPostgresHandoffExecutorHappyPathReachesClaimAndFinalize(t *testing.T) {
 	}
 	t.Cleanup(func() { handoffFailpoints = func(string) error { return nil } })
 
-	result, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash)
+	result, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash)
 	if err != nil {
 		t.Fatalf("ExecuteHandoff error=%v\nissued=%s", err, tx.issuedSQL())
 	}
@@ -504,8 +640,54 @@ func TestPostgresHandoffExecutorHappyPathReachesClaimAndFinalize(t *testing.T) {
 	}
 	tx.requireQuery(t, "INSERT INTO handoff_receipts")
 	tx.requireQuery(t, "UPDATE handoff_receipts")
-	if len(seams) != 2 || seams[0] != "after-edge" || seams[1] != "before-commit" {
-		t.Fatalf("execution seams=%v, want [after-edge before-commit]", seams)
+	if len(seams) != 3 || seams[0] != "after-save" || seams[1] != "after-edge" || seams[2] != "before-commit" {
+		t.Fatalf("execution seams=%v, want [after-save after-edge before-commit]", seams)
+	}
+}
+
+// The after-save seam fires immediately after observation materialization
+// and before the optional relation: firing it must abort the attempt with
+// no edge written and no receipt finalization.
+func TestPostgresHandoffExecutorFailpointAfterSaveAbortsBeforeRelation(t *testing.T) {
+	store, tx, canonical, hash := stubExecutorReady(t, true)
+	handoffFailpoints = func(seam string) error {
+		if seam == "after-save" {
+			return errors.New("seam failure: after-save")
+		}
+		return nil
+	}
+	t.Cleanup(func() { handoffFailpoints = func(string) error { return nil } })
+
+	_, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash)
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorPersistence {
+		t.Fatalf("error=%v, want persistence-classified seam failure", err)
+	}
+	tx.requireQuery(t, "INSERT INTO observations")
+	if i := tx.queryIndex("INSERT INTO edges"); i >= 0 {
+		t.Fatalf("relation ran after an after-save failure")
+	}
+	if i := tx.queryIndex("UPDATE handoff_receipts"); i >= 0 {
+		t.Fatalf("finalize ran after an after-save failure")
+	}
+	if tx.commits != 0 {
+		t.Fatalf("failed attempt committed %d times", tx.commits)
+	}
+}
+
+// Receipt claims are workspace scoped through the transaction-resolved
+// binding: a workspace-bound store whose transaction never resolved the
+// binding fails closed before claiming instead of falling back to a
+// tenant-wide receipt namespace.
+func TestPostgresHandoffExecutorRequiresResolvedWorkspaceBinding(t *testing.T) {
+	store, tx, canonical, hash := stubExecutorReady(t, false)
+	_, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash)
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorPersistence || !typed.Retryable {
+		t.Fatalf("error=%v, want retryable persistence refusal without a resolved workspace binding", err)
+	}
+	if i := tx.queryIndex("INSERT INTO handoff_receipts"); i >= 0 {
+		t.Fatalf("receipt claim ran without a resolved workspace binding")
 	}
 }
 
@@ -521,7 +703,7 @@ func TestPostgresHandoffExecutorFailpointAfterEdgeAbortsBeforeFinalize(t *testin
 	}
 	t.Cleanup(func() { handoffFailpoints = func(string) error { return nil } })
 
-	_, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash)
+	_, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash)
 	var typed *domain.HandoffError
 	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorPersistence {
 		t.Fatalf("error=%v, want persistence-classified seam failure", err)
@@ -548,7 +730,7 @@ func TestPostgresHandoffExecutorFailpointBeforeCommitSurfacesRetryable(t *testin
 	}
 	t.Cleanup(func() { handoffFailpoints = func(string) error { return nil } })
 
-	_, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash)
+	_, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash)
 	var typed *domain.HandoffError
 	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorPersistence || !typed.Retryable {
 		t.Fatalf("error=%v, want retryable persistence classification", err)
@@ -565,7 +747,7 @@ func TestPostgresHandoffExecutorReplaysCommittedReceiptWithoutEffects(t *testing
 	store, tx, canonical, hash := stubExecutorReady(t, true)
 	tx.receiptExists = true
 
-	result, err := store.ExecuteHandoff(ctxWithStubTx(tx), "project:a", "key", canonical, hash)
+	result, err := store.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), "project:a", "key", canonical, hash)
 	if err != nil {
 		t.Fatalf("replay error=%v\nissued=%s", err, tx.issuedSQL())
 	}
@@ -575,4 +757,111 @@ func TestPostgresHandoffExecutorReplaysCommittedReceiptWithoutEffects(t *testing
 	tx.forbidQuery(t, "INSERT INTO observations")
 	tx.forbidQuery(t, "INSERT INTO edges")
 	tx.requireQuery(t, "FOR UPDATE")
+}
+
+// --- R7 review fix 1: in-transaction relation authorization (REM-AUTH-001) ---
+
+// stubAuthorizedStore builds an AuthorizedStore over the offline stub whose
+// policy principal (member, full project grant) can write memory and graph
+// but carries no classification clearance, so in-transaction attribute
+// revalidation is observable.
+func stubAuthorizedStore(t *testing.T) (*AuthorizedStore, *stubPgTx) {
+	t.Helper()
+	store, tx := stubStore(t, true)
+	store.authorizer = authz.NewPolicy()
+	store.principal = domain.Principal{
+		Subject:      store.principal.Subject,
+		Type:         "user",
+		OrgID:        store.tenant.TenantID,
+		WorkspaceIDs: []string{store.tenant.WorkspaceID},
+		Roles:        []string{"member"},
+		ProjectIDs:   []string{"*"},
+	}
+	tx.relationProject = "stub"
+	tx.relationOwner = store.principal.Subject
+	tx.relationClassification = "project"
+	return &AuthorizedStore{store: store}, tx
+}
+
+func authorizedRelationRequest(key string) domain.HandoffRequest {
+	target := uuid.New()
+	return domain.HandoffRequest{
+		IdempotencyKey: key,
+		Observation: domain.SaveObservationInput{
+			Title: "locked target handoff", Content: "relation authorization in transaction", Project: "stub", Type: domain.TypeDecision,
+		},
+		Relation: &domain.HandoffRelationInput{Target: domain.ObservationRef{PublicID: &target}, Type: domain.RelationReferences, Weight: 1, Confidence: 1},
+	}
+}
+
+// The relation target authorization must run INSIDE the executor transaction:
+// the target row is locked FOR SHARE in the resolved workspace and its
+// authorizable attributes (project, owner, classification) are revalidated
+// there, strictly before the receipt claim and any effect. This closes the
+// resolve-authorize-mutate TOCTOU window of a pre-transaction preauth.
+func TestAuthorizedStoreHandoffRelationAuthorizationRunsLockedInsideTransaction(t *testing.T) {
+	authorized, tx := stubAuthorizedStore(t)
+
+	result, err := authorized.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), authorizedRelationRequest("lock-order"))
+	if err != nil {
+		t.Fatalf("ExecuteHandoff error=%v\nissued=%s", err, tx.issuedSQL())
+	}
+	if result.Status != domain.WriteStatusCreated || result.Ref.PublicID == nil {
+		t.Fatalf("result=%+v, want created public ref", result)
+	}
+	lock := tx.requireQuery(t, "FOR SHARE")
+	if !strings.Contains(lock.sql, "workspace_id=$") || !hasWorkspaceArg(lock.args) {
+		t.Fatalf("relation authorization is not scoped to the resolved workspace: %s %v", lock.sql, lock.args)
+	}
+	for _, attribute := range []string{"project_key", "owner_subject", "classification"} {
+		if !strings.Contains(lock.sql, attribute) {
+			t.Fatalf("locked authorization does not read %s: %s", attribute, lock.sql)
+		}
+	}
+	lockIdx := tx.queryIndex("FOR SHARE")
+	claimIdx := tx.queryIndex("INSERT INTO handoff_receipts")
+	edgeIdx := tx.queryIndex("INSERT INTO edges")
+	if claimIdx < 0 || edgeIdx < 0 || lockIdx > claimIdx || claimIdx > edgeIdx {
+		t.Fatalf("execution ordering violated: lock=%d claim=%d edge=%d\n%s", lockIdx, claimIdx, edgeIdx, tx.issuedSQL())
+	}
+}
+
+// A target whose attributes changed to an unauthorized classification
+// concurrently with the request is revalidated against the in-transaction
+// locked values: the handoff fails forbidden with zero effects.
+func TestAuthorizedStoreHandoffRelationDenialOnInTransactionAttributes(t *testing.T) {
+	authorized, tx := stubAuthorizedStore(t)
+	tx.relationClassification = "restricted" // attribute drift seen only inside the transaction
+
+	_, err := authorized.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), authorizedRelationRequest("deny-restricted"))
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorForbidden {
+		t.Fatalf("error=%v, want forbidden revalidation of the locked attributes", err)
+	}
+	tx.forbidQuery(t, "INSERT INTO handoff_receipts")
+	tx.forbidQuery(t, "INSERT INTO observations")
+	tx.forbidQuery(t, "INSERT INTO edges")
+	if tx.commits != 0 {
+		t.Fatalf("denied attempt committed %d times", tx.commits)
+	}
+}
+
+// A relation target invisible in the bound workspace — a sibling workspace of
+// the same tenant or a row of another tenant — is not-found under the
+// workspace-scoped lock: validation (never an authorization oracle) and zero
+// effects.
+func TestAuthorizedStoreHandoffRelationTargetMissingInWorkspaceFailsClosed(t *testing.T) {
+	authorized, tx := stubAuthorizedStore(t)
+	tx.relationTargetMissing = true
+
+	_, err := authorized.ExecuteHandoff(ctxWithStubTxAndWorkspace(tx), authorizedRelationRequest("missing-target"))
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) || typed.Code != domain.HandoffErrorValidation {
+		t.Fatalf("error=%v, want validation for a workspace-invisible target", err)
+	}
+	tx.forbidQuery(t, "INSERT INTO handoff_receipts")
+	tx.forbidQuery(t, "INSERT INTO edges")
+	if tx.commits != 0 {
+		t.Fatalf("invisible-target attempt committed %d times", tx.commits)
+	}
 }

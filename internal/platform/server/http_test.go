@@ -11,24 +11,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 type fakeOperations struct {
-	observations  map[int64]*domain.Observation
-	nextID        int64
-	subgraph      *domain.GraphSubgraph
-	subgraphID    string
-	subgraphDepth int
-	subgraphMax   int
-	createdEdge   *domain.Edge
-	issuedToken   identity.TokenIssue
-	issueTokenErr error
+	observations     map[int64]*domain.Observation
+	nextID           int64
+	subgraph         *domain.GraphSubgraph
+	subgraphID       string
+	subgraphDepth    int
+	subgraphMax      int
+	createdEdge      *domain.Edge
+	issuedToken      identity.TokenIssue
+	issueTokenErr    error
+	saveEffectErr    error
+	saveEffectStatus domain.WriteStatus
+	handoffRequest   domain.HandoffRequest
+	handoffResult    domain.ObservationWriteResult
+	handoffErr       error
 }
 
 func newFakeOperations() *fakeOperations {
@@ -169,6 +176,28 @@ func (f *fakeOperations) ListTokens(context.Context) ([]identity.TokenRecord, er
 func (f *fakeOperations) RevokeToken(context.Context, string) error                  { return nil }
 func (f *fakeOperations) RotateToken(context.Context, string) (identity.IssuedToken, error) {
 	return identity.IssuedToken{}, nil
+}
+
+func (f *fakeOperations) SaveObservationWithEffect(ctx context.Context, o *domain.Observation) (domain.SaveEffect, error) {
+	if f.saveEffectErr != nil {
+		return domain.SaveEffect{}, f.saveEffectErr
+	}
+	if err := f.SaveObservation(ctx, o); err != nil {
+		return domain.SaveEffect{}, err
+	}
+	status := f.saveEffectStatus
+	if status == "" {
+		status = domain.WriteStatusCreated
+	}
+	return domain.SaveEffect{Observation: o, Status: status}, nil
+}
+
+func (f *fakeOperations) ExecuteHandoff(_ context.Context, request domain.HandoffRequest) (domain.ObservationWriteResult, error) {
+	f.handoffRequest = request
+	if f.handoffErr != nil {
+		return domain.ObservationWriteResult{}, f.handoffErr
+	}
+	return f.handoffResult, nil
 }
 
 func testHandler(health healthCheck) http.Handler {
@@ -335,7 +364,7 @@ func TestMCPInitializeAndListServerTools(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tools/list response = %d %s", rec.Code, rec.Body.String())
 	}
-	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_graph_subgraph", "cortex_score"} {
+	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_graph_subgraph", "cortex_score", "cortex_handoff"} {
 		if !strings.Contains(rec.Body.String(), `"name":"`+name+`"`) {
 			t.Errorf("tools/list missing %s: %s", name, rec.Body.String())
 		}
@@ -434,5 +463,386 @@ func TestValidateConfigRequiresToken(t *testing.T) {
 	cfg.HTTP.Token = "secret"
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("authenticated loopback config rejected: %v", err)
+	}
+}
+
+// --- R7: durable memory write surface (REM-AUTH-001, REM-MCP-001, RD5/RD6) ---
+
+// serverNormalizedJSON canonicalizes raw JSON so schema comparisons are
+// insensitive to re-serialization by the MCP server.
+func serverNormalizedJSON(t *testing.T, raw json.RawMessage) json.RawMessage {
+	t.Helper()
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		t.Fatalf("JSON is not valid: %v", err)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("renormalize JSON: %v", err)
+	}
+	return encoded
+}
+
+func serverRawOutputSchema(t *testing.T, tool *mcpserver.ServerTool) json.RawMessage {
+	t.Helper()
+	if tool == nil {
+		return nil
+	}
+	raw := tool.Tool.RawOutputSchema
+	if len(raw) == 0 && tool.Tool.OutputSchema.Type != "" {
+		encoded, err := json.Marshal(tool.Tool.OutputSchema)
+		if err != nil {
+			t.Fatalf("marshal output schema: %v", err)
+		}
+		raw = encoded
+	}
+	return serverNormalizedJSON(t, raw)
+}
+
+func serverRawInputSchema(t *testing.T, tool *mcpserver.ServerTool) json.RawMessage {
+	t.Helper()
+	if tool == nil {
+		return nil
+	}
+	raw := tool.Tool.RawInputSchema
+	if len(raw) == 0 {
+		encoded, err := json.Marshal(tool.Tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal input schema: %v", err)
+		}
+		raw = encoded
+	}
+	return serverNormalizedJSON(t, raw)
+}
+
+// TestServerToolsPublishMemoryContractParity asserts the server MCP publishes
+// cortex_save and cortex_handoff with the exact shared schemas and hint
+// annotations from memorycontract (REM-MCP-001: three-route parity).
+func TestServerToolsPublishMemoryContractParity(t *testing.T) {
+	srv := newServerMCP(newFakeOperations())
+
+	save := srv.GetTool(memorycontract.ToolSave)
+	if save == nil {
+		t.Fatal("cortex_save is not registered on the server MCP")
+	}
+	if got, want := serverRawOutputSchema(t, save), serverNormalizedJSON(t, memorycontract.WriteOutputSchemaJSON); string(got) != string(want) {
+		t.Errorf("cortex_save outputSchema = %s, want shared memorycontract schema %s", got, want)
+	}
+	annotations := save.Tool.Annotations
+	if annotations.Title != memorycontract.SaveHints.Title {
+		t.Errorf("cortex_save title = %q, want %q", annotations.Title, memorycontract.SaveHints.Title)
+	}
+	if annotations.IdempotentHint != nil && *annotations.IdempotentHint {
+		t.Errorf("cortex_save annotations = %+v, save is not idempotent", annotations)
+	}
+
+	handoff := srv.GetTool(memorycontract.ToolHandoff)
+	if handoff == nil {
+		t.Fatal("cortex_handoff is not registered on the server MCP (REM-AUTH-001 end-to-end handoff)")
+	}
+	if got, want := serverRawOutputSchema(t, handoff), serverNormalizedJSON(t, memorycontract.WriteOutputSchemaJSON); string(got) != string(want) {
+		t.Errorf("cortex_handoff outputSchema = %s, want shared memorycontract schema %s", got, want)
+	}
+	if got, want := serverRawInputSchema(t, handoff), serverNormalizedJSON(t, memorycontract.HandoffInputSchemaJSON); string(got) != string(want) {
+		t.Errorf("cortex_handoff inputSchema = %s, want shared memorycontract schema %s", got, want)
+	}
+	handoffAnnotations := handoff.Tool.Annotations
+	if handoffAnnotations.Title != memorycontract.HandoffHints.Title {
+		t.Errorf("cortex_handoff title = %q, want %q", handoffAnnotations.Title, memorycontract.HandoffHints.Title)
+	}
+	if handoffAnnotations.IdempotentHint == nil || !*handoffAnnotations.IdempotentHint {
+		t.Errorf("cortex_handoff annotations = %+v, handoff must be idempotent", handoffAnnotations)
+	}
+	if handoffAnnotations.DestructiveHint != nil && *handoffAnnotations.DestructiveHint {
+		t.Errorf("cortex_handoff annotations = %+v, handoff must not be destructive", handoffAnnotations)
+	}
+}
+
+func structuredSavePayload(t *testing.T, result *mcp.CallToolResult) memorycontract.SaveStructured {
+	t.Helper()
+	payload, ok := result.StructuredContent.(memorycontract.SaveStructured)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want memorycontract.SaveStructured", result.StructuredContent)
+	}
+	return payload
+}
+
+func structuredErrorPayload(t *testing.T, result *mcp.CallToolResult) memorycontract.ErrorStructured {
+	t.Helper()
+	payload, ok := result.StructuredContent.(memorycontract.ErrorStructured)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want memorycontract.ErrorStructured", result.StructuredContent)
+	}
+	return payload
+}
+
+// TestMCPSaveToolReturnsStructuredPublicRef asserts the server cortex_save
+// lowers the durable write effect into the shared structured payload with the
+// public UUID namespace exclusively (REM-SAVE-001, REM-MCP-001).
+func TestMCPSaveToolReturnsStructuredPublicRef(t *testing.T) {
+	ops := newFakeOperations()
+	result := callServerTool(t, saveTool(ops), map[string]any{
+		"title": "JWT auth", "content": "body", "type": "decision",
+		"session_id": "00000000-0000-0000-0000-000000000010",
+	})
+	if result.IsError {
+		t.Fatalf("save failed: %s", serverToolText(result))
+	}
+	payload := structuredSavePayload(t, result)
+	if payload.ObservationRef.PublicID == nil || payload.ObservationRef.LocalID != nil {
+		t.Fatalf("observation_ref = %+v, want exclusive public_id namespace", payload.ObservationRef)
+	}
+	if parsed, err := uuid.Parse(*payload.ObservationRef.PublicID); err != nil || parsed.String() != *payload.ObservationRef.PublicID {
+		t.Fatalf("public_id = %q, want canonical UUID", *payload.ObservationRef.PublicID)
+	}
+	if payload.Status != string(domain.WriteStatusCreated) {
+		t.Fatalf("status = %q, want created", payload.Status)
+	}
+	if text := serverToolText(result); !strings.Contains(text, "Memory saved") {
+		t.Fatalf("legacy text = %q, want useful save confirmation", text)
+	}
+}
+
+// TestMCPSaveToolClassifiesFailures asserts authorization denials and invalid
+// input keep isError semantics, the stable class, and no reference.
+func TestMCPSaveToolClassifiesFailures(t *testing.T) {
+	forbidden := newFakeOperations()
+	forbidden.saveEffectErr = errors.New(authz.DenyRole)
+	result := callServerTool(t, saveTool(forbidden), map[string]any{"title": "t", "content": "c", "session_id": "00000000-0000-0000-0000-000000000010"})
+	if !result.IsError {
+		t.Fatalf("authorization denial must be an error result: %s", serverToolText(result))
+	}
+	payload := structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeForbidden {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeForbidden)
+	}
+	if strings.Contains(serverToolText(result), "role_not_permitted") {
+		t.Fatalf("raw denial reason leaked: %s", serverToolText(result))
+	}
+
+	invalid := newFakeOperations()
+	invalid.saveEffectErr = domain.ErrInvalidInput
+	result = callServerTool(t, saveTool(invalid), map[string]any{"title": "", "content": "c", "session_id": "00000000-0000-0000-0000-000000000010"})
+	if !result.IsError {
+		t.Fatal("invalid input must be an error result")
+	}
+	payload = structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeValidation {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeValidation)
+	}
+}
+
+// TestMCPHandoffToolLowersPublicNamespace asserts the server cortex_handoff
+// lowers tool arguments into a domain HandoffRequest, executes through
+// Operations, and returns the public-namespace structured result.
+func TestMCPHandoffToolLowersPublicNamespace(t *testing.T) {
+	target := "00000000-0000-0000-0000-0000000000ab"
+	publicRef, refErr := uuid.Parse("00000000-0000-0000-0000-0000000000cd")
+	if refErr != nil {
+		t.Fatal(refErr)
+	}
+	ops := newFakeOperations()
+	ops.handoffResult = domain.ObservationWriteResult{
+		Ref:    domain.ObservationRef{PublicID: &publicRef},
+		Status: domain.WriteStatusReplayed,
+	}
+	result := callServerTool(t, handoffTool(ops), map[string]any{
+		"idempotency_key": "key-1",
+		"observation": map[string]any{
+			"title": "Handoff", "content": "body", "project": "cortex",
+			"type": "decision", "confidence": 0.9, "tags": []any{"auth", "mcp"},
+		},
+		"relation": map[string]any{
+			"target":     map[string]any{"public_id": target},
+			"type":       "references",
+			"weight":     2.5,
+			"confidence": 0.5,
+			"reasoning":  "shared contract",
+		},
+	})
+	if result.IsError {
+		t.Fatalf("handoff failed: %s", serverToolText(result))
+	}
+	if ops.handoffRequest.IdempotencyKey != "key-1" {
+		t.Fatalf("idempotency key = %q", ops.handoffRequest.IdempotencyKey)
+	}
+	obs := ops.handoffRequest.Observation
+	if obs.Title != "Handoff" || obs.Content != "body" || obs.Project != "cortex" || obs.Type != "decision" || obs.Confidence != 0.9 {
+		t.Fatalf("lowered observation = %+v", obs)
+	}
+	if len(obs.Tags) != 2 || obs.Tags[0] != "auth" || obs.Tags[1] != "mcp" {
+		t.Fatalf("lowered tags = %+v", obs.Tags)
+	}
+	rel := ops.handoffRequest.Relation
+	if rel == nil || rel.Type != "references" || rel.Weight != 2.5 || rel.Confidence != 0.5 || rel.Reasoning != "shared contract" {
+		t.Fatalf("lowered relation = %+v", rel)
+	}
+	if rel.Target.PublicID == nil || rel.Target.PublicID.String() != target || rel.Target.LocalID != nil {
+		t.Fatalf("relation target = %+v, want exclusive public namespace", rel.Target)
+	}
+	payload := structuredSavePayload(t, result)
+	if payload.ObservationRef.PublicID == nil || *payload.ObservationRef.PublicID != publicRef.String() {
+		t.Fatalf("observation_ref = %+v, want %q", payload.ObservationRef, publicRef.String())
+	}
+	if payload.Status != string(domain.WriteStatusReplayed) {
+		t.Fatalf("status = %q, want replayed", payload.Status)
+	}
+	if text := serverToolText(result); !strings.Contains(text, "Handoff recorded") {
+		t.Fatalf("legacy text = %q, want useful handoff confirmation", text)
+	}
+}
+
+// TestMCPHandoffToolValidationAndAuthorization asserts the server handoff
+// namespace rules: public targets only, validation before execution, and
+// stable fail-closed classifications without references.
+func TestMCPHandoffToolValidationAndAuthorization(t *testing.T) {
+	localTarget := newFakeOperations()
+	result := callServerTool(t, handoffTool(localTarget), map[string]any{
+		"idempotency_key": "key-1",
+		"observation":     map[string]any{"title": "T", "content": "C"},
+		"relation":        map[string]any{"target": map[string]any{"local_id": float64(7)}, "type": "references"},
+	})
+	if !result.IsError {
+		t.Fatal("local_id target must be rejected on the server namespace")
+	}
+	if localTarget.handoffRequest.IdempotencyKey != "" {
+		t.Fatal("rejected request must not reach operations")
+	}
+	payload := structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeValidation {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeValidation)
+	}
+
+	missingKey := newFakeOperations()
+	result = callServerTool(t, handoffTool(missingKey), map[string]any{
+		"observation": map[string]any{"title": "T", "content": "C"},
+	})
+	if !result.IsError {
+		t.Fatal("missing idempotency key must be rejected")
+	}
+	payload = structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeValidation {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeValidation)
+	}
+
+	forbidden := newFakeOperations()
+	forbidden.handoffErr = errors.New(authz.DenyRole)
+	result = callServerTool(t, handoffTool(forbidden), map[string]any{
+		"idempotency_key": "key-1",
+		"observation":     map[string]any{"title": "T", "content": "C"},
+	})
+	if !result.IsError {
+		t.Fatal("authorization denial must be an error result")
+	}
+	payload = structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeForbidden {
+		t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeForbidden)
+	}
+
+	unavailable := newFakeOperations()
+	unavailable.handoffErr = domain.ErrHandoffUnavailable
+	result = callServerTool(t, handoffTool(unavailable), map[string]any{
+		"idempotency_key": "key-1",
+		"observation":     map[string]any{"title": "T", "content": "C"},
+	})
+	if !result.IsError {
+		t.Fatal("auth dependency failure must be an error result")
+	}
+	payload = structuredErrorPayload(t, result)
+	if payload.Error.Code != memorycontract.CodeUnavailable || !payload.Error.Retryable {
+		t.Fatalf("error body = %+v, want retryable unavailable", payload.Error)
+	}
+}
+
+// TestMCPHandoffToolRelationArgumentContract pins the relation argument shape
+// on the server runtime: a present-but-non-object relation is validation
+// (never silently omitted) and the target must set exactly one namespace —
+// both or neither fail before Operations is reached (review R7 fix 2).
+func TestMCPHandoffToolRelationArgumentContract(t *testing.T) {
+	cases := []struct {
+		name     string
+		relation any
+		message  string
+	}{
+		{"relation not an object", "references", "relation must be an object"},
+		{"target with both namespaces", map[string]any{
+			"target": map[string]any{"local_id": float64(3), "public_id": "00000000-0000-0000-0000-0000000000ab"},
+			"type":   "references",
+		}, "exactly one of public_id or local_id"},
+		{"target with neither namespace", map[string]any{
+			"target": map[string]any{},
+			"type":   "references",
+		}, "exactly one of public_id or local_id"},
+		{"public_id not a uuid string", map[string]any{
+			"target": map[string]any{"public_id": float64(42)},
+			"type":   "references",
+		}, "public_id must be a UUID"},
+		{"local namespace rejected", map[string]any{
+			"target": map[string]any{"local_id": float64(7)},
+			"type":   "references",
+		}, "server namespace accepts public_id targets only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOperations()
+			result := callServerTool(t, handoffTool(ops), map[string]any{
+				"idempotency_key": "rel-contract",
+				"observation":     map[string]any{"title": "T", "content": "C"},
+				"relation":        tc.relation,
+			})
+			payload := structuredErrorPayload(t, result)
+			if payload.Error.Code != memorycontract.CodeValidation {
+				t.Fatalf("error code = %q, want %q", payload.Error.Code, memorycontract.CodeValidation)
+			}
+			if !strings.Contains(payload.Error.Message, tc.message) {
+				t.Fatalf("message = %q, want it to contain %q", payload.Error.Message, tc.message)
+			}
+			if ops.handoffRequest.IdempotencyKey != "" {
+				t.Fatal("rejected relation shape reached operations")
+			}
+		})
+	}
+}
+
+// TestRequestOperationsExposeSaveEffectAndHandoff asserts the capability-only
+// transport operations delegate the durable write surface to the
+// principal-scoped AuthorizedStore and fail closed without one.
+func TestRequestOperationsExposeSaveEffectAndHandoff(t *testing.T) {
+	request := domain.HandoffRequest{IdempotencyKey: "k"}
+	if _, err := (requestOperations{}).ExecuteHandoff(context.Background(), request); err == nil {
+		t.Fatal("handoff without authenticated operations must fail closed")
+	}
+	observation := &domain.Observation{Title: "t", Content: "c"}
+	if _, err := (requestOperations{}).SaveObservationWithEffect(context.Background(), observation); err == nil {
+		t.Fatal("save without authenticated operations must fail closed")
+	}
+
+	publicRef, refErr := uuid.Parse("00000000-0000-0000-0000-0000000000ef")
+	if refErr != nil {
+		t.Fatal(refErr)
+	}
+	ops := newFakeOperations()
+	ops.handoffResult = domain.ObservationWriteResult{
+		Ref:    domain.ObservationRef{PublicID: &publicRef},
+		Status: domain.WriteStatusCreated,
+	}
+	ctx := withOperations(context.Background(), ops)
+	result, err := requestOperations{}.ExecuteHandoff(ctx, request)
+	if err != nil {
+		t.Fatalf("delegated handoff: %v", err)
+	}
+	if result.Ref.PublicID == nil || result.Ref.PublicID.String() != publicRef.String() || result.Status != domain.WriteStatusCreated {
+		t.Fatalf("delegated result = %+v", result)
+	}
+	if ops.handoffRequest.IdempotencyKey != "k" {
+		t.Fatalf("delegated request = %+v", ops.handoffRequest)
+	}
+
+	effect, err := requestOperations{}.SaveObservationWithEffect(ctx, observation)
+	if err != nil {
+		t.Fatalf("delegated save: %v", err)
+	}
+	if effect.Observation == nil || effect.Observation.PublicID == "" || effect.Status != domain.WriteStatusCreated {
+		t.Fatalf("delegated effect = %+v", effect)
 	}
 }

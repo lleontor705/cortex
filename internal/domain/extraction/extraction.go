@@ -264,7 +264,9 @@ Text to analyze:
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	// The body is fully consumed below (ReadAll on error, Decode on success),
+	// so a Close failure carries no additional signal for the caller.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBytes, _ := io.ReadAll(resp.Body)
@@ -312,7 +314,7 @@ func (s *Service) synthesizeWithLLM(ctx context.Context, req SynthesisRequest, c
 
 	var sb strings.Builder
 	for i, obs := range req.Observations {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s: %s\n", i+1, obs.Type, obs.Title, obs.Content))
+		fmt.Fprintf(&sb, "%d. [%s] %s: %s\n", i+1, obs.Type, obs.Title, obs.Content)
 	}
 
 	prompt := fmt.Sprintf(`Synthesize the following observations for project %q into a cohesive knowledge map.
@@ -360,7 +362,9 @@ Observations:
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	// The body is fully consumed below via Decode, so a Close failure carries
+	// no additional signal for the caller.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("synthesis LLM request failed with status %d", resp.StatusCode)

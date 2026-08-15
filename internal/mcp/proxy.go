@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,9 @@ import (
 	clienttransport "github.com/mark3labs/mcp-go/client/transport"
 	protocol "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
+	"github.com/lleontor705/cortex/internal/transportpolicy"
 )
 
 // RemoteProxyConfig describes the remote MCP endpoint used by the local stdio
@@ -37,16 +41,34 @@ type remoteToolClient interface {
 	Close() error
 }
 
+// newBearerHTTPClient builds the HTTP client used for every remote MCP
+// request carrying Bearer credentials. The shared transport policy gates
+// redirects before the redirected request — and therefore before the
+// Authorization header — is ever sent: no scheme downgrade, no cross-origin
+// credential forwarding (REM-TRANSPORT-001).
+func newBearerHTTPClient() *http.Client {
+	return &http.Client{CheckRedirect: transportpolicy.CheckBearerRedirect}
+}
+
 // OpenRemoteProxy connects, negotiates, and snapshots the remote tool catalog.
 // It fails closed so an unavailable or unauthenticated remote cannot silently
 // fall back to a different local memory database.
+//
+// REM-TRANSPORT-001: the destination is validated against the shared
+// transport policy BEFORE the token is read or any client capable of sending
+// it is constructed — HTTPS for remote hosts, plain HTTP only on strict
+// loopback.
 func OpenRemoteProxy(ctx context.Context, cfg RemoteProxyConfig) (*RemoteProxy, error) {
+	if err := transportpolicy.ValidateBearerDestination(cfg.URL); err != nil {
+		return nil, fmt.Errorf("remote MCP destination rejected: %w", err)
+	}
 	token := strings.TrimSpace(os.Getenv(cfg.TokenEnv))
 	if token == "" {
 		return nil, fmt.Errorf("remote MCP token environment variable %s is empty", cfg.TokenEnv)
 	}
 	remote, err := mcpclient.NewStreamableHttpClient(
 		cfg.URL,
+		clienttransport.WithHTTPBasicClient(newBearerHTTPClient()),
 		clienttransport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + token}),
 		clienttransport.WithHTTPTimeout(cfg.Timeout),
 	)
@@ -108,7 +130,19 @@ func openRemoteProxy(ctx context.Context, remote remoteToolClient) (*RemoteProxy
 		toolName := remoteTool.Name
 		srv.AddTool(proxiedTool, func(ctx context.Context, request protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 			request.Params.Name = toolName
-			return remote.CallTool(ctx, request)
+			result, err := remote.CallTool(ctx, request)
+			if err != nil {
+				// Transport-level failure: no MCP result exists at all. The
+				// failure is classified into the shared stable error contract
+				// and reported as isError — a success result is never
+				// fabricated and a valid remote result is never rewritten
+				// (REM-MCP-001, RD6).
+				payload := memorycontract.FromError(err)
+				classified := protocol.NewToolResultStructured(payload, payload.Error.Message)
+				classified.IsError = true
+				return classified, nil
+			}
+			return result, nil
 		})
 	}
 	return &RemoteProxy{Server: srv, client: remote}, nil

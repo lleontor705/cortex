@@ -27,6 +27,19 @@ type tenantKey struct{}
 type principalKey struct{}
 type actorKey struct{}
 
+// boundedLockTimeout bounds every explicit lock wait a store transaction can
+// take (advisory topic locks and receipt row locks). A save or handoff must
+// never wait on a lock indefinitely; a timeout surfaces as SQLSTATE 55P03,
+// which the save and handoff taxonomies map to retryable contention.
+//
+// Ownership note (R4b design amendment reconciliation): boundedLockTimeout,
+// workspaceKey/workspaceFromContext, and bindWorkspace below live in store.go
+// because they are transaction-lifecycle primitives shared by the observation
+// save core and the handoff executor (amendment decisions AD5/AD6: one
+// workspace bigint resolution per transaction; bounded, JSON-framed advisory
+// lock key). The R4b dispatch authorizes store.go for exactly these seams.
+const boundedLockTimeout = "5s"
+
 func withTenant(ctx context.Context, t *domain.TenantContext) context.Context {
 	return context.WithValue(ctx, tenantKey{}, t)
 }
@@ -244,6 +257,10 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	if err != nil {
 		return err
 	}
+	ctx, err = s.bindWorkspace(ctx, tx)
+	if err != nil {
+		return err
+	}
 	// The fresh-transaction path must expose the tx to the closure through
 	// the context: receipt primitives (claim/read/finalize) resolve it via
 	// txFromContext, exactly like the WithinTx path does.
@@ -279,6 +296,10 @@ func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Contex
 	if err != nil {
 		return err
 	}
+	ctx, err = s.bindWorkspace(ctx, tx)
+	if err != nil {
+		return err
+	}
 	return fn(ctx)
 }
 
@@ -310,4 +331,40 @@ type txKey struct{}
 func txFromContext(ctx context.Context) (pgx.Tx, bool) {
 	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
 	return tx, ok
+}
+
+// workspaceKey carries the transaction-resolved workspaces.id bigint. The
+// verified TenantContext workspace UUID is exchanged for it once per
+// transaction so receipt, topic-lock, dedup, insert, update, and replay
+// statements never re-derive the workspace binding per statement.
+type workspaceKey struct{}
+
+func workspaceFromContext(ctx context.Context) (int64, bool) {
+	id, ok := ctx.Value(workspaceKey{}).(int64)
+	return id, ok
+}
+
+// bindWorkspace resolves the durable workspace binding once per transaction:
+// the verified TenantContext workspace UUID is exchanged for the workspaces
+// row bigint, and every workspace-scoped statement in the transaction
+// (receipts, topic locks, dedup, session resolution, relation targets)
+// reuses it. A tenant context without a workspace keeps the compatibility
+// (trigger-derived) behavior; a bound workspace that does not resolve inside
+// the tenant fails the transaction closed before any effect.
+func (s *Store) bindWorkspace(ctx context.Context, tx pgx.Tx) (context.Context, error) {
+	if s.tenant == nil || s.tenant.WorkspaceID == "" {
+		return ctx, nil
+	}
+	if _, err := uuid.Parse(s.tenant.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("%w: workspace id: %v", ErrTenantContextRequired, err)
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, s.tenant.WorkspaceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("postgres store: bound workspace %q is not visible in tenant %q", s.tenant.WorkspaceID, s.tenant.TenantID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres store: resolve workspace: %w", err)
+	}
+	return context.WithValue(ctx, workspaceKey{}, id), nil
 }

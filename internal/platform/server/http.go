@@ -19,6 +19,7 @@ import (
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/extraction"
 	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
@@ -34,6 +35,8 @@ const (
 // postgres.AuthorizedStore. It deliberately contains no repository accessors.
 type Operations interface {
 	SaveObservation(context.Context, *domain.Observation) error
+	SaveObservationWithEffect(context.Context, *domain.Observation) (domain.SaveEffect, error)
+	ExecuteHandoff(context.Context, domain.HandoffRequest) (domain.ObservationWriteResult, error)
 	GetObservationByID(context.Context, int64) (*domain.Observation, error)
 	GetObservationByPublicID(context.Context, string) (*domain.Observation, error)
 	UpdateObservation(context.Context, *domain.Observation) error
@@ -891,7 +894,46 @@ func newServerMCP(ops Operations) *mcpserver.MCPServer {
 
 func registerServerTools(srv *mcpserver.MCPServer, ops Operations) {
 	add := func(tool mcp.Tool, handler mcpserver.ToolHandlerFunc) { srv.AddTool(tool, handler) }
-	add(mcp.NewTool("cortex_save", mcp.WithDescription("Save an observation."), mcp.WithString("title", mcp.Required()), mcp.WithString("content", mcp.Required()), mcp.WithString("type"), mcp.WithString("session_id", mcp.Required()), mcp.WithString("project"), mcp.WithString("scope"), mcp.WithString("topic_key"), mcp.WithString("source")), saveTool(ops))
+	add(mcp.NewTool(memorycontract.ToolSave,
+		mcp.WithTitleAnnotation(memorycontract.SaveHints.Title),
+		mcp.WithReadOnlyHintAnnotation(memorycontract.SaveHints.ReadOnly),
+		mcp.WithDestructiveHintAnnotation(memorycontract.SaveHints.Destructive),
+		mcp.WithIdempotentHintAnnotation(memorycontract.SaveHints.Idempotent),
+		mcp.WithOpenWorldHintAnnotation(memorycontract.SaveHints.OpenWorld),
+		mcp.WithDescription("Save an observation."),
+		mcp.WithString("title", mcp.Required()),
+		mcp.WithString("content", mcp.Required()),
+		mcp.WithString("type"),
+		mcp.WithString("session_id", mcp.Required()),
+		mcp.WithString("project"),
+		mcp.WithString("scope"),
+		mcp.WithString("topic_key"),
+		mcp.WithNumber("confidence"),
+		mcp.WithString("tags"),
+		mcp.WithString("source"),
+		mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON),
+	), saveTool(ops))
+	add(func() mcp.Tool {
+		tool := mcp.NewTool(memorycontract.ToolHandoff,
+			mcp.WithTitleAnnotation(memorycontract.HandoffHints.Title),
+			mcp.WithReadOnlyHintAnnotation(memorycontract.HandoffHints.ReadOnly),
+			mcp.WithDestructiveHintAnnotation(memorycontract.HandoffHints.Destructive),
+			mcp.WithIdempotentHintAnnotation(memorycontract.HandoffHints.Idempotent),
+			mcp.WithOpenWorldHintAnnotation(memorycontract.HandoffHints.OpenWorld),
+			mcp.WithDescription(`Record a durable, idempotent handoff: persist an observation (and an optional relation) exactly once per idempotency key.
+
+Replaying the identical payload under the same key returns the SAME observation with status "replayed"; the same key with a DIFFERENT payload is a conflict and mutates nothing. Any failure rolls back every effect — observation, relation, and receipt — atomically.
+
+observation.session_id is optional on the server: the handoff resolves an existing workspace session or creates one inside the atomic unit.
+
+The server namespace returns observation_ref.public_id only.`),
+			mcp.WithRawInputSchema(memorycontract.HandoffInputSchemaJSON),
+			mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON))
+		// mcp.NewTool seeds a structural InputSchema; a raw schema must replace
+		// it or Tool.MarshalJSON rejects the tool (mcp-go schema conflict).
+		tool.InputSchema = mcp.ToolInputSchema{}
+		return tool
+	}(), handoffTool(ops))
 	add(mcp.NewTool("cortex_session_start", mcp.WithDescription("Start a memory session."), mcp.WithString("project"), mcp.WithString("summary")), sessionStartTool(ops))
 	add(mcp.NewTool("cortex_search", mcp.WithDescription("Search observations."), mcp.WithString("query", mcp.Required()), mcp.WithString("type"), mcp.WithString("project"), mcp.WithString("scope"), mcp.WithNumber("limit")), searchTool(ops))
 	add(mcp.NewTool("cortex_get_observation", mcp.WithDescription("Get an observation by public UUID."), mcp.WithString("id", mcp.Required())), getTool(ops))
@@ -941,12 +983,251 @@ func toolResult(value any, err error) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// saveStructuredFromEffect lowers a durable save effect into the shared
+// structured payload using the server's public UUID namespace exclusively. A
+// nil structured value (plain text result) is returned when a valid exclusive
+// reference cannot be built — structured content is additive and must never
+// fabricate a reference the store did not durably assign (REM-SAVE-001).
+func saveStructuredFromEffect(effect domain.SaveEffect) any {
+	if effect.Observation == nil || effect.Observation.PublicID == "" {
+		return nil
+	}
+	publicID, err := uuid.Parse(effect.Observation.PublicID)
+	if err != nil {
+		return nil
+	}
+	structured, err := memorycontract.FromWriteResult(domain.ObservationWriteResult{
+		Ref:    domain.ObservationRef{PublicID: &publicID},
+		Status: effect.Status,
+	})
+	if err != nil {
+		return nil
+	}
+	return structured
+}
+
+// serverMemoryError lowers any operation error into the shared structured
+// error contract. Authorization denials map to the forbidden class and invalid
+// input to validation; everything else keeps memorycontract's stable
+// classification. Raw denial reasons and driver text never surface.
+func serverMemoryError(err error) memorycontract.ErrorStructured {
+	if isAuthorizationDenial(err) {
+		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
+			Code:    memorycontract.CodeForbidden,
+			Message: domain.ErrHandoffForbidden.Message,
+		}}
+	}
+	if errors.Is(err, domain.ErrInvalidInput) {
+		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
+			Code:    memorycontract.CodeValidation,
+			Message: "invalid operation input",
+		}}
+	}
+	return memorycontract.FromError(err)
+}
+
+// structuredTextResult returns the legacy text content plus the additive
+// structuredContent payload. A nil structured value yields a plain text
+// result, byte-compatible with the legacy response.
+func structuredTextResult(structured any, format string, args ...any) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultStructured(structured, fmt.Sprintf(format, args...)), nil
+}
+
+// structuredErrorResult returns an isError result whose text uses the same
+// constant, redacted message as the structuredContent error classification —
+// never a reference, key, or raw error text (REM-MCP-001).
+func structuredErrorResult(payload memorycontract.ErrorStructured, format string, args ...any) (*mcp.CallToolResult, error) {
+	result := mcp.NewToolResultStructured(payload, fmt.Sprintf(format, args...))
+	result.IsError = true
+	return result, nil
+}
+
 func saveTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		o := &domain.Observation{Title: toolString(req, "title"), Content: toolString(req, "content"), Type: toolString(req, "type"), SessionID: toolString(req, "session_id"), Project: toolString(req, "project"), Scope: toolString(req, "scope"), TopicKey: toolString(req, "topic_key"), Source: toolString(req, "source")}
-		err := ops.SaveObservation(ctx, o)
-		return toolResult(observationResponse(o), err)
+		o := &domain.Observation{Title: toolString(req, "title"), Content: toolString(req, "content"), Type: toolString(req, "type"), SessionID: toolString(req, "session_id"), Project: toolString(req, "project"), Scope: toolString(req, "scope"), TopicKey: toolString(req, "topic_key"), Confidence: toolFloat(req, "confidence", 0), Source: toolString(req, "source"), Tags: toolTags(req, "tags")}
+		effect, err := ops.SaveObservationWithEffect(ctx, o)
+		if err != nil {
+			payload := serverMemoryError(err)
+			return structuredErrorResult(payload, "Failed to save: %s", payload.Error.Message)
+		}
+		typ := o.Type
+		if typ == "" {
+			typ = "manual"
+		}
+		return structuredTextResult(saveStructuredFromEffect(effect), "Memory saved: %q (%s)", o.Title, typ)
 	}
+}
+
+// toolTags splits a comma-separated tag list, trimming blanks.
+func toolTags(req mcp.CallToolRequest, key string) []string {
+	raw := toolString(req, key)
+	if raw == "" {
+		return nil
+	}
+	var tags []string
+	for _, tag := range strings.Split(raw, ",") {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// handoffTool executes the compound, preauthorized, idempotent handoff through
+// the authenticated Operations boundary. The server namespace addresses
+// relation targets and observation references with public UUIDs exclusively
+// (REM-AUTH-001, REM-HANDOFF-001/002, REM-MCP-001).
+func handoffTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		request, invalid := handoffRequestFromArguments(req)
+		if invalid != nil {
+			return structuredErrorResult(*invalid, "Handoff failed: %s", invalid.Error.Message)
+		}
+		result, err := ops.ExecuteHandoff(ctx, request)
+		if err != nil {
+			payload := serverMemoryError(err)
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+		structured, lowerErr := memorycontract.FromWriteResult(result)
+		if lowerErr != nil {
+			// The operation returned an unusable result: fail closed with a
+			// persistence classification instead of fabricating a reference.
+			payload := memorycontract.FromError(domain.ErrHandoffPersistence)
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+		publicID := ""
+		if result.Ref.PublicID != nil {
+			publicID = result.Ref.PublicID.String()
+		}
+		return structuredTextResult(structured, "Handoff recorded: %q %s (%s)", request.Observation.Title, publicID, result.Status)
+	}
+}
+
+// handoffRequestFromArguments lowers MCP tool arguments into a domain
+// HandoffRequest. Every rejection is a bounded validation classification that
+// echoes no payload, key, or reference material.
+func handoffRequestFromArguments(req mcp.CallToolRequest) (domain.HandoffRequest, *memorycontract.ErrorStructured) {
+	args := toolArgs(req)
+
+	key := toolString(req, "idempotency_key")
+	if strings.TrimSpace(key) == "" {
+		payload := memorycontract.Validationf("idempotency_key is required")
+		return domain.HandoffRequest{}, &payload
+	}
+	obsRaw, ok := args["observation"].(map[string]any)
+	if !ok {
+		payload := memorycontract.Validationf("observation object is required")
+		return domain.HandoffRequest{}, &payload
+	}
+	observation := domain.SaveObservationInput{
+		Title:     serverStringField(obsRaw, "title"),
+		Content:   serverStringField(obsRaw, "content"),
+		Type:      serverStringField(obsRaw, "type"),
+		Project:   serverStringField(obsRaw, "project"),
+		Scope:     serverStringField(obsRaw, "scope"),
+		SessionID: serverStringField(obsRaw, "session_id"),
+		TopicKey:  serverStringField(obsRaw, "topic_key"),
+		Source:    serverStringField(obsRaw, "source"),
+	}
+	if strings.TrimSpace(observation.Title) == "" || strings.TrimSpace(observation.Content) == "" {
+		payload := memorycontract.Validationf("observation.title and observation.content are required")
+		return domain.HandoffRequest{}, &payload
+	}
+	if confidence, ok := obsRaw["confidence"].(float64); ok {
+		observation.Confidence = confidence
+	}
+	if tagsRaw, ok := obsRaw["tags"].([]any); ok {
+		for _, tag := range tagsRaw {
+			if s, ok := tag.(string); ok && strings.TrimSpace(s) != "" {
+				observation.Tags = append(observation.Tags, strings.TrimSpace(s))
+			}
+		}
+	}
+	request := domain.HandoffRequest{IdempotencyKey: key, Observation: observation}
+	if raw, present := args["relation"]; present && raw != nil {
+		relRaw, ok := raw.(map[string]any)
+		if !ok {
+			// A present relation must be an object: silently omitting it
+			// would persist a handoff the caller did not request.
+			payload := memorycontract.Validationf("relation must be an object")
+			return domain.HandoffRequest{}, &payload
+		}
+		relation, invalid := handoffRelationFromArguments(relRaw)
+		if invalid != nil {
+			return domain.HandoffRequest{}, invalid
+		}
+		request.Relation = relation
+	}
+	if tuple, ok := args["capability_tuple"]; ok && tuple != nil {
+		encoded, err := json.Marshal(tuple)
+		if err != nil {
+			payload := memorycontract.Validationf("capability_tuple must be JSON data")
+			return domain.HandoffRequest{}, &payload
+		}
+		request.CapabilityTuple = encoded
+	}
+	return request, nil
+}
+
+// handoffRelationFromArguments lowers the optional relation argument. The
+// server namespace accepts public_id targets only (REM-MCP-001).
+func handoffRelationFromArguments(raw map[string]any) (*domain.HandoffRelationInput, *memorycontract.ErrorStructured) {
+	targetRaw, ok := raw["target"].(map[string]any)
+	if !ok {
+		payload := memorycontract.Validationf("relation.target object is required")
+		return nil, &payload
+	}
+	ref, invalid := handoffRefFromArguments(targetRaw)
+	if invalid != nil {
+		return nil, invalid
+	}
+	relationType := serverStringField(raw, "type")
+	if relationType == "" {
+		payload := memorycontract.Validationf("relation.type is required")
+		return nil, &payload
+	}
+	relation := &domain.HandoffRelationInput{Target: ref, Type: relationType}
+	if weight, ok := raw["weight"].(float64); ok {
+		relation.Weight = weight
+	}
+	if confidence, ok := raw["confidence"].(float64); ok {
+		relation.Confidence = confidence
+	}
+	relation.Reasoning = serverStringField(raw, "reasoning")
+	return relation, nil
+}
+
+// handoffRefFromArguments builds the exclusive public-namespace relation
+// target reference. The namespace XOR is enforced exactly — both or neither
+// fail — BEFORE the server namespace preference is applied (review R7 fix 2).
+func handoffRefFromArguments(raw map[string]any) (domain.ObservationRef, *memorycontract.ErrorStructured) {
+	publicRaw, hasPublic := raw["public_id"]
+	_, hasLocal := raw["local_id"]
+	if hasPublic == hasLocal {
+		payload := memorycontract.Validationf("relation.target must set exactly one of public_id or local_id")
+		return domain.ObservationRef{}, &payload
+	}
+	if hasLocal {
+		payload := memorycontract.Validationf("the server namespace accepts public_id targets only")
+		return domain.ObservationRef{}, &payload
+	}
+	rawID, ok := publicRaw.(string)
+	if !ok {
+		payload := memorycontract.Validationf("relation.target.public_id must be a UUID")
+		return domain.ObservationRef{}, &payload
+	}
+	id, err := uuid.Parse(strings.TrimSpace(rawID))
+	if err != nil {
+		payload := memorycontract.Validationf("relation.target.public_id must be a UUID")
+		return domain.ObservationRef{}, &payload
+	}
+	return domain.ObservationRef{PublicID: &id}, nil
+}
+
+// serverStringField reads a string value from a raw argument object.
+func serverStringField(raw map[string]any, key string) string {
+	v, _ := raw[key].(string)
+	return v
 }
 func searchTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

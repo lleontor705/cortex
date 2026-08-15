@@ -33,6 +33,26 @@ func (requestOperations) SaveObservation(ctx context.Context, value *domain.Obse
 	}
 	return ops.SaveObservation(ctx, value)
 }
+
+// SaveObservationWithEffect delegates the durable, status-reporting save to
+// the principal-scoped AuthorizedStore (REM-SAVE-001 server surface).
+func (requestOperations) SaveObservationWithEffect(ctx context.Context, value *domain.Observation) (domain.SaveEffect, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return domain.SaveEffect{}, err
+	}
+	return ops.SaveObservationWithEffect(ctx, value)
+}
+
+// ExecuteHandoff delegates the compound, preauthorized handoff to the
+// principal-scoped AuthorizedStore (REM-AUTH-001).
+func (requestOperations) ExecuteHandoff(ctx context.Context, request domain.HandoffRequest) (domain.ObservationWriteResult, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return domain.ObservationWriteResult{}, err
+	}
+	return ops.ExecuteHandoff(ctx, request)
+}
 func (requestOperations) GetObservationByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {

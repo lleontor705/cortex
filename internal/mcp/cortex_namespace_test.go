@@ -1,8 +1,12 @@
 package mcp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 // REQ-MCP-001: cortex_* namespace with no aliases
@@ -110,6 +114,7 @@ var requiredOrdinaryAgentTools = []string{
 	"cortex_save_prompt", "cortex_update", "cortex_relate",
 	"cortex_graph", "cortex_score", "cortex_search_hybrid",
 	"cortex_revision_history", "cortex_graph_relationships", "cortex_graph_path",
+	"cortex_handoff",
 }
 
 // The 5 tools required in the admin profile (design Part 2 §9).
@@ -327,3 +332,124 @@ func TestAgentProfileExcludesAdminTools(t *testing.T) {
 		}
 	}
 }
+
+// --- R6 / REM-MCP-001: shared memorycontract surface on the local server -----
+
+// normalizedOutputSchema renders a tool's published outputSchema as comparable
+// JSON regardless of whether it was set raw or typed.
+func normalizedOutputSchema(t *testing.T, tool *server.ServerTool) json.RawMessage {
+	t.Helper()
+	if tool == nil {
+		return nil
+	}
+	raw := tool.Tool.RawOutputSchema
+	if len(raw) == 0 && tool.Tool.OutputSchema.Type != "" {
+		encoded, err := json.Marshal(tool.Tool.OutputSchema)
+		if err != nil {
+			t.Fatalf("marshal output schema: %v", err)
+		}
+		raw = encoded
+	}
+	return normalizedJSON(t, raw)
+}
+
+// normalizedJSON canonicalizes raw JSON (parse + compact re-marshal with
+// sorted keys) so two semantically identical documents compare equal. The
+// mcp-go server may re-serialize a raw schema, so both sides of every schema
+// comparison must go through this normalization.
+func normalizedJSON(t *testing.T, raw json.RawMessage) json.RawMessage {
+	t.Helper()
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		t.Fatalf("JSON is not valid: %v", err)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("renormalize JSON: %v", err)
+	}
+	return encoded
+}
+
+// TestCortexHandoffRegisteredWithContract asserts that tools/list registers
+// cortex_handoff with the shared outputSchema, annotations, and input schema
+// from internal/mcp/memorycontract (REM-MCP-001, RD6).
+func TestCortexHandoffRegisteredWithContract(t *testing.T) {
+	stores := setupTestStores(t)
+	srv := NewServer(stores)
+
+	tool := srv.GetTool(memorycontract.ToolHandoff)
+	if tool == nil {
+		t.Fatal("cortex_handoff is NOT registered — the local server must publish the durable handoff tool (REM-MCP-001)")
+	}
+	wantSchema := normalizedJSON(t, memorycontract.WriteOutputSchemaJSON)
+	if got := normalizedOutputSchema(t, tool); string(got) != string(wantSchema) {
+		t.Errorf("cortex_handoff outputSchema = %s, want the shared memorycontract schema %s", got, wantSchema)
+	}
+	annotations := tool.Tool.Annotations
+	if boolHint(annotations.DestructiveHint) || boolHint(annotations.ReadOnlyHint) || boolHint(annotations.OpenWorldHint) {
+		t.Errorf("cortex_handoff annotations = %+v, want read/write non-destructive closed-world", annotations)
+	}
+	if !boolHint(annotations.IdempotentHint) {
+		t.Errorf("cortex_handoff must be annotated idempotent — same key+payload replays (REM-HANDOFF-002)")
+	}
+
+	var inputSchema struct {
+		Type       string   `json:"type"`
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	rawInput := tool.Tool.RawInputSchema
+	if len(rawInput) == 0 {
+		encoded, err := json.Marshal(tool.Tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal input schema: %v", err)
+		}
+		rawInput = encoded
+	}
+	if err := json.Unmarshal(rawInput, &inputSchema); err != nil {
+		t.Fatalf("cortex_handoff input schema is not valid JSON: %v", err)
+	}
+	if inputSchema.Type != "object" {
+		t.Errorf("cortex_handoff input schema type = %q, want object", inputSchema.Type)
+	}
+	for _, required := range []string{"idempotency_key", "observation"} {
+		found := false
+		for _, name := range inputSchema.Required {
+			if name == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cortex_handoff input schema missing required property %q", required)
+		}
+	}
+	if _, ok := inputSchema.Properties["relation"]; !ok {
+		t.Error("cortex_handoff input schema missing optional relation property")
+	}
+}
+
+// TestCortexSavePublishesSharedOutputSchema asserts cortex_save carries the
+// shared structured outputSchema additively, without touching its legacy input
+// surface (REM-SAVE-001).
+func TestCortexSavePublishesSharedOutputSchema(t *testing.T) {
+	stores := setupTestStores(t)
+	srv := NewServer(stores)
+
+	tool := srv.GetTool(memorycontract.ToolSave)
+	if tool == nil {
+		t.Fatal("cortex_save is NOT registered")
+	}
+	wantSchema := normalizedJSON(t, memorycontract.WriteOutputSchemaJSON)
+	if got := normalizedOutputSchema(t, tool); string(got) != string(wantSchema) {
+		t.Errorf("cortex_save outputSchema = %s, want the shared memorycontract schema %s", got, wantSchema)
+	}
+	if boolHint(tool.Tool.Annotations.IdempotentHint) {
+		t.Errorf("cortex_save annotations = %+v, legacy non-idempotent hint must be preserved", tool.Tool.Annotations)
+	}
+}
+
+// boolHint dereferences a nullable JSON-LD hint: nil means unset (default).
+func boolHint(hint *bool) bool { return hint != nil && *hint }

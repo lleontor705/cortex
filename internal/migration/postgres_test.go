@@ -21,6 +21,8 @@ var postgresHistoricalChecksums = map[int]string{
 	101: "ab40aa393397641dc2e7a783cb4227e01528431e67dcd79ad590819d6f159e8b",
 	102: "8ada074feeca3d8741287e96eb6f54ee1834e9bb1f35b2678b81d50b6219e107",
 	103: "c45c94890e5be93326df36b1c00307af502f0a70f6ab014162e6a4220a1e76e0",
+	104: "52c21c6a60b8d3912ad1ca004613f0de762e43307db95774d41f0e184fb82234",
+	105: "63ff0c1498387bf42e42728662c7bd89ca65d103c881340bd23357829e682127",
 }
 
 // mustPostgresMigrations loads the full PostgreSQL migration line or fails
@@ -57,10 +59,10 @@ func TestPostgresServerMigrationMetadata(t *testing.T) {
 
 func TestPostgresServerMigrationSequence(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
-	if len(migrations) != 5 {
-		t.Fatalf("migration count = %d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("migration count = %d, want 6", len(migrations))
 	}
-	for i, want := range []int{100, 101, 102, 103, 104} {
+	for i, want := range []int{100, 101, 102, 103, 104, 105} {
 		if migrations[i].Version() != want {
 			t.Fatalf("migration %d version = %d, want %d", i, migrations[i].Version(), want)
 		}
@@ -85,10 +87,15 @@ func TestPostgresServerMigrationSequence(t *testing.T) {
 			t.Errorf("migration 104 missing %q", token)
 		}
 	}
+	for _, token := range []string{"workspace_id", "workspaces(tenant_id, id)", "handoff_receipts"} {
+		if !strings.Contains(migrations[5].SQL(), token) {
+			t.Errorf("migration 105 missing %q", token)
+		}
+	}
 }
 
 // TestPostgresHistoricalMigrationsAreImmutable pins the canonical SHA-256 of
-// the historical server SQL (100-103). They MUST remain byte-identical:
+// the historical server SQL (100-105). They MUST remain byte-identical:
 // applied databases refuse checksum mismatches, and rewriting history would
 // be a destructive schema change (REM-MIG-001).
 func TestPostgresHistoricalMigrationsAreImmutable(t *testing.T) {
@@ -149,6 +156,90 @@ func TestPostgresServerMigration104HandoffReceipts(t *testing.T) {
 	}
 	if strings.Contains(subject.SQL(), "CREATE TABLE IF NOT EXISTS handoff_receipts") {
 		t.Error("migration 104 uses IF NOT EXISTS; a stale unledgered artifact must fail closed, not be adopted")
+	}
+}
+
+// TestPostgresServerMigration105WorkspaceBinding verifies the workspace
+// binding follow-up: fail-closed backfills, NOT NULL composite tenant/workspace
+// foreign keys, the workspace-scoped topic uniqueness swap, and the
+// workspace-scoped handoff receipt primary key (AMD-MIG-105).
+func TestPostgresServerMigration105WorkspaceBinding(t *testing.T) {
+	migrations := mustPostgresMigrations(t)
+	var subject *PostgresServerMigration
+	for _, migration := range migrations {
+		if migration.Version() == 105 {
+			subject = migration
+			break
+		}
+	}
+	if subject == nil {
+		t.Fatal("migration 105 (workspace binding) is not registered")
+	}
+	if subject.Name() != "workspace_binding" {
+		t.Errorf("migration 105 name = %q, want workspace_binding", subject.Name())
+	}
+	if subject.Checksum() == "" {
+		t.Error("migration 105 checksum is empty")
+	}
+	for _, token := range []string{
+		// Column adds before the fail-closed backfills.
+		"ALTER TABLE observations ADD COLUMN workspace_id bigint",
+		"ALTER TABLE handoff_receipts ADD COLUMN workspace_id bigint",
+		// Backfills derive workspace exactly from the durable chain
+		// session -> observation -> receipt; leftovers abort the migration.
+		"UPDATE observations o",
+		"SET workspace_id = s.workspace_id",
+		"UPDATE handoff_receipts r",
+		"SET workspace_id = o.workspace_id",
+		"RAISE EXCEPTION",
+		// 104-era observation DML keeps working: the BEFORE trigger derives
+		// the workspace from the session and rejects explicit mismatches.
+		"cortex_bind_observation_workspace",
+		"BEFORE INSERT OR UPDATE OF session_id, workspace_id ON observations",
+		// Hard constraints after the backfill.
+		"ALTER TABLE observations ALTER COLUMN workspace_id SET NOT NULL",
+		"ALTER TABLE handoff_receipts ALTER COLUMN workspace_id SET NOT NULL",
+		"REFERENCES workspaces(tenant_id, id)",
+		// Durable pending receipts cannot resolve a workspace and must fail
+		// closed instead of guessing a tenant-wide default.
+		"state = 'pending'",
+		// Workspace-scoped idempotency namespaces.
+		"ADD PRIMARY KEY (tenant_id, workspace_id, scope, key)",
+		// Workspace-scoped active topic uniqueness: create the new partial
+		// index, validate duplicates, retire the tenant-wide index, rename.
+		"CREATE UNIQUE INDEX observations_topic_key_active_ws_uq",
+		"(tenant_id, workspace_id, project_key, topic_key)",
+		"WHERE topic_key IS NOT NULL AND deleted_at IS NULL",
+		"DROP INDEX observations_topic_key_active_uq",
+		"ALTER INDEX observations_topic_key_active_ws_uq RENAME TO observations_topic_key_active_uq",
+	} {
+		if !strings.Contains(subject.SQL(), token) {
+			t.Errorf("migration 105 missing %q", token)
+		}
+	}
+	for _, banned := range []string{"DROP TABLE", "TRUNCATE", "DELETE FROM observations", "DELETE FROM handoff_receipts", "DROP DATABASE"} {
+		if strings.Contains(strings.ToUpper(subject.SQL()), banned) {
+			t.Errorf("migration 105 contains destructive statement %q", banned)
+		}
+	}
+}
+
+// TestPostgresServerMigrationHeadIs105 pins the runtime head: every migration
+// in the line must refuse ledgers recording versions beyond 105 so a head 105
+// binary fails closed (ErrFutureMigration) against a newer database, and a
+// head 104 binary fails closed against a 105 ledger.
+func TestPostgresServerMigrationHeadIs105(t *testing.T) {
+	migrations := mustPostgresMigrations(t)
+	for _, migration := range migrations {
+		if migration.maxKnownVersion != 105 {
+			t.Errorf("migration %d maxKnownVersion = %d, want 105", migration.Version(), migration.maxKnownVersion)
+		}
+		if err := migration.Down(context.Background(), (*sql.DB)(nil)); err == nil || !strings.Contains(err.Error(), "nil") {
+			// Down(nil) must fail on the nil connection before any DDL; the
+			// forward-only error for real connections is proven in the
+			// postgres_integration behavioral matrix.
+			t.Errorf("Down(nil) for migration %d err=%v, want nil-connection failure", migration.Version(), err)
+		}
 	}
 }
 

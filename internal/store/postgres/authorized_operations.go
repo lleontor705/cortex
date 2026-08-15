@@ -54,6 +54,118 @@ func (s *AuthorizedStore) SaveObservation(ctx context.Context, o *domain.Observa
 	}
 	return s.store.observations().Save(ctx, o)
 }
+
+// SaveObservationWithEffect authorizes the write exactly like SaveObservation
+// and persists through the transactional effect primitive, so the durable
+// created/updated classification is decided inside the transaction (RD2,
+// REM-SAVE-001). No repository escapes the boundary.
+func (s *AuthorizedStore) SaveObservationWithEffect(ctx context.Context, o *domain.Observation) (domain.SaveEffect, error) {
+	if o == nil {
+		return domain.SaveEffect{}, domain.ErrInvalidInput
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
+		return domain.SaveEffect{}, err
+	}
+	return s.store.observations().SaveWithEffect(ctx, o)
+}
+
+// handoffAuthorizationError converts authorization outcomes into the stable
+// handoff taxonomy. Denials of an authenticated principal are forbidden; a
+// missing principal binding is unauthorized; anything else (e.g. a failed
+// audit dependency) fails closed as retryable-unavailable and never mutates.
+func handoffAuthorizationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch err.Error() {
+	case authz.DenyUnauthenticated:
+		return &domain.HandoffError{Code: domain.HandoffErrorUnauthorized, Message: domain.ErrHandoffUnauthorized.Message, Operation: "authorize", Context: "authorization required"}
+	case authz.DenyRole, authz.DenyScope, authz.DenyTenantMismatch, authz.DenyWorkspace, authz.DenyProject, authz.DenyOwnership, authz.DenyClassification, authz.DenyRevoked:
+		return &domain.HandoffError{Code: domain.HandoffErrorForbidden, Message: domain.ErrHandoffForbidden.Message, Operation: "authorize", Context: "principal is not authorized for the complete handoff"}
+	}
+	return &domain.HandoffError{Code: domain.HandoffErrorUnavailable, Message: domain.ErrHandoffUnavailable.Message, Retryable: true, Operation: "authorize", Context: "authorization dependency failed"}
+}
+
+// authorizeHandoffRelationInTx is the in-transaction relation revalidation
+// (REM-AUTH-001, review R7 fix 1). It runs INSIDE the executor transaction,
+// strictly before the receipt claim and any effect:
+//
+//  1. the target is resolved by public UUID scoped to the transaction-resolved
+//     workspace bigint (bindWorkspace) — sibling workspaces of the same tenant
+//     and rows of other tenants are invisible and fail as validation;
+//  2. the resolved row is locked FOR SHARE, so its authorizable attributes
+//     cannot change between this authorization and the relation write in the
+//     same transaction — the resolve-authorize-mutate TOCTOU window of a
+//     pre-transaction preauth is closed;
+//  3. the graph write is authorized against the LOCKED project, owner, and
+//     classification values.
+//
+// The callback receives the pgx.Tx only because the type is unexported: no
+// raw transaction or repository escapes the package boundary.
+func (s *AuthorizedStore) authorizeHandoffRelationInTx(ctx context.Context, tx pgx.Tx, relation *domain.HandoffRelationInput) error {
+	if s == nil || s.store == nil {
+		return domain.ErrHandoffUnauthorized
+	}
+	if relation == nil || relation.Target.PublicID == nil || relation.Target.LocalID != nil {
+		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target must use the public namespace"}
+	}
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "relation", Context: "workspace binding is not resolved in this transaction"}
+	}
+	if err := setHandoffLockTimeout(ctx, tx); err != nil {
+		return err
+	}
+	var project, owner, classification string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(o.project_key,''),COALESCE(o.owner_subject,''),COALESCE(o.classification,'')
+		FROM observations o
+		WHERE o.tenant_id=public.cortex_current_tenant() AND o.public_id=$1::uuid AND o.deleted_at IS NULL AND o.workspace_id=$2
+		FOR SHARE OF o`, relation.Target.PublicID.String(), ws).Scan(&project, &owner, &classification)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target was not found"}
+	}
+	if err != nil {
+		return handoffPgError(err, "relation")
+	}
+	if err := s.authorize(ctx, authz.ResourceGraph, authz.ActionWrite, project, owner, classification); err != nil {
+		return handoffAuthorizationError(err)
+	}
+	return nil
+}
+
+// derivedHandoffScope builds the receipt idempotency scope EXCLUSIVELY from
+// the verified principal binding (tenant, workspace, subject). No client
+// input participates: idempotency keys are isolated per principal and
+// workspace (REM-HANDOFF-002, RD5).
+func (s *AuthorizedStore) derivedHandoffScope() domain.HandoffScope {
+	workspace := ""
+	if s.store.tenant != nil {
+		workspace = s.store.tenant.WorkspaceID
+	}
+	return domain.HandoffScope("tenant/" + s.store.tenant.TenantID + "/workspace/" + workspace + "/principal/" + s.store.principal.Subject)
+}
+
+// ExecuteHandoff performs the compound preauthorization — observation write
+// ahead of the transaction, plus the optional relation INSIDE it — and then
+// delegates to the RLS-bound executor. tenant/workspace/scope authority
+// comes only from the verified principal; partial permission, an unavailable
+// authorization dependency, or a cross-tenant target fails closed with zero
+// effects (REM-AUTH-001, RD5).
+func (s *AuthorizedStore) ExecuteHandoff(ctx context.Context, req domain.HandoffRequest) (domain.ObservationWriteResult, error) {
+	if s == nil || s.store == nil {
+		return domain.ObservationWriteResult{}, domain.ErrHandoffUnauthorized
+	}
+	canonical, _, hash, err := domain.CanonicalizeHandoff(req)
+	if err != nil {
+		return domain.ObservationWriteResult{}, err
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, req.Observation.Project, s.store.principal.Subject, req.Observation.Scope); err != nil {
+		return domain.ObservationWriteResult{}, handoffAuthorizationError(err)
+	}
+	return s.store.executeHandoff(ctx, s.derivedHandoffScope(), req.IdempotencyKey, canonical, hash, s.authorizeHandoffRelationInTx)
+}
+
 func (s *AuthorizedStore) GetObservationByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	if err := s.authorizeObservation(ctx, authz.ActionRead, id); err != nil {
 		return nil, err

@@ -38,6 +38,7 @@ go test -v -count=1 ./...  # CI unit/default gate
 - The Husky pre-push order is lint, then `go test -v ./...`. Before broad changes, also use the CI race gate: `go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp`.
 - Retrieval changes must pass the offline gate: `go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline`. It needs no model, dataset download, or network.
 - Obsidian/path changes need the Windows/macOS portability gate: `go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'`.
+- Plugin gates: in `plugin/opencode` run `npm ci && npm test` (Vitest harness, Node >= 24, own lockfile); run `bash plugin/claude-code/scripts/hooks_test.sh` for the Claude hooks contract harness, which needs bash, jq, python3, and timeout and exits 127 when a tool is missing.
 
 ## Integration Tests
 
@@ -45,6 +46,7 @@ go test -v -count=1 ./...  # CI unit/default gate
 - PostgreSQL integration requires PostgreSQL 16 plus `CORTEX_TEST_POSTGRES_DSN`, `CORTEX_TEST_POSTGRES_MIGRATION_DSN`, and `CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN`. Missing DSNs fail rather than skip. Bootstrap the non-superuser/RLS roles with `scripts/postgres/bootstrap-authz.sql` as CI does.
 - CI's coverage gate includes PostgreSQL: `go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...`; total coverage must be at least 70%.
 - Optional adapter checks: `go test -v -count=1 -tags cortex_vectors ./internal/vector/sqlite_blob`, `go test -v -count=1 -tags qdrant_integration ./internal/vector/qdrant`, and `go test -v -count=1 -tags pgvector_integration ./internal/vector/pgvector`.
+- Gates that cannot run locally are BLOCKED, not silently skipped: PostgreSQL suites fail without the three DSNs, the race gate needs CGO with a working gcc, and the Claude harness needs jq. On workstations missing these (typical Windows setups), report BLOCKED and rely on `.github/workflows/ci.yml` (ubuntu-latest), which is the authoritative executor; release re-runs the same suite before its manual approval gate.
 
 ## Change Conventions
 

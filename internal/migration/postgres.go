@@ -88,7 +88,12 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		return nil, errors.New("migration: embedded PostgreSQL handoff receipts SQL is empty")
 	}
 	sql104 := normalizeLF(servermigrations.ServerHandoffReceiptsSQL)
-	sum = sha256.Sum256([]byte(sql104))
+	sum104 := sha256.Sum256([]byte(sql104))
+	if servermigrations.ServerWorkspaceBindingSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL workspace binding SQL is empty")
+	}
+	sql105 := normalizeLF(servermigrations.ServerWorkspaceBindingSQL)
+	sum105 := sha256.Sum256([]byte(sql105))
 	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
@@ -98,7 +103,12 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		version:  104,
 		name:     "handoff_receipts",
 		sql:      sql104,
-		checksum: hex.EncodeToString(sum[:]),
+		checksum: hex.EncodeToString(sum104[:]),
+	}, {
+		version:  105,
+		name:     "workspace_binding",
+		sql:      sql105,
+		checksum: hex.EncodeToString(sum105[:]),
 	}}
 	// Every migration carries the runtime head so any single Apply refuses
 	// databases ledgered by a newer runtime (ErrFutureMigration).
@@ -145,10 +155,7 @@ func (m *PostgresServerMigration) MatchesChecksum(recorded string) bool {
 	}
 	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
 	sumCRLF := sha256.Sum256([]byte(crlf))
-	if recorded == hex.EncodeToString(sumCRLF[:]) {
-		return true
-	}
-	return false
+	return recorded == hex.EncodeToString(sumCRLF[:])
 }
 
 // Apply runs the server migration atomically. A migration record stores the
@@ -215,7 +222,7 @@ func (m *PostgresServerMigration) Apply(ctx context.Context, db *sql.DB) error {
 }
 
 // Down is the forward-only guard for the PostgreSQL server migration line.
-// For EVERY version — 100 through 104, ledgered or unledgered — it returns an
+// For EVERY version — 100 through 105, ledgered or unledgered — it returns an
 // ErrForwardOnly-wrapped error and executes NO DDL/DML: no transaction, no
 // query; schema, data, and the migration ledger remain untouched. There is no
 // artifact-cleanup exception: stale unledgered artifacts and newer-runtime

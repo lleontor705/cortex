@@ -48,6 +48,7 @@ var ProfileAgent = map[string]bool{
 	"cortex_score":               true,
 	"cortex_search_hybrid":       true,
 	"cortex_revision_history":    true,
+	"cortex_handoff":             true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
 	"cortex_consolidate": true,
 	"cortex_project_dna": true,
@@ -141,7 +142,11 @@ KNOWLEDGE GRAPH & SCORING:
 
 ADDITIONAL TOOLS (use ToolSearch):
   cortex_suggest_topic_key, cortex_capture_passive, cortex_session_start,
-  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna`
+  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna
+
+DURABLE HANDOFF:
+  cortex_handoff - exactly-once handoff with receipts; same key+payload
+  replays the same observation, differing payload conflicts`
 
 // NewServer creates an MCP server with ALL tools registered.
 func NewServer(stores *Stores) *server.MCPServer {

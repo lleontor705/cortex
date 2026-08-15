@@ -333,6 +333,29 @@ func TestBaselineWorkflowContract(t *testing.T) {
 		t.Error("CI coverage threshold must not promote rounded percentages")
 	}
 
+	// Reproducible gate surface (R8): compile gate plus both plugin gates.
+	for _, required := range []string{
+		"  build:",
+		"go build ./...",
+		"  plugin-opencode:",
+		"cache-dependency-path: plugin/opencode/package-lock.json",
+		"  plugin-claude-code:",
+		"plugin/claude-code/scripts/hooks_test.sh",
+	} {
+		if !strings.Contains(ciText, required) {
+			t.Errorf("CI reproducible-gate contract is missing %q", required)
+		}
+	}
+	// The Claude harness job must provision its full toolchain (bash, jq,
+	// python3, coreutils/timeout) explicitly instead of relying on runner
+	// preinstalls, so the harness never silently degrades.
+	claudeJobBlock := workflowJobBlock(t, ciText, "plugin-claude-code")
+	for _, tool := range []string{"bash", "jq", "python3", "coreutils"} {
+		if !strings.Contains(claudeJobBlock, tool) {
+			t.Errorf("CI plugin-claude-code job must explicitly install %s", tool)
+		}
+	}
+
 	release, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatalf("read release workflow: %v", err)
@@ -343,8 +366,38 @@ func TestBaselineWorkflowContract(t *testing.T) {
 			t.Errorf("release gate missing %q", command)
 		}
 	}
-	if !strings.Contains(releaseText, "needs: [unit-tests, vector-tests, web-tests, e2e-tests, lint]") {
-		t.Error("release approval must depend on vector and web gates")
+	// Release approval must depend on the full CI gate set. Parse the needs
+	// list and check it as a superset of required gates instead of matching
+	// one exact string, so extending the gate list does not break the
+	// contract while removing a required gate still fails.
+	for _, required := range []string{
+		"go build ./...",
+	} {
+		if !strings.Contains(releaseText, required) {
+			t.Errorf("release gate missing %q", required)
+		}
+	}
+	approvalNeeds := parseWorkflowJobNeeds(t, releaseText, "approve-release")
+	for _, gate := range []string{
+		"build",
+		"unit-tests",
+		"vector-tests",
+		"web-tests",
+		"e2e-tests",
+		"lint",
+		"race-detector",
+		"coverage",
+		"baseline-contracts",
+		"obsidian-path-portability",
+		"plugin-opencode",
+		"plugin-claude-code",
+	} {
+		if !approvalNeeds[gate] {
+			t.Errorf("release approval must depend on gate %q", gate)
+		}
+		if !workflowJobBlockMatches(releaseText, gate) {
+			t.Errorf("release workflow must define job %q required by approval", gate)
+		}
 	}
 	if !strings.Contains(releaseText, `GOFLAGS: "-p=1"`) {
 		t.Error("release PostgreSQL E2E job must serialize packages that share the test database")
@@ -492,4 +545,50 @@ func TestPostgresAuthzBootstrapContract(t *testing.T) {
 	if strings.Count(text, "IF NOT EXISTS (SELECT 1 FROM pg_roles") != 3 {
 		t.Fatal("PostgreSQL authz role creation must guard each role idempotently")
 	}
+}
+
+// workflowJobBlockMatches reports whether the workflow text declares a job
+// with the given 2-space-indented job ID header.
+func workflowJobBlockMatches(workflowText, job string) bool {
+	header := regexp.MustCompile(`(?m)^  ` + regexp.QuoteMeta(job) + `:[ \t]*$`)
+	return header.MatchString(workflowText)
+}
+
+// workflowJobBlock returns the YAML block of a top-level workflow job, from
+// its 2-space-indented header to the next job header (or end of file). Job
+// properties are indented at least four spaces, so a two-space `name:` line
+// can only be another job header.
+func workflowJobBlock(t *testing.T, workflowText, job string) string {
+	t.Helper()
+	if !workflowJobBlockMatches(workflowText, job) {
+		t.Fatalf("workflow must define job %q", job)
+	}
+	header := regexp.MustCompile(`(?m)^  ` + regexp.QuoteMeta(job) + `:[ \t]*$`)
+	loc := header.FindStringIndex(workflowText)
+	rest := workflowText[loc[1]:]
+	next := regexp.MustCompile(`(?m)^  [A-Za-z0-9_-]+:[ \t]*$`).FindStringIndex(rest)
+	if next == nil {
+		return rest
+	}
+	return rest[:next[0]]
+}
+
+// parseWorkflowJobNeeds parses the inline `needs: [a, b]` list of a workflow
+// job into a set. It deliberately reads a structural list rather than one
+// exact string so the contract survives gate-list extensions.
+func parseWorkflowJobNeeds(t *testing.T, workflowText, job string) map[string]bool {
+	t.Helper()
+	block := workflowJobBlock(t, workflowText, job)
+	match := regexp.MustCompile(`(?m)^[ \t]+needs:[ \t]*\[([^\]]*)\][ \t]*$`).FindStringSubmatch(block)
+	if match == nil {
+		t.Fatalf("workflow job %q must declare an inline needs list", job)
+	}
+	gates := make(map[string]bool)
+	for _, entry := range strings.Split(match[1], ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" {
+			gates[entry] = true
+		}
+	}
+	return gates
 }

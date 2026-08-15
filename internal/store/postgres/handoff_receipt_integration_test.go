@@ -304,6 +304,192 @@ func TestPostgresHandoffReceiptConcurrentSameKey(t *testing.T) {
 	}
 }
 
+// Workspace isolation for the receipt namespace inside one tenant: the same
+// (scope, key) in two workspaces of one tenant must claim, finalize, and
+// replay independently — migration 105 made the receipt primary key
+// workspace scoped — while a sibling workspace can neither read nor finalize
+// the other's receipt.
+func TestPostgresHandoffReceiptWorkspaceNamespaceIsolation(t *testing.T) {
+	h := newPostgresHarness(t)
+	applyReceiptMigration(t)
+	ctx := context.Background()
+	tenant, workspaceA, workspaceB := uuid.New(), uuid.New(), uuid.New()
+	if _, err := h.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, tenant.String()); err != nil {
+		t.Fatal(err)
+	}
+	for _, ws := range []uuid.UUID{workspaceA, workspaceB} {
+		if _, err := h.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,$3)`, tenant, ws, ws.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storeA := newAuthorizedTestStore(t, h, tenant, workspaceA, uuid.New())
+	storeB := newAuthorizedTestStore(t, h, tenant, workspaceB, uuid.New())
+	payload := []byte(`{"workspace":"scoped"}`)
+	hash := sha256.Sum256(payload)
+
+	claim := func(store *Store, title string) (int64, error) {
+		var observationID int64
+		err := store.transaction(ctx, func(ctx context.Context, _ pgx.Tx) error {
+			_, claimed, err := store.claimHandoffReceipt(ctx, domain.HandoffScope("project:iso"), "same-key", hash, payload)
+			if err != nil {
+				return err
+			}
+			if !claimed {
+				return errors.New("sibling workspace receipt was not independently claimable")
+			}
+			effect, err := saveReceiptObservation(ctx, title)
+			if err != nil {
+				return err
+			}
+			observationID = effect.Observation.ID
+			_, err = store.finalizeHandoffReceipt(ctx, domain.HandoffScope("project:iso"), "same-key", effect.Observation.ID, effect.Status)
+			return err
+		})
+		return observationID, err
+	}
+	observationA, err := claim(storeA.store, "workspace-a-receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observationB, err := claim(storeB.store, "workspace-b-receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observationA == observationB {
+		t.Fatalf("sibling workspaces reused observation %d for the same key", observationA)
+	}
+
+	// Replays stay inside their own workspace namespace.
+	replay := func(store *Store) error {
+		return store.transaction(ctx, func(ctx context.Context, _ pgx.Tx) error {
+			receipt, claimed, err := store.claimHandoffReceipt(ctx, domain.HandoffScope("project:iso"), "same-key", hash, payload)
+			if err != nil {
+				return err
+			}
+			if claimed || receipt.State != handoffReceiptCommitted || receipt.ObservationID == nil {
+				return fmt.Errorf("workspace replay receipt=%+v claimed=%v", receipt, claimed)
+			}
+			return nil
+		})
+	}
+	if err := replay(storeA.store); err != nil {
+		t.Fatalf("workspace A replay: %v", err)
+	}
+	if err := replay(storeB.store); err != nil {
+		t.Fatalf("workspace B replay: %v", err)
+	}
+
+	// A sibling workspace cannot read or finalize the other's receipt.
+	err = storeB.store.transaction(ctx, func(ctx context.Context, _ pgx.Tx) error {
+		_, err := storeB.store.readHandoffReceipt(ctx, domain.HandoffScope("project:missing"), "same-key")
+		return err
+	})
+	if err == nil {
+		t.Fatal("workspace B read a receipt outside its namespace")
+	}
+	err = storeB.store.transaction(ctx, func(ctx context.Context, _ pgx.Tx) error {
+		_, err := storeB.store.finalizeHandoffReceipt(ctx, domain.HandoffScope("project:iso"), "same-key", observationA, domain.WriteStatusCreated)
+		return err
+	})
+	if err == nil {
+		t.Fatal("workspace B finalized workspace A's committed receipt")
+	}
+
+	var receiptsA, receiptsB int
+	if err := h.admin.QueryRow(ctx, `SELECT count(*) FROM handoff_receipts r JOIN workspaces w ON w.tenant_id=r.tenant_id AND w.id=r.workspace_id WHERE r.tenant_id=$1 AND r.scope='project:iso' AND w.public_id=$2`, tenant, workspaceA).Scan(&receiptsA); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.admin.QueryRow(ctx, `SELECT count(*) FROM handoff_receipts r JOIN workspaces w ON w.tenant_id=r.tenant_id AND w.id=r.workspace_id WHERE r.tenant_id=$1 AND r.scope='project:iso' AND w.public_id=$2`, tenant, workspaceB).Scan(&receiptsB); err != nil {
+		t.Fatal(err)
+	}
+	if receiptsA != 1 || receiptsB != 1 {
+		t.Fatalf("receipts per workspace A=%d B=%d, want 1/1", receiptsA, receiptsB)
+	}
+}
+
+// The failpoint matrix proves rollback atomicity at every execution seam
+// against a real database: after-save (observation materialized, no relation
+// yet), after-edge (relation written, receipt pending), and before-commit
+// (receipt finalized, commit imminent). Each seam leaves zero durable
+// effects — receipts, observations, and edges all roll back — and a restart
+// (fresh pools and store instances) retries the same key to exactly one
+// materialization that then replays.
+func TestPostgresHandoffExecutorFailpointMatrix(t *testing.T) {
+	for _, seam := range []string{"after-save", "after-edge", "before-commit"} {
+		t.Run(seam, func(t *testing.T) {
+			h := newPostgresHarness(t)
+			applyReceiptMigration(t)
+			authorized, tenant, workspace, subject := newExecutorTestStore(t, h)
+			store := authorized.store
+			ctx := context.Background()
+			key := "matrix-" + seam
+
+			var targetPublic uuid.UUID
+			if err := store.transaction(ctx, func(ctx context.Context, _ pgx.Tx) error {
+				effect, err := saveReceiptObservation(ctx, "matrix-target")
+				if err != nil {
+					return err
+				}
+				targetPublic, err = uuid.Parse(effect.Observation.PublicID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			canonical := domain.CanonicalHandoff{
+				Observation: domain.SaveObservationInput{Title: seam + " handoff", Content: "matrix payload", Type: domain.TypeDecision, Project: "handoff-exec"},
+				Relation:    &domain.HandoffRelationInput{Target: domain.ObservationRef{PublicID: &targetPublic}, Type: domain.RelationReferences, Weight: 1, Confidence: 1, Reasoning: "matrix relation"},
+			}
+			_, hash := executorCanonical(t, canonical)
+
+			handoffFailpoints = func(s string) error {
+				if s == seam {
+					return errors.New("seam failure: " + seam)
+				}
+				return nil
+			}
+			t.Cleanup(func() { handoffFailpoints = func(string) error { return nil } })
+
+			if _, err := store.ExecuteHandoff(ctx, "project:matrix", key, canonical, hash); err == nil {
+				t.Fatalf("%s failpoint did not fail the handoff", seam)
+			}
+			for name, query := range map[string]string{
+				"receipts":     `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1 AND key='` + key + `'`,
+				"observations": `SELECT count(*) FROM observations WHERE tenant_id=$1 AND title='` + seam + ` handoff'`,
+				"edges":        `SELECT count(*) FROM edges WHERE tenant_id=$1 AND reasoning='matrix relation'`,
+			} {
+				if n := countForTenant(t, ctx, h, query, tenant); n != 0 {
+					t.Fatalf("%s seam left durable %s=%d, want 0", seam, name, n)
+				}
+			}
+
+			// Restart: brand-new pools and store instances against the same
+			// database; the failed attempt must not poison the retry.
+			handoffFailpoints = func(string) error { return nil }
+			restartedHarness := newPostgresHarness(t)
+			applyReceiptMigration(t)
+			restartedStore := newAuthorizedTestStore(t, restartedHarness, tenant, workspace, subject)
+			created, err := restartedStore.store.ExecuteHandoff(ctx, "project:matrix", key, canonical, hash)
+			if err != nil || created.Status != domain.WriteStatusCreated || created.Ref.PublicID == nil {
+				t.Fatalf("%s restart created=%+v err=%v", seam, created, err)
+			}
+			for name, query := range map[string]string{
+				"receipts":     `SELECT count(*) FROM handoff_receipts WHERE tenant_id=$1 AND key='` + key + `'`,
+				"observations": `SELECT count(*) FROM observations WHERE tenant_id=$1 AND title='` + seam + ` handoff'`,
+				"edges":        `SELECT count(*) FROM edges WHERE tenant_id=$1 AND reasoning='matrix relation'`,
+			} {
+				if n := countForTenant(t, ctx, restartedHarness, query, tenant); n != 1 {
+					t.Fatalf("%s restart durable %s=%d, want 1", seam, name, n)
+				}
+			}
+			replayed, err := restartedStore.store.ExecuteHandoff(ctx, "project:matrix", key, canonical, hash)
+			if err != nil || replayed.Status != domain.WriteStatusReplayed || *replayed.Ref.PublicID != *created.Ref.PublicID {
+				t.Fatalf("%s replay=%+v err=%v", seam, replayed, err)
+			}
+		})
+	}
+}
+
 // newExecutorTestStore provisions an isolated tenant with one session and
 // returns the identifiers needed to rebuild the same authorized store after a
 // simulated restart on a fresh connection pool.

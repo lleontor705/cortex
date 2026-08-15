@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lleontor705/cortex/internal/domain"
 	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
 )
@@ -24,6 +25,22 @@ var _ domain.ObservationRepository = (*ObservationRepository)(nil)
 // save hit the duplicate path. The handoff executor converts it into a
 // replayed effect so the receipt still finalizes in the same transaction.
 var errDedupSkipped = errors.New("postgres observations: dedup skipped")
+
+// classifySaveError converts driver failures escaping the interactive save
+// path into the stable handoff taxonomy: a bounded topic-lock timeout
+// (SQLSTATE 55P03) or any other contention surfaces as a redacted,
+// retryable-unavailable save error instead of leaking driver internals.
+// Non-driver errors (validation, sentinels) pass through unchanged.
+func classifySaveError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return handoffPgError(err, "save")
+	}
+	return err
+}
 
 // SaveWithEffect persists the observation and reports the durable write
 // status decided inside the same transaction. REM-SAVE-001 compatibility: the
@@ -45,7 +62,7 @@ func (r *ObservationRepository) SaveWithEffect(ctx context.Context, o *domain.Ob
 		return nil
 	})
 	if err != nil {
-		return domain.SaveEffect{}, err
+		return domain.SaveEffect{}, classifySaveError(err)
 	}
 	return effect, nil
 }
@@ -71,34 +88,68 @@ func (s *Store) workspaceID() (string, bool) {
 	return s.tenant.WorkspaceID, true
 }
 
-// prepareTopicInTx normalizes the topic key once (lookup and persisted bytes
-// must agree) and serializes concurrent first upserts of the same
-// (tenant, topic) with an advisory transaction lock, so the partial unique
-// index observations_topic_key_active_uq can never race two inserts into a
-// commit-time 23505. The lock is released with the transaction.
+// workspaceSessionPredicate scopes session rows to the bound workspace. It
+// prefers the transaction-resolved workspace bigint (bindWorkspace) and falls
+// back to the public UUID subquery only for ambient transactions that predate
+// the binding, so isolated workspaces of one tenant stay invisible to each
+// other on every schema revision.
+func (s *Store) workspaceSessionPredicate(ctx context.Context, args []any) (string, []any) {
+	if ws, ok := workspaceFromContext(ctx); ok {
+		return fmt.Sprintf(` AND workspace_id=$%d`, len(args)+1), append(args, ws)
+	}
+	if id, ok := s.workspaceID(); ok {
+		return fmt.Sprintf(` AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$%d::uuid)`, len(args)+1), append(args, id)
+	}
+	return "", args
+}
+
+// errWorkspaceBindingRequired fails closed when a workspace-scoped
+// observation statement runs without the transaction-resolved workspace
+// binding: after migration 105 there is no safe tenant-wide fallback for
+// topic isolation, dedup, or the topic advisory lock.
+var errWorkspaceBindingRequired = errors.New("postgres observations: workspace binding is required (migration 105)")
+
+// prepareTopicInTx normalizes the project and topic key exactly once — the
+// lock key, the lookup, and the persisted bytes must all agree — and
+// serializes concurrent first upserts of the same (tenant, workspace,
+// project, topic) with a bounded advisory transaction lock, so the
+// workspace-scoped partial unique index observations_topic_key_active_uq
+// can never race two inserts into a commit-time 23505. The workspace
+// binding is mandatory before the lock is taken: there is no NULL/tenant
+// -wide fallback namespace. The lock key is JSON framed (no concatenation
+// collisions), taken only after installing a lock_timeout, and released
+// with the transaction.
 func (r *ObservationRepository) prepareTopicInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation) error {
+	o.Project = strings.TrimSpace(o.Project)
 	o.TopicKey = strings.TrimSpace(o.TopicKey)
 	if o.TopicKey == "" {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(public.cortex_current_tenant()::text || ':' || $1, 0))`, o.TopicKey); err != nil {
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return errWorkspaceBindingRequired
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, boundedLockTimeout); err != nil {
+		return fmt.Errorf("postgres observations: topic lock timeout: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array(public.cortex_current_tenant()::text, $1::bigint, $2, $3)::text, 0))`, ws, o.Project, o.TopicKey); err != nil {
 		return fmt.Errorf("postgres observations: topic lock: %w", err)
 	}
 	return nil
 }
 
 // findTopicObservationInTx locates the current observation for a topic key,
-// restricted to the bound workspace when one exists.
+// isolated by the explicit observations.workspace_id column (migration 105).
+// A missing workspace binding fails closed instead of degrading to a
+// tenant-wide lookup.
 func (r *ObservationRepository) findTopicObservationInTx(ctx context.Context, tx pgx.Tx, project, topic string) (int64, bool, error) {
-	query := `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL`
-	args := []any{project, topic}
-	if ws, ok := r.workspaceID(); ok {
-		query += fmt.Sprintf(` AND session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$%d::uuid))`, len(args)+1)
-		args = append(args, ws)
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return 0, false, errWorkspaceBindingRequired
 	}
-	query += ` ORDER BY updated_at DESC LIMIT 1`
+	query := `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL AND workspace_id=$3`
 	var id int64
-	err := tx.QueryRow(ctx, query, args...).Scan(&id)
+	err := tx.QueryRow(ctx, query, project, topic, ws).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -162,6 +213,10 @@ func (r *ObservationRepository) saveWithEffectInTx(ctx context.Context, tx pgx.T
 		}
 	}
 	if callerType == domain.TypeManual {
+		ws, ok := workspaceFromContext(ctx)
+		if !ok {
+			return domain.SaveEffect{}, errWorkspaceBindingRequired
+		}
 		query := `
 			SELECT id, public_id::text, created_at, updated_at FROM observations
 			WHERE tenant_id=public.cortex_current_tenant()
@@ -171,16 +226,11 @@ func (r *ObservationRepository) saveWithEffectInTx(ctx context.Context, tx pgx.T
 			  AND title=$4
 			  AND content=$5
 			  AND deleted_at IS NULL
-			  AND created_at >= now() - interval '15 minutes'`
-		args := []any{o.Project, o.Scope, o.Type, o.Title, o.Content}
-		if ws, ok := r.workspaceID(); ok {
-			query += fmt.Sprintf(`
-			  AND session_id IN (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$%d::uuid))`, len(args)+1)
-			args = append(args, ws)
-		}
-		query += `
+			  AND workspace_id=$6
+			  AND created_at >= now() - interval '15 minutes'
 			ORDER BY created_at DESC
 			LIMIT 1`
+		args := []any{o.Project, o.Scope, o.Type, o.Title, o.Content, ws}
 		err := tx.QueryRow(ctx, query, args...).Scan(&o.ID, &o.PublicID, &o.CreatedAt, &o.UpdatedAt)
 		if err == nil {
 			return domain.SaveEffect{Observation: o, Status: domain.WriteStatusReplayed}, errDedupSkipped
@@ -193,22 +243,30 @@ func (r *ObservationRepository) saveWithEffectInTx(ctx context.Context, tx pgx.T
 }
 
 // insertObservationInTx performs the unconditional insert together with
-// ownership metadata and entity links. The session foreign key resolves only
-// inside the tenant, and inside the bound workspace when one exists.
+// ownership metadata and entity links. With a resolved workspace binding the
+// observation is written with an explicit observations.workspace_id value
+// (migration 105); the session foreign key still resolves only inside the
+// tenant. Compatibility transactions without a binding keep the legacy
+// session-derived insert the 105 trigger accepts.
 func (r *ObservationRepository) insertObservationInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation) (domain.SaveEffect, error) {
 	now := time.Now().UTC()
 	if o.CreatedAt.IsZero() {
 		o.CreatedAt = now
 	}
 	o.UpdatedAt = now
-	sessionFilter := ""
 	args := []any{o.SessionID, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, o.CreatedAt, actorFromContext(ctx)}
-	if ws, ok := r.workspaceID(); ok {
-		sessionFilter = fmt.Sprintf(` AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$%d::uuid)`, len(args)+1)
+	columns := `tenant_id, session_id, project_key, scope, source, type, title, content, topic_key, created_at, updated_at, created_by, updated_by`
+	values := `public.cortex_current_tenant(), (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10`
+	if ws, ok := workspaceFromContext(ctx); ok {
+		columns = `tenant_id, workspace_id, session_id, project_key, scope, source, type, title, content, topic_key, created_at, updated_at, created_by, updated_by`
+		values = `public.cortex_current_tenant(), $11::bigint, (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10`
 		args = append(args, ws)
+	} else if id, hasWS := r.workspaceID(); hasWS {
+		values = `public.cortex_current_tenant(), (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$11::uuid)), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10`
+		args = append(args, id)
 	}
 	var id int64
-	err := tx.QueryRow(ctx, `INSERT INTO observations (tenant_id, session_id, project_key, scope, source, type, title, content, topic_key, created_at, updated_at, created_by, updated_by) VALUES (public.cortex_current_tenant(), (SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`+sessionFilter+`), $2, COALESCE(NULLIF($3,''),'project'), COALESCE(NULLIF($4,''),'manual'), $5, $6, $7, NULLIF($8,''), $9, $9, $10, $10) RETURNING id,public_id::text`, args...).Scan(&id, &o.PublicID)
+	err := tx.QueryRow(ctx, `INSERT INTO observations (`+columns+`) VALUES (`+values+`) RETURNING id,public_id::text`, args...).Scan(&id, &o.PublicID)
 	if err != nil {
 		return domain.SaveEffect{}, fmt.Errorf("postgres observations: insert: %w", err)
 	}
@@ -256,10 +314,24 @@ func (r *ObservationRepository) SaveBulk(ctx context.Context, observations []*do
 	})
 }
 
+// updateInTx updates the durable topic row. The lookup and the UPDATE are
+// both scoped by the explicit observations.workspace_id column (migration
+// 105) whenever the transaction resolved a workspace binding, so an update
+// can never cross workspaces of one tenant.
 func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *domain.Observation, id int64) error {
 	now := time.Now().UTC()
 	var created time.Time
-	err := tx.QueryRow(ctx, `SELECT created_at,public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&created, &o.PublicID)
+	selectQuery := `SELECT created_at,public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`
+	selectArgs := []any{id}
+	updateQuery := `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),classification=COALESCE(NULLIF($2,''),classification),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE tenant_id=public.cortex_current_tenant() AND id=$11 AND deleted_at IS NULL AND (classification <> 'personal' OR owner_subject=$10) RETURNING revision_count`
+	updateArgs := []any{o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), r.principal.Subject, id}
+	if ws, ok := workspaceFromContext(ctx); ok {
+		selectQuery += ` AND workspace_id=$2`
+		selectArgs = append(selectArgs, ws)
+		updateQuery += ` AND workspace_id=$12`
+		updateArgs = append(updateArgs, ws)
+	}
+	err := tx.QueryRow(ctx, selectQuery, selectArgs...).Scan(&created, &o.PublicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return notFound("observation", id)
 	}
@@ -267,7 +339,7 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 		return err
 	}
 	var revision int
-	err = tx.QueryRow(ctx, `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),classification=COALESCE(NULLIF($2,''),classification),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE tenant_id=public.cortex_current_tenant() AND id=$11 AND deleted_at IS NULL AND (classification <> 'personal' OR owner_subject=$10) RETURNING revision_count`, o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), r.principal.Subject, id).Scan(&revision)
+	err = tx.QueryRow(ctx, updateQuery, updateArgs...).Scan(&revision)
 	if err != nil {
 		return fmt.Errorf("postgres observations: update: %w", err)
 	}

@@ -789,7 +789,11 @@ func v2SchemaSnapshot(t *testing.T, db *sql.DB) string {
 	if err != nil {
 		t.Fatalf("read sqlite_master snapshot: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close sqlite_master snapshot rows: %v", err)
+		}
+	}()
 	var b strings.Builder
 	for rows.Next() {
 		var entry string

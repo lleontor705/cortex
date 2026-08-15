@@ -53,3 +53,13 @@ var HandoffReceiptsSQL string
 //
 //go:embed 104_handoff_receipts.sql
 var ServerHandoffReceiptsSQL string
+
+// ServerWorkspaceBindingSQL is the PostgreSQL-only follow-up migration
+// (105) that binds observations and handoff receipts to workspaces: the
+// active topic uniqueness and the receipt idempotency namespace become
+// workspace-scoped, and a trigger keeps 104-era observation DML working by
+// deriving the workspace from the session. It is ledgered with its SHA-256
+// checksum in cortex_server_migrations; the line is forward-only.
+//
+//go:embed 105_workspace_binding.sql
+var ServerWorkspaceBindingSQL string
