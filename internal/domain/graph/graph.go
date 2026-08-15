@@ -194,6 +194,46 @@ func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int
 	return nil, nil
 }
 
+// DetectConflicts finds edges where the observation is involved in a contradiction
+// or has been superseded by newer knowledge.
+func (s *Service) DetectConflicts(ctx context.Context, obsID int64) ([]*domain.Edge, error) {
+	edges, err := s.repo.GetEdgesForObservation(ctx, obsID)
+	if err != nil {
+		return nil, fmt.Errorf("detect conflicts: %w", err)
+	}
+
+	var conflicts []*domain.Edge
+	for _, edge := range edges {
+		if edge.RelationType == domain.RelationContradicts || edge.RelationType == domain.RelationSupersedes {
+			conflicts = append(conflicts, edge)
+		}
+	}
+	return conflicts, nil
+}
+
+// ResolveConflict resolves a knowledge contradiction by marking the new observation as superseding
+// the obsolete one, documenting the reason, and creating a formal supersedes edge.
+func (s *Service) ResolveConflict(ctx context.Context, newObsID, obsoleteObsID int64, reason string) (*domain.Edge, error) {
+	if newObsID == obsoleteObsID {
+		return nil, ErrSelfReference
+	}
+
+	edge := &domain.Edge{
+		FromObsID:    newObsID,
+		ToObsID:      obsoleteObsID,
+		RelationType: domain.RelationSupersedes,
+		Weight:       1.0,
+		Confidence:   1.0,
+		Reasoning:    reason,
+		ChangeReason: reason,
+	}
+
+	if err := s.repo.CreateEdge(ctx, edge); err != nil {
+		return nil, fmt.Errorf("resolve conflict: %w", err)
+	}
+	return edge, nil
+}
+
 // ValidateRelationType checks if a relation type is valid.
 func ValidateRelationType(relationType string) bool {
 	return ValidRelationTypes[relationType]
@@ -207,3 +247,4 @@ func GetValidRelationTypes() []string {
 	}
 	return types
 }
+

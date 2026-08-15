@@ -495,6 +495,41 @@ func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 	return edge, nil
 }
 
+// CurrentEdgeByPairInTx returns the single current durable edge for the exact
+// (from, to, relationType) triple. It reads through the shared transaction
+// enlisted via WithinTx when one is active in ctx, so the caller observes its
+// own uncommitted state rather than a separate connection snapshot. Returns
+// domain.NotFoundError when no current fact exists for the triple.
+func (s *Store) CurrentEdgeByPairInTx(ctx context.Context, fromObsID, toObsID int64, relationType string) (*domain.Edge, error) {
+	query := `
+		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+		       valid_from, invalid_at, created_at,
+		       evolution_id, COALESCE(evolution_type, 'original'),
+		       COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+		FROM edges
+		WHERE from_obs_id = ? AND to_obs_id = ? AND relation_type = ?
+		  AND valid_until IS NULL AND invalid_at IS NULL
+		  AND fact_state NOT IN ('deprecated', 'superseded')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	var row *sql.Row
+	if tx := graphTx(ctx); tx != nil {
+		row = tx.QueryRowContext(ctx, query, fromObsID, toObsID, relationType)
+	} else {
+		row = s.db.QueryRowContext(ctx, query, fromObsID, toObsID, relationType)
+	}
+	edge, err := s.scanEdgeRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, &domain.NotFoundError{Type: "edge", ID: fmt.Sprintf("%d->%d %s", fromObsID, toObsID, relationType)}
+		}
+		return nil, fmt.Errorf("graph: current edge by pair: %w", err)
+	}
+	return edge, nil
+}
+
 // GetEvolutionChain retrieves all edges that share the same endpoints.
 func (s *Store) GetEvolutionChain(ctx context.Context, fromObsID, toObsID int64) ([]*domain.Edge, error) {
 	if s.v2TemporalSchema(ctx) {

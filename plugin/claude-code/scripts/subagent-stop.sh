@@ -26,13 +26,50 @@ credential() {
   fi
 }
 
+# REM-TRANSPORT-001: plaintext delivery is loopback-only; any other host must
+# be https. Validated before any credential is read so a misconfigured
+# plaintext target can never receive the bearer token. The 127/8 host must be
+# a strict decimal dotted quad: octets 0-255, no leading zeros, no short
+# forms, so ambiguous numeric hosts are never treated as loopback.
+validate_url() {
+  local scheme rest host
+  scheme=${CORTEX_URL%%://*}
+  rest=${CORTEX_URL#*://}
+  rest=${rest%%\#*}
+  rest=${rest%%\?*}
+  rest=${rest%%/*}
+  host=${rest##*@}
+  if [[ $host == \[* ]]; then
+    host=${host#\[}
+    host=${host%%\]*}
+  else
+    host=${host%%:*}
+  fi
+  if [[ $scheme == https ]]; then return 0; fi
+  [[ $scheme == http ]] || return 1
+  [[ $host == localhost || $host == ::1 || $host =~ ^127\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$ ]]
+}
+
+# A 2xx response is success only when it is the persisted Observation for the
+# exact session, content, and classification fields that were sent. Validation
+# is field-identity based: additive server fields (e.g. tags) are tolerated,
+# and an exact key count is never required.
 classify_delivery() {
-  local curl_status=$1 http_status=$2 response_file=$3
+  local curl_status=$1 http_status=$2 response_file=$3 expect_session=$4 expect_content=$5 expect_project=$6
   if [[ $curl_status -eq 28 ]]; then signal timeout; return; fi
   if [[ $curl_status -ne 0 ]]; then signal unavailable; return; fi
   case "$http_status" in
     2??)
-      if jq -e 'type == "object"' "$response_file" >/dev/null 2>&1; then
+      if jq -e --arg sid "$expect_session" --arg content "$expect_content" \
+        --arg title "Passive capture from subagent" --arg project "$expect_project" '
+        type == "object" and
+        (.id | type == "number") and .id > 0 and
+        .session_id == $sid and
+        .content == $content and
+        .title == $title and
+        .project == $project and
+        .type == "passive" and
+        .scope == "project"' "$response_file" >/dev/null 2>&1; then
         signal success
       else
         signal invalid_response
@@ -58,6 +95,7 @@ main() {
   cwd=$(jq -r '.cwd // empty' <<<"$input")
   [[ $(jq -r '.stdout // empty | length' <<<"$input") -gt 0 ]] || return
 
+  validate_url || { signal config; return; }
   token=$(credential)
   if [[ -z $token ]]; then signal config; return; fi
 
@@ -66,6 +104,7 @@ main() {
   project=$(basename -- "${cwd:-unknown}")
   capture=$(printf '%s' "$input" | jq --argjson limit "$CAPTURE_BYTE_LIMIT" \
     -f "${SCRIPT_DIR}/utf8-truncate.jq") || { signal validation; return; }
+  expected_content=$(printf '%s' "$capture" | jq -r '.content')
   request=$(jq -cn --arg sid "$session_id" --arg project "$project" --argjson capture "$capture" \
     '{session_id:$sid,project:$project,title:"Passive capture from subagent",type:"passive",scope:"project"} + $capture') \
     || { signal validation; return; }
@@ -76,7 +115,7 @@ main() {
     -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
     --data-binary "$request" "${CORTEX_URL}/api/observations" 2>/dev/null)
   curl_status=$?
-  classify_delivery "$curl_status" "$http_status" "$response"
+  classify_delivery "$curl_status" "$http_status" "$response" "$session_id" "$expected_content" "$project"
   rm -f "$response"
 }
 

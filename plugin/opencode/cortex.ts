@@ -10,6 +10,23 @@
  * Session resilience:
  *   Uses `ensureSession()` before any DB write. Sessions are created on-demand
  *   even if the plugin was loaded after the session started.
+ *
+ * Delivery contract (REM-PLUGIN-001):
+ *   - Credentials come only from CORTEX_HTTP_TOKEN; without it nothing is sent.
+ *   - Success is only a 2xx response with the exact persisted body expected
+ *     for the endpoint; every other outcome is classified (unauthorized,
+ *     forbidden, conflict, validation, unavailable, timeout,
+ *     invalid_response, config, durable_rejected) and logged bounded.
+ *   - Sessions are confirmed before use: ensureSession caches a session only
+ *     on a persisted-identity echo or an explicit 409, and classifies every
+ *     failure instead of silently assuming continuity.
+ *   - Logs never contain tokens, payloads, or response bodies.
+ *   - Hooks always return control; every delivery is deadline-bounded.
+ *   - Prompts and passive captures are truncated by UTF-8 runes before JSON
+ *     with truncated/original_bytes/stored_bytes metadata.
+ *   - Durable handoffs (cortex_handoff) are an MCP capability already
+ *     delivered through the MCP channel; this plugin never interprets,
+ *     redelivers, or fabricates signals from their results.
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -18,6 +35,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 const CORTEX_HTTP_PORT = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
 const CORTEX_URL = `http://127.0.0.1:${CORTEX_HTTP_PORT}`
+const CORTEX_HTTP_TOKEN = (process.env.CORTEX_HTTP_TOKEN ?? "").trim()
 const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
   // Try Bun.which for PATH lookup, fall back to bare command
   try {
@@ -27,7 +45,12 @@ const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
   return "cortex"
 })()
 
-// Cortex's own MCP tools — don't count these as "tool calls" for session stats
+const REQUEST_TIMEOUT_MS = 2000
+const PAYLOAD_BYTE_LIMIT = 2000
+const encoder = new TextEncoder()
+
+// Cortex's own MCP tools — don't count these as "tool calls" for session stats.
+// cortex_handoff is handled separately before this set is consulted.
 const CORTEX_TOOLS = new Set([
   // Core memory
   "cortex_search",
@@ -55,6 +78,7 @@ const CORTEX_TOOLS = new Set([
   "cortex_consolidate",
   "cortex_project_dna",
   "cortex_merge_projects",
+  "cortex_handoff",
   // Temporal (advanced)
   "cortex_temporal_create_edge",
   "cortex_temporal_get_edges",
@@ -119,7 +143,7 @@ When the user asks to recall something — "remember", "recall", "what did we do
 4. If you find a match, use \`cortex_get_observation\` for full content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
-- Starting work on something that might have been done before
+- Starting work on something that might have done before
 - The user mentions a topic you have no context on
 - The user's FIRST message references the project
 
@@ -148,32 +172,255 @@ If you see a message about compaction or context reset:
 4. Only THEN continue working
 `
 
+// ─── Delivery classification ─────────────────────────────────────────────────
+
+type DeliveryKind = "prompt" | "observation" | "session"
+
+type Classification =
+  | "success"
+  | "unauthorized"
+  | "forbidden"
+  | "conflict"
+  | "validation"
+  | "unavailable"
+  | "timeout"
+  | "invalid_response"
+  | "config"
+  | "durable_rejected"
+
+// Logs carry the classification only — never tokens, payloads, or bodies.
+function report(kind: DeliveryKind, outcome: Classification, detail = ""): void {
+  const suffix = detail ? ` (${detail})` : ""
+  if (outcome === "success") {
+    console.info(`[cortex] ${kind} delivery success`)
+  } else {
+    console.warn(`[cortex] ${kind} delivery ${outcome}${suffix}`)
+  }
+}
+
+function classifyStatus(status: number): Classification {
+  if (status === 401) return "unauthorized"
+  if (status === 403) return "forbidden"
+  if (status === 409) return "conflict"
+  if (status === 400 || status === 404 || status === 405 || status === 413 || status === 422) {
+    return "validation"
+  }
+  return "unavailable"
+}
+
+function classifyException(err: unknown): Classification {
+  const name = (err as DOMException | null)?.name
+  if (name === "TimeoutError" || name === "AbortError") return "timeout"
+  return "unavailable"
+}
+
 // ─── HTTP Client ─────────────────────────────────────────────────────────────
 
-async function cortexFetch(
-  path: string,
-  opts: { method?: string; body?: any } = {}
-): Promise<any> {
+// fetch with a deadline the host runtime can observe. The timer (not
+// AbortSignal.timeout) drives aborts so deadlines stay testable and the
+// request can never hang the hook.
+async function boundedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController()
+  let deadlineHit = false
+  const timer = setTimeout(() => {
+    deadlineHit = true
+    controller.abort()
+  }, REQUEST_TIMEOUT_MS)
   try {
-    const res = await fetch(`${CORTEX_URL}${path}`, {
-      method: opts.method ?? "GET",
-      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    })
-    return await res.json()
-  } catch {
-    return null
+    return await fetch(`${CORTEX_URL}${path}`, { ...init, signal: controller.signal })
+  } catch (err) {
+    if (deadlineHit) {
+      throw Object.assign(new Error("deadline elapsed"), { name: "TimeoutError" })
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+type HttpResult =
+  | { ok: true; status: number; body: unknown }
+  | { ok: false; classification: Classification }
+
+async function request(path: string, body?: unknown): Promise<HttpResult> {
+  try {
+    // Every request carries the credential when one is configured, including
+    // protected GETs. /health is the only unauthenticated route and is probed
+    // through boundedFetch directly, never here.
+    const headers: Record<string, string> = {}
+    if (CORTEX_HTTP_TOKEN) headers.Authorization = `Bearer ${CORTEX_HTTP_TOKEN}`
+    const init: RequestInit =
+      body === undefined
+        ? { headers }
+        : {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...headers,
+            },
+            body: JSON.stringify(body),
+          }
+    const res = await boundedFetch(path, init)
+    if (res.status < 200 || res.status >= 300) {
+      return { ok: false, classification: classifyStatus(res.status) }
+    }
+    try {
+      return { ok: true, status: res.status, body: await res.json() }
+    } catch {
+      return { ok: false, classification: "invalid_response" }
+    }
+  } catch (err) {
+    return { ok: false, classification: classifyException(err) }
+  }
+}
+
+// Deliver a payload and classify the outcome. `expected` must validate the
+// exact persisted body for the endpoint; anything else is invalid_response.
+async function deliver(
+  kind: DeliveryKind,
+  path: string,
+  payload: unknown,
+  expected: (body: unknown) => boolean
+): Promise<void> {
+  if (!CORTEX_HTTP_TOKEN) {
+    report(kind, "config", "missing CORTEX_HTTP_TOKEN")
+    return
+  }
+  const result = await request(path, payload)
+  if (!result.ok) {
+    report(kind, result.classification)
+    return
+  }
+  if (!expected(result.body)) {
+    report(kind, "invalid_response")
+    return
+  }
+  report(kind, "success")
 }
 
 async function isCortexRunning(): Promise<boolean> {
   try {
-    const res = await fetch(`${CORTEX_URL}/health`, {
-      signal: AbortSignal.timeout(500),
-    })
+    const res = await boundedFetch("/health")
     return res.ok
   } catch {
     return false
+  }
+}
+
+// ─── UTF-8 byte-bounded truncation ───────────────────────────────────────────
+
+export type TruncationRecord = {
+  content: string
+  truncated: boolean
+  original_bytes: number
+  stored_bytes: number
+}
+
+// Truncate by whole UTF-8 runes so stored bytes never exceed the limit and
+// the stored content always round-trips as valid UTF-8. Array.from indexes by
+// codepoint, so an astral rune (surrogate pair) can never be split into a
+// lone surrogate that would encode as U+FFFD.
+function truncateUtf8(text: string): TruncationRecord {
+  const originalBytes = encoder.encode(text).byteLength
+  if (originalBytes <= PAYLOAD_BYTE_LIMIT) {
+    return { content: text, truncated: false, original_bytes: originalBytes, stored_bytes: originalBytes }
+  }
+  const runes = Array.from(text)
+  let lo = 0
+  let hi = runes.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    const prefix = runes.slice(0, mid).join("")
+    if (encoder.encode(prefix).byteLength <= PAYLOAD_BYTE_LIMIT) {
+      lo = mid
+    } else {
+      hi = mid - 1
+    }
+  }
+  const content = runes.slice(0, lo).join("")
+  const storedBytes = encoder.encode(content).byteLength
+  return { content, truncated: true, original_bytes: originalBytes, stored_bytes: storedBytes }
+}
+
+// ─── Response body contracts ─────────────────────────────────────────────────
+
+function hasExactKeys(body: unknown, keys: readonly string[]): body is Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false
+  const actual = Object.keys(body)
+  return actual.length === keys.length && keys.every((key) => key in body)
+}
+
+const PROMPT_KEYS = ["id", "content", "project", "session_id", "created_at"] as const
+
+function isPositiveID(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+}
+
+function persistedPrompt(sent: { content: string; session_id: string }): (body: unknown) => boolean {
+  return (body) =>
+    hasExactKeys(body, PROMPT_KEYS) &&
+    isPositiveID(body.id) &&
+    typeof body.content === "string" &&
+    body.content === sent.content &&
+    typeof body.project === "string" &&
+    body.session_id === sent.session_id &&
+    typeof body.created_at === "string"
+}
+
+// The persisted Observation is validated by identity, not by exact shape:
+// a positive ID plus equality on every field the plugin actually sent.
+// Additive server fields (tags, sync metadata, ...) are tolerated so the
+// contract does not break when the server payload grows.
+function persistedObservation(
+  sent: {
+    content: string
+    session_id: string
+    title: string
+    project: string
+    type: string
+    scope: string
+  }
+): (body: unknown) => boolean {
+  return (body) =>
+    isJsonObject(body) &&
+    isPositiveID(body.id) &&
+    body.session_id === sent.session_id &&
+    body.content === sent.content &&
+    body.title === sent.title &&
+    body.project === sent.project &&
+    body.type === sent.type &&
+    body.scope === sent.scope
+}
+
+// POST /api/sessions/{id}/end returns exactly {"status":"ended"}; anything
+// else in a 2xx body is a false success.
+function persistedEndStatus(): (body: unknown) => boolean {
+  return (body) => hasExactKeys(body, ["status"]) && body.status === "ended"
+}
+
+function isJsonObject(body: unknown): boolean {
+  return typeof body === "object" && body !== null && !Array.isArray(body)
+}
+
+const SESSION_REQUIRED_KEYS = ["id", "project", "directory", "started_at"] as const
+
+// The persisted Session echo is validated by identity: the server returns the
+// session that was sent (optional omitempty fields are not asserted).
+function persistedSession(sent: {
+  id: string
+  project: string
+  directory: string
+}): (body: unknown) => boolean {
+  return (body) => {
+    if (!isJsonObject(body)) return false
+    const record = body as Record<string, unknown>
+    return (
+      SESSION_REQUIRED_KEYS.every((key) => key in record) &&
+      record.id === sent.id &&
+      record.project === sent.project &&
+      record.directory === sent.directory &&
+      typeof record.started_at === "string"
+    )
   }
 }
 
@@ -202,15 +449,17 @@ function extractProjectName(directory: string): string {
   return directory.split("/").pop() ?? "unknown"
 }
 
-function truncate(str: string, max: number): string {
-  if (!str) return ""
-  return str.length > max ? str.slice(0, max) + "..." : str
-}
-
 function stripPrivateTags(str: string): string {
   if (!str) return ""
   return str.replace(/<private>[\s\S]*?<\/private>/gi, "[REDACTED]").trim()
 }
+
+// ─── Durable handoff neutrality ──────────────────────────────────────────────
+
+// cortex_handoff is an MCP capability: by the time this hook sees a result,
+// the handoff was already delivered (or failed) through the MCP channel.
+// The plugin never interprets, redelivers, truncates, or classifies that
+// result — doing so would fabricate delivery signals from tool output.
 
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
@@ -221,31 +470,57 @@ export const Cortex: Plugin = async (ctx) => {
   const knownSessions = new Set<string>()
   const subAgentSessions = new Set<string>()
 
-  async function ensureSession(sessionId: string): Promise<void> {
-    if (!sessionId || knownSessions.has(sessionId)) return
-    if (subAgentSessions.has(sessionId)) return
-    knownSessions.add(sessionId)
-    await cortexFetch("/api/sessions", {
-      method: "POST",
-      body: {
-        id: sessionId,
-        project,
-        directory: ctx.directory,
-      },
-    })
+  type SessionEnsureResult = {
+    confirmed: boolean
+    classification: Classification
   }
 
-  // Try to start cortex server if not running
-  const running = await isCortexRunning()
-  if (!running) {
-    try {
-      Bun.spawn([CORTEX_BIN, "serve"], {
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      })
-      await new Promise((r) => setTimeout(r, 500))
-    } catch {}
+  // A session counts as known only after the server confirmed it: a 2xx
+  // persisted echo of the exact session identity, or an explicit 409
+  // conflict proving it already exists. Failures are classified, never
+  // cached, and a later event retries instead of assuming continuity.
+  async function ensureSession(sessionId: string): Promise<SessionEnsureResult> {
+    if (!sessionId || subAgentSessions.has(sessionId)) {
+      return { confirmed: false, classification: "validation" }
+    }
+    if (knownSessions.has(sessionId)) {
+      return { confirmed: true, classification: "success" }
+    }
+    if (!CORTEX_HTTP_TOKEN) {
+      return { confirmed: false, classification: "config" }
+    }
+    const sent = { id: sessionId, project, directory: ctx.directory }
+    const result = await request("/api/sessions", sent)
+    if (result.ok) {
+      if (persistedSession(sent)(result.body)) {
+        knownSessions.add(sessionId)
+        return { confirmed: true, classification: "success" }
+      }
+      report("session", "invalid_response")
+      return { confirmed: false, classification: "invalid_response" }
+    }
+    if (result.classification === "conflict") {
+      knownSessions.add(sessionId)
+      return { confirmed: true, classification: "success" }
+    }
+    report("session", result.classification)
+    return { confirmed: false, classification: result.classification }
+  }
+
+  // Try to start cortex server if not running. Never attempted without a
+  // configured credential: an unauthenticated plugin sends nothing.
+  if (CORTEX_HTTP_TOKEN) {
+    const running = await isCortexRunning()
+    if (!running) {
+      try {
+        Bun.spawn([CORTEX_BIN, "serve"], {
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        })
+        await new Promise((r) => setTimeout(r, 500))
+      } catch {}
+    }
   }
 
   return {
@@ -272,10 +547,12 @@ export const Cortex: Plugin = async (ctx) => {
         const sessionId = info?.id
         if (sessionId) {
           if (!subAgentSessions.has(sessionId) && knownSessions.has(sessionId)) {
-            await cortexFetch(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
-              method: "POST",
-              body: { summary: "" },
-            })
+            await deliver(
+              "session",
+              `/api/sessions/${encodeURIComponent(sessionId)}/end`,
+              { summary: "" },
+              persistedEndStatus()
+            )
           }
           toolCounts.delete(sessionId)
           knownSessions.delete(sessionId)
@@ -287,61 +564,92 @@ export const Cortex: Plugin = async (ctx) => {
     // ─── User Prompt Capture ──────────────────────────────────────
 
     "chat.message": async (input, output) => {
-      if (subAgentSessions.has(input.sessionID)) return
+      try {
+        if (subAgentSessions.has(input.sessionID)) return
 
-      const sessionId = input.sessionID
-      const content = output.parts
-        .filter((p) => p.type === "text")
-        .map((p) => (p as any).text ?? "")
-        .join("\n")
-        .trim()
+        const sessionId = input.sessionID
+        const content = output.parts
+          .filter((p) => p.type === "text")
+          .map((p) => (p as any).text ?? "")
+          .join("\n")
+          .trim()
 
-      const fallback = !content && output.message.summary
-        ? `${output.message.summary.title ?? ""}\n${output.message.summary.body ?? ""}`.trim()
-        : ""
+        const fallback = !content && output.message.summary
+          ? `${output.message.summary.title ?? ""}\n${output.message.summary.body ?? ""}`.trim()
+          : ""
 
-      const finalContent = content || fallback
+        const finalContent = content || fallback
 
-      if (finalContent.length > 10) {
-        await ensureSession(sessionId)
-        await cortexFetch("/api/prompts", {
-          method: "POST",
-          body: {
-            session_id: sessionId,
-            content: stripPrivateTags(truncate(finalContent, 2000)),
-            project,
-          },
-        })
+        if (finalContent.length > 10) {
+          await ensureSession(sessionId)
+          const redacted = stripPrivateTags(finalContent)
+          const record = truncateUtf8(redacted)
+          await deliver(
+            "prompt",
+            "/api/prompts",
+            {
+              session_id: sessionId,
+              project,
+              ...record,
+            },
+            persistedPrompt({ content: record.content, session_id: sessionId })
+          )
+        }
+      } catch {
+        report("prompt", "unavailable")
       }
     },
 
     // ─── Tool Execution Hook ─────────────────────────────────────
 
     "tool.execute.after": async (input, output) => {
-      if (CORTEX_TOOLS.has(input.tool.toLowerCase())) return
+      try {
+        const tool = input.tool.toLowerCase()
 
-      const sessionId = input.sessionID
-      if (sessionId) {
-        await ensureSession(sessionId)
-        toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
-      }
+        // Durable handoffs were already delivered through the MCP channel;
+        // their result is not input to this plugin. Stay neutral: no
+        // interpretation, no redelivery, no fabricated signal.
+        if (tool === "cortex_handoff") return
 
-      // Passive capture from Task tool output
-      if (input.tool === "Task" && output && sessionId) {
-        const text = typeof output === "string" ? output : JSON.stringify(output)
-        if (text.length > 50) {
-          await cortexFetch("/api/observations", {
-            method: "POST",
-            body: {
+        if (CORTEX_TOOLS.has(tool)) return
+
+        const sessionId = input.sessionID
+        if (sessionId) {
+          await ensureSession(sessionId)
+          toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
+        }
+
+        // Passive capture from Task tool output
+        if (input.tool === "Task" && output && sessionId) {
+          const text = typeof output === "string" ? output : JSON.stringify(output)
+          if (text.length > 50) {
+            const redacted = stripPrivateTags(text)
+            const record = truncateUtf8(redacted)
+            const sent = {
+              content: record.content,
               session_id: sessionId,
               title: "Passive capture from task",
-              content: stripPrivateTags(text),
-              type: "passive",
               project,
+              type: "passive",
               scope: "project",
-            },
-          })
+            }
+            await deliver(
+              "observation",
+              "/api/observations",
+              {
+                session_id: sent.session_id,
+                title: sent.title,
+                type: sent.type,
+                project: sent.project,
+                scope: sent.scope,
+                ...record,
+              },
+              persistedObservation(sent)
+            )
+          }
         }
+      } catch {
+        report("observation", "unavailable")
       }
     },
 
@@ -362,13 +670,18 @@ export const Cortex: Plugin = async (ctx) => {
         await ensureSession(input.sessionID)
       }
 
-      // Inject context from previous sessions
-      const data = await cortexFetch(
-        `/api/observations?project=${encodeURIComponent(project)}&limit=20`
-      )
-      if (data && Array.isArray(data) && data.length > 0) {
-        const ctx = data.map((o: any) => `- [${o.type}] ${o.title}`).join("\n")
-        output.context.push(`Recent Cortex memories for ${project}:\n${ctx}`)
+      if (CORTEX_HTTP_TOKEN) {
+        const result = await request(
+          `/api/observations?project=${encodeURIComponent(project)}&limit=20`
+        )
+        if (!result.ok) {
+          report("observation", result.classification)
+        } else if (!Array.isArray(result.body)) {
+          report("observation", "invalid_response")
+        } else if (result.body.length > 0) {
+          const ctx = (result.body as any[]).map((o) => `- [${o.type}] ${o.title}`).join("\n")
+          output.context.push(`Recent Cortex memories for ${project}:\n${ctx}`)
+        }
       }
 
       output.context.push(

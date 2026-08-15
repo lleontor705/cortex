@@ -49,11 +49,11 @@ Use `mcp.remote.enabled: true` only when you want `cortex mcp` to bypass SQLite 
 | `http.token` | `CORTEX_HTTP_TOKEN` | Required for protected/non-loopback HTTP |
 | `http.allowed_origins` | `CORTEX_HTTP_ALLOWED_ORIGINS` | Comma-separated browser origins |
 | `mcp.remote.enabled` | `CORTEX_MCP_REMOTE_ENABLED` | Proxy `cortex mcp` to a remote Streamable HTTP server |
-| `mcp.remote.url` | `CORTEX_MCP_REMOTE_URL` | Remote MCP endpoint, including `/mcp` |
+| `mcp.remote.url` | `CORTEX_MCP_REMOTE_URL` | Remote MCP endpoint, including `/mcp`. Bearer transport policy applies: HTTPS off-loopback, plain HTTP only on strict loopback |
 | `mcp.remote.token_env` | `CORTEX_MCP_REMOTE_TOKEN_ENV` | Name of the environment variable holding the bearer token |
 | `mcp.remote.timeout` | `CORTEX_MCP_REMOTE_TIMEOUT` | Remote request timeout, default `30s` |
 | `sync.enabled` | `CORTEX_SYNC_ENABLED` | Keep SQLite local and enable bidirectional server replication |
-| `sync.url` | `CORTEX_SYNC_URL` | Cortex Server base URL, without `/mcp` |
+| `sync.url` | `CORTEX_SYNC_URL` | Cortex Server base URL, without `/mcp`. Bearer transport policy applies: HTTPS off-loopback, plain HTTP only on strict loopback |
 | `sync.token_env` | `CORTEX_SYNC_TOKEN_ENV` | Environment variable containing the bearer token |
 | `sync.interval` | `CORTEX_SYNC_INTERVAL` | Background replication interval, default `30s` |
 | `sync.timeout` | `CORTEX_SYNC_TIMEOUT` | Per-request timeout, default `30s` |
@@ -64,6 +64,14 @@ Use `mcp.remote.enabled: true` only when you want `cortex mcp` to bypass SQLite 
 `CORTEX_PORT` is not a Cortex configuration key. Use `CORTEX_HTTP_PORT`.
 
 With `sync.enabled`, local HTTP, MCP, CLI, and plugin writes continue to use SQLite. Cortex retries idempotent pushes and incrementally pulls server changes in the background; `cortex sync --remote` forces an immediate cycle. Set `mcp.remote.enabled: false` for local-first MCP operation.
+
+## Bearer transport policy
+
+`mcp.remote.url` and `sync.url` are Bearer destinations and share one transport policy (implemented in `internal/transportpolicy`):
+
+- HTTPS is required for every non-loopback destination.
+- Plain HTTP is accepted only on strict loopback: an IPv4 literal in `127.0.0.0/8`, the IPv6 literal `[::1]`, or the exact dotless name `localhost`. Any other plain-HTTP URL is rejected at configuration load time and by the sync client before any credential is attached. Hostnames are never resolved to decide this.
+- Redirects are followed only when they keep the scheme — an HTTPS-to-HTTP downgrade is always rejected, even towards loopback — and keep the exact origin (scheme + host + port). Otherwise the request fails before the token is forwarded.
 
 ## TUI Fields
 
@@ -86,6 +94,7 @@ Keyboard controls: `h/l`, `tab`, or left/right move between sections; `j/k` or u
 - Local memories do not appear remotely: run `cortex sync --remote` and inspect the reported cursor/error.
 - MCP does not use local SQLite: ensure `mcp.remote.enabled` is `false`.
 - Sync authentication fails: verify that the variable named by `sync.token_env` exists in the environment of the Cortex process.
+- A `sync.url` or `mcp.remote.url` using plain HTTP towards a non-loopback host is rejected at startup: switch the destination to HTTPS. A local development server on `127.0.0.1` (any `127.x` address), `[::1]`, or `localhost` may keep plain HTTP.
 - A database path points to a Cortex v1 file: Cortex v2 refuses it without mutation; use an explicit migration/import rather than replacing it automatically.
 
 ## Server-only Keys

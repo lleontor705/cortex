@@ -94,41 +94,121 @@ func NewStore(db *sql.DB) *Store {
 //
 // This method opens and commits its OWN transaction (local-mode path). For
 // cross-store atomic saves, use SaveInTx within a UnitOfWork (W2.1, REQ-TX-001).
+//
+// REM-SAVE-001/RD2: Save delegates to SaveWithEffect and preserves the exact
+// legacy envelope and error surface — the interactive 64 KiB content limit
+// and the ClassDedupSkipped dedup classification are unchanged.
 func (s *Store) Save(ctx context.Context, obs *domain.Observation) error {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return fmt.Errorf("memory store: begin transaction: %w", err)
+	_, err := s.SaveWithEffect(ctx, obs)
+	return err
+}
+
+// SaveWithEffect is the transactional save primitive (REM-SAVE-001, RD2): it
+// saves obs and reports the durable effect — created, replayed (dedup), or
+// updated (topic_key upsert) — decided inside the transaction itself, never
+// inferred from a read-back after the fact.
+//
+// The content envelope is IDENTICAL to legacy Save (interactive 64 KiB); the
+// handoff path must use SaveHandoffWithEffect. No ambiguous dual ceiling is
+// exposed on this method.
+//
+// Transaction ownership mirrors Save:
+//   - With no shared transaction in ctx, it opens, commits, or rolls back its
+//     own transaction. On the dedup path the transaction COMMITS (persisting
+//     the duplicate_count increment) and the returned error carries
+//     ClassDedupSkipped alongside the populated replayed effect.
+//   - When a shared UnitOfWork transaction is active in ctx (enlisted via
+//     WithinTx), it runs entirely on that transaction and never commits or
+//     rolls back; the UnitOfWork owns the lifecycle. The dedup classification
+//     is still returned as an error for the enlisting coordinator to handle.
+//
+// On failure the effect is the zero value (Observation == nil) and nothing
+// committed by this call persists.
+func (s *Store) SaveWithEffect(ctx context.Context, obs *domain.Observation) (domain.SaveEffect, error) {
+	return s.saveWithEffectCeiling(ctx, obs, maxObservationContentLength)
+}
+
+// SaveHandoffWithEffect is the specialized handoff save primitive: identical
+// semantics to SaveWithEffect, but the content envelope is the domain handoff
+// payload bound (1 MiB) because the canonical handoff payload was already
+// validated and size-bounded at the domain layer (domain.CanonicalizeHandoff).
+// It exists so the public Save/SaveWithEffect surface keeps exactly one
+// unambiguous interactive limit.
+func (s *Store) SaveHandoffWithEffect(ctx context.Context, obs *domain.Observation) (domain.SaveEffect, error) {
+	return s.saveWithEffectCeiling(ctx, obs, domain.MaxHandoffPayloadSize)
+}
+
+// saveWithEffectCeiling implements both save-with-effect primitives under an
+// explicit content ceiling (see saveInTxEnvelope).
+func (s *Store) saveWithEffectCeiling(ctx context.Context, obs *domain.Observation, maxContent int) (domain.SaveEffect, error) {
+	// Enlisted path: a shared transaction is already active; the caller owns
+	// its commit/rollback lifecycle.
+	if tx := txFromContext(ctx); tx != nil {
+		return s.saveWithEffectInTx(ctx, tx, obs, maxContent)
 	}
 
-	err = s.saveInTx(ctx, tx, obs)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
-		if errors.Is(err, errDedupSkipped) {
-			// Dedup path: the duplicate_count increment and load already
-			// happened within this tx. Commit so the increment persists,
-			// then return a ClassDedupSkipped classification so callers can
-			// distinguish dedup from real failures (REQ-MCPH-002).
+		return domain.SaveEffect{}, fmt.Errorf("memory store: begin transaction: %w", err)
+	}
+
+	effect, err := s.saveWithEffectInTx(ctx, tx, obs, maxContent)
+	if err != nil {
+		if domain.IsClass(err, domain.ClassDedupSkipped) {
+			// Dedup path: commit so the duplicate_count increment persists,
+			// then return the classified error with the replayed effect.
 			if commitErr := tx.Commit(); commitErr != nil {
-				return fmt.Errorf("memory store: commit dedup: %w", commitErr)
+				return domain.SaveEffect{}, fmt.Errorf("memory store: commit dedup: %w", commitErr)
 			}
-			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+			return effect, err
 		}
 		_ = tx.Rollback()
-		return err
+		return domain.SaveEffect{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("memory store: commit transaction: %w", err)
+		return domain.SaveEffect{}, fmt.Errorf("memory store: commit transaction: %w", err)
 	}
-	return nil
+	return effect, nil
+}
+
+// saveWithEffectInTx runs saveInTxEnvelope on the given transaction and
+// converts its outcome into a SaveEffect. It never commits or rolls back the
+// transaction.
+func (s *Store) saveWithEffectInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observation, maxContent int) (domain.SaveEffect, error) {
+	status, err := s.saveInTxEnvelope(ctx, tx, obs, maxContent)
+	if err != nil {
+		if errors.Is(err, errDedupSkipped) {
+			return domain.SaveEffect{Observation: obs, Status: domain.WriteStatusReplayed},
+				domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		}
+		return domain.SaveEffect{}, err
+	}
+	return domain.SaveEffect{Observation: obs, Status: status}, nil
 }
 
 // saveInTx contains the core save logic (validation, normalization, insert/
 // update/dedup) running within an externally-provided transaction. It is shared
-// by Save (which wraps it in its own tx) and SaveInTx (which uses a shared tx).
+// by Save (which wraps it in its own tx), SaveInTx (which uses a shared tx),
+// and SaveWithEffect (which additionally needs the durable write status).
 // It MUST NOT call BeginTx/Commit/Rollback — the caller owns the tx lifecycle.
-func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observation) error {
-	if err := validateObservation(obs); err != nil {
-		return err
+//
+// The returned WriteStatus classifies which durable path the save took inside
+// this transaction: WriteStatusCreated (new row), WriteStatusUpdated (topic_key
+// upsert), or WriteStatusReplayed (dedup; returned together with the private
+// errDedupSkipped sentinel). On error the status is the zero value.
+func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observation) (domain.WriteStatus, error) {
+	return s.saveInTxEnvelope(ctx, tx, obs, maxObservationContentLength)
+}
+
+// saveInTxEnvelope is saveInTx with an explicit content ceiling. maxContent
+// selects the validation envelope: the interactive 64 KiB limit for legacy
+// Save/SaveInTx callers, or the domain handoff payload bound for the
+// transactional SaveWithEffect primitive (whose full canonical payload was
+// already bounded at the domain layer).
+func (s *Store) saveInTxEnvelope(ctx context.Context, tx *sql.Tx, obs *domain.Observation, maxContent int) (domain.WriteStatus, error) {
+	if err := validateObservationEnvelope(obs, maxContent); err != nil {
+		return "", err
 	}
 
 	// Set defaults
@@ -152,18 +232,21 @@ func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observatio
 	if topicKey != "" {
 		existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
 		if err != nil && !isNoRows(err) {
-			return fmt.Errorf("memory store: find by topic key: %w", err)
+			return "", fmt.Errorf("memory store: find by topic key: %w", err)
 		}
 		if existingID > 0 {
 			if err := s.captureObservationSnapshotTx(ctx, tx, existingID, "topic_key_upsert"); err != nil {
-				return fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
+				return "", fmt.Errorf("memory store: snapshot before topic key upsert: %w", err)
 			}
 			// Update existing observation
 			if err := s.updateObservationTx(tx, existingID, obs, obsType, scope, topicKey, normHash); err != nil {
-				return fmt.Errorf("memory store: update by topic key: %w", err)
+				return "", fmt.Errorf("memory store: update by topic key: %w", err)
 			}
 			obs.ID = existingID
-			return s.loadObservationTx(tx, obs)
+			if err := s.loadObservationTx(tx, obs); err != nil {
+				return "", err
+			}
+			return domain.WriteStatusUpdated, nil
 		}
 	}
 
@@ -173,20 +256,20 @@ func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observatio
 	if callerType == domain.TypeManual {
 		existingID, err := s.findDuplicateObservationTx(tx, obs.Project, scope, obsType, obs.Title, normHash)
 		if err != nil && !isNoRows(err) {
-			return fmt.Errorf("memory store: find duplicate: %w", err)
+			return "", fmt.Errorf("memory store: find duplicate: %w", err)
 		}
 		if existingID > 0 {
 			// Increment duplicate_count and last_seen_at
 			if err := s.incrementDuplicateCountTx(tx, existingID); err != nil {
-				return fmt.Errorf("memory store: increment duplicate: %w", err)
+				return "", fmt.Errorf("memory store: increment duplicate: %w", err)
 			}
 			obs.ID = existingID
 			if err := s.loadObservationTx(tx, obs); err != nil {
-				return fmt.Errorf("memory store: load after dedup: %w", err)
+				return "", fmt.Errorf("memory store: load after dedup: %w", err)
 			}
 			// Signal dedup to Save/SaveInTx so they commit the tx and convert
 			// to domain.NewDedupSkipped for caller classification.
-			return errDedupSkipped
+			return domain.WriteStatusReplayed, errDedupSkipped
 		}
 	}
 
@@ -203,12 +286,12 @@ func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observatio
 		obsConfidence, obsSource, tagsToJSON(obs.Tags),
 	)
 	if err != nil {
-		return fmt.Errorf("memory store: insert observation: %w", err)
+		return "", fmt.Errorf("memory store: insert observation: %w", err)
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("memory store: get last insert id: %w", err)
+		return "", fmt.Errorf("memory store: get last insert id: %w", err)
 	}
 
 	obs.ID = id
@@ -219,7 +302,10 @@ func (s *Store) saveInTx(ctx context.Context, tx *sql.Tx, obs *domain.Observatio
 	obs.Confidence = obsConfidence
 
 	// Reload timestamps from DB so in-memory values match stored values
-	return s.loadObservationTx(tx, obs)
+	if err := s.loadObservationTx(tx, obs); err != nil {
+		return "", err
+	}
+	return domain.WriteStatusCreated, nil
 }
 
 // GetByID retrieves an observation by its ID.
@@ -896,7 +982,7 @@ func (s *Store) SaveInTx(ctx context.Context, obs *domain.Observation) error {
 	if tx == nil {
 		return fmt.Errorf("sqlite store: SaveInTx requires an active shared transaction (call within WithinTx)")
 	}
-	if err := s.saveInTx(ctx, tx, obs); err != nil {
+	if _, err := s.saveInTx(ctx, tx, obs); err != nil {
 		if errors.Is(err, errDedupSkipped) {
 			return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
 		}
@@ -1280,6 +1366,12 @@ func parseTime(s string) time.Time {
 }
 
 func validateObservation(obs *domain.Observation) error {
+	return validateObservationEnvelope(obs, maxObservationContentLength)
+}
+
+// validateObservationEnvelope validates an observation against the given
+// content ceiling (see saveInTxEnvelope).
+func validateObservationEnvelope(obs *domain.Observation, maxContent int) error {
 	if obs == nil {
 		return &domain.ValidationError{
 			Field:   "observation",
@@ -1308,10 +1400,10 @@ func validateObservation(obs *domain.Observation) error {
 			Message: "content is required",
 		}
 	}
-	if len(content) > maxObservationContentLength {
+	if len(content) > maxContent {
 		return &domain.ValidationError{
 			Field:   "content",
-			Message: fmt.Sprintf("content exceeds %d characters", maxObservationContentLength),
+			Message: fmt.Sprintf("content exceeds %d characters", maxContent),
 		}
 	}
 
@@ -1431,11 +1523,11 @@ func (s *Store) RecordSyncedChunk(ctx context.Context, chunkID string) error {
 
 // ExportData holds all data for sync export.
 type ExportData struct {
-	Version      string               `json:"version"`
-	ExportedAt   string               `json:"exported_at"`
-	Sessions     []*domain.Session    `json:"sessions"`
+	Version      string                `json:"version"`
+	ExportedAt   string                `json:"exported_at"`
+	Sessions     []*domain.Session     `json:"sessions"`
 	Observations []*domain.Observation `json:"observations"`
-	Prompts      []*domain.Prompt     `json:"prompts"`
+	Prompts      []*domain.Prompt      `json:"prompts"`
 }
 
 // ExportAll exports all sessions, observations, and prompts for sync.

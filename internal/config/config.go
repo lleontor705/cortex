@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/lleontor705/cortex/internal/transportpolicy"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -362,6 +362,28 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	if cfg.Server.Storage.DSN == "" {
+		if dsn := os.Getenv("CORTEX_SERVER_STORAGE_DSN"); dsn != "" {
+			cfg.Server.Storage.DSN = dsn
+		} else if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+			cfg.Server.Storage.DSN = dsn
+		} else if dsn := os.Getenv("POSTGRES_URL"); dsn != "" {
+			cfg.Server.Storage.DSN = dsn
+		}
+	}
+	if cfg.Server.Storage.MigrationDSN == "" {
+		if dsn := os.Getenv("CORTEX_SERVER_STORAGE_MIGRATION_DSN"); dsn != "" {
+			cfg.Server.Storage.MigrationDSN = dsn
+		} else if cfg.Server.Storage.DSN != "" {
+			cfg.Server.Storage.MigrationDSN = cfg.Server.Storage.DSN
+		}
+	}
+	if cfg.HTTP.Token == "" {
+		if tok := os.Getenv("CORTEX_HTTP_TOKEN"); tok != "" {
+			cfg.HTTP.Token = tok
+		}
+	}
+
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
@@ -505,9 +527,11 @@ func validate(cfg *Config) error {
 	}
 
 	if cfg.MCP.Remote.Enabled {
-		remoteURL, err := url.Parse(cfg.MCP.Remote.URL)
-		if err != nil || remoteURL.Host == "" || (remoteURL.Scheme != "https" && remoteURL.Scheme != "http") {
-			return fmt.Errorf("invalid mcp.remote.url: must be an absolute HTTP(S) URL")
+		// mcp.remote.url is a Bearer destination: enforce the shared
+		// transport policy (HTTPS off-loopback, strict-loopback HTTP only)
+		// at load time so misconfiguration fails fast (REM-TRANSPORT-001).
+		if err := transportpolicy.ValidateBearerDestination(cfg.MCP.Remote.URL); err != nil {
+			return fmt.Errorf("invalid mcp.remote.url: %w", err)
 		}
 		if strings.TrimSpace(cfg.MCP.Remote.TokenEnv) == "" {
 			return fmt.Errorf("invalid mcp.remote.token_env: environment variable name is required")
@@ -517,9 +541,9 @@ func validate(cfg *Config) error {
 		}
 	}
 	if cfg.Sync.Enabled {
-		remoteURL, err := url.Parse(cfg.Sync.URL)
-		if err != nil || remoteURL.Host == "" || (remoteURL.Scheme != "https" && remoteURL.Scheme != "http") {
-			return fmt.Errorf("invalid sync.url: must be an absolute HTTP(S) URL")
+		// sync.url is a Bearer destination: same shared transport policy.
+		if err := transportpolicy.ValidateBearerDestination(cfg.Sync.URL); err != nil {
+			return fmt.Errorf("invalid sync.url: %w", err)
 		}
 		if strings.TrimSpace(cfg.Sync.TokenEnv) == "" {
 			return fmt.Errorf("invalid sync.token_env: environment variable name is required")

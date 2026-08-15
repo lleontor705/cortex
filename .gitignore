@@ -41,6 +41,7 @@ web/vite.config.d.ts
 
 # Ignore dotfiles except specific ones
 .*
+!.gitattributes
 !.github/
 !.claude-plugin/
 !.gitignore

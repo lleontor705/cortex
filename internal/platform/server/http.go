@@ -17,6 +17,7 @@ import (
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/domain/extraction"
 	"github.com/lleontor705/cortex/internal/identity"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -81,7 +82,12 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	api := &apiHandler{ops: ops, defaultLimit: boundedDefault(cfg.Search.DefaultLimit), maxLimit: boundedMax(cfg.Search.MaxLimit)}
+	api := &apiHandler{
+		ops:          ops,
+		defaultLimit: boundedDefault(cfg.Search.DefaultLimit),
+		maxLimit:     boundedMax(cfg.Search.MaxLimit),
+		extractor:    extraction.NewService(extraction.Config{}),
+	}
 	mux.Handle("/api/", protect(api.routes()))
 	mux.Handle("/mcp", protect(transport))
 	return corsHandler(cfg.HTTP.AllowedOrigins, mux), transport
@@ -116,6 +122,7 @@ type apiHandler struct {
 	ops          Operations
 	defaultLimit int
 	maxLimit     int
+	extractor    *extraction.Service
 }
 
 func (a *apiHandler) routes() http.Handler {
@@ -144,7 +151,10 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
 	mux.HandleFunc("GET /api/graph/{id}/related", a.related)
 	mux.HandleFunc("GET /api/graph/{id}/subgraph", a.subgraph)
+	mux.HandleFunc("POST /api/graph/resolve", a.resolveConflict)
 	mux.HandleFunc("GET /api/scores/{id}", a.score)
+	mux.HandleFunc("POST /api/extract", a.extract)
+	mux.HandleFunc("POST /api/synthesize", a.synthesize)
 	mux.HandleFunc("POST /api/sync/push", a.pushSync)
 	mux.HandleFunc("GET /api/sync/changes", a.pullSync)
 	return mux
@@ -563,6 +573,69 @@ func (a *apiHandler) score(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"observation_id": observation.PublicID, "score": result.Score, "access_count": result.AccessCount, "last_accessed": result.LastAccessed, "updated_at": result.UpdatedAt})
+}
+
+func (a *apiHandler) extract(w http.ResponseWriter, r *http.Request) {
+	var req extraction.ExtractionRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	result, err := a.extractor.Extract(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "extraction_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *apiHandler) synthesize(w http.ResponseWriter, r *http.Request) {
+	var req extraction.SynthesisRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	result, err := a.extractor.Synthesize(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "synthesis_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *apiHandler) resolveConflict(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		NewObsID      string `json:"new_observation_id"`
+		ObsoleteObsID string `json:"obsolete_observation_id"`
+		Reason        string `json:"reason"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	newObs, err := a.ops.GetObservationByPublicID(r.Context(), input.NewObsID)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	obsoleteObs, err := a.ops.GetObservationByPublicID(r.Context(), input.ObsoleteObsID)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	edge := &domain.Edge{
+		FromObsID:    newObs.ID,
+		ToObsID:      obsoleteObs.ID,
+		FromPublicID: newObs.PublicID,
+		ToPublicID:   obsoleteObs.PublicID,
+		RelationType: domain.RelationSupersedes,
+		Weight:       1.0,
+		Confidence:   1.0,
+		Reasoning:    input.Reason,
+		ChangeReason: input.Reason,
+	}
+	if err := a.ops.CreateGraphEdge(r.Context(), edge); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, edgeResponse(edge))
 }
 
 func bearerAuth(token string, next http.Handler) http.Handler {

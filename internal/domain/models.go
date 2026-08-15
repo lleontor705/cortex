@@ -9,6 +9,8 @@ package domain
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Observation represents a single piece of knowledge or memory captured
@@ -43,6 +45,63 @@ func (o Observation) MarshalJSON() ([]byte, error) {
 		ID any `json:"id"`
 		alias
 	}{id, alias(o)})
+}
+
+// ObservationRef is the exclusive local/public identifier union for addressing
+// an observation across storage namespaces. Exactly one namespace must be set;
+// Validate enforces the XOR invariant.
+type ObservationRef struct {
+	// LocalID addresses the observation in the local SQLite namespace.
+	LocalID *int64 `json:"local_id,omitempty"`
+	// PublicID addresses the observation in the shared server namespace.
+	PublicID *uuid.UUID `json:"public_id,omitempty"`
+}
+
+// NewLocalObservationRef returns a validated local-namespace reference.
+// The local identifier must be positive.
+func NewLocalObservationRef(id int64) (ObservationRef, error) {
+	if id <= 0 {
+		return ObservationRef{}, ErrHandoffValidation
+	}
+	return ObservationRef{LocalID: &id}, nil
+}
+
+// NewPublicObservationRef returns a validated public-namespace reference.
+// The identifier must not be the nil UUID.
+func NewPublicObservationRef(id uuid.UUID) (ObservationRef, error) {
+	if id == uuid.Nil {
+		return ObservationRef{}, ErrHandoffValidation
+	}
+	return ObservationRef{PublicID: &id}, nil
+}
+
+// WriteStatus classifies the durable effect of an observation write relative
+// to previously persisted state. The set is closed: created, replayed, updated.
+type WriteStatus string
+
+const (
+	// WriteStatusCreated marks the first durable materialization.
+	WriteStatusCreated WriteStatus = "created"
+	// WriteStatusReplayed marks an idempotent replay of an identical write.
+	WriteStatusReplayed WriteStatus = "replayed"
+	// WriteStatusUpdated marks an in-place update of an existing observation.
+	WriteStatusUpdated WriteStatus = "updated"
+)
+
+// ObservationWriteResult is the transport-neutral outcome of executing a
+// handoff: which observation namespace holds the payload and what kind of
+// write materialized it.
+type ObservationWriteResult struct {
+	Ref    ObservationRef `json:"observation_ref"`
+	Status WriteStatus    `json:"status"`
+}
+
+// SaveEffect reports the durable effect of a transactional observation save.
+// Observation is nil only when the save did not commit; a non-nil value is the
+// committed aggregate, never a speculation read back after the fact.
+type SaveEffect struct {
+	Observation *Observation `json:"observation"`
+	Status      WriteStatus  `json:"status"`
 }
 
 // Session represents a coding session that groups related observations.

@@ -9,6 +9,30 @@ CORTEX_URL=${CORTEX_URL:-http://127.0.0.1:${CORTEX_HTTP_PORT}}
 
 signal() { printf '{"outcome":"%s"}\n' "$1" >&2; }
 
+# REM-TRANSPORT-001: plaintext delivery is loopback-only; any other host must
+# be https. Validated before any credential is read so a misconfigured
+# plaintext target can never receive the bearer token. The 127/8 host must be
+# a strict decimal dotted quad: octets 0-255, no leading zeros, no short
+# forms, so ambiguous numeric hosts are never treated as loopback.
+validate_url() {
+  local scheme rest host
+  scheme=${CORTEX_URL%%://*}
+  rest=${CORTEX_URL#*://}
+  rest=${rest%%\#*}
+  rest=${rest%%\?*}
+  rest=${rest%%/*}
+  host=${rest##*@}
+  if [[ $host == \[* ]]; then
+    host=${host#\[}
+    host=${host%%\]*}
+  else
+    host=${host%%:*}
+  fi
+  if [[ $scheme == https ]]; then return 0; fi
+  [[ $scheme == http ]] || return 1
+  [[ $host == localhost || $host == ::1 || $host =~ ^127\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$ ]]
+}
+
 credential() {
   if [[ -n ${CORTEX_API_KEY:-} ]]; then
     printf '%s' "$CORTEX_API_KEY"
@@ -26,7 +50,14 @@ classify_delivery() {
   if [[ $curl_status -ne 0 ]]; then signal unavailable; return; fi
   case "$http_status" in
     2??)
-      if jq -e 'type == "object"' "$response_file" >/dev/null 2>&1; then signal success; else signal invalid_response; fi
+      # The session-end endpoint returns exactly {"status":"ended"}; any other
+      # 2xx body (empty object, another endpoint's, extra keys) is a false
+      # success and must classify as invalid_response.
+      if jq -e 'type == "object" and (keys | length) == 1 and .status == "ended"' "$response_file" >/dev/null 2>&1; then
+        signal success
+      else
+        signal invalid_response
+      fi
       ;;
     401) signal unauthorized ;;
     403) signal forbidden ;;
@@ -43,6 +74,7 @@ main() {
     signal validation
     return
   fi
+  validate_url || { signal config; return; }
   token=$(credential)
   if [[ -z $token ]]; then signal config; return; fi
   encoded_session=$(printf '%s' "$session_id" | jq -sRr @uri)

@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,34 +311,71 @@ func TestPostgresW11ChecksumLockAndDown(t *testing.T) {
 		t.Fatal("advisory lock contention unexpectedly succeeded")
 	}
 	_ = lockTx.Rollback()
-	restoreSchema := func() error {
-		if _, err := db.Exec(`DELETE FROM cortex_server_migrations WHERE version > $1`, m.Version()); err != nil {
-			return err
+	// Down is forward-only (REM-MIG-001): the ledgered migration must be
+	// rejected with errors.Is ErrForwardOnly and the database must remain
+	// unchanged — no DDL, no DML, no ledger rewrite, no schema restore.
+	before := w11ForwardOnlySnapshot(t, db)
+	if err := m.Down(context.Background(), db); !errors.Is(err, migration.ErrForwardOnly) {
+		t.Fatalf("Down err=%v; want errors.Is ErrForwardOnly", err)
+	}
+	if after := w11ForwardOnlySnapshot(t, db); after != before {
+		t.Fatal("Down executed DDL/DML: schema, ledger, or data snapshot changed")
+	}
+}
+
+// w11ForwardOnlySnapshot builds a deterministic digest of the W11 schema
+// (public columns), the migration ledger, and tenant row counts for the
+// zero-mutation proof of the Down forward-only policy.
+func w11ForwardOnlySnapshot(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	ctx := context.Background()
+	var b strings.Builder
+
+	columns, err := db.QueryContext(ctx, `
+		SELECT table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		ORDER BY table_name, column_name`)
+	if err != nil {
+		t.Fatalf("snapshot columns: %v", err)
+	}
+	for columns.Next() {
+		var table, column, dataType string
+		if err := columns.Scan(&table, &column, &dataType); err != nil {
+			t.Fatalf("scan columns: %v", err)
 		}
-		return migration.ApplyPostgresServerMigrations(context.Background(), db)
+		fmt.Fprintf(&b, "col|%s|%s|%s\n", table, column, dataType)
 	}
-	downStarted := true
-	t.Cleanup(func() {
-		if downStarted {
-			if err := restoreSchema(); err != nil {
-				t.Errorf("restore PostgreSQL schema after Down test: %v", err)
-			}
+	columns.Close()
+	if err := columns.Err(); err != nil {
+		t.Fatalf("iterate columns: %v", err)
+	}
+
+	ledger, err := db.QueryContext(ctx, `SELECT version, name, checksum FROM cortex_server_migrations ORDER BY version`)
+	if err != nil {
+		t.Fatalf("snapshot ledger: %v", err)
+	}
+	for ledger.Next() {
+		var version int
+		var name, checksum string
+		if err := ledger.Scan(&version, &name, &checksum); err != nil {
+			t.Fatalf("scan ledger: %v", err)
 		}
-	})
-	if err := m.Down(context.Background(), db); err != nil {
-		t.Fatal(err)
+		fmt.Fprintf(&b, "ledger|%d|%s|%s\n", version, name, checksum)
 	}
-	var exists bool
-	if err := db.QueryRow(`SELECT to_regclass('public.observations') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatal(err)
+	ledger.Close()
+	if err := ledger.Err(); err != nil {
+		t.Fatalf("iterate ledger: %v", err)
 	}
-	if exists {
-		t.Fatal("Down left server tables behind")
+
+	for _, table := range []string{"organizations", "workspaces", "projects", "sessions", "observations", "importance_scores", "prompts", "edges", "entities", "observation_entities", "index_outbox", "actor_subjects"} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatalf("snapshot count(%s): %v", table, err)
+		}
+		fmt.Fprintf(&b, "count|%s|%d\n", table, count)
 	}
-	if err := restoreSchema(); err != nil {
-		t.Fatal(err)
-	}
-	downStarted = false
+	return b.String()
 }
 
 func TestPostgresW11ParameterizedInputIsData(t *testing.T) {

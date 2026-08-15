@@ -244,6 +244,10 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	if err != nil {
 		return err
 	}
+	// The fresh-transaction path must expose the tx to the closure through
+	// the context: receipt primitives (claim/read/finalize) resolve it via
+	// txFromContext, exactly like the WithinTx path does.
+	ctx = context.WithValue(ctx, txKey{}, tx)
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}

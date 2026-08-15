@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	v2migrations "github.com/lleontor705/cortex/migrations/v2"
 )
 
 // --- helpers ---------------------------------------------------------------
@@ -533,4 +535,353 @@ func TestDefaultV2DBPath(t *testing.T) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// --- 8. V2 FOLLOW-UP MIGRATION LINE (002 handoff receipts) ------------------
+
+// v2FollowUpLedgerTable is the additive ledger that tracks applied v2
+// follow-up migrations (versions above the 001 baseline, e.g. 2002).
+const v2FollowUpLedgerTable = "cortex_v2_migrations"
+
+// v2LedgerChecksum reads the checksum recorded for a version in the follow-up
+// ledger. Returns ("", false) when the ledger table or the version row is
+// absent (e.g. a database created by an older runtime).
+func v2LedgerChecksum(t *testing.T, db *sql.DB, version int) (string, bool) {
+	t.Helper()
+	var checksum string
+	err := db.QueryRow(
+		`SELECT checksum FROM `+v2FollowUpLedgerTable+` WHERE version = ?`, version,
+	).Scan(&checksum)
+	if err != nil {
+		return "", false
+	}
+	return checksum, true
+}
+
+// v2LedgerRowCount returns the number of ledger rows recorded for a version.
+func v2LedgerRowCount(t *testing.T, db *sql.DB, version int) int {
+	t.Helper()
+	var rows int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM `+v2FollowUpLedgerTable+` WHERE version = ?`, version,
+	).Scan(&rows); err != nil {
+		return 0
+	}
+	return rows
+}
+
+// buildBaselineOnlyDB simulates a database created by the PREVIOUS runtime:
+// the 001 baseline and its schema identity exist, but no follow-up ledger and
+// no handoff_receipts table. Upgrading such a database MUST be additive.
+func buildBaselineOnlyDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openMem(t)
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	if _, err := db.Exec(v2migrations.BaselineSQL); err != nil {
+		t.Fatalf("exec baseline SQL: %v", err)
+	}
+	if err := writeIdentity(db, baseline.Identity()); err != nil {
+		t.Fatalf("write identity: %v", err)
+	}
+	return db
+}
+
+// TestV2Registry_LineIncludesHandoffReceipts verifies the v2 line is the
+// baseline (2001) followed by the checksummed handoff-receipts follow-up
+// (2002), and that every entry stays forward-only (no DownSQL).
+func TestV2Registry_LineIncludesHandoffReceipts(t *testing.T) {
+	reg, err := NewV2Registry()
+	if err != nil {
+		t.Fatalf("NewV2Registry: %v", err)
+	}
+	migrations := reg.V2Migrations()
+	if len(migrations) != 2 {
+		t.Fatalf("v2 line length = %d, want 2 (baseline + handoff receipts)", len(migrations))
+	}
+	if migrations[0].Version != 2001 || migrations[1].Version != 2002 {
+		t.Fatalf("v2 line versions = [%d, %d], want [2001, 2002]",
+			migrations[0].Version, migrations[1].Version)
+	}
+	if migrations[1].UpSQL == "" {
+		t.Error("handoff receipts migration has empty UpSQL")
+	}
+	for _, migration := range migrations {
+		if migration.DownSQL != "" {
+			t.Errorf("v2 migration %d defines DownSQL; the v2 line is forward-only", migration.Version)
+		}
+	}
+}
+
+// TestV2FollowUp_FreshApplyCreatesHandoffReceipts verifies a fresh v2 database
+// receives the handoff_receipts table and exactly one ledger row with a
+// non-empty checksum, and still passes the integrity gate.
+func TestV2FollowUp_FreshApplyCreatesHandoffReceipts(t *testing.T) {
+	ctx := context.Background()
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	db := openMem(t)
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !tableExists(t, db, "handoff_receipts") {
+		t.Fatal("handoff_receipts table missing after fresh Apply")
+	}
+	ledgerChecksum, ok := v2LedgerChecksum(t, db, 2002)
+	if !ok || ledgerChecksum == "" {
+		t.Fatalf("ledger row for 2002 missing or empty: checksum=%q ok=%v", ledgerChecksum, ok)
+	}
+	if rows := v2LedgerRowCount(t, db, 2002); rows != 1 {
+		t.Errorf("ledger rows for 2002 = %d, want 1", rows)
+	}
+	if err := baseline.VerifyIntegrity(ctx, db); err != nil {
+		t.Errorf("VerifyIntegrity with follow-ups applied: %v", err)
+	}
+}
+
+// TestV2FollowUp_UpgradeFromBaselineOnly verifies an existing 001-only
+// database (previous runtime) is upgraded additively: the follow-up is
+// applied, pre-existing data survives, and the 001 identity is untouched.
+func TestV2FollowUp_UpgradeFromBaselineOnly(t *testing.T) {
+	ctx := context.Background()
+	db := buildBaselineOnlyDB(t)
+	if _, err := db.Exec(`INSERT INTO sessions (id, project, directory) VALUES ('old', 'p', '/d')`); err != nil {
+		t.Fatalf("seed old-runtime data: %v", err)
+	}
+
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("upgrade Apply: %v", err)
+	}
+
+	if !tableExists(t, db, "handoff_receipts") {
+		t.Fatal("handoff_receipts table missing after upgrade from 001-only database")
+	}
+	if _, ok := v2LedgerChecksum(t, db, 2002); !ok {
+		t.Fatal("ledger row for 2002 missing after upgrade")
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id = 'old'`).Scan(&count); err != nil {
+		t.Fatalf("count old data after upgrade: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("upgrade lost pre-existing data: count=%d, want 1", count)
+	}
+	version, _ := metaValue(t, db, "schema_version")
+	if version != V2BaselineVersion {
+		t.Errorf("schema_version = %q after upgrade, want %q (001 is immutable)", version, V2BaselineVersion)
+	}
+}
+
+// TestV2FollowUp_ReapplyIsIdempotent verifies a second Apply records no
+// duplicate ledger row, does not drift the checksum, and preserves data.
+func TestV2FollowUp_ReapplyIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	db := openMem(t)
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	first, _ := v2LedgerChecksum(t, db, 2002)
+
+	if _, err := db.Exec(`INSERT INTO sessions (id, project, directory) VALUES ('keep', 'p', '/d')`); err != nil {
+		t.Fatalf("seed data: %v", err)
+	}
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+
+	second, _ := v2LedgerChecksum(t, db, 2002)
+	if first == "" || first != second {
+		t.Fatalf("ledger checksum drifted on reapply: first=%q second=%q", first, second)
+	}
+	if rows := v2LedgerRowCount(t, db, 2002); rows != 1 {
+		t.Errorf("ledger rows for 2002 after reapply = %d, want 1", rows)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id = 'keep'`).Scan(&count); err != nil {
+		t.Fatalf("count data after reapply: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("data lost after reapply: count=%d, want 1", count)
+	}
+}
+
+// TestV2FollowUp_ChecksumTamperFailsClosed verifies a tampered follow-up
+// ledger checksum is refused by Apply AND VerifyIntegrity (fail closed).
+func TestV2FollowUp_ChecksumTamperFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	db := openMem(t)
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if _, err := db.Exec(
+		`UPDATE ` + v2FollowUpLedgerTable + ` SET checksum = 'tampered' WHERE version = 2002`); err != nil {
+		t.Fatalf("tamper follow-up checksum: %v", err)
+	}
+
+	if err := baseline.Apply(ctx, db); err == nil {
+		t.Fatal("Apply succeeded with tampered follow-up checksum; expected fail-closed error")
+	} else if !errors.Is(err, ErrSchemaTampered) {
+		t.Errorf("Apply error = %v; want errors.Is ErrSchemaTampered", err)
+	}
+	if err := baseline.VerifyIntegrity(ctx, db); err == nil || !errors.Is(err, ErrSchemaTampered) {
+		t.Errorf("VerifyIntegrity error = %v; want errors.Is ErrSchemaTampered", err)
+	}
+}
+
+// TestV2FollowUp_FailureFailsClosedWithoutPartialState verifies that a
+// follow-up whose DDL fails (stale unledgered artifact with the same table
+// name) leaves NO partial state: no ledger row, no schema mutation, and the
+// baseline identity intact. Startup must fail closed rather than half-apply.
+func TestV2FollowUp_FailureFailsClosedWithoutPartialState(t *testing.T) {
+	ctx := context.Background()
+	db := buildBaselineOnlyDB(t)
+	// Stale, unledgered artifact from an interrupted/foreign run.
+	if _, err := db.Exec(`CREATE TABLE handoff_receipts (stub INTEGER)`); err != nil {
+		t.Fatalf("create stale artifact: %v", err)
+	}
+
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	if err := baseline.Apply(ctx, db); err == nil {
+		t.Fatal("Apply succeeded over a stale unledgered artifact; expected fail-closed error")
+	}
+
+	if _, ok := v2LedgerChecksum(t, db, 2002); ok {
+		t.Error("ledger row for 2002 recorded despite failed follow-up")
+	}
+	if !tableExists(t, db, "handoff_receipts") {
+		t.Error("stale artifact was mutated/dropped during the failed Apply")
+	}
+	family, _ := metaValue(t, db, "schema_family")
+	if family != SchemaFamilyCortexV2 {
+		t.Errorf("schema_family = %q after failed follow-up, want %q", family, SchemaFamilyCortexV2)
+	}
+}
+
+// --- 9. V2 FOLLOW-UP LEDGER: FUTURE VERSIONS FAIL CLOSED (R1F) --------------
+
+// v2SchemaSnapshot returns a deterministic dump of every schema object
+// (type|name|SQL, sorted) for zero-mutation proofs.
+func v2SchemaSnapshot(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.Query(
+		`SELECT type || '|' || name || '|' || COALESCE(sql, '') FROM sqlite_master ` +
+			`WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+	if err != nil {
+		t.Fatalf("read sqlite_master snapshot: %v", err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var entry string
+		if err := rows.Scan(&entry); err != nil {
+			t.Fatalf("scan sqlite_master snapshot: %v", err)
+		}
+		b.WriteString(entry)
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate sqlite_master snapshot: %v", err)
+	}
+	return b.String()
+}
+
+// TestV2FollowUp_FutureLedgerVersionFailsClosed verifies that a follow-up
+// ledger recording a version NEWER than this runtime's head (e.g. 2003
+// written by a newer runtime) is refused by BOTH Apply and VerifyIntegrity,
+// with zero mutation: schema snapshot and ledger rows stay identical.
+func TestV2FollowUp_FutureLedgerVersionFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	db := openMem(t)
+	if err := baseline.Apply(ctx, db); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// A newer runtime recorded follow-up 2003 in the ledger.
+	if _, err := db.Exec(
+		`INSERT INTO cortex_v2_migrations (version, name, checksum) VALUES (2003, 'future_runtime', 'future')`,
+	); err != nil {
+		t.Fatalf("seed future ledger row: %v", err)
+	}
+	snapshot := v2SchemaSnapshot(t, db)
+
+	// Apply MUST fail closed instead of silently running below a newer head.
+	if err := baseline.Apply(ctx, db); err == nil || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("Apply err=%v; want errors.Is ErrFutureMigration", err)
+	}
+	// VerifyIntegrity MUST fail closed too.
+	if err := baseline.VerifyIntegrity(ctx, db); err == nil || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("VerifyIntegrity err=%v; want errors.Is ErrFutureMigration", err)
+	}
+	// Zero mutation: schema identical, both ledger rows intact.
+	if after := v2SchemaSnapshot(t, db); after != snapshot {
+		t.Error("schema changed during fail-closed Apply/VerifyIntegrity over a future ledger version")
+	}
+	if rows := v2LedgerRowCount(t, db, 2002); rows != 1 {
+		t.Errorf("ledger rows for 2002 = %d after fail-closed Apply, want 1", rows)
+	}
+	if rows := v2LedgerRowCount(t, db, 2003); rows != 1 {
+		t.Errorf("ledger rows for 2003 = %d after fail-closed Apply, want 1 (row must be preserved)", rows)
+	}
+}
+
+// TestV2FollowUp_FutureVersionBlocksUpgradeBeforeDDL verifies the fail-closed
+// future-version check runs BEFORE any follow-up DDL: on a baseline-only
+// database whose ledger carries a 2003 row, the upgrade refuses without
+// creating handoff_receipts and without recording 2002.
+func TestV2FollowUp_FutureVersionBlocksUpgradeBeforeDDL(t *testing.T) {
+	ctx := context.Background()
+	db := buildBaselineOnlyDB(t)
+	if _, err := db.Exec(v2FollowUpLedgerDDL); err != nil {
+		t.Fatalf("create follow-up ledger: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO cortex_v2_migrations (version, name, checksum) VALUES (2003, 'future_runtime', 'future')`,
+	); err != nil {
+		t.Fatalf("seed future ledger row: %v", err)
+	}
+
+	baseline, err := NewV2Baseline()
+	if err != nil {
+		t.Fatalf("NewV2Baseline: %v", err)
+	}
+	if err := baseline.Apply(ctx, db); err == nil || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("upgrade Apply err=%v; want errors.Is ErrFutureMigration", err)
+	}
+
+	if tableExists(t, db, "handoff_receipts") {
+		t.Error("2002 DDL executed despite a future ledger version; the guard must precede any DDL")
+	}
+	if _, ok := v2LedgerChecksum(t, db, 2002); ok {
+		t.Error("ledger row for 2002 recorded despite fail-closed upgrade")
+	}
+	if rows := v2LedgerRowCount(t, db, 2003); rows != 1 {
+		t.Errorf("ledger rows for 2003 = %d after fail-closed upgrade, want 1", rows)
+	}
+	if err := baseline.VerifyIntegrity(ctx, db); err == nil || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("VerifyIntegrity err=%v; want errors.Is ErrFutureMigration", err)
+	}
 }

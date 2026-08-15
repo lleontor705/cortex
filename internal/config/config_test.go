@@ -1,11 +1,14 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lleontor705/cortex/internal/transportpolicy"
 )
 
 func TestLoad(t *testing.T) {
@@ -1034,4 +1037,73 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// transportPolicyTestConfig returns a minimal configuration that passes every
+// other validation rule, so transport policy is the only variable under test.
+func transportPolicyTestConfig() *Config {
+	return &Config{
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Database: DatabaseConfig{
+			InMemory: true,
+			Pragma: PragmaConfig{
+				JournalMode: "WAL",
+				Synchronous: "NORMAL",
+				TempStore:   "MEMORY",
+			},
+		},
+		Search: SearchConfig{DefaultLimit: 20, MaxLimit: 100, FusionK: 60},
+		Memory: MemoryConfig{MaxObservationLength: 1, AutoArchiveDays: 1, DecayHalfLifeDays: 1, MinArchiveScore: 1},
+	}
+}
+
+func TestValidateBearerTransportPolicy(t *testing.T) {
+	tests := []struct {
+		name     string
+		mcp      bool
+		sync     bool
+		url      string
+		wantErr  bool
+		wantCode string
+	}{
+		{name: "mcp remote https accepted", mcp: true, url: "https://cortex.example/mcp"},
+		{name: "mcp remote http loopback accepted", mcp: true, url: "http://127.0.0.1:7438/mcp"},
+		{name: "mcp remote http IPv6 loopback accepted", mcp: true, url: "http://[::1]:7438/mcp"},
+		{name: "mcp remote http localhost accepted", mcp: true, url: "http://localhost:7438/mcp"},
+		{name: "mcp remote http remote rejected", mcp: true, url: "http://cortex.example/mcp", wantErr: true, wantCode: "insecure_scheme"},
+		{name: "mcp remote http private network rejected", mcp: true, url: "http://10.0.0.5:7438/mcp", wantErr: true, wantCode: "insecure_scheme"},
+		{name: "mcp remote non-HTTP scheme rejected", mcp: true, url: "ftp://cortex.example/mcp", wantErr: true, wantCode: "unsupported_scheme"},
+		{name: "sync https accepted", sync: true, url: "https://cortex.example.com"},
+		{name: "sync http loopback accepted", sync: true, url: "http://127.0.0.1:7438"},
+		{name: "sync http remote rejected", sync: true, url: "http://cortex.example.com", wantErr: true, wantCode: "insecure_scheme"},
+		{name: "sync relative URL rejected", sync: true, url: "cortex.example.com", wantErr: true, wantCode: "invalid_url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := transportPolicyTestConfig()
+			if tt.mcp {
+				cfg.MCP.Remote = MCPRemoteConfig{Enabled: true, URL: tt.url, TokenEnv: "CORTEX_TEST_REMOTE_TOKEN", Timeout: 30 * time.Second}
+			}
+			if tt.sync {
+				cfg.Sync = SyncConfig{Enabled: true, URL: tt.url, TokenEnv: "CORTEX_TEST_REMOTE_TOKEN", Interval: 30 * time.Second, Timeout: 30 * time.Second}
+			}
+			err := Validate(cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate(url=%q) = nil, want rejection %q", tt.url, tt.wantCode)
+				}
+				var policyErr *transportpolicy.Error
+				if !errors.As(err, &policyErr) {
+					t.Fatalf("error %v does not wrap *transportpolicy.Error", err)
+				}
+				if policyErr.Code != tt.wantCode {
+					t.Fatalf("code = %q, want %q", policyErr.Code, tt.wantCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate(url=%q) = %v, want accepted", tt.url, err)
+			}
+		})
+	}
 }

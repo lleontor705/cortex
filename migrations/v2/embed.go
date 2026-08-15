@@ -37,3 +37,19 @@ var ServerSyncSQL string
 //
 //go:embed 103_sync_identity.sql
 var ServerSyncIdentitySQL string
+
+// HandoffReceiptsSQL is the SQLite-only follow-up migration (002) that adds
+// the durable handoff receipt ledger on top of the immutable 001 baseline.
+// It is applied transactionally with its own SHA-256 checksum recorded in the
+// additive cortex_v2_migrations ledger; the baseline identity is unchanged.
+//
+//go:embed 002_handoff_receipts.sql
+var HandoffReceiptsSQL string
+
+// ServerHandoffReceiptsSQL is the PostgreSQL-only follow-up migration (104)
+// that adds the tenant-isolated handoff receipt ledger on top of the
+// immutable server migrations 100-103. It is ledgered with its SHA-256
+// checksum in cortex_server_migrations; the line is forward-only.
+//
+//go:embed 104_handoff_receipts.sql
+var ServerHandoffReceiptsSQL string

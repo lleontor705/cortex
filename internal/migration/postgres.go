@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	servermigrations "github.com/lleontor705/cortex/migrations/v2"
 )
@@ -18,60 +19,99 @@ type PostgresServerMigration struct {
 	name     string
 	sql      string
 	checksum string
+	// maxKnownVersion is the head of the migration line this runtime knows
+	// (set by the constructors). Apply refuses ledgers recording versions
+	// beyond it: such databases were created by a NEWER runtime.
+	maxKnownVersion int
 }
 
-// NewPostgresServerMigration loads the embedded, checksummed server schema.
+// NewPostgresServerMigration loads the embedded, checksummed server baseline
+// (version 100). It carries the full runtime head so a standalone Apply also
+// refuses databases ledgered by a newer runtime.
 func NewPostgresServerMigration() (*PostgresServerMigration, error) {
-	if servermigrations.ServerSQL == "" {
-		return nil, errors.New("migration: embedded PostgreSQL server SQL is empty")
+	all, err := NewPostgresServerMigrations()
+	if err != nil {
+		return nil, err
 	}
-	sum := sha256.Sum256([]byte(servermigrations.ServerSQL))
-	return &PostgresServerMigration{
-		version:  100,
-		name:     "server",
-		sql:      servermigrations.ServerSQL,
-		checksum: hex.EncodeToString(sum[:]),
-	}, nil
+	return all[0], nil
+}
+
+func normalizeLF(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
 // NewPostgresServerMigrations returns every immutable server migration in
 // application order. Existing databases apply only versions missing from the
-// ledger; checksum mismatches continue to fail closed.
+// ledger; checksum mismatches and ledgered versions beyond the runtime head
+// fail closed.
 func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
-	baseline, err := NewPostgresServerMigration()
-	if err != nil {
-		return nil, err
+	if servermigrations.ServerSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL server SQL is empty")
+	}
+	sql100 := normalizeLF(servermigrations.ServerSQL)
+	sum := sha256.Sum256([]byte(sql100))
+	baseline := &PostgresServerMigration{
+		version:  100,
+		name:     "server",
+		sql:      sql100,
+		checksum: hex.EncodeToString(sum[:]),
 	}
 	if servermigrations.ServerIdentityGraphSQL == "" {
 		return nil, errors.New("migration: embedded PostgreSQL identity/graph SQL is empty")
 	}
-	sum := sha256.Sum256([]byte(servermigrations.ServerIdentityGraphSQL))
+	sql101 := normalizeLF(servermigrations.ServerIdentityGraphSQL)
+	sum = sha256.Sum256([]byte(sql101))
 	identityGraph := &PostgresServerMigration{
 		version:  101,
 		name:     "identity_graph",
-		sql:      servermigrations.ServerIdentityGraphSQL,
+		sql:      sql101,
 		checksum: hex.EncodeToString(sum[:]),
 	}
 	if servermigrations.ServerSyncSQL == "" {
 		return nil, errors.New("migration: embedded PostgreSQL sync SQL is empty")
 	}
-	sum = sha256.Sum256([]byte(servermigrations.ServerSyncSQL))
+	sql102 := normalizeLF(servermigrations.ServerSyncSQL)
+	sum = sha256.Sum256([]byte(sql102))
 	syncMigration := &PostgresServerMigration{
 		version:  102,
 		name:     "sync",
-		sql:      servermigrations.ServerSyncSQL,
+		sql:      sql102,
 		checksum: hex.EncodeToString(sum[:]),
 	}
 	if servermigrations.ServerSyncIdentitySQL == "" {
 		return nil, errors.New("migration: embedded PostgreSQL sync identity SQL is empty")
 	}
-	sum = sha256.Sum256([]byte(servermigrations.ServerSyncIdentitySQL))
-	return []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
+	sql103 := normalizeLF(servermigrations.ServerSyncIdentitySQL)
+	sum = sha256.Sum256([]byte(sql103))
+	syncIdentityChecksum := hex.EncodeToString(sum[:])
+	if servermigrations.ServerHandoffReceiptsSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL handoff receipts SQL is empty")
+	}
+	sql104 := normalizeLF(servermigrations.ServerHandoffReceiptsSQL)
+	sum = sha256.Sum256([]byte(sql104))
+	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
-		sql:      servermigrations.ServerSyncIdentitySQL,
+		sql:      sql103,
+		checksum: syncIdentityChecksum,
+	}, {
+		version:  104,
+		name:     "handoff_receipts",
+		sql:      sql104,
 		checksum: hex.EncodeToString(sum[:]),
-	}}, nil
+	}}
+	// Every migration carries the runtime head so any single Apply refuses
+	// databases ledgered by a newer runtime (ErrFutureMigration).
+	head := 0
+	for _, migration := range migrations {
+		if migration.version > head {
+			head = migration.version
+		}
+	}
+	for _, migration := range migrations {
+		migration.maxKnownVersion = head
+	}
+	return migrations, nil
 }
 
 func ApplyPostgresServerMigrations(ctx context.Context, db *sql.DB) error {
@@ -91,6 +131,25 @@ func (m *PostgresServerMigration) Version() int     { return m.version }
 func (m *PostgresServerMigration) Name() string     { return m.name }
 func (m *PostgresServerMigration) SQL() string      { return m.sql }
 func (m *PostgresServerMigration) Checksum() string { return m.checksum }
+
+// MatchesChecksum checks if the recorded checksum matches the migration checksum,
+// including cross-platform line ending normalization (LF vs CRLF).
+func (m *PostgresServerMigration) MatchesChecksum(recorded string) bool {
+	if recorded == m.checksum {
+		return true
+	}
+	lf := strings.ReplaceAll(m.sql, "\r\n", "\n")
+	sumLF := sha256.Sum256([]byte(lf))
+	if recorded == hex.EncodeToString(sumLF[:]) {
+		return true
+	}
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	sumCRLF := sha256.Sum256([]byte(crlf))
+	if recorded == hex.EncodeToString(sumCRLF[:]) {
+		return true
+	}
+	return false
+}
 
 // Apply runs the server migration atomically. A migration record stores the
 // exact embedded checksum, so changing an applied migration fails closed.
@@ -115,10 +174,28 @@ func (m *PostgresServerMigration) Apply(ctx context.Context, db *sql.DB) error {
 	)`); err != nil {
 		return fmt.Errorf("migration: create PostgreSQL migration ledger: %w", err)
 	}
+	// Future-version guard: a ledger recording a version beyond this
+	// runtime's head means the database was created by a NEWER runtime.
+	// Applying below that head would silently fork the line: fail closed
+	// before reading or writing any migration row (REM-ROLLOUT-001).
+	head := m.maxKnownVersion
+	if head < m.version {
+		head = m.version
+	}
+	var future sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT max(version) FROM cortex_server_migrations WHERE version > $1`, head,
+	).Scan(&future); err != nil {
+		return fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
+	}
+	if future.Valid {
+		return fmt.Errorf("%w: PostgreSQL ledger records migration %d beyond runtime head %d",
+			ErrFutureMigration, future.Int64, head)
+	}
 	var checksum string
 	err = tx.QueryRowContext(ctx, `SELECT checksum FROM cortex_server_migrations WHERE version = $1`, m.Version()).Scan(&checksum)
 	switch {
-	case err == nil && checksum != m.Checksum():
+	case err == nil && !m.MatchesChecksum(checksum):
 		return fmt.Errorf("migration: PostgreSQL migration %d checksum mismatch", m.Version())
 	case err == nil:
 		return tx.Commit()
@@ -137,44 +214,17 @@ func (m *PostgresServerMigration) Apply(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// Down rolls back the server wave under the same advisory lock used by Apply.
-// It is intentionally explicit: callers must opt in because it removes all
-// tenant data in the server schema.
+// Down is the forward-only guard for the PostgreSQL server migration line.
+// For EVERY version — 100 through 104, ledgered or unledgered — it returns an
+// ErrForwardOnly-wrapped error and executes NO DDL/DML: no transaction, no
+// query; schema, data, and the migration ledger remain untouched. There is no
+// artifact-cleanup exception: stale unledgered artifacts and newer-runtime
+// ledgers are handled by reviewed compensating migrations, never by
+// destructive rollback (REM-MIG-001, R1F review). The behavioral matrix with
+// real schema/ledger/data snapshots runs in postgres_integration.
 func (m *PostgresServerMigration) Down(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return errors.New("migration: PostgreSQL database connection is nil")
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("migration: begin PostgreSQL rollback: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('cortex:v2:server-migrations'))`); err != nil {
-		return fmt.Errorf("migration: lock PostgreSQL server migrations: %w", err)
-	}
-	var checksum string
-	if err = tx.QueryRowContext(ctx, `SELECT checksum FROM cortex_server_migrations WHERE version=$1`, m.Version()).Scan(&checksum); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
-	}
-	if checksum != m.Checksum() {
-		return fmt.Errorf("migration: PostgreSQL migration %d checksum mismatch", m.Version())
-	}
-	for _, table := range []string{"audit_events", "actor_subjects", "index_outbox", "observation_entities", "entities", "edges", "prompts", "observation_revisions", "importance_scores", "observations", "sessions", "api_tokens", "memberships", "rbac_roles", "service_accounts", "app_users", "projects", "workspaces", "organizations", "cortex_tenant_context"} {
-		if _, err = tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+table+` CASCADE`); err != nil {
-			return fmt.Errorf("migration: rollback table %s: %w", table, err)
-		}
-	}
-	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_current_tenant() CASCADE`); err != nil {
-		return fmt.Errorf("migration: rollback current tenant function: %w", err)
-	}
-	if _, err = tx.ExecContext(ctx, `DROP FUNCTION IF EXISTS cortex_bind_principal(uuid,text,bigint) CASCADE`); err != nil {
-		return fmt.Errorf("migration: rollback principal binder function: %w", err)
-	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM cortex_server_migrations WHERE version=$1`, m.Version()); err != nil {
-		return fmt.Errorf("migration: rollback migration ledger: %w", err)
-	}
-	return tx.Commit()
+	return fmt.Errorf("%w: PostgreSQL server migration %d cannot be rolled back", ErrForwardOnly, m.version)
 }
