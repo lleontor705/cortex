@@ -188,6 +188,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
 	mux.HandleFunc("GET /api/graph/analytics", a.graphAnalytics)
 	mux.HandleFunc("GET /api/graph/blast-radius", a.graphBlastRadius)
+	mux.HandleFunc("GET /api/graph/project-graph", a.projectGraph)
 	mux.HandleFunc("POST /api/graph/ingest-code", a.ingestCode)
 	mux.HandleFunc("GET /api/graph/{id}/related", a.related)
 	mux.HandleFunc("GET /api/graph/{id}/subgraph", a.subgraph)
@@ -713,11 +714,70 @@ func (a *apiHandler) graphBlastRadius(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, blast)
 }
 
+func (a *apiHandler) projectGraph(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	limit := queryInt(r.URL.Query().Get("limit"), 150, 1, 500)
+
+	observations, err := a.ops.ListObservations(r.Context(), domain.ObservationFilter{
+		Project: project,
+		Limit:   limit,
+	})
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+
+	var nodes []domain.GraphNode
+	var edges []domain.GraphLink
+	nodeSet := make(map[string]bool)
+
+	for _, obs := range observations {
+		nid := "observation:" + obs.PublicID
+		nodeSet[nid] = true
+		nodes = append(nodes, domain.GraphNode{
+			ID:      nid,
+			Kind:    obs.Type,
+			Label:   obs.Title,
+			Project: obs.Project,
+			Hop:     0,
+			Metadata: map[string]any{
+				"source": obs.Source,
+				"scope":  obs.Scope,
+			},
+		})
+
+		sub, err := a.ops.GetGraphSubgraph(r.Context(), obs.PublicID, 1, 30)
+		if err == nil && sub != nil {
+			for _, e := range sub.Edges {
+				edges = append(edges, e)
+			}
+			for _, n := range sub.Nodes {
+				if !nodeSet[n.ID] {
+					nodeSet[n.ID] = true
+					nodes = append(nodes, n)
+				}
+			}
+		}
+	}
+
+	rootLabel := project
+	if rootLabel == "" {
+		rootLabel = "all_projects"
+	}
+
+	writeJSON(w, http.StatusOK, domain.GraphSubgraph{
+		Root:  rootLabel,
+		Nodes: nodes,
+		Edges: edges,
+	})
+}
+
 func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Directory string `json:"directory"`
 		Project   string `json:"project"`
 		MaxFiles  int    `json:"max_files"`
+		Persist   *bool  `json:"persist"`
 	}
 	if !decodeBody(w, r, &input) {
 		return
@@ -729,6 +789,10 @@ func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
 	if input.Project == "" {
 		input.Project = "default"
 	}
+	shouldPersist := true
+	if input.Persist != nil {
+		shouldPersist = *input.Persist
+	}
 
 	extractor := ast.NewExtractor(input.Directory)
 	res, err := extractor.ExtractDir(input.Directory, input.MaxFiles)
@@ -737,12 +801,50 @@ func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	persistedCount := 0
+	if shouldPersist {
+		entityObsMap := make(map[string]*domain.Observation)
+		for _, ent := range res.Entities {
+			obs := &domain.Observation{
+				Project: input.Project,
+				Type:    "code_entity",
+				Title:   fmt.Sprintf("[%s] %s", ent.Kind, ent.Name),
+				Content: fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s", ent.File, ent.Line, ent.Kind, ent.Package),
+				Source:  ent.File,
+				Scope:   "project",
+			}
+			if err := a.ops.SaveObservation(r.Context(), obs); err == nil {
+				entityObsMap[ent.ID] = obs
+				persistedCount++
+			}
+		}
+
+		for _, rel := range res.Relationships {
+			srcObs := entityObsMap[rel.Source]
+			tgtObs := entityObsMap[rel.Target]
+			if srcObs != nil && tgtObs != nil {
+				edge := domain.Edge{
+					FromObsID:    srcObs.ID,
+					ToObsID:      tgtObs.ID,
+					FromPublicID: srcObs.PublicID,
+					ToPublicID:   tgtObs.PublicID,
+					RelationType: rel.Relation,
+					Confidence:   rel.Confidence,
+					Reasoning:    rel.Reasoning,
+				}
+				_ = a.ops.CreateGraphEdge(r.Context(), &edge)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"files_scanned":  res.FilesScanned,
-		"entities_count": len(res.Entities),
+		"files_scanned":   res.FilesScanned,
+		"entities_count":  len(res.Entities),
 		"relations_count": len(res.Relationships),
-		"entities":       res.Entities,
-		"relationships":  res.Relationships,
+		"persisted_count": persistedCount,
+		"project":         input.Project,
+		"entities":        res.Entities,
+		"relationships":   res.Relationships,
 	})
 }
 

@@ -41,7 +41,9 @@ import {
   Network,
   Radio,
   FileCode,
-  ShieldAlert,
+  FolderGit2,
+  Cpu,
+  Scan,
 } from "lucide-react";
 
 interface SimulationNode extends GraphNode {
@@ -107,10 +109,12 @@ export default function GraphPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Projects State
+  const [projects, setProjects] = useState<string[]>(["default"]);
+  const [selectedProject, setSelectedProject] = useState<string>("default");
+
+  // Observations for connect/resolve modals
   const [observations, setObservations] = useState<Observation[]>([]);
-  const [selectedObsId, setSelectedObsId] = useState<string>("");
-  const [depth, setDepth] = useState<number>(2);
-  const [maxNodes, setMaxNodes] = useState<number>(80);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,7 +126,6 @@ export default function GraphPage() {
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [blastData, setBlastData] = useState<BlastRadiusResult | null>(null);
   const [blastLoading, setBlastLoading] = useState(false);
-  const [activeCommunityId, setActiveCommunityId] = useState<number | null>(null);
 
   // Graph Simulation State
   const nodesRef = useRef<SimulationNode[]>([]);
@@ -151,7 +154,6 @@ export default function GraphPage() {
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const draggedNodeRef = useRef<SimulationNode | null>(null);
-  const animationFrameId = useRef<number | null>(null);
   const alphaRef = useRef(1);
 
   // Copied indicator
@@ -169,29 +171,48 @@ export default function GraphPage() {
   const [relationReason, setRelationReason] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
 
-  // Initial Load of observations for the selector
+  // Code Scan / Ingest Modal
+  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
+  const [scanDir, setScanDir] = useState(".");
+  const [scanMaxFiles, setScanMaxFiles] = useState(250);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<any>(null);
+
+  // Load Projects and Observations
   useEffect(() => {
     if (!client) return;
+
+    // Load registered projects
     client
-      .listObservations("?limit=100")
-      .then((obs) => {
-        const list = obs || [];
-        setObservations(list);
-        if (list.length > 0 && !selectedObsId) {
-          setSelectedObsId(list[0].id);
+      .projects()
+      .then((res) => {
+        const projs = Array.isArray(res) ? res : [];
+        if (projs.length > 0) {
+          setProjects(projs);
+          if (!projs.includes(selectedProject)) {
+            setSelectedProject(projs[0]);
+          }
         }
+      })
+      .catch((err) => console.error("Failed to load projects", err));
+
+    // Load observations for relation targets
+    client
+      .listObservations("?limit=150")
+      .then((obs) => {
+        setObservations(obs || []);
       })
       .catch((err) => console.error("Failed to list observations", err));
   }, [client]);
 
-  // Load Subgraph data from backend
-  const loadSubgraph = useCallback(
-    async (rootId: string, currentDepth = depth, currentMax = maxNodes) => {
-      if (!client || !rootId) return;
+  // Load Project Graph data from backend
+  const loadProjectGraph = useCallback(
+    async (project: string) => {
+      if (!client) return;
       setLoading(true);
       setError(null);
       try {
-        const data: GraphSubgraph = await client.subgraph(rootId, currentDepth, currentMax);
+        const data: GraphSubgraph = await client.projectGraph(project === "all" ? undefined : project, 200);
         rootIdRef.current = data.root;
 
         const existingPosMap = new Map<string, { x: number; y: number; vx: number; vy: number; isPinned?: boolean }>();
@@ -205,8 +226,8 @@ export default function GraphPage() {
 
         const simNodes: SimulationNode[] = data.nodes.map((n, idx) => {
           const prev = existingPosMap.get(n.id);
-          const isRoot = n.id === data.root;
-          const radius = isRoot ? 26 : n.hop === 1 ? 20 : 16;
+          const isRoot = idx === 0;
+          const radius = n.kind === "module" ? 24 : n.kind === "class" ? 20 : 16;
 
           if (prev) {
             return {
@@ -221,11 +242,11 @@ export default function GraphPage() {
           }
 
           const angle = (idx / (count || 1)) * 2 * Math.PI;
-          const dist = isRoot ? 0 : n.hop === 1 ? 140 + Math.random() * 40 : 250 + Math.random() * 60;
+          const dist = 120 + Math.random() * 180;
           return {
             ...n,
-            x: centerX + dist * Math.cos(angle) + (Math.random() - 0.5) * 20,
-            y: centerY + dist * Math.sin(angle) + (Math.random() - 0.5) * 20,
+            x: centerX + dist * Math.cos(angle) + (Math.random() - 0.5) * 30,
+            y: centerY + dist * Math.sin(angle) + (Math.random() - 0.5) * 30,
             vx: 0,
             vy: 0,
             radius,
@@ -247,36 +268,37 @@ export default function GraphPage() {
         edgesRef.current = simEdges;
         alphaRef.current = 1.0;
 
-        const rootNode = simNodes.find((n) => n.id === data.root) || null;
-        setSelectedNode(rootNode);
+        if (simNodes.length > 0) {
+          setSelectedNode(simNodes[0]);
+        }
       } catch (err: any) {
-        setError(err.message || "Error al cargar el subgrafo");
+        setError(err.message || "Error al cargar el grafo del proyecto");
       } finally {
         setLoading(false);
       }
     },
-    [client, depth, maxNodes],
+    [client],
   );
 
   useEffect(() => {
-    if (selectedObsId) {
-      loadSubgraph(selectedObsId);
+    if (selectedProject) {
+      loadProjectGraph(selectedProject);
     }
-  }, [selectedObsId, loadSubgraph]);
+  }, [selectedProject, loadProjectGraph]);
 
-  // Load Graph Analytics
+  // Load Graph Analytics for the selected project
   const loadAnalytics = useCallback(async () => {
     if (!client) return;
     setAnalyticsLoading(true);
     try {
-      const report = await client.analytics();
+      const report = await client.analytics(selectedProject === "all" ? undefined : selectedProject, 200);
       setAnalyticsReport(report);
     } catch (err: any) {
-      console.error("Failed to load graph analytics", err);
+      console.error("Failed to load project graph analytics", err);
     } finally {
       setAnalyticsLoading(false);
     }
-  }, [client]);
+  }, [client, selectedProject]);
 
   useEffect(() => {
     if (viewMode === "communities" || viewMode === "analytics") {
@@ -310,7 +332,29 @@ export default function GraphPage() {
     return map;
   }, [analyticsReport]);
 
-  // Export Graph to Obsidian Markdown format
+  // Ingest Project Code via AST
+  const handleScanCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!client) return;
+    setIsScanning(true);
+    try {
+      const res = await client.ingestCode({
+        directory: scanDir || ".",
+        project: selectedProject,
+        max_files: scanMaxFiles || 250,
+      });
+      setScanResult(res);
+      loadProjectGraph(selectedProject);
+      alert(`¡Escaneo de proyecto completado! Símbolos extraídos: ${res.entities_count}, Relaciones detectadas: ${res.relations_count}`);
+      setIsScanModalOpen(false);
+    } catch (err: any) {
+      alert("Error al escanear código: " + (err.message || err));
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // Export Project Graph to Obsidian Markdown format
   const handleExportObsidian = () => {
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
@@ -319,9 +363,9 @@ export default function GraphPage() {
       return;
     }
 
-    let md = `# Cortex Knowledge Graph Export\n\n`;
+    let md = `# Cortex Knowledge Graph Export - Proyecto: ${selectedProject}\n\n`;
     md += `*Generado automáticamente: ${new Date().toLocaleString()}*\n\n`;
-    md += `## Resumen del Grafo\n- Nodos totales: ${nodes.length}\n- Aristas totales: ${edges.length}\n\n`;
+    md += `## Resumen del Proyecto\n- Proyecto: **${selectedProject}**\n- Nodos totales: ${nodes.length}\n- Aristas totales: ${edges.length}\n\n`;
 
     md += `## Entidades y WikiLinks\n`;
     nodes.forEach((n) => {
@@ -347,7 +391,7 @@ export default function GraphPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `cortex_graph_obsidian_${new Date().toISOString().slice(0, 10)}.md`;
+    a.download = `cortex_${selectedProject}_obsidian_${new Date().toISOString().slice(0, 10)}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -372,8 +416,8 @@ export default function GraphPage() {
             const distSq = dx * dx + dy * dy || 1;
             const dist = Math.sqrt(distSq);
 
-            if (dist < 400) {
-              const force = (1800 / distSq) * alpha;
+            if (dist < 380) {
+              const force = (1600 / distSq) * alpha;
               const fx = (dx / dist) * force;
               const fy = (dy / dist) * force;
 
@@ -398,7 +442,7 @@ export default function GraphPage() {
           const dx = t.x - s.x;
           const dy = t.y - s.y;
           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          const idealDist = 120;
+          const idealDist = 110;
           const force = (dist - idealDist) * 0.045 * alpha;
           const fx = (dx / dist) * force;
           const fy = (dy / dist) * force;
@@ -408,8 +452,8 @@ export default function GraphPage() {
             s.vy += fy;
           }
           if (!t.isPinned) {
-            t.vx -= fx;
-            t.vy -= fy;
+            t.vx += fx;
+            t.vy += fy;
           }
         }
 
@@ -458,7 +502,6 @@ export default function GraphPage() {
 
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
-    const rootId = rootIdRef.current;
     const activeNode = hoveredNode || selectedNode;
 
     const connectedNodeIds = new Set<string>();
@@ -527,10 +570,8 @@ export default function GraphPage() {
 
     // Draw Nodes
     nodes.forEach((node) => {
-      const isRoot = node.id === rootId;
       const isSelected = selectedNode?.id === node.id;
       const isSearchMatch = searchQuery && node.label.toLowerCase().includes(searchQuery.toLowerCase());
-      const isConnected = activeNode ? connectedNodeIds.has(node.id) : true;
 
       let isDimmed = activeNode ? !connectedNodeIds.has(node.id) : false;
 
@@ -564,15 +605,13 @@ export default function GraphPage() {
       }
 
       // Outer Glow
-      if (isRoot || isSelected || isSearchMatch || isBlastRoot || isDirectImpact) {
+      if (isSelected || isSearchMatch || isBlastRoot || isDirectImpact) {
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.radius + (isSelected ? 8 : 5), 0, 2 * Math.PI);
         ctx.fillStyle = isBlastRoot
           ? "rgba(239, 68, 68, 0.4)"
           : isDirectImpact
           ? "rgba(245, 158, 11, 0.35)"
-          : isRoot
-          ? "rgba(59, 130, 246, 0.25)"
           : isSearchMatch
           ? "rgba(245, 158, 11, 0.25)"
           : "rgba(96, 165, 250, 0.25)";
@@ -591,8 +630,6 @@ export default function GraphPage() {
         ctx.fillStyle = "#fb923c";
       } else if (isCommunityMode && commColor) {
         ctx.fillStyle = commColor;
-      } else if (isRoot) {
-        ctx.fillStyle = "#2563eb";
       } else if (isSelected) {
         ctx.fillStyle = "#3b82f6";
       } else {
@@ -601,15 +638,13 @@ export default function GraphPage() {
       ctx.fill();
 
       // Node Border
-      ctx.lineWidth = isSelected ? 3.5 : isRoot || isBlastRoot ? 2.5 : 1.5;
+      ctx.lineWidth = isSelected ? 3.5 : isBlastRoot ? 2.5 : 1.5;
       ctx.strokeStyle = isBlastRoot
         ? "#fca5a5"
         : isDirectImpact
         ? "#fde68a"
         : isSelected
         ? "#93c5fd"
-        : isRoot
-        ? "#60a5fa"
         : isCommunityMode && commColor
         ? "#ffffff"
         : kindStyle.border;
@@ -623,20 +658,9 @@ export default function GraphPage() {
         ctx.fill();
       }
 
-      // Hop Ring
-      if (!isRoot && node.hop > 1) {
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.4)";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([2, 2]);
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, node.radius + 3, 0, 2 * Math.PI);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
       // Label
       ctx.fillStyle = isSelected ? "#ffffff" : isDimmed ? "#64748b" : "#f8fafc";
-      ctx.font = isRoot || isBlastRoot
+      ctx.font = isBlastRoot
         ? "bold 12px Inter, sans-serif"
         : isSelected
         ? "600 11px Inter, sans-serif"
@@ -644,7 +668,7 @@ export default function GraphPage() {
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
 
-      const maxLen = isRoot ? 24 : 18;
+      const maxLen = 22;
       const labelText = node.label.length > maxLen ? node.label.slice(0, maxLen - 2) + "..." : node.label;
       ctx.fillText(labelText, node.x, node.y + node.radius + 6);
 
@@ -701,7 +725,7 @@ export default function GraphPage() {
       const my = (n.y - minY) * scale;
       mctx.beginPath();
       mctx.arc(mx, my, 2.5, 0, 2 * Math.PI);
-      mctx.fillStyle = n.id === rootIdRef.current ? "#3b82f6" : "#64748b";
+      mctx.fillStyle = "#64748b";
       mctx.fill();
     });
   };
@@ -845,55 +869,6 @@ export default function GraphPage() {
     setSelectedNode(node);
   };
 
-  const handleExpandNode = async () => {
-    if (!client || !selectedNode) return;
-    setLoading(true);
-    try {
-      const data: GraphSubgraph = await client.subgraph(selectedNode.id, 1, 20);
-      const existingNodeIds = new Set(nodesRef.current.map((n) => n.id));
-      const existingEdgeKeys = new Set(nodesRef.current.map((e) => `${e.id}`));
-
-      const newNodes: SimulationNode[] = [];
-      data.nodes.forEach((n) => {
-        if (!existingNodeIds.has(n.id)) {
-          const angle = Math.random() * 2 * Math.PI;
-          const dist = 100 + Math.random() * 40;
-          newNodes.push({
-            ...n,
-            x: selectedNode.x + dist * Math.cos(angle),
-            y: selectedNode.y + dist * Math.sin(angle),
-            vx: 0,
-            vy: 0,
-            radius: 16,
-          });
-        }
-      });
-
-      const nodeMap = new Map<string, SimulationNode>();
-      [...nodesRef.current, ...newNodes].forEach((n) => nodeMap.set(n.id, n));
-
-      const newEdges: SimulationLink[] = [];
-      data.edges.forEach((e) => {
-        const key = `${e.source}->${e.target}`;
-        if (!existingEdgeKeys.has(key)) {
-          const src = nodeMap.get(e.source);
-          const tgt = nodeMap.get(e.target);
-          if (src && tgt) {
-            newEdges.push({ ...e, sourceNode: src, targetNode: tgt });
-          }
-        }
-      });
-
-      nodesRef.current = [...nodesRef.current, ...newNodes];
-      edgesRef.current = [...edgesRef.current, ...newEdges];
-      alphaRef.current = 0.8;
-    } catch (err: any) {
-      alert("Error al expandir subgrafo: " + (err.message || err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const selectedNodeNeighbors = useMemo(() => {
     if (!selectedNode) return [];
     const neighbors: { node: SimulationNode; relation: string; direction: "in" | "out" }[] = [];
@@ -923,7 +898,7 @@ export default function GraphPage() {
       });
       setIsResolveModalOpen(false);
       setResolveReason("");
-      loadSubgraph(selectedNode.id);
+      loadProjectGraph(selectedProject);
       alert("¡Conflicto resuelto exitosamente! Arista 'supersedes' registrada.");
     } catch (err: any) {
       alert("Error al resolver: " + (err.message || err));
@@ -945,7 +920,7 @@ export default function GraphPage() {
       });
       setIsConnectModalOpen(false);
       setRelationReason("");
-      loadSubgraph(selectedNode.id);
+      loadProjectGraph(selectedProject);
       alert("¡Arista creada exitosamente!");
     } catch (err: any) {
       alert("Error al conectar: " + (err.message || err));
@@ -980,50 +955,51 @@ export default function GraphPage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
             <Share2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
-            <span>Grafo de Conocimiento & Código</span>
+            <span>Grafo del Proyecto & Código (Estilo Graphify)</span>
           </h1>
           <p className="text-xs text-[var(--text-muted)] mt-1">
-            Motor de física 2D a 60 FPS con clustering modular (Louvain), análisis de blast radius y detección de olores arquitectónicos.
+            Mapeo completo por proyecto: módulos, clases, llamadas, comunidades funcionales, cuellos de botella y blast radius.
           </p>
         </div>
 
-        {/* Global Toolbar */}
+        {/* Global Project Toolbar */}
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)]">RAÍZ:</span>
+            <span className="text-[11px] font-semibold text-[var(--text-muted)] flex items-center gap-1">
+              <FolderGit2 className="h-3.5 w-3.5 text-blue-400" />
+              PROYECTO:
+            </span>
             <Select
-              value={selectedObsId}
-              onChange={(e) => setSelectedObsId(e.target.value)}
-              className="w-48 sm:w-56 text-xs"
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              className="w-44 sm:w-52 text-xs font-semibold"
             >
-              {observations.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.title} ({o.project})
+              {projects.map((p) => (
+                <option key={p} value={p}>
+                  📁 {p}
                 </option>
               ))}
-            </Select>
-          </div>
-
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)]">SALTOS:</span>
-            <Select
-              value={depth}
-              onChange={(e) => setDepth(Number(e.target.value))}
-              className="w-20 sm:w-24 text-xs"
-            >
-              <option value={1}>1 hop</option>
-              <option value={2}>2 hops</option>
-              <option value={3}>3 hops</option>
-              <option value={4}>4 hops</option>
+              <option value="all">🌐 Todos los Proyectos</option>
             </Select>
           </div>
 
           <Button
-            onClick={() => loadSubgraph(selectedObsId)}
+            onClick={() => setIsScanModalOpen(true)}
+            variant="default"
+            size="sm"
+            className="text-xs gap-1.5 bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/20"
+            title="Escanear e Ingestar Código del Proyecto con AST Extractor"
+          >
+            <Scan className="h-3.5 w-3.5" />
+            <span>Escanear Código</span>
+          </Button>
+
+          <Button
+            onClick={() => loadProjectGraph(selectedProject)}
             variant="secondary"
             size="sm"
             disabled={loading}
-            title="Recargar Grafo"
+            title="Recargar Grafo del Proyecto"
             className="text-xs gap-1.5"
           >
             <RotateCcw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -1035,7 +1011,7 @@ export default function GraphPage() {
             variant="outline"
             size="sm"
             className="text-xs gap-1.5 border-[var(--border-subtle)] bg-[var(--bg-surface)]"
-            title="Exportar a Obsidian Vault en Markdown con [[WikiLinks]]"
+            title="Exportar base de conocimiento del proyecto a Obsidian Vault (.md con [[WikiLinks]])"
           >
             <Download className="h-3.5 w-3.5 text-purple-400" />
             <span>Obsidian (.md)</span>
@@ -1058,7 +1034,7 @@ export default function GraphPage() {
           }`}
         >
           <Network className="h-3.5 w-3.5" />
-          <span>Subgrafo 2D</span>
+          <span>Grafo del Proyecto ({stats.nodes} nodos)</span>
         </button>
 
         <button
@@ -1109,22 +1085,22 @@ export default function GraphPage() {
           }`}
         >
           <Activity className="h-3.5 w-3.5 text-emerald-300" />
-          <span>Diagnóstico Arquitectónico</span>
+          <span>Diagnóstico Arquitectónico del Proyecto</span>
         </button>
       </div>
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
         <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Nodos en el Grafo</span>
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Nodos del Proyecto</span>
           <span className="text-2xl font-bold text-[var(--text-primary)] mt-1 block">{stats.nodes}</span>
         </Card>
         <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Aristas de Relación</span>
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Aristas & Dependencias</span>
           <span className="text-2xl font-bold text-blue-400 mt-1 block">{stats.edges}</span>
         </Card>
         <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Conflictos Detectados</span>
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Conflictos / Contradicciones</span>
           <span className={`text-2xl font-bold mt-1 block ${stats.contradicts > 0 ? "text-red-400" : "text-[var(--text-muted)]"}`}>
             {stats.contradicts}
           </span>
@@ -1132,7 +1108,7 @@ export default function GraphPage() {
         <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Comunidades Funcionales</span>
           <span className="text-2xl font-bold text-purple-400 mt-1 block">
-            {analyticsReport?.communities?.length || 1}
+            {analyticsReport?.communities?.length || (stats.nodes > 0 ? 1 : 0)}
           </span>
         </Card>
       </div>
@@ -1175,7 +1151,7 @@ export default function GraphPage() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar nodo en grafo..."
+            placeholder="Buscar entidad en el proyecto..."
             className="pl-8 h-8 text-xs w-full"
           />
           {searchQuery && (
@@ -1224,7 +1200,7 @@ export default function GraphPage() {
             <div className="absolute top-3 sm:top-4 right-3 sm:right-4 z-10 p-3 rounded-xl bg-rose-950/80 border border-rose-800/60 backdrop-blur-md text-xs space-y-1 shadow-2xl max-w-xs">
               <div className="flex items-center gap-1.5 text-rose-400 font-bold">
                 <Zap className="h-4 w-4" />
-                <span>Blast Radius: {blastData.blast_radius_pct.toFixed(1)}% del Grafo</span>
+                <span>Blast Radius: {blastData.blast_radius_pct.toFixed(1)}% del Proyecto</span>
               </div>
               <div className="text-[11px] text-slate-300">
                 • Impacto Directo: <b>{blastData.direct_impact.length}</b> nodos
@@ -1267,7 +1243,7 @@ export default function GraphPage() {
               <div className="pb-3 border-b border-[var(--border-subtle)] flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
                   <Activity className="h-4 w-4 text-emerald-400" />
-                  Diagnóstico Arquitectónico
+                  Salud Arquitectónica ({selectedProject})
                 </h2>
                 <Button variant="ghost" size="sm" onClick={loadAnalytics} disabled={analyticsLoading} className="text-xs">
                   <RotateCcw className={`h-3 w-3 ${analyticsLoading ? "animate-spin" : ""}`} />
@@ -1275,7 +1251,7 @@ export default function GraphPage() {
               </div>
 
               {analyticsLoading ? (
-                <div className="py-12 text-center text-[var(--text-muted)]">Calculando métricas...</div>
+                <div className="py-12 text-center text-[var(--text-muted)]">Calculando métricas del proyecto...</div>
               ) : analyticsReport ? (
                 <div className="space-y-4">
                   {/* God Nodes */}
@@ -1348,17 +1324,17 @@ export default function GraphPage() {
               <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
                 <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
                   <Info className="h-4 w-4 text-blue-400" />
-                  Detalle del Nodo
+                  Detalle de la Entidad
                 </h2>
-                {selectedNode && (
-                  <Badge variant="default">Hop {selectedNode.hop}</Badge>
+                {selectedNode?.project && (
+                  <Badge variant="default">{selectedNode.project}</Badge>
                 )}
               </div>
 
               {selectedNode ? (
                 <div className="space-y-3.5 text-xs">
                   <div>
-                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TÍTULO</span>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">SÍMBOLO / TÍTULO</span>
                     <div className="font-semibold text-sm text-slate-100 mt-1">
                       {selectedNode.label}
                     </div>
@@ -1366,7 +1342,7 @@ export default function GraphPage() {
 
                   <div className="flex items-center justify-between">
                     <div>
-                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TIPO DE ENTIDAD</span>
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TIPO</span>
                       <div className="mt-1">
                         <Badge variant={KIND_COLORS[selectedNode.kind]?.variant || "secondary"}>
                           {selectedNode.kind}
@@ -1383,7 +1359,7 @@ export default function GraphPage() {
                   </div>
 
                   <div>
-                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ID OPACO</span>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ID DEL NODO</span>
                     <div
                       onClick={() => copyNodeId(selectedNode.id)}
                       className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-slate-700 cursor-pointer mt-1 transition-colors"
@@ -1402,7 +1378,7 @@ export default function GraphPage() {
                     </span>
                     <div className="mt-1.5 space-y-1.5 max-h-32 overflow-y-auto pr-1">
                       {selectedNodeNeighbors.length === 0 ? (
-                        <p className="text-xs text-slate-500 italic">Sin conexiones directas visibles</p>
+                        <p className="text-xs text-slate-500 italic">Sin conexiones directas en este proyecto</p>
                       ) : (
                         selectedNodeNeighbors.map(({ node, relation, direction }, idx) => (
                           <div
@@ -1428,7 +1404,7 @@ export default function GraphPage() {
               ) : (
                 <div className="text-center py-10 px-4 text-slate-500 space-y-2">
                   <Layers className="h-8 w-8 mx-auto opacity-40" />
-                  <p className="text-xs">Haz clic en cualquier nodo del grafo para inspeccionar sus atributos y relaciones.</p>
+                  <p className="text-xs">Haz clic en cualquier entidad del proyecto para ver sus atributos y dependencias.</p>
                 </div>
               )}
             </div>
@@ -1445,18 +1421,7 @@ export default function GraphPage() {
                 disabled={blastLoading}
               >
                 <Zap className="h-3.5 w-3.5 text-amber-300" />
-                <span>Analizar Blast Radius (Impacto)</span>
-              </Button>
-
-              <Button
-                onClick={handleExpandNode}
-                variant="secondary"
-                size="sm"
-                className="w-full justify-center"
-                disabled={loading}
-              >
-                <Plus className="h-3.5 w-3.5 text-blue-400" />
-                <span>Expandir Vecinos en este Nodo</span>
+                <span>Calcular Blast Radius en el Proyecto</span>
               </Button>
 
               <Button
@@ -1488,6 +1453,58 @@ export default function GraphPage() {
           )}
         </Card>
       </div>
+
+      {/* Modal: Scan Project Code (AST Extractor) */}
+      <Dialog open={isScanModalOpen} onOpenChange={setIsScanModalOpen}>
+        <DialogHeader>
+          <DialogTitle>
+            <Scan className="h-4 w-4 text-blue-400" />
+            Escanear Código del Proyecto ({selectedProject})
+          </DialogTitle>
+          <DialogClose onClick={() => setIsScanModalOpen(false)} />
+        </DialogHeader>
+
+        <form onSubmit={handleScanCode} className="space-y-3.5 mt-4 text-xs">
+          <p className="text-slate-400">
+            Ejecuta el extractor AST nativo (Go, TS/JS, Python, SQL) para mapear automáticamente funciones, métodos, clases, imports y llamadas en el grafo de <b>{selectedProject}</b>.
+          </p>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              DIRECTORIO O RUTA DEL PROYECTO
+            </label>
+            <Input
+              type="text"
+              value={scanDir}
+              onChange={(e) => setScanDir(e.target.value)}
+              placeholder="Ej: . o D:\repos\cortex o ./internal"
+              required
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              LÍMITE MÁXIMO DE ARCHIVOS A ESCANEAR
+            </label>
+            <Input
+              type="number"
+              value={scanMaxFiles}
+              onChange={(e) => setScanMaxFiles(Number(e.target.value))}
+              min={10}
+              max={2000}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsScanModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit" size="sm" disabled={isScanning} className="bg-blue-600 hover:bg-blue-500 text-white">
+              {isScanning ? "Escaneando AST..." : "Iniciar Escaneo"}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
 
       {/* Modal 1: Connect / Create Edge */}
       <Dialog open={isConnectModalOpen && !!selectedNode} onOpenChange={setIsConnectModalOpen}>

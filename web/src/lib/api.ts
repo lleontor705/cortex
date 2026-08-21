@@ -454,6 +454,13 @@ export class CortexClient {
     });
   }
 
+  projectGraph(project?: string, limit = 150) {
+    const params = new URLSearchParams();
+    if (project) params.set("project", project);
+    params.set("limit", limit.toString());
+    return this.request<GraphSubgraph>(`/api/graph/project-graph?${params.toString()}`);
+  }
+
   analytics(project?: string, limit = 100) {
     const params = new URLSearchParams();
     if (project) params.set("project", project);
