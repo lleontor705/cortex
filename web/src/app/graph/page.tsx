@@ -306,13 +306,16 @@ export default function GraphPage() {
     }
   }, [viewMode, loadAnalytics]);
 
+  // Blast Depth State
+  const [blastDepth, setBlastDepth] = useState<number>(3);
+
   // Calculate Blast Radius for Selected Node
-  const handleInspectBlastRadius = async (nodeId: string) => {
+  const handleInspectBlastRadius = async (nodeId: string, depth = blastDepth) => {
     if (!client || !nodeId) return;
     setBlastLoading(true);
     setViewMode("blast");
     try {
-      const res = await client.blastRadius(nodeId, 3);
+      const res = await client.blastRadius(nodeId, depth);
       setBlastData(res);
     } catch (err: any) {
       alert("Error al calcular blast radius: " + (err.message || err));
@@ -392,6 +395,34 @@ export default function GraphPage() {
     const a = document.createElement("a");
     a.href = url;
     a.download = `cortex_${selectedProject}_obsidian_${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Export Project Graph to JSON format
+  const handleExportJSON = () => {
+    const nodes = nodesRef.current;
+    const edges = edgesRef.current;
+    if (nodes.length === 0) {
+      alert("No hay nodos en el grafo para exportar.");
+      return;
+    }
+
+    const payload = {
+      project: selectedProject,
+      exported_at: new Date().toISOString(),
+      nodes_count: nodes.length,
+      edges_count: edges.length,
+      nodes,
+      edges,
+      analytics: analyticsReport,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cortex_${selectedProject}_graph_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1007,6 +1038,17 @@ export default function GraphPage() {
           </Button>
 
           <Button
+            onClick={handleExportJSON}
+            variant="outline"
+            size="sm"
+            className="text-xs gap-1.5 border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+            title="Exportar grafo del proyecto a JSON"
+          >
+            <Download className="h-3.5 w-3.5 text-blue-400" />
+            <span>JSON (.json)</span>
+          </Button>
+
+          <Button
             onClick={handleExportObsidian}
             variant="outline"
             size="sm"
@@ -1088,6 +1130,43 @@ export default function GraphPage() {
           <span>Diagnóstico Arquitectónico del Proyecto</span>
         </button>
       </div>
+
+      {/* Louvain Communities Interactive Legend Bar */}
+      {viewMode === "communities" && analyticsReport?.communities && analyticsReport.communities.length > 0 && (
+        <Card className="p-3 bg-[var(--bg-secondary)] border-purple-500/30 shadow-md">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-bold text-purple-400 uppercase tracking-wider mr-1 flex items-center gap-1">
+              <Layers className="h-3.5 w-3.5" /> SUBSISTEMAS DETECTADOS:
+            </span>
+            {analyticsReport.communities.map((comm) => {
+              const color = COMMUNITY_COLORS[comm.id % COMMUNITY_COLORS.length];
+              return (
+                <button
+                  key={comm.id}
+                  type="button"
+                  onClick={() => {
+                    const hubNode = nodesRef.current.find((n) => n.id === comm.hub_node_id || comm.members.includes(n.id));
+                    if (hubNode) focusOnNode(hubNode);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all hover:scale-105"
+                  style={{
+                    borderColor: color,
+                    backgroundColor: `${color}25`,
+                    color: "#f8fafc",
+                  }}
+                  title={`Hub: ${comm.hub_node_id} • ${comm.members.length} miembros • Cohesión: ${comm.cohesion_score.toFixed(2)}`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="font-semibold font-mono text-[11px]">{comm.label || `Comunidad ${comm.id}`}</span>
+                  <Badge variant="purple" className="text-[9px] px-1.5 py-0">
+                    {comm.members.length}
+                  </Badge>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">

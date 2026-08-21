@@ -131,8 +131,13 @@ export default function SettingsPage() {
     llmProvider,
     llmModel,
     llmBaseURL,
+    embeddingProvider,
+    embeddingModel,
+    embeddingDimensions,
+    vectorProvider,
     setCredentials,
     setLLMCredentials,
+    setEmbeddingCredentials,
     logout,
   } = useAuth();
 
@@ -153,9 +158,10 @@ export default function SettingsPage() {
   const [showBearer, setShowBearer] = useState(false);
 
   // Embedding state
-  const [embedProvider, setEmbedProvider] = useState<string>("gemini");
-  const [embedModel, setEmbedModel] = useState<string>("text-embedding-004");
-  const [embedDims, setEmbedDims] = useState<number>(768);
+  const [embedProvider, setEmbedProvider] = useState<string>(embeddingProvider || "gemini");
+  const [embedModel, setEmbedModel] = useState<string>(embeddingModel || "text-embedding-004");
+  const [embedDims, setEmbedDims] = useState<number>(embeddingDimensions || 768);
+  const [vecBackend, setVecBackend] = useState<string>(vectorProvider || "pgvector");
 
   // Hybrid Search Weights state
   const [bm25Weight, setBm25Weight] = useState<number>(0.4);
@@ -170,6 +176,7 @@ export default function SettingsPage() {
 
   const [serverSavedMessage, setServerSavedMessage] = useState(false);
   const [llmSavedMessage, setLlmSavedMessage] = useState(false);
+  const [embedSavedMessage, setEmbedSavedMessage] = useState(false);
   const [searchSavedMessage, setSearchSavedMessage] = useState(false);
 
   useEffect(() => {
@@ -215,6 +222,13 @@ export default function SettingsPage() {
     setLLMCredentials(inputLLMKey, inputLLMProvider, inputLLMModel, inputLLMBaseURL);
     setLlmSavedMessage(true);
     setTimeout(() => setLlmSavedMessage(false), 3000);
+  };
+
+  const handleSaveEmbedding = (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmbeddingCredentials(embedProvider, embedModel, embedDims, vecBackend);
+    setEmbedSavedMessage(true);
+    setTimeout(() => setEmbedSavedMessage(false), 3000);
   };
 
   const handleSaveSearchWeights = (e: React.FormEvent) => {
@@ -605,11 +619,11 @@ export default function SettingsPage() {
             </CardTitle>
           </div>
 
-          <div className="space-y-4 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <form onSubmit={handleSaveEmbedding} className="space-y-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div className="space-y-1">
                 <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  PROVEEDOR VECTORES
+                  PROVEEDOR EMBEDDINGS
                 </label>
                 <Select
                   value={embedProvider}
@@ -633,6 +647,7 @@ export default function SettingsPage() {
                   onChange={(e) => setEmbedModel(e.target.value)}
                   placeholder="text-embedding-004"
                   className="h-9 font-mono text-xs w-full"
+                  required
                 />
               </div>
 
@@ -646,14 +661,44 @@ export default function SettingsPage() {
                   onChange={(e) => setEmbedDims(Number(e.target.value))}
                   placeholder="768"
                   className="h-9 font-mono text-xs w-full"
+                  required
                 />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  MOTOR VECTORIAL
+                </label>
+                <Select
+                  value={vecBackend}
+                  onChange={(e) => setVecBackend(e.target.value)}
+                  className="h-9 w-full text-xs"
+                >
+                  <option value="pgvector">PostgreSQL (pgvector)</option>
+                  <option value="qdrant">Qdrant Server</option>
+                  <option value="sqlite_blob">SQLite BLOB Cosine</option>
+                </Select>
               </div>
             </div>
 
             <p className="text-[11px] text-[var(--text-muted)]">
-              Controla las dimensiones del espacio vectorial semántico para Qdrant, Pgvector o el motor de escaneo BLOB de SQLite.
+              Controla las dimensiones del espacio vectorial semántico y el adaptador de indexación para búsqueda híbrida y similitud de embeddings.
             </p>
-          </div>
+
+            {embedSavedMessage && (
+              <div className="flex items-center gap-2 text-emerald-400 text-xs py-1">
+                <CheckCircle className="h-4 w-4" />
+                <span>¡Configuración del Motor de Embeddings guardada y persistida con éxito!</span>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-purple-600/20 text-xs bg-purple-600 hover:bg-purple-500 text-white">
+                <Save className="h-3.5 w-3.5" />
+                <span>Guardar Motor de Embeddings & Vectores</span>
+              </Button>
+            </div>
+          </form>
         </Card>
 
         {/* Hybrid Search Weights & Retrieval Tuning */}

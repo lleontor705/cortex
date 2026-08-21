@@ -6,6 +6,7 @@ import { AuthAttemptCoordinator } from "./auth-attempts";
 import {
   loadPreferences,
   purgeLegacySecrets,
+  saveEmbeddingPreferences,
   saveLLMPreferences,
   saveServerUrl,
 } from "./prefs";
@@ -27,6 +28,10 @@ interface AuthContextType {
   llmProvider: string;
   llmModel: string;
   llmBaseURL: string;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  vectorProvider: string;
   client: CortexClient | null;
   principal: Principal | null;
   stats: ServerStats | null;
@@ -35,6 +40,7 @@ interface AuthContextType {
   error: string | null;
   setCredentials: (url: string, token: string) => Promise<boolean>;
   setLLMCredentials: (apiKey: string, provider: string, model: string, baseURL?: string) => void;
+  setEmbeddingCredentials: (provider: string, model: string, dimensions: number, vectorProvider?: string) => void;
   refreshState: () => Promise<void>;
   logout: () => void;
 }
@@ -45,9 +51,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [serverUrl, setServerUrl] = useState<string>("http://localhost:7438");
   const [token, setToken] = useState<string>("");
   const [llmApiKey, setLlmApiKey] = useState<string>("");
-  const [llmProvider, setLlmProvider] = useState<string>("openai");
-  const [llmModel, setLlmModel] = useState<string>("gpt-4o-mini");
+  const [llmProvider, setLlmProvider] = useState<string>("gemini");
+  const [llmModel, setLlmModel] = useState<string>("gemini-2.5-flash");
   const [llmBaseURL, setLlmBaseURL] = useState<string>("");
+  const [embeddingProvider, setEmbeddingProvider] = useState<string>("gemini");
+  const [embeddingModel, setEmbeddingModel] = useState<string>("text-embedding-004");
+  const [embeddingDimensions, setEmbeddingDimensions] = useState<number>(768);
+  const [vectorProvider, setVectorProvider] = useState<string>("pgvector");
 
   const [client, setClient] = useState<CortexClient | null>(null);
   const [principal, setPrincipal] = useState<Principal | null>(null);
@@ -81,6 +91,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLlmProvider(prefs.llmProvider);
     setLlmModel(prefs.llmModel);
     setLlmBaseURL(prefs.llmBaseURL);
+    setEmbeddingProvider(prefs.embeddingProvider);
+    setEmbeddingModel(prefs.embeddingModel);
+    setEmbeddingDimensions(prefs.embeddingDimensions);
+    setVectorProvider(prefs.vectorProvider);
     setIsLoading(false);
   }, []);
 
@@ -175,8 +189,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     model: string,
     baseURL: string = "",
   ) => {
-    // The API key lives only in the memory of this tab; provider, model, and baseURL
-    // are non-secret preferences and may be persisted.
     setLlmApiKey(apiKey);
     setLlmProvider(provider);
     setLlmModel(model);
@@ -184,17 +196,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveLLMPreferences(window.localStorage, provider, model, baseURL);
   };
 
+  const setEmbeddingCredentials = (
+    provider: string,
+    model: string,
+    dimensions: number,
+    vecProvider: string = "pgvector",
+  ) => {
+    setEmbeddingProvider(provider);
+    setEmbeddingModel(model);
+    setEmbeddingDimensions(dimensions);
+    setVectorProvider(vecProvider);
+    saveEmbeddingPreferences(window.localStorage, provider, model, dimensions, vecProvider);
+  };
+
   const refreshState = async () => {
     if (!client) return;
     const snapshot = await refreshSnapshot(client);
     if (snapshot.expired) {
-      // A 401 fired the invalidation callback, which already cleared the
-      // session state. Writing the stale snapshot would resurrect it.
       return;
     }
     if (!attemptsRef.current?.owns(client)) {
-      // A logout or newer login superseded this client mid-refresh: the
-      // stale snapshot must not overwrite the newer session state.
       return;
     }
     setPrincipal(snapshot.principal);
@@ -202,9 +223,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
-    // Abort in-flight requests and clear every live secret reference. The
-    // coordinator supersede inside clearLiveSecrets also aborts any client
-    // still held by a pending handshake, so it can never commit afterwards.
     client?.invalidate();
     clearLiveSecrets();
   };
@@ -219,6 +237,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         llmProvider,
         llmModel,
         llmBaseURL,
+        embeddingProvider,
+        embeddingModel,
+        embeddingDimensions,
+        vectorProvider,
         client,
         principal,
         stats,
@@ -227,6 +249,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         error,
         setCredentials,
         setLLMCredentials,
+        setEmbeddingCredentials,
         refreshState,
         logout,
       }}
