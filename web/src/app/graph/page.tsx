@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import {
   Observation,
@@ -103,15 +104,18 @@ const KIND_COLORS: Record<string, { bg: string; border: string; text: string; va
   entity: { bg: "#312e81", border: "#6366f1", text: "#c7d2fe", variant: "purple" },
 };
 
-export default function GraphPage() {
+function GraphPageContent() {
   const { client } = useAuth();
+  const searchParams = useSearchParams();
+  const projectParam = searchParams.get("project");
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
 
   // Projects State
   const [projects, setProjects] = useState<string[]>(["default"]);
-  const [selectedProject, setSelectedProject] = useState<string>("default");
+  const [selectedProject, setSelectedProject] = useState<string>(projectParam || "default");
 
   // Observations for connect/resolve modals
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -148,62 +152,32 @@ export default function GraphPage() {
     uses: true,
   });
 
-  // Canvas View Transform
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  // Camera State (Pan & Zoom)
+  const [zoom, setZoom] = useState(1.0);
+  const [offset, setOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
+  const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const draggedNodeRef = useRef<SimulationNode | null>(null);
-  const alphaRef = useRef(1);
+  const alphaRef = useRef<number>(1.0);
 
-  // Copied indicator
-  const [copied, setCopied] = useState(false);
-
-  // Modals
+  // Connect & Resolve Modals
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [isResolveModalOpen, setIsResolveModalOpen] = useState(false);
+  const [targetObsId, setTargetObsId] = useState("");
+  const [relationType, setRelationType] = useState<string>("relates_to");
+  const [relationReason, setRelationReason] = useState("");
   const [obsoleteObsId, setObsoleteObsId] = useState("");
   const [resolveReason, setResolveReason] = useState("");
-  const [isResolving, setIsResolving] = useState(false);
-
-  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const [targetObsId, setTargetObsId] = useState("");
-  const [relationType, setRelationType] = useState("relates_to");
-  const [relationReason, setRelationReason] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  // Code Scan / Ingest Modal
+  // Code AST Ingestion Modal State
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [scanDir, setScanDir] = useState(".");
   const [scanMaxFiles, setScanMaxFiles] = useState(250);
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<any>(null);
-
-  // Load Projects and Observations
-  useEffect(() => {
-    if (!client) return;
-
-    // Load registered projects
-    client
-      .projects()
-      .then((res) => {
-        const projs = Array.isArray(res) ? res : [];
-        if (projs.length > 0) {
-          setProjects(projs);
-          if (!projs.includes(selectedProject)) {
-            setSelectedProject(projs[0]);
-          }
-        }
-      })
-      .catch((err) => console.error("Failed to load projects", err));
-
-    // Load observations for relation targets
-    client
-      .listObservations("?limit=150")
-      .then((obs) => {
-        setObservations(obs || []);
-      })
-      .catch((err) => console.error("Failed to list observations", err));
-  }, [client]);
 
   // Load Project Graph data from backend
   const loadProjectGraph = useCallback(
@@ -234,51 +208,91 @@ export default function GraphPage() {
               ...n,
               x: prev.x,
               y: prev.y,
-              vx: prev.vx || 0,
-              vy: prev.vy || 0,
+              vx: prev.vx,
+              vy: prev.vy,
               radius,
               isPinned: prev.isPinned,
             };
           }
 
           const angle = (idx / (count || 1)) * 2 * Math.PI;
-          const dist = 120 + Math.random() * 180;
+          const dist = isRoot ? 0 : 120 + (idx % 4) * 45;
           return {
             ...n,
-            x: centerX + dist * Math.cos(angle) + (Math.random() - 0.5) * 30,
-            y: centerY + dist * Math.sin(angle) + (Math.random() - 0.5) * 30,
-            vx: 0,
-            vy: 0,
+            x: centerX + Math.cos(angle) * dist + (Math.random() - 0.5) * 20,
+            y: centerY + Math.sin(angle) * dist + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
             radius,
+            isPinned: false,
           };
         });
 
-        const nodeMap = new Map<string, SimulationNode>();
-        simNodes.forEach((n) => nodeMap.set(n.id, n));
-
-        const simEdges: SimulationLink[] = data.edges
-          .map((e) => ({
-            ...e,
-            sourceNode: nodeMap.get(e.source),
-            targetNode: nodeMap.get(e.target),
-          }))
-          .filter((e) => e.sourceNode && e.targetNode);
+        const nodeMap = new Map(simNodes.map((n) => [n.id, n]));
+        const simLinks: SimulationLink[] = data.edges.map((e) => ({
+          ...e,
+          sourceNode: nodeMap.get(e.source),
+          targetNode: nodeMap.get(e.target),
+        }));
 
         nodesRef.current = simNodes;
-        edgesRef.current = simEdges;
+        edgesRef.current = simLinks;
         alphaRef.current = 1.0;
 
         if (simNodes.length > 0) {
-          setSelectedNode(simNodes[0]);
+          if (!selectedNode || !simNodes.some((n) => n.id === selectedNode.id)) {
+            setSelectedNode(simNodes[0]);
+          }
+        } else {
+          setSelectedNode(null);
         }
       } catch (err: any) {
-        setError(err.message || "Error al cargar el grafo del proyecto");
+        setError(err.message || "Error al cargar grafo del proyecto");
       } finally {
         setLoading(false);
       }
     },
-    [client],
+    [client, selectedNode],
   );
+
+  // Sync with project param from URL
+  useEffect(() => {
+    if (projectParam && projectParam !== selectedProject) {
+      setSelectedProject(projectParam);
+      loadProjectGraph(projectParam);
+    }
+  }, [projectParam, selectedProject, loadProjectGraph]);
+
+  // Load Projects and Observations
+  useEffect(() => {
+    if (!client) return;
+
+    // Load registered projects
+    client
+      .projects()
+      .then((res) => {
+        const projs = Array.isArray(res) ? res : [];
+        if (projs.length > 0) {
+          setProjects(projs);
+          if (projectParam) {
+            setSelectedProject(projectParam);
+            loadProjectGraph(projectParam);
+          } else if (!selectedProject || !projs.includes(selectedProject)) {
+            setSelectedProject(projs[0]);
+            loadProjectGraph(projs[0]);
+          }
+        }
+      })
+      .catch((err) => console.error("Failed to load projects", err));
+
+    // Load observations for relation targets
+    client
+      .listObservations("?limit=150")
+      .then((obs) => {
+        setObservations(obs || []);
+      })
+      .catch((err) => console.error("Failed to list observations", err));
+  }, [client, projectParam, loadProjectGraph]);
 
   useEffect(() => {
     if (selectedProject) {
@@ -1725,5 +1739,22 @@ export default function GraphPage() {
         </form>
       </Dialog>
     </div>
+  );
+}
+
+export default function GraphPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-[60vh] items-center justify-center text-xs text-[var(--text-muted)]">
+          <div className="flex items-center gap-2">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+            <span>Cargando Grafo del Proyecto...</span>
+          </div>
+        </div>
+      }
+    >
+      <GraphPageContent />
+    </Suspense>
   );
 }

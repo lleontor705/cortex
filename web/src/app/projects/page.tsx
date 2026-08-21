@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import {
   ProjectArtifactItem,
@@ -38,9 +39,11 @@ import {
   ChevronRight,
   FileCode,
   Sliders,
+  Share2,
 } from "lucide-react";
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const { client, principal, llmApiKey, llmProvider, llmModel, llmBaseURL } = useAuth();
   const [projects, setProjects] = useState<string[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("");
@@ -319,21 +322,32 @@ export default function ProjectsPage() {
         {/* Project Selector & Actions Bar */}
         <div className="mt-5 pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] px-3 py-1.5 rounded-xl">
-              <Layers className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+            <div className="flex items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] px-3 py-1 rounded-xl shadow-sm">
+              <Layers className="h-4 w-4 text-blue-400 shrink-0" />
               <Select
                 value={selectedProject}
                 onChange={(e) => setSelectedProject(e.target.value)}
-                className="bg-transparent border-0 font-medium text-xs focus:ring-0 text-[var(--text-primary)]"
+                className="bg-transparent border-0 font-semibold text-xs text-[var(--text-primary)] focus:ring-0 cursor-pointer min-w-[200px]"
               >
-                <option value="">Corporativo Global (Workspace)</option>
+                <option value="">🌐 Corporativo Global (Workspace)</option>
                 {projects.map((p) => (
                   <option key={p} value={p}>
-                    Proyecto: {p}
+                    📁 Proyecto: {p}
                   </option>
                 ))}
               </Select>
             </div>
+
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => router.push(`/graph?project=${encodeURIComponent(selectedProject || "all")}`)}
+              className="text-xs gap-1.5 bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/20"
+              title="Explorar el Grafo Completo del Proyecto en Cortex Web"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              <span>Ver Grafo del Proyecto</span>
+            </Button>
 
             <button
               type="button"
