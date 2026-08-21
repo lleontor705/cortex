@@ -351,23 +351,45 @@ func bootstrapServicePrincipal(ctx context.Context, db *sql.DB, cfg config.Confi
 	if err != nil {
 		return fmt.Errorf("server: encode bootstrap grants: %w", err)
 	}
+
+	subjectsToTry := []string{bootstrapActorSubject}
+	if cfg.Server.PrincipalSubject != "" && cfg.Server.PrincipalSubject != bootstrapActorSubject {
+		subjectsToTry = append(subjectsToTry, cfg.Server.PrincipalSubject)
+	}
+
 	var tokenID, action string
 	var grantVersion int64
+	var lastErr error
+
 	query := `SELECT token_public_id::text, grant_version, bootstrap_action
 		FROM public.cortex_bootstrap_service_principal($1::uuid,$2::uuid,$3::uuid,$4::text,$5::text,$6::jsonb,$7::text,$8::text,$9::text)`
-	err = db.QueryRowContext(ctx, query,
-		cfg.Server.TenantID,
-		cfg.Server.WorkspaceID,
-		cfg.Server.PrincipalSubject,
-		bootstrapActorSubject,
-		bootstrapServiceName,
-		string(payload),
-		bootstrapTokenName,
-		cfg.HTTP.Token,
-		bootstrapAuditReason,
-	).Scan(&tokenID, &grantVersion, &action)
-	if err != nil {
-		return redactStageError(fmt.Errorf("server: bootstrap service principal: %w", err), cfg.HTTP.Token)
+
+	for _, subj := range subjectsToTry {
+		tokenID, action = "", ""
+		grantVersion = 0
+		err = db.QueryRowContext(ctx, query,
+			cfg.Server.TenantID,
+			cfg.Server.WorkspaceID,
+			cfg.Server.PrincipalSubject,
+			subj,
+			bootstrapServiceName,
+			string(payload),
+			bootstrapTokenName,
+			cfg.HTTP.Token,
+			bootstrapAuditReason,
+		).Scan(&tokenID, &grantVersion, &action)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		if !strings.Contains(err.Error(), "bootstrap actor conflicts with an existing subject") {
+			break
+		}
+	}
+
+	if lastErr != nil {
+		return redactStageError(fmt.Errorf("server: bootstrap service principal: %w", lastErr), cfg.HTTP.Token)
 	}
 	if tokenID == "" || grantVersion < 1 {
 		return errors.New("server: bootstrap service principal returned an invalid reconciliation result")
