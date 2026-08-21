@@ -33,21 +33,22 @@ func (s *AuthorizedStore) GetProjectContext(ctx context.Context, project string)
 	skills := make([]domain.ProjectSkillSummary, 0)
 	var promptBuilder strings.Builder
 
-	promptBuilder.WriteString(fmt.Sprintf("# Corporate & Project Directives for [%s]\n\n", project))
+	fmt.Fprintf(&promptBuilder, "# Corporate & Project Directives for [%s]\n\n", project)
 
 	for _, a := range artifacts {
 		if a.Status != "active" {
 			continue
 		}
-		if a.Kind == "rule" {
+		switch a.Kind {
+		case "rule":
 			rules = append(rules, domain.ProjectRule{
 				Key:     a.Key,
 				Title:   a.Title,
 				Content: a.Content,
 				Scope:   a.Scope,
 			})
-			promptBuilder.WriteString(fmt.Sprintf("## Rule: %s (%s)\n%s\n\n", a.Title, a.Scope, a.Content))
-		} else if a.Kind == "skill" {
+			fmt.Fprintf(&promptBuilder, "## Rule: %s (%s)\n%s\n\n", a.Title, a.Scope, a.Content)
+		case "skill":
 			skills = append(skills, domain.ProjectSkillSummary{
 				Key:         a.Key,
 				Title:       a.Title,

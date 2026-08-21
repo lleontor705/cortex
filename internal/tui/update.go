@@ -1531,23 +1531,25 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
 	case "left", "h":
-		if m.LocalCfgFocusField == 1 {
+		switch m.LocalCfgFocusField {
+		case 1:
 			m.LocalCfgFormat = (m.LocalCfgFormat + 2) % 3
 			m.LocalCfgDirty = true
-		} else if m.LocalCfgFocusField == 2 {
+		case 2:
 			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 7) % 8
 			m.LocalCfgDirty = true
-		} else {
+		default:
 			m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
 		}
 	case "right", "l":
-		if m.LocalCfgFocusField == 1 {
+		switch m.LocalCfgFocusField {
+		case 1:
 			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
 			m.LocalCfgDirty = true
-		} else if m.LocalCfgFocusField == 2 {
+		case 2:
 			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
 			m.LocalCfgDirty = true
-		} else {
+		default:
 			m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
 		}
 	case "up", "k":
