@@ -54,7 +54,7 @@ var postgresHistoricalChecksums = map[int]string{
 	// non-authoritative last_used_at telemetry. Purely additive CREATE OR
 	// REPLACE over 100/106 routines. Still unshipped, so its pin moves
 	// with the reviewed bytes until release.
-	108: "7eb15b2554fb13f3b3f8558455dafa99b568f0c07e94600f6b47f3598893e306",
+	108: "e56bbd81b2adcc175bda72e44ab4895fcbdd4fe8adeca914f0fe2f152bf73ca8",
 }
 
 // mustPostgresMigrations loads the full PostgreSQL migration line or fails
