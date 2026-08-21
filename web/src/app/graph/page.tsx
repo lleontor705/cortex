@@ -134,6 +134,14 @@ function GraphPageContent() {
   // Graph Domain Layer: all (unified), knowledge (decisions/memories only), code (AST only)
   const [graphLayer, setGraphLayer] = useState<"all" | "knowledge" | "code">("all");
 
+  const handleLayerChange = (layer: "all" | "knowledge" | "code") => {
+    setGraphLayer(layer);
+    alphaRef.current = 1.0;
+    setTimeout(() => {
+      handleFitView();
+    }, 60);
+  };
+
   // Graph Simulation State
   const nodesRef = useRef<SimulationNode[]>([]);
   const edgesRef = useRef<SimulationLink[]>([]);
@@ -221,7 +229,7 @@ function GraphPageContent() {
       setLoading(true);
       setError(null);
       try {
-        const data: GraphSubgraph = await client.projectGraph(project === "all" ? undefined : project, 200);
+        const data: GraphSubgraph = await client.projectGraph(project === "all" ? undefined : project, 300);
         rootIdRef.current = data.root;
 
         const existingPosMap = new Map<string, { x: number; y: number; vx: number; vy: number; isPinned?: boolean }>();
@@ -229,12 +237,15 @@ function GraphPageContent() {
           existingPosMap.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy, isPinned: n.isPinned });
         });
 
-        const centerX = 400;
-        const centerY = 300;
-        const count = data.nodes.length;
+        const normalizeId = (id: string) => (id ? id.replace(/^observation:/, "").trim() : "");
+        const canvasW = canvasRef.current?.width || 800;
+        const canvasH = canvasRef.current?.height || 600;
+        const centerX = canvasW / 2;
+        const centerY = canvasH / 2;
+        const count = (data.nodes || []).length;
 
-        const simNodes: SimulationNode[] = data.nodes.map((n, idx) => {
-          const prev = existingPosMap.get(n.id);
+        const simNodes: SimulationNode[] = (data.nodes || []).map((n, idx) => {
+          const prev = existingPosMap.get(n.id) || existingPosMap.get(normalizeId(n.id));
           const isRoot = idx === 0;
           const radius = n.kind === "module" ? 24 : n.kind === "class" ? 20 : 16;
 
@@ -251,11 +262,11 @@ function GraphPageContent() {
           }
 
           const angle = (idx / (count || 1)) * 2 * Math.PI;
-          const dist = isRoot ? 0 : 120 + (idx % 4) * 45;
+          const dist = isRoot ? 0 : 120 + (idx % 5) * 45;
           return {
             ...n,
-            x: centerX + Math.cos(angle) * dist + (Math.random() - 0.5) * 20,
-            y: centerY + Math.sin(angle) * dist + (Math.random() - 0.5) * 20,
+            x: centerX + Math.cos(angle) * dist + (Math.random() - 0.5) * 30,
+            y: centerY + Math.sin(angle) * dist + (Math.random() - 0.5) * 30,
             vx: (Math.random() - 0.5) * 2,
             vy: (Math.random() - 0.5) * 2,
             radius,
@@ -263,19 +274,46 @@ function GraphPageContent() {
           };
         });
 
-        const nodeMap = new Map(simNodes.map((n) => [n.id, n]));
-        const simLinks: SimulationLink[] = data.edges.map((e) => ({
-          ...e,
-          sourceNode: nodeMap.get(e.source),
-          targetNode: nodeMap.get(e.target),
-        }));
+        const nodeMap = new Map<string, SimulationNode>();
+        simNodes.forEach((n) => {
+          nodeMap.set(n.id, n);
+          const raw = normalizeId(n.id);
+          nodeMap.set(raw, n);
+          nodeMap.set("observation:" + raw, n);
+        });
+
+        const simLinks: SimulationLink[] = [];
+        const seenEdges = new Set<string>();
+
+        (data.edges || []).forEach((e) => {
+          const s = normalizeId(e.source);
+          const t = normalizeId(e.target);
+          const key = `${s}->${t}:${e.type}`;
+          if (seenEdges.has(key)) return;
+          seenEdges.add(key);
+
+          const sNode = nodeMap.get(e.source) || nodeMap.get(s) || nodeMap.get("observation:" + s);
+          const tNode = nodeMap.get(e.target) || nodeMap.get(t) || nodeMap.get("observation:" + t);
+
+          if (sNode && tNode) {
+            simLinks.push({
+              ...e,
+              sourceNode: sNode,
+              targetNode: tNode,
+            });
+          }
+        });
 
         nodesRef.current = simNodes;
         edgesRef.current = simLinks;
         alphaRef.current = 1.0;
 
+        setTimeout(() => {
+          handleFitView();
+        }, 80);
+
         if (simNodes.length > 0) {
-          if (!selectedNode || !simNodes.some((n) => n.id === selectedNode.id)) {
+          if (!selectedNode || !simNodes.some((n) => normalizeId(n.id) === normalizeId(selectedNode.id))) {
             setSelectedNode(simNodes[0]);
           }
         } else {
@@ -476,6 +514,31 @@ function GraphPageContent() {
     URL.revokeObjectURL(url);
   };
 
+  const drawRef = useRef<() => void>(() => {});
+
+  // ResizeObserver on Canvas Container to ensure exact pixel dimensions
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleResize = () => {
+      const rect = container.getBoundingClientRect();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const w = Math.floor(rect.width);
+      const h = Math.floor(rect.height);
+      if (w > 0 && h > 0 && (canvas.width !== w || canvas.height !== h)) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    };
+
+    handleResize();
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   // 60 FPS Force-Directed Physics Engine
   useEffect(() => {
     let animationId: number;
@@ -538,8 +601,8 @@ function GraphPageContent() {
         }
 
         // Center gravity & Damping
-        const cx = 400;
-        const cy = 300;
+        const cx = (canvasRef.current?.width || 800) / 2;
+        const cy = (canvasRef.current?.height || 600) / 2;
         for (let i = 0; i < nodes.length; i++) {
           const n = nodes[i];
           if (n.isPinned) continue;
@@ -557,7 +620,7 @@ function GraphPageContent() {
         alphaRef.current = alpha * 0.985;
       }
 
-      draw();
+      drawRef.current?.();
       animationId = requestAnimationFrame(stepSimulation);
     };
 
@@ -769,6 +832,8 @@ function GraphPageContent() {
     drawRadarHUD();
   };
 
+  drawRef.current = draw;
+
   const drawRadarHUD = () => {
     const minimap = minimapRef.current;
     if (!minimap) return;
@@ -909,8 +974,13 @@ function GraphPageContent() {
 
   const handleFitView = () => {
     const canvas = canvasRef.current;
-    const nodes = nodesRef.current;
-    if (!canvas || nodes.length === 0) return;
+    const allNodes = nodesRef.current;
+    const nodes = allNodes.filter(isNodeVisible);
+    if (!canvas || nodes.length === 0) {
+      setZoom(1.0);
+      setOffset({ x: 0, y: 0 });
+      return;
+    }
 
     let minX = Infinity,
       maxX = -Infinity,
@@ -923,21 +993,21 @@ function GraphPageContent() {
       if (n.y > maxY) maxY = n.y;
     });
 
-    const padding = 60;
-    const graphWidth = maxX - minX + padding * 2;
-    const graphHeight = maxY - minY + padding * 2;
+    const padding = 80;
+    const graphWidth = Math.max(maxX - minX + padding * 2, 100);
+    const graphHeight = Math.max(maxY - minY + padding * 2, 100);
 
-    const scaleX = canvas.width / graphWidth;
-    const scaleY = canvas.height / graphHeight;
-    const newZoom = Math.min(scaleX, scaleY, 1.5);
+    const scaleX = (canvas.width || 800) / graphWidth;
+    const scaleY = (canvas.height || 600) / graphHeight;
+    const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.35), 1.6);
 
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
 
     setZoom(newZoom);
     setOffset({
-      x: canvas.width / 2 - centerX * newZoom,
-      y: canvas.height / 2 - centerY * newZoom,
+      x: (canvas.width || 800) / 2 - centerX * newZoom,
+      y: (canvas.height || 600) / 2 - centerY * newZoom,
     });
   };
 
@@ -1258,7 +1328,7 @@ function GraphPageContent() {
 
           <button
             type="button"
-            onClick={() => setGraphLayer("all")}
+            onClick={() => handleLayerChange("all")}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
               graphLayer === "all"
                 ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
@@ -1273,7 +1343,7 @@ function GraphPageContent() {
 
           <button
             type="button"
-            onClick={() => setGraphLayer("knowledge")}
+            onClick={() => handleLayerChange("knowledge")}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
               graphLayer === "knowledge"
                 ? "bg-purple-600 text-white shadow-md shadow-purple-600/20"
@@ -1289,7 +1359,7 @@ function GraphPageContent() {
 
           <button
             type="button"
-            onClick={() => setGraphLayer("code")}
+            onClick={() => handleLayerChange("code")}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
               graphLayer === "code"
                 ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/20"
