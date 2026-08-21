@@ -345,27 +345,15 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
-	// Synchronize unified AI section with search config
-	if cfg.AI.Provider != "" {
-		if cfg.Search.EmbeddingProvider == "" {
-			cfg.Search.EmbeddingProvider = cfg.AI.Provider
-		}
-	} else if cfg.Search.EmbeddingProvider != "" {
-		cfg.AI.Provider = cfg.Search.EmbeddingProvider
+	// Default search embedding config from AI section only if search embedding is unset
+	if cfg.Search.EmbeddingProvider == "" && cfg.AI.Provider != "" {
+		cfg.Search.EmbeddingProvider = cfg.AI.Provider
 	}
-	if cfg.AI.Model != "" {
-		if cfg.Search.EmbeddingModel == "" {
-			cfg.Search.EmbeddingModel = cfg.AI.Model
-		}
-	} else if cfg.Search.EmbeddingModel != "" {
-		cfg.AI.Model = cfg.Search.EmbeddingModel
+	if cfg.Search.EmbeddingModel == "" && cfg.AI.Model != "" {
+		cfg.Search.EmbeddingModel = cfg.AI.Model
 	}
-	if cfg.AI.BaseURL != "" {
-		if cfg.Search.EmbeddingBaseURL == "" {
-			cfg.Search.EmbeddingBaseURL = cfg.AI.BaseURL
-		}
-	} else if cfg.Search.EmbeddingBaseURL != "" {
-		cfg.AI.BaseURL = cfg.Search.EmbeddingBaseURL
+	if cfg.Search.EmbeddingBaseURL == "" && cfg.AI.BaseURL != "" {
+		cfg.Search.EmbeddingBaseURL = cfg.AI.BaseURL
 	}
 
 	// Expand ~ in database path
@@ -481,6 +469,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("search.fts5", defaults.Search.FTS5)
 	v.SetDefault("search.vector", defaults.Search.Vector)
 	v.SetDefault("search.fusion_k", defaults.Search.FusionK)
+	v.SetDefault("search.embedding_provider", "")
+	v.SetDefault("search.embedding_model", "")
+	v.SetDefault("search.embedding_base_url", "")
 
 	v.SetDefault("memory.max_observation_length", defaults.Memory.MaxObservationLength)
 	v.SetDefault("memory.dedupe_window", defaults.Memory.DedupeWindow)
