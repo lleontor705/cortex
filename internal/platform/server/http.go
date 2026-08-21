@@ -2100,7 +2100,7 @@ func (a *apiHandler) testLLM(w http.ResponseWriter, r *http.Request) {
 			if doErr != nil {
 				err = doErr
 			} else {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				var oResp struct {
 					Response string `json:"response"`
 					Error    string `json:"error"`
@@ -2139,7 +2139,7 @@ func (a *apiHandler) testLLM(w http.ResponseWriter, r *http.Request) {
 			if doErr != nil {
 				err = doErr
 			} else {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				var cResp struct {
 					Choices []struct {
 						Message struct {
@@ -2228,7 +2228,7 @@ func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
 			if doErr != nil {
 				err = doErr
 			} else {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				var oResp struct {
 					Embedding []float64 `json:"embedding"`
 					Error     string    `json:"error"`
@@ -2264,7 +2264,7 @@ func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
 			if doErr != nil {
 				err = doErr
 			} else {
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 				var cResp struct {
 					Data []struct {
 						Embedding []float64 `json:"embedding"`
