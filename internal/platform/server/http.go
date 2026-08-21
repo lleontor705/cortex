@@ -2036,8 +2036,14 @@ func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	embBaseURL := a.cfg.Search.EmbeddingBaseURL
 	embDim := 1024
-	if embModel == "nomic-embed-text" {
+	if strings.Contains(embModel, "qwen3-embedding:4b") {
+		embDim = 2560
+	} else if strings.Contains(embModel, "qwen3-embedding:8b") {
+		embDim = 4096
+	} else if strings.Contains(embModel, "nomic-embed-text") || strings.Contains(embModel, "text-embedding-004") {
 		embDim = 768
+	} else if strings.Contains(embModel, "text-embedding-3-small") || strings.Contains(embModel, "text-embedding-ada") {
+		embDim = 1536
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
