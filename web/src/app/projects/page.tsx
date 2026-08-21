@@ -245,35 +245,37 @@ export default function ProjectsPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-5">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2">
-              <FolderKanban className="h-6 w-6 text-blue-500" />
-              Proyectos & Skills Corporativos
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2">
+              <FolderKanban className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+              <span>Proyectos & Skills</span>
             </h1>
             <Badge variant="secondary" className="text-xs font-mono text-blue-400">
-              MCP Protocol
+              MCP
             </Badge>
           </div>
-          <p className="text-sm text-[var(--text-muted)]">
+          <p className="text-xs sm:text-sm text-[var(--text-muted)]">
             Gobierna los System Prompts, directivas de arquitectura y catálogo
             de herramientas corporativas expuestas a los agentes AI vía MCP.
           </p>
         </div>
 
         {/* Project Selector Bar */}
-        <div className="flex items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-1.5 rounded-xl backdrop-blur-md">
-          <Layers className="h-4 w-4 text-[var(--text-muted)] ml-2" />
-          <Select
-            value={selectedProject}
-            onChange={(e) => setSelectedProject(e.target.value)}
-            className="w-48 bg-transparent border-0 font-medium text-xs focus:ring-0 text-[var(--text-primary)]"
-          >
-            <option value="">Corporativo Global (Workspace)</option>
-            {projects.map((p) => (
-              <option key={p} value={p}>
-                Proyecto: {p}
-              </option>
-            ))}
-          </Select>
+        <div className="flex flex-wrap items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-1.5 rounded-xl backdrop-blur-md">
+          <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
+            <Layers className="h-4 w-4 text-[var(--text-muted)] ml-2 shrink-0" />
+            <Select
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              className="w-full bg-transparent border-0 font-medium text-xs focus:ring-0 text-[var(--text-primary)]"
+            >
+              <option value="">Corporativo Global (Workspace)</option>
+              {projects.map((p) => (
+                <option key={p} value={p}>
+                  Proyecto: {p}
+                </option>
+              ))}
+            </Select>
+          </div>
 
           {/* Project-level Sync Toggle */}
           <button
@@ -286,7 +288,7 @@ export default function ProjectsPage() {
             }`}
             title="Configura si el trabajo de este proyecto se sube a Cortex Server"
           >
-            {projectSyncEnabled ? "☁️ Subir a Cortex: ON" : "🔒 Local Only"}
+            {projectSyncEnabled ? "☁️ Subida: ON" : "🔒 Local"}
           </button>
 
           {isAdmin && (
@@ -301,7 +303,7 @@ export default function ProjectsPage() {
                   setSelectedProject(name);
                 }
               }}
-              className="h-8 px-2 text-xs"
+              className="h-8 px-2 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               <Plus className="h-3.5 w-3.5 mr-1" /> Nuevo
             </Button>
@@ -310,25 +312,25 @@ export default function ProjectsPage() {
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1 sm:pb-0">
           <Button
             variant={activeTab === "rules" ? "default" : "ghost"}
             size="sm"
             onClick={() => setActiveTab("rules")}
-            className="gap-2 text-xs"
+            className="gap-1.5 sm:gap-2 text-xs shrink-0"
           >
-            <ShieldCheck className="h-4 w-4" />
-            System Prompt & Reglas ({rulesList.length})
+            <ShieldCheck className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span>Reglas ({rulesList.length})</span>
           </Button>
           <Button
             variant={activeTab === "skills" ? "default" : "ghost"}
             size="sm"
             onClick={() => setActiveTab("skills")}
-            className="gap-2 text-xs"
+            className="gap-1.5 sm:gap-2 text-xs shrink-0"
           >
-            <Sparkles className="h-4 w-4" />
-            Skills del Proyecto ({skillsList.length})
+            <Sparkles className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span>Skills ({skillsList.length})</span>
           </Button>
           <Button
             variant={activeTab === "simulator" ? "default" : "ghost"}
@@ -337,10 +339,10 @@ export default function ProjectsPage() {
               setActiveTab("simulator");
               loadContextSimulator();
             }}
-            className="gap-2 text-xs font-mono"
+            className="gap-1.5 sm:gap-2 text-xs font-mono shrink-0"
           >
-            <Bot className="h-4 w-4" />
-            Simulador Agente MCP
+            <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span>Simulador MCP</span>
           </Button>
         </div>
 
@@ -351,10 +353,10 @@ export default function ProjectsPage() {
             onClick={() =>
               openCreateModal(activeTab === "rules" ? "rule" : "skill")
             }
-            className="gap-1.5 text-xs shadow-md shadow-blue-500/20"
+            className="gap-1.5 text-xs shadow-md shadow-blue-500/20 shrink-0 self-start sm:self-auto"
           >
             <Plus className="h-4 w-4" />
-            {activeTab === "rules" ? "Agregar Regla" : "Agregar Skill"}
+            <span>{activeTab === "rules" ? "Agregar Regla" : "Agregar Skill"}</span>
           </Button>
         )}
       </div>
@@ -362,13 +364,13 @@ export default function ProjectsPage() {
       {/* Tab Content: Rules & System Prompt */}
       {activeTab === "rules" && (
         <div className="space-y-4">
-          <div className="bg-blue-950/30 border border-blue-800/40 p-4 rounded-xl flex items-start gap-3">
+          <div className="bg-blue-950/30 border border-blue-800/40 p-3.5 sm:p-4 rounded-xl flex items-start gap-3">
             <ShieldCheck className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
             <div>
-              <h4 className="text-sm font-semibold text-slate-100">
+              <h4 className="text-xs sm:text-sm font-semibold text-[var(--text-primary)]">
                 Resolución Jerárquica de System Prompt
               </h4>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-[var(--text-secondary)] mt-0.5">
                 Las directivas configuradas como{" "}
                 <span className="text-blue-400 font-medium">
                   Workspace Default
@@ -376,7 +378,7 @@ export default function ProjectsPage() {
                 se aplican a todos los agentes. Las reglas de{" "}
                 <span className="text-blue-400 font-medium">Proyecto</span> se
                 combinan y tienen precedencia al consultar{" "}
-                <code className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[11px]">
+                <code className="bg-[var(--bg-surface)] px-1 py-0.5 rounded font-mono text-[11px]">
                   cortex_get_project_context
                 </code>
                 .
@@ -385,16 +387,16 @@ export default function ProjectsPage() {
           </div>
 
           {loading ? (
-            <div className="py-12 text-center text-slate-400 text-sm">
+            <div className="py-12 text-center text-[var(--text-muted)] text-sm">
               Cargando reglas y directivas...
             </div>
           ) : rulesList.length === 0 ? (
-            <Card className="border-dashed border-2 border-slate-800 p-8 text-center bg-slate-900/30">
-              <BookOpen className="h-10 w-10 text-slate-600 mx-auto mb-3" />
-              <h3 className="text-sm font-medium text-slate-200">
+            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-6 sm:p-8 text-center bg-[var(--bg-secondary)]">
+              <BookOpen className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
+              <h3 className="text-sm font-medium text-[var(--text-primary)]">
                 Sin reglas configuradas
               </h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+              <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
                 Define las pautas de arquitectura, seguridad y estándares de
                 código para este proyecto.
               </p>
@@ -408,17 +410,17 @@ export default function ProjectsPage() {
               </Button>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
               {rulesList.map((rule) => (
                 <Card
                   key={rule.id}
-                  className="bg-slate-900/70 border-slate-800 hover:border-blue-500/40 transition-all flex flex-col justify-between"
+                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-blue-500/40 transition-all flex flex-col justify-between"
                 >
                   <CardHeader className="p-4 pb-2">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <CardTitle className="text-sm font-semibold text-slate-100">
+                      <div className="overflow-hidden">
+                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                          <CardTitle className="text-sm font-semibold text-[var(--text-primary)] truncate">
                             {rule.title}
                           </CardTitle>
                           <Badge
@@ -427,23 +429,23 @@ export default function ProjectsPage() {
                                 ? "outline"
                                 : "secondary"
                             }
-                            className="text-[10px] px-1.5 py-0 font-mono"
+                            className="text-[10px] px-1.5 py-0 font-mono shrink-0"
                           >
                             {rule.scope === "workspace_default"
                               ? "Global"
                               : "Proyecto"}
                           </Badge>
                         </div>
-                        <span className="text-[11px] font-mono text-slate-400 block mt-0.5">
+                        <span className="text-[11px] font-mono text-[var(--text-muted)] block mt-0.5">
                           key: {rule.key} • rev {rule.revision}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 shrink-0">
                         <Button
                           variant="ghost"
                           size="icon"
                           onClick={() => openEditModal(rule)}
-                          className="h-7 w-7 text-slate-400 hover:text-slate-100"
+                          className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
                         </Button>
@@ -451,15 +453,20 @@ export default function ProjectsPage() {
                           variant="ghost"
                           size="icon"
                           onClick={() => handleDelete(rule.id)}
-                          className="h-7 w-7 text-slate-400 hover:text-rose-400"
+                          className="h-7 w-7 text-[var(--text-muted)] hover:text-rose-400"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="p-4 pt-2">
-                    <div className="bg-slate-950/60 rounded-lg p-3 font-mono text-xs text-slate-200 whitespace-pre-wrap max-h-48 overflow-y-auto border border-slate-800/80">
+                  <CardContent className="p-4 pt-2 space-y-2">
+                    {rule.description && (
+                      <p className="text-xs text-[var(--text-secondary)] line-clamp-2">
+                        {rule.description}
+                      </p>
+                    )}
+                    <div className="bg-[var(--bg-surface)] rounded-lg p-2.5 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
                       {rule.content}
                     </div>
                   </CardContent>
@@ -495,16 +502,16 @@ export default function ProjectsPage() {
           </div>
 
           {loading ? (
-            <div className="py-12 text-center text-slate-400 text-sm">
+            <div className="py-12 text-center text-[var(--text-muted)] text-sm">
               Cargando catálogo de skills...
             </div>
           ) : skillsList.length === 0 ? (
-            <Card className="border-dashed border-2 border-slate-800 p-8 text-center bg-slate-900/30">
-              <Code2 className="h-10 w-10 text-slate-600 mx-auto mb-3" />
-              <h3 className="text-sm font-medium text-slate-200">
+            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-6 sm:p-8 text-center bg-[var(--bg-secondary)]">
+              <Code2 className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
+              <h3 className="text-sm font-medium text-[var(--text-primary)]">
                 Sin skills registrados
               </h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+              <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
                 Crea habilidades corporativas (despliegues, revisiones de
                 seguridad, migraciones) para tus agentes.
               </p>
@@ -518,36 +525,36 @@ export default function ProjectsPage() {
               </Button>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
               {skillsList.map((skill) => (
                 <Card
                   key={skill.id}
-                  className="bg-slate-900/70 border-slate-800 hover:border-amber-500/40 transition-all flex flex-col justify-between"
+                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-amber-500/40 transition-all flex flex-col justify-between"
                 >
                   <CardHeader className="p-4 pb-2">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
+                      <div className="overflow-hidden">
                         <div className="flex items-center gap-2">
-                          <CardTitle className="text-sm font-semibold text-slate-100">
+                          <CardTitle className="text-sm font-semibold text-[var(--text-primary)] truncate">
                             {skill.title}
                           </CardTitle>
                           <Badge
                             variant="secondary"
-                            className="text-[10px] px-1.5 py-0 font-mono text-amber-400"
+                            className="text-[10px] px-1.5 py-0 font-mono text-amber-400 shrink-0"
                           >
                             Skill
                           </Badge>
                         </div>
-                        <span className="text-[11px] font-mono text-slate-400 block mt-0.5">
+                        <span className="text-[11px] font-mono text-[var(--text-muted)] block mt-0.5 truncate">
                           {skill.key}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 shrink-0">
                         <Button
                           variant="ghost"
                           size="icon"
                           onClick={() => openEditModal(skill)}
-                          className="h-7 w-7 text-slate-400 hover:text-slate-100"
+                          className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
                         </Button>
@@ -555,7 +562,7 @@ export default function ProjectsPage() {
                           variant="ghost"
                           size="icon"
                           onClick={() => handleDelete(skill.id)}
-                          className="h-7 w-7 text-slate-400 hover:text-rose-400"
+                          className="h-7 w-7 text-[var(--text-muted)] hover:text-rose-400"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -564,11 +571,11 @@ export default function ProjectsPage() {
                   </CardHeader>
                   <CardContent className="p-4 pt-2 space-y-2">
                     {skill.description && (
-                      <p className="text-xs text-slate-400 line-clamp-2">
+                      <p className="text-xs text-[var(--text-secondary)] line-clamp-2">
                         {skill.description}
                       </p>
                     )}
-                    <div className="bg-slate-950/60 rounded-lg p-2.5 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-36 overflow-y-auto border border-slate-800/80">
+                    <div className="bg-[var(--bg-surface)] rounded-lg p-2.5 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
                       {skill.content}
                     </div>
                   </CardContent>
@@ -582,21 +589,21 @@ export default function ProjectsPage() {
       {/* Tab Content: Agent Simulator */}
       {activeTab === "simulator" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 p-4 rounded-xl backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] p-4 rounded-xl backdrop-blur-md">
             <div className="flex items-center gap-3">
-              <Terminal className="h-5 w-5 text-emerald-400" />
+              <Terminal className="h-5 w-5 text-emerald-400 shrink-0" />
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                   Simulador de Consulta de Agente AI
                 </h3>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-[var(--text-muted)]">
                   Visualiza en tiempo real la respuesta exacta que recibe el
                   agente (Claude, Cursor, Windsurf) al invocar las herramientas
                   MCP.
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
               <Button
                 variant="outline"
                 size="sm"
@@ -630,16 +637,16 @@ export default function ProjectsPage() {
           </div>
 
           {contextLoading ? (
-            <div className="py-16 text-center text-sm text-slate-400">
+            <div className="py-16 text-center text-sm text-[var(--text-muted)]">
               Consultando MCP Project Context Protocol...
             </div>
           ) : projectContext ? (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Consolidate System Prompt */}
-              <Card className="bg-slate-900/70 border-slate-800">
-                <CardHeader className="p-4 pb-2 border-b border-slate-800">
+              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+                <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                    <CardTitle className="text-sm font-semibold flex items-center gap-2 text-[var(--text-primary)]">
                       <ShieldCheck className="h-4 w-4 text-blue-400" />
                       System Prompt Consolidado
                     </CardTitle>
@@ -649,17 +656,17 @@ export default function ProjectsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <pre className="bg-slate-950/80 p-4 rounded-xl text-xs font-mono text-slate-200 whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-slate-800">
+                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-[var(--border-subtle)]">
                     {projectContext.system_prompt}
                   </pre>
                 </CardContent>
               </Card>
 
               {/* Skills Registry Payload */}
-              <Card className="bg-slate-900/70 border-slate-800">
-                <CardHeader className="p-4 pb-2 border-b border-slate-800">
+              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+                <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                    <CardTitle className="text-sm font-semibold flex items-center gap-2 text-[var(--text-primary)]">
                       <Sparkles className="h-4 w-4 text-amber-400" />
                       Skills Disponibles ({projectContext.skills.length})
                     </CardTitle>
@@ -669,7 +676,7 @@ export default function ProjectsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <pre className="bg-slate-950/80 p-4 rounded-xl text-xs font-mono text-slate-200 whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-slate-800">
+                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-[var(--border-subtle)]">
                     {JSON.stringify(projectContext.skills, null, 2)}
                   </pre>
                 </CardContent>
@@ -694,9 +701,9 @@ export default function ProjectsPage() {
         </DialogHeader>
 
         <form onSubmit={handleSave} className="space-y-4 mt-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-slate-400 block mb-1">
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
                 Tipo
               </label>
               <Select
@@ -711,7 +718,7 @@ export default function ProjectsPage() {
               </Select>
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-400 block mb-1">
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
                 Alcance (Scope)
               </label>
               <Select
@@ -733,9 +740,9 @@ export default function ProjectsPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-slate-400 block mb-1">
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
                 Clave Técnica (Key) *
               </label>
               <Input
@@ -747,7 +754,7 @@ export default function ProjectsPage() {
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-400 block mb-1">
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
                 Título Descriptivo *
               </label>
               <Input
@@ -762,7 +769,7 @@ export default function ProjectsPage() {
 
           {modalKind === "skill" && (
             <div>
-              <label className="text-xs font-medium text-slate-400 block mb-1">
+              <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
                 Descripción (para el descubrimiento del LLM)
               </label>
               <Input
@@ -775,7 +782,7 @@ export default function ProjectsPage() {
           )}
 
           <div>
-            <label className="text-xs font-medium text-slate-400 block mb-1">
+            <label className="text-xs font-medium text-[var(--text-secondary)] block mb-1">
               Contenido / Instrucciones (Markdown) *
             </label>
             <textarea
@@ -784,17 +791,17 @@ export default function ProjectsPage() {
               onChange={(e) => setModalContent(e.target.value)}
               placeholder="Escribe las directivas, reglas o procedimientos en Markdown..."
               required
-              className="w-full rounded-md border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() => setIsModalOpen(false)}
-              className="text-xs"
+              className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               Cancelar
             </Button>

@@ -137,23 +137,23 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            <ShieldCheck className="h-6 w-6 text-blue-500" />
-            Administración de Usuarios y Agentes
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+            <ShieldCheck className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+            <span>Administración de Usuarios y Agentes</span>
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-[var(--text-muted)] mt-1">
             Control de identidades, emisión de tokens y descarga de perfiles de configuración para coding agents
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <Button onClick={() => setIsUserModalOpen(true)} variant="secondary" size="sm" className="gap-2">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <Button onClick={() => setIsUserModalOpen(true)} variant="secondary" size="sm" className="gap-2 text-xs">
             <Users className="h-4 w-4" />
             <span>Crear Usuario</span>
           </Button>
-          <Button onClick={() => setIsTokenModalOpen(true)} size="sm" className="gap-2 shadow-lg shadow-blue-600/20">
+          <Button onClick={() => setIsTokenModalOpen(true)} size="sm" className="gap-2 shadow-lg shadow-blue-600/20 text-xs">
             <Key className="h-4 w-4" />
             <span>Emitir Token</span>
           </Button>
@@ -161,14 +161,14 @@ export default function AdminPage() {
       </div>
 
       {/* Global Config Download Card */}
-      <Card className="p-6 bg-gradient-to-r from-slate-900/90 via-slate-800/80 to-slate-900/90 border-slate-700/80 shadow-2xl">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+      <Card className="p-4 sm:p-6 bg-gradient-to-r from-[var(--bg-secondary)] via-[var(--bg-surface)] to-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-base font-semibold text-white flex items-center gap-2">
-              <Download className="h-5 w-5 text-blue-400" />
-              Descargar Configuraciones para tus Agentes de IA
+            <h2 className="text-sm sm:text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
+              <Download className="h-5 w-5 text-blue-400 shrink-0" />
+              <span>Descargar Configuraciones para tus Agentes de IA</span>
             </h2>
-            <p className="text-xs text-slate-300 max-w-2xl">
+            <p className="text-xs text-[var(--text-secondary)] max-w-2xl">
               Exporta perfiles para Claude Desktop, Cursor, Windsurf o Cortex CLI. Los archivos nunca incluyen secretos:
               referencian la variable de entorno CORTEX_REMOTE_TOKEN.
             </p>
@@ -230,48 +230,48 @@ export default function AdminPage() {
       </Card>
 
       {/* Two Column Layout for Users and Tokens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Tokens List */}
-        <Card className="p-5 bg-slate-900/70 border-slate-800 flex flex-col justify-between">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between">
           <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-              <CardTitle className="text-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
                 <Key className="h-4 w-4 text-blue-400" />
                 Tokens de Autenticación
               </CardTitle>
-              <Button onClick={() => setIsTokenModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1">
+              <Button onClick={() => setIsTokenModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                 <Plus className="h-3.5 w-3.5" />
                 <span>Nuevo Token</span>
               </Button>
             </div>
 
             {loading ? (
-              <p className="text-xs text-slate-500 py-6 text-center">Cargando tokens...</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">Cargando tokens...</p>
             ) : tokens.length === 0 ? (
-              <p className="text-xs text-slate-500 py-6 text-center">No hay tokens emitidos.</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">No hay tokens emitidos.</p>
             ) : (
               <div className="space-y-2.5">
                 {tokens.map((tok) => (
                   <div
                     key={tok.id}
-                    className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-lg space-y-2 hover:border-slate-700 transition-colors"
+                    className="p-3.5 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg space-y-2 hover:border-[var(--border-focus)] transition-colors"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-semibold text-xs text-slate-200">
+                      <span className="font-semibold text-xs text-[var(--text-primary)] truncate mr-2">
                         {tok.name}
                       </span>
-                      <Badge variant={tok.revoked_at ? "destructive" : "success"}>
+                      <Badge variant={tok.revoked_at ? "destructive" : "success"} className="shrink-0 text-[10px]">
                         {tok.revoked_at ? "Revocado" : "Activo"}
                       </Badge>
                     </div>
 
-                    <div className="flex items-center gap-3 text-[11px] text-slate-500">
-                      <span>Prefijo: <code className="text-slate-400 font-mono">{tok.prefix}...</code></span>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                      <span>Prefijo: <code className="text-[var(--text-secondary)] font-mono">{tok.prefix}...</code></span>
                       <span>•</span>
-                      <span>Subject: <code className="text-slate-400 font-mono">{tok.subject.slice(0, 8)}...</code></span>
+                      <span>Subject: <code className="text-[var(--text-secondary)] font-mono">{tok.subject.slice(0, 8)}...</code></span>
                     </div>
 
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
                       <Button
                         onClick={() => openExportModal(tok)}
                         variant="secondary"
@@ -301,36 +301,36 @@ export default function AdminPage() {
         </Card>
 
         {/* Users List */}
-        <Card className="p-5 bg-slate-900/70 border-slate-800 flex flex-col justify-between">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between">
           <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-              <CardTitle className="text-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
                 <Users className="h-4 w-4 text-purple-400" />
                 Usuarios & Agentes Registrados
               </CardTitle>
-              <Button onClick={() => setIsUserModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1">
+              <Button onClick={() => setIsUserModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                 <Plus className="h-3.5 w-3.5" />
                 <span>Nuevo Usuario</span>
               </Button>
             </div>
 
             {loading ? (
-              <p className="text-xs text-slate-500 py-6 text-center">Cargando usuarios...</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">Cargando usuarios...</p>
             ) : users.length === 0 ? (
-              <p className="text-xs text-slate-500 py-6 text-center">No hay usuarios registrados aún.</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">No hay usuarios registrados aún.</p>
             ) : (
               <div className="space-y-2.5">
                 {users.map((u) => (
                   <div
                     key={u.id}
-                    className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-lg flex items-center justify-between hover:border-slate-700 transition-colors"
+                    className="p-3.5 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg flex items-center justify-between hover:border-[var(--border-focus)] transition-colors"
                   >
-                    <div>
-                      <div className="font-semibold text-xs text-slate-200">{u.display_name}</div>
-                      <div className="text-[11px] text-slate-500">{u.email}</div>
+                    <div className="overflow-hidden mr-2">
+                      <div className="font-semibold text-xs text-[var(--text-primary)] truncate">{u.display_name}</div>
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">{u.email}</div>
                     </div>
 
-                    <Badge variant="default">
+                    <Badge variant="default" className="shrink-0 text-[10px]">
                       {u.roles?.join(", ") || "developer"}
                     </Badge>
                   </div>
@@ -353,7 +353,7 @@ export default function AdminPage() {
 
         <form onSubmit={handleCreateUser} className="space-y-3.5 mt-4 text-xs">
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
               NOMBRE COMPLETO / AGENTE
             </label>
             <Input
@@ -366,7 +366,7 @@ export default function AdminPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
               CORREO ELECTRÓNICO
             </label>
             <Input
@@ -379,7 +379,7 @@ export default function AdminPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
               ROL PRINCIPAL
             </label>
             <Select value={userRole} onChange={(e) => setUserRole(e.target.value)}>
@@ -389,7 +389,7 @@ export default function AdminPage() {
             </Select>
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
+          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
             <Button type="button" variant="outline" size="sm" onClick={() => setIsUserModalOpen(false)}>
               Cancelar
             </Button>
@@ -414,13 +414,13 @@ export default function AdminPage() {
           <div className="space-y-4 mt-4 text-xs">
             <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-lg space-y-2">
               <span className="font-semibold block">¡Token emitido con éxito!</span>
-              <p className="text-[11px] text-slate-300">Copia este secreto ahora; no volverá a mostrarse:</p>
-              <div className="p-2.5 bg-slate-950 rounded border border-slate-800 font-mono text-[11px] text-slate-200 break-all select-all">
+              <p className="text-[11px] text-[var(--text-secondary)]">Copia este secreto ahora; no volverá a mostrarse:</p>
+              <div className="p-2.5 bg-[var(--bg-surface)] rounded border border-[var(--border-subtle)] font-mono text-[11px] text-[var(--text-primary)] break-all select-all">
                 {issuedSecret}
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
               <Button
                 type="button"
                 variant="secondary"
@@ -443,7 +443,7 @@ export default function AdminPage() {
         ) : (
           <form onSubmit={handleIssueToken} className="space-y-3.5 mt-4 text-xs">
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                 USUARIO / SUBJECT ASIGNADO
               </label>
               <Select

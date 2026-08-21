@@ -174,13 +174,13 @@ export default function ExtractPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            <Sparkles className="h-6 w-6 text-blue-500" />
-            Extracción y Síntesis Automática con IA
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+            <Sparkles className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+            <span>Extracción y Síntesis Automática con IA</span>
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-[var(--text-muted)] mt-1">
             Extrae observaciones estructuradas, entidades y relaciones desde transcripciones de sesiones o notas de código
           </p>
         </div>
@@ -189,33 +189,33 @@ export default function ExtractPage() {
           onClick={() => setShowLLMSettings(!showLLMSettings)}
           variant="secondary"
           size="sm"
-          className="gap-2"
+          className="gap-2 text-xs shrink-0 self-start sm:self-auto"
         >
           <Settings className="h-4 w-4" />
-          <span>{apiKeyInput || baseURLInput ? "LLM Configurado" : "Configurar LLM (API / Token)"}</span>
+          <span>{apiKeyInput || baseURLInput ? "LLM Configurado" : "Configurar LLM"}</span>
         </Button>
       </div>
 
       {/* LLM Settings Collapsible Card */}
       {showLLMSettings && (
-        <Card className="p-5 bg-slate-900/80 border-slate-800 shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-            <CardTitle className="text-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+            <CardTitle className="text-sm text-[var(--text-primary)]">
               <Key className="h-4 w-4 text-blue-400" />
               Configuración de Proveedor LLM Personalizado
             </CardTitle>
           </div>
 
           <form onSubmit={handleSaveLLMSettings} className="space-y-3 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   PROVEEDOR
                 </label>
                 <Select
                   value={providerInput}
                   onChange={(e) => handleProviderSelect(e.target.value)}
-                  className="h-9 text-xs"
+                  className="h-9 text-xs w-full"
                 >
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic Claude</option>
@@ -224,26 +224,26 @@ export default function ExtractPage() {
                   <option value="groq">Groq LPU</option>
                   <option value="together">Together AI</option>
                   <option value="deepseek">DeepSeek</option>
-                  <option value="custom">Personalizado (OpenAI-compatible)</option>
+                  <option value="custom">Personalizado</option>
                 </Select>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   MODELO
                 </label>
                 <Input
                   type="text"
-                  placeholder="gpt-4o-mini / llama3.3 / claude-3-5-sonnet"
+                  placeholder="gpt-4o-mini / llama3.3"
                   value={modelInput}
                   onChange={(e) => setModelInput(e.target.value)}
-                  className="h-9 text-xs font-mono"
+                  className="h-9 text-xs font-mono w-full"
                   required
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   API ENDPOINT / BASE URL
                 </label>
                 <Input
@@ -251,12 +251,12 @@ export default function ExtractPage() {
                   placeholder="https://api.openai.com/v1"
                   value={baseURLInput}
                   onChange={(e) => setBaseURLInput(e.target.value)}
-                  className="h-9 text-xs font-mono"
+                  className="h-9 text-xs font-mono w-full"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   API KEY / TOKEN
                 </label>
                 <Input
@@ -264,16 +264,16 @@ export default function ExtractPage() {
                   placeholder={providerInput === "ollama" ? "Opcional (Ollama)" : "sk-..."}
                   value={apiKeyInput}
                   onChange={(e) => setApiKeyInput(e.target.value)}
-                  className="h-9 text-xs font-mono"
+                  className="h-9 text-xs font-mono w-full"
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[11px] text-slate-500">
-                Si no configuras credenciales, Cortex ejecutará el extractor heurístico integrado.
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-[var(--border-subtle)]">
+              <span className="text-[11px] text-[var(--text-muted)]">
+                Si no configuras credenciales, Cortex ejecutará el extractor integrado.
               </span>
-              <Button type="submit" size="sm" className="h-8">
+              <Button type="submit" size="sm" className="h-8 text-xs shrink-0">
                 Guardar Configuración
               </Button>
             </div>
@@ -282,37 +282,37 @@ export default function ExtractPage() {
       )}
 
       {/* Input Section */}
-      <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <label className="text-xs font-semibold text-slate-200">
+      <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <label className="text-xs font-semibold text-[var(--text-primary)]">
             Transcripción de Sesión, Notas de Arquitectura o Logs de Código:
           </label>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400">Proyecto:</span>
+            <span className="text-xs text-[var(--text-muted)]">Proyecto:</span>
             <Input
               type="text"
               value={project}
               onChange={(e) => setProject(e.target.value)}
-              className="w-40 h-8 text-xs bg-slate-950/80"
+              className="w-36 sm:w-40 h-8 text-xs bg-[var(--bg-surface)]"
             />
           </div>
         </div>
 
         <textarea
-          className="flex min-h-[140px] w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 font-mono"
+          className="flex min-h-[140px] w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3.5 py-2.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 font-mono"
           rows={7}
           placeholder="Pega aquí el registro de una sesión, decisiones tomadas, explicaciones de bugfixes o notas técnicas..."
           value={rawText}
           onChange={(e) => setRawText(e.target.value)}
         />
 
-        <div className="flex justify-end gap-2.5 pt-1">
+        <div className="flex flex-wrap justify-end gap-2.5 pt-1">
           <Button
             onClick={handleSynthesize}
             variant="secondary"
             size="sm"
             disabled={isExtracting}
-            className="gap-2"
+            className="gap-2 text-xs"
           >
             <Layers className="h-4 w-4" />
             <span>Sintetizar Proyecto</span>
@@ -322,10 +322,10 @@ export default function ExtractPage() {
             onClick={handleExtract}
             size="sm"
             disabled={isExtracting || !rawText.trim()}
-            className="gap-2 shadow-lg shadow-blue-600/20"
+            className="gap-2 shadow-lg shadow-blue-600/20 text-xs"
           >
             <Sparkles className="h-4 w-4" />
-            <span>{isExtracting ? "Analizando y Extrayendo..." : "Extraer Conocimiento con IA"}</span>
+            <span>{isExtracting ? "Analizando y Extrayendo..." : "Extraer Conocimiento"}</span>
           </Button>
         </div>
       </Card>
@@ -340,12 +340,12 @@ export default function ExtractPage() {
       {/* Extraction Results */}
       {extractionResult && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-semibold text-white">
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">
                 Resultado de la Extracción ({extractionResult.source_method.toUpperCase()})
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-[var(--text-muted)]">
                 {extractionResult.summary}
               </p>
             </div>
@@ -354,31 +354,31 @@ export default function ExtractPage() {
               onClick={handleSaveToCortex}
               size="sm"
               disabled={isSaving}
-              className="gap-2 shadow-lg shadow-blue-600/20"
+              className="gap-2 shadow-lg shadow-blue-600/20 text-xs shrink-0 self-start sm:self-auto"
             >
               <Database className="h-4 w-4" />
               <span>{isSaving ? "Guardando..." : "Guardar Todo en Cortex"}</span>
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
             {extractionResult.observations.map((obs, idx) => (
-              <Card key={idx} className="p-4 bg-slate-900/80 border-slate-800 space-y-2">
+              <Card key={idx} className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-2">
                 <div className="flex items-start justify-between gap-2">
-                  <h3 className="text-xs font-semibold text-slate-100 line-clamp-1">
+                  <h3 className="text-xs font-semibold text-[var(--text-primary)] line-clamp-1">
                     {obs.title}
                   </h3>
-                  <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"}>
+                  <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"} className="shrink-0 text-[10px]">
                     {obs.type}
                   </Badge>
                 </div>
-                <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
+                <p className="text-xs text-[var(--text-secondary)] line-clamp-3 leading-relaxed">
                   {obs.content}
                 </p>
                 {obs.tags && obs.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
                     {obs.tags.map((t, i) => (
-                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400 font-mono">
+                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
                         #{t}
                       </span>
                     ))}
@@ -389,21 +389,27 @@ export default function ExtractPage() {
           </div>
 
           {extractionResult.edges.length > 0 && (
-            <Card className="p-5 bg-slate-900/80 border-slate-800 space-y-3">
-              <CardTitle className="text-sm">
+            <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
+              <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
                 <Share2 className="h-4 w-4 text-blue-400" />
-                Relaciones Detectadas para el Grafo
+                <span>Relaciones Detectadas para el Grafo</span>
               </CardTitle>
               <div className="space-y-2">
                 {extractionResult.edges.map((e, idx) => (
                   <div
                     key={idx}
-                    className="p-3 bg-slate-950/70 rounded-lg border border-slate-800/80 text-xs flex flex-wrap items-center gap-2.5"
+                    className="p-3 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
                   >
-                    <span className="font-semibold text-slate-200">{e.from_title}</span>
-                    <Badge variant="default" className="text-[10px]">{e.relation_type}</Badge>
-                    <span className="font-semibold text-slate-200">{e.to_title}</span>
-                    <span className="text-slate-500 ml-auto text-[11px]">{e.reasoning}</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-[var(--text-primary)]">{e.from_title}</span>
+                      <span className="text-[var(--text-muted)]">➔</span>
+                      <Badge variant="outline" className="text-[10px] font-mono">{e.relation_type}</Badge>
+                      <span className="text-[var(--text-muted)]">➔</span>
+                      <span className="font-semibold text-[var(--text-primary)]">{e.to_title}</span>
+                    </div>
+                    {e.reasoning && (
+                      <span className="text-[11px] text-[var(--text-muted)] italic sm:text-right">{e.reasoning}</span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -412,24 +418,22 @@ export default function ExtractPage() {
         </div>
       )}
 
-      {/* Synthesis Results */}
+      {/* Synthesis Result */}
       {synthesisResult && (
-        <Card className="p-6 bg-slate-900/80 border-slate-800 space-y-4">
-          <div>
-            <h2 className="text-base font-bold text-white">
-              Mapa de Conocimiento Consolidado: {synthesisResult.project}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-4 shadow-xl">
+          <div className="flex items-center gap-2 pb-3 border-b border-[var(--border-subtle)]">
+            <Layers className="h-5 w-5 text-purple-400" />
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">
+              Síntesis Consolidada del Proyecto ({project})
             </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              {synthesisResult.summary}
-            </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
+              <h3 className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
                 Decisiones Clave
               </h3>
-              <ul className="space-y-1.5 pl-4 text-xs text-slate-300 list-disc">
+              <ul className="space-y-1.5 pl-4 text-xs text-[var(--text-secondary)] list-disc">
                 {synthesisResult.key_decisions.map((d, i) => (
                   <li key={i}>{d}</li>
                 ))}
@@ -437,10 +441,10 @@ export default function ExtractPage() {
             </div>
 
             <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
+              <h3 className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wider">
                 Patrones y Estándares
               </h3>
-              <ul className="space-y-1.5 pl-4 text-xs text-slate-300 list-disc">
+              <ul className="space-y-1.5 pl-4 text-xs text-[var(--text-secondary)] list-disc">
                 {synthesisResult.patterns.map((p, i) => (
                   <li key={i}>{p}</li>
                 ))}

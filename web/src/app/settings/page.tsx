@@ -161,22 +161,22 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2">
-          <Sliders className="h-6 w-6 text-blue-500" />
-          Configuración del Sistema
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+          <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+          <span>Configuración del Sistema</span>
         </h1>
-        <p className="text-sm text-slate-400">
+        <p className="text-xs text-[var(--text-muted)] mt-1">
           Gestiona el endpoint de Cortex Server y la integración con proveedores LLM personalizados.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
         {/* Cortex Server Connection Settings */}
-        <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-            <CardTitle className="text-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
               <Server className="h-4 w-4 text-blue-400" />
-              Conexión Cortex Server
+              <span>Conexión Cortex Server</span>
             </CardTitle>
             <Button
               type="button"
@@ -192,7 +192,7 @@ export default function SettingsPage() {
 
           <form onSubmit={handleSaveServer} className="space-y-4 text-xs">
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                 URL DEL SERVIDOR CORTEX
               </label>
               <Input
@@ -206,9 +206,9 @@ export default function SettingsPage() {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                 BEARER TOKEN
-                <span className="font-normal text-slate-500 lowercase">
+                <span className="font-normal text-[var(--text-muted)] lowercase">
                   {" "}(solo en memoria; no se persiste)
                 </span>
               </label>
@@ -225,7 +225,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setShowBearer(!showBearer)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
                   {showBearer ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -240,7 +240,7 @@ export default function SettingsPage() {
             )}
 
             <div className="flex justify-end pt-2">
-              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20 text-xs">
                 <Save className="h-3.5 w-3.5" />
                 <span>Actualizar Conexión</span>
               </Button>
@@ -249,24 +249,24 @@ export default function SettingsPage() {
         </Card>
 
         {/* LLM Engine Settings with Full Custom Support */}
-        <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-            <CardTitle className="text-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-blue-400" />
-              Proveedor de LLM Personalizado
+              <span>Proveedor de LLM Personalizado</span>
             </CardTitle>
           </div>
 
           <form onSubmit={handleSaveLLM} className="space-y-4 text-xs">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   PROVEEDOR
                 </label>
                 <Select
                   value={inputLLMProvider}
                   onChange={(e) => handleProviderChange(e.target.value)}
-                  className="h-9"
+                  className="h-9 w-full text-xs"
                 >
                   <option value="openai">OpenAI (Oficial)</option>
                   <option value="anthropic">Anthropic Claude</option>
@@ -280,7 +280,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                   MODELO
                 </label>
                 <Input
@@ -288,7 +288,7 @@ export default function SettingsPage() {
                   value={inputLLMModel}
                   onChange={(e) => setInputLLMModel(e.target.value)}
                   placeholder="ej: gpt-4o, claude-3-7-sonnet, llama3.3"
-                  className="h-9 font-mono"
+                  className="h-9 font-mono text-xs w-full"
                   required
                 />
               </div>
@@ -297,7 +297,7 @@ export default function SettingsPage() {
             {/* Model Suggestions Chips */}
             {currentModels.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="text-[10px] text-slate-500 uppercase font-mono mr-1 flex items-center gap-1">
+                <span className="text-[10px] text-[var(--text-muted)] uppercase font-mono mr-1 flex items-center gap-1">
                   <Bot className="h-3 w-3" /> Sugeridos:
                 </span>
                 {currentModels.map((m) => (
@@ -308,7 +308,7 @@ export default function SettingsPage() {
                     className={`text-[10px] font-mono px-2 py-0.5 rounded-full border transition-all ${
                       inputLLMModel === m
                         ? "bg-blue-600/30 border-blue-500 text-blue-300"
-                        : "bg-slate-800/80 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                        : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-focus)]"
                     }`}
                   >
                     {m}
@@ -318,13 +318,13 @@ export default function SettingsPage() {
             )}
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-slate-300 flex items-center justify-between uppercase">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] flex flex-wrap items-center justify-between gap-1 uppercase">
                 <span className="flex items-center gap-1.5">
                   <Globe className="h-3.5 w-3.5 text-blue-400" />
                   API ENDPOINT / BASE URL
                 </span>
-                <span className="font-normal text-slate-500 lowercase">
-                  (Opcional, compatible con proxy corporativo)
+                <span className="font-normal text-[var(--text-muted)] lowercase">
+                  (Opcional, compatible con proxy)
                 </span>
               </label>
               <Input
@@ -332,14 +332,14 @@ export default function SettingsPage() {
                 value={inputLLMBaseURL}
                 onChange={(e) => setInputLLMBaseURL(e.target.value)}
                 placeholder="https://api.openai.com/v1 o http://localhost:11434/v1"
-                className="h-9 font-mono"
+                className="h-9 font-mono text-xs"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                 API KEY / TOKEN DE LLM
-                <span className="font-normal text-slate-500 lowercase">
+                <span className="font-normal text-[var(--text-muted)] lowercase">
                   {" "}(solo en memoria; no se persiste en disco)
                 </span>
               </label>
@@ -351,12 +351,12 @@ export default function SettingsPage() {
                     setSecretLLMKey((state) => ({ ...state, typed: e.target.value }))
                   }
                   placeholder={inputLLMProvider === "ollama" ? "Opcional para Ollama local" : "sk-..."}
-                  className="h-9 font-mono pr-10"
+                  className="h-9 font-mono pr-10 text-xs"
                 />
                 <button
                   type="button"
                   onClick={() => setShowKey(!showKey)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
                   {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -371,7 +371,7 @@ export default function SettingsPage() {
             )}
 
             <div className="flex justify-end pt-2">
-              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20 text-xs">
                 <Save className="h-3.5 w-3.5" />
                 <span>Guardar Configuración LLM</span>
               </Button>

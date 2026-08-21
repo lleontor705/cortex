@@ -90,8 +90,8 @@ export default function DashboardPage() {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {viewMode === "global" ? "Total Observaciones (Tenant)" : "Mis Observaciones"}
           </span>
@@ -103,7 +103,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {viewMode === "global" ? "Aristas de Grafo (Tenant)" : "Mis Vínculos de Grafo"}
           </span>
@@ -113,7 +113,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {viewMode === "global" ? "Sesiones Totales" : "Mis Sesiones de Agente"}
           </span>
@@ -125,7 +125,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {viewMode === "global" ? "Proyectos Activos" : "Mis Proyectos Asignados"}
           </span>
@@ -139,28 +139,28 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick Action Banner */}
-      <Card className="p-6 bg-gradient-to-r from-blue-900/20 via-[var(--bg-surface)] to-purple-900/20 border-[var(--border-subtle)] shadow-md">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+      <Card className="p-4 sm:p-6 bg-gradient-to-r from-blue-900/20 via-[var(--bg-surface)] to-purple-900/20 border-[var(--border-subtle)] shadow-md">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-blue-400" />
-              Extracción Automática de Conocimiento con LLM
+            <h2 className="text-sm sm:text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-blue-400 shrink-0" />
+              <span>Extracción Automática de Conocimiento con LLM</span>
             </h2>
             <p className="text-xs text-[var(--text-secondary)]">
               Pasa transcripciones de sesiones o notas de código para extraer observaciones y relaciones con 1 clic.
             </p>
           </div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
             <Link href="/extract">
-              <Button size="sm" className="gap-2">
+              <Button size="sm" className="gap-2 text-xs">
                 <Sparkles className="h-4 w-4" />
                 <span>Abrir Extractor</span>
               </Button>
             </Link>
             <Link href="/search">
-              <Button variant="secondary" size="sm" className="gap-2">
+              <Button variant="secondary" size="sm" className="gap-2 text-xs">
                 <Search className="h-4 w-4" />
-                <span>Retrieval Playground</span>
+                <span>Retrieval</span>
               </Button>
             </Link>
           </div>
@@ -168,17 +168,17 @@ export default function DashboardPage() {
       </Card>
 
       {/* Two Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Recent Observations */}
-        <Card className="p-5 bg-slate-900/70 border-slate-800 flex flex-col justify-between">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between">
           <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-              <CardTitle className="text-sm">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
                 <BrainCircuit className="h-4 w-4 text-blue-400" />
                 Últimas Observaciones
               </CardTitle>
               <Link href="/memory">
-                <Button variant="ghost" size="sm" className="text-xs text-slate-400 hover:text-white gap-1.5 h-7">
+                <Button variant="ghost" size="sm" className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] gap-1.5 h-7">
                   <span>Ver todas</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
@@ -186,29 +186,29 @@ export default function DashboardPage() {
             </div>
 
             {loading ? (
-              <p className="text-xs text-slate-500 py-6 text-center">Cargando observaciones...</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">Cargando observaciones...</p>
             ) : recentObs.length === 0 ? (
-              <p className="text-xs text-slate-500 py-6 text-center">No hay observaciones guardadas aún.</p>
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">No hay observaciones guardadas aún.</p>
             ) : (
               <div className="space-y-3">
                 {recentObs.map((obs) => (
                   <div
                     key={obs.id}
-                    className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-lg space-y-1.5 hover:border-slate-700 transition-colors"
+                    className="p-3.5 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg space-y-1.5 hover:border-[var(--border-focus)] transition-colors"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-xs text-slate-200 truncate">
+                      <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
                         {obs.title}
                       </span>
                       <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "warning" : "secondary"}>
                         {obs.type}
                       </Badge>
                     </div>
-                    <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                    <p className="text-xs text-[var(--text-secondary)] line-clamp-2 leading-relaxed">
                       {obs.content}
                     </p>
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500 pt-1">
-                      <span>Proyecto: <b className="text-slate-400">{obs.project}</b></span>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)] pt-1">
+                      <span>Proyecto: <b className="text-[var(--text-secondary)]">{obs.project}</b></span>
                       <span>•</span>
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
@@ -223,31 +223,31 @@ export default function DashboardPage() {
         </Card>
 
         {/* Sessions & Access Authority */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           {/* Active Sessions */}
-          <Card className="p-5 bg-slate-900/70 border-slate-800">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
-              <CardTitle className="text-sm">
+          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
                 <Layers className="h-4 w-4 text-amber-400" />
                 Sesiones Recientes
               </CardTitle>
             </div>
             {recentSessions.length === 0 ? (
-              <p className="text-xs text-slate-500 py-4 text-center">No hay sesiones activas registradas.</p>
+              <p className="text-xs text-[var(--text-muted)] py-4 text-center">No hay sesiones activas registradas.</p>
             ) : (
               <div className="space-y-2.5">
                 {recentSessions.map((sess) => (
                   <div
                     key={sess.id}
-                    className="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg flex items-center justify-between hover:border-slate-700 transition-colors"
+                    className="p-3 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg flex items-center justify-between hover:border-[var(--border-focus)] transition-colors"
                   >
-                    <div>
-                      <div className="font-semibold text-xs text-slate-200">{sess.project}</div>
-                      <div className="text-[11px] text-slate-500">
+                    <div className="overflow-hidden mr-2">
+                      <div className="font-semibold text-xs text-[var(--text-primary)] truncate">{sess.project}</div>
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">
                         {sess.summary || `ID: ${sess.id.slice(0, 12)}...`}
                       </div>
                     </div>
-                    <Badge variant="success">Activa</Badge>
+                    <Badge variant="success" className="shrink-0">Activa</Badge>
                   </div>
                 ))}
               </div>
@@ -255,21 +255,21 @@ export default function DashboardPage() {
           </Card>
 
           {/* Principal Clearance Card */}
-          <Card className="p-5 bg-slate-900/70 border-slate-800">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
-              <CardTitle className="text-sm">
+          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-3">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
                 <Shield className="h-4 w-4 text-emerald-400" />
                 Identidad y Autoridad de Acceso
               </CardTitle>
             </div>
-            <div className="space-y-2.5 text-xs text-slate-400">
-              <div className="flex justify-between py-1 border-b border-slate-850">
+            <div className="space-y-2.5 text-xs text-[var(--text-secondary)]">
+              <div className="flex justify-between py-1 border-b border-[var(--border-subtle)]">
                 <span>Tipo de Principal:</span>
-                <span className="font-mono text-slate-200">{principal?.type || "service_account"}</span>
+                <span className="font-mono text-[var(--text-primary)]">{principal?.type || "service_account"}</span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-850">
+              <div className="flex justify-between py-1 border-b border-[var(--border-subtle)]">
                 <span>Organización / Tenant:</span>
-                <span className="font-mono text-slate-200">{principal?.org_id || "default-tenant"}</span>
+                <span className="font-mono text-[var(--text-primary)] truncate ml-2">{principal?.org_id || "default-tenant"}</span>
               </div>
               <div className="flex justify-between py-1">
                 <span>Roles Asignados:</span>

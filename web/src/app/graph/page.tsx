@@ -901,25 +901,25 @@ export default function GraphPage() {
   return (
     <div className="space-y-5">
       {/* Page Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-            <Share2 className="h-6 w-6 text-blue-500" />
-            Grafo de Conocimiento & Relaciones
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+            <Share2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+            <span>Grafo de Conocimiento & Relaciones</span>
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-[var(--text-muted)] mt-1">
             Explorador visual 2D interactivo a 60 FPS con motor de físicas, detección de conflictos y análisis de dependencias
           </p>
         </div>
 
         {/* Global Toolbar */}
         <div className="flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-400">RAÍZ:</span>
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <span className="text-[11px] font-semibold text-[var(--text-muted)]">RAÍZ:</span>
             <Select
               value={selectedObsId}
               onChange={(e) => setSelectedObsId(e.target.value)}
-              className="w-56"
+              className="w-48 sm:w-56 text-xs"
             >
               {observations.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -929,12 +929,12 @@ export default function GraphPage() {
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-400">SALTOS:</span>
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <span className="text-[11px] font-semibold text-[var(--text-muted)]">SALTOS:</span>
             <Select
               value={depth}
               onChange={(e) => setDepth(Number(e.target.value))}
-              className="w-24"
+              className="w-20 sm:w-24 text-xs"
             >
               <option value={1}>1 hop</option>
               <option value={2}>2 hops</option>
@@ -949,6 +949,7 @@ export default function GraphPage() {
             size="sm"
             disabled={loading}
             title="Recargar Grafo"
+            className="text-xs gap-1.5"
           >
             <RotateCcw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             <span>{loading ? "Cargando..." : "Recargar"}</span>
@@ -957,31 +958,31 @@ export default function GraphPage() {
       </div>
 
       {/* Metrics Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="p-4 bg-slate-900/60 border-slate-800">
-          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Nodos en el Grafo</span>
-          <span className="text-2xl font-bold text-white mt-1 block">{stats.nodes}</span>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Nodos en el Grafo</span>
+          <span className="text-2xl font-bold text-[var(--text-primary)] mt-1 block">{stats.nodes}</span>
         </Card>
-        <Card className="p-4 bg-slate-900/60 border-slate-800">
-          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Aristas de Relación</span>
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Aristas de Relación</span>
           <span className="text-2xl font-bold text-blue-400 mt-1 block">{stats.edges}</span>
         </Card>
-        <Card className="p-4 bg-slate-900/60 border-slate-800">
-          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Conflictos Detectados</span>
-          <span className={`text-2xl font-bold mt-1 block ${stats.contradicts > 0 ? "text-red-400" : "text-slate-500"}`}>
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Conflictos Detectados</span>
+          <span className={`text-2xl font-bold mt-1 block ${stats.contradicts > 0 ? "text-red-400" : "text-[var(--text-muted)]"}`}>
             {stats.contradicts}
           </span>
         </Card>
-        <Card className="p-4 bg-slate-900/60 border-slate-800">
-          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Superaciones Activas</span>
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Superaciones Activas</span>
           <span className="text-2xl font-bold text-emerald-400 mt-1 block">{stats.supersedes}</span>
         </Card>
       </div>
 
       {/* Relation Type Filter Chips & Search Bar */}
-      <Card className="p-3 bg-slate-900/70 border-slate-800 flex flex-wrap items-center justify-between gap-3">
+      <Card className="p-3 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 mr-1">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)] mr-1">
             <Filter className="h-3.5 w-3.5" />
             <span>FILTROS:</span>
           </div>
@@ -994,9 +995,9 @@ export default function GraphPage() {
                 onClick={() => setActiveFilters((prev) => ({ ...prev, [rel]: !active }))}
                 className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-all duration-150"
                 style={{
-                  borderColor: active ? color : "#334155",
+                  borderColor: active ? color : "var(--border-subtle)",
                   backgroundColor: active ? `${color}20` : "transparent",
-                  color: active ? color : "#94a3b8",
+                  color: active ? color : "var(--text-secondary)",
                   fontWeight: active ? "600" : "400",
                 }}
               >
@@ -1010,20 +1011,20 @@ export default function GraphPage() {
           })}
         </div>
 
-        <div className="relative w-64">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
+        <div className="relative w-full sm:w-64">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
           <Input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Buscar nodo en grafo..."
-            className="pl-8 h-8 text-xs"
+            className="pl-8 h-8 text-xs w-full"
           />
           {searchQuery && (
             <button
               type="button"
               onClick={() => setSearchQuery("")}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -1032,28 +1033,28 @@ export default function GraphPage() {
       </Card>
 
       {/* Main Workspace Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 sm:gap-5">
         {/* Canvas Explorer Card */}
         <Card
           ref={containerRef}
-          className="relative p-0 overflow-hidden min-h-[580px] h-[calc(100vh-340px)] flex flex-col border-slate-800 bg-slate-950/90"
+          className="relative p-0 overflow-hidden min-h-[420px] sm:min-h-[500px] h-[55vh] lg:h-[calc(100vh-340px)] flex flex-col border-[var(--border-subtle)] bg-[var(--bg-primary)]"
         >
           {/* Floating Canvas Action Overlay */}
-          <div className="absolute top-4 left-4 flex items-center gap-2 z-10">
-            <Button onClick={() => setZoom((z) => Math.min(z * 1.25, 3.5))} variant="secondary" size="icon" title="Acercar">
+          <div className="absolute top-3 sm:top-4 left-3 sm:left-4 flex flex-wrap items-center gap-1.5 sm:gap-2 z-10">
+            <Button onClick={() => setZoom((z) => Math.min(z * 1.25, 3.5))} variant="secondary" size="icon" className="h-8 w-8" title="Acercar">
               <ZoomIn className="h-4 w-4" />
             </Button>
-            <Button onClick={() => setZoom((z) => Math.max(z * 0.8, 0.25))} variant="secondary" size="icon" title="Alejar">
+            <Button onClick={() => setZoom((z) => Math.max(z * 0.8, 0.25))} variant="secondary" size="icon" className="h-8 w-8" title="Alejar">
               <ZoomOut className="h-4 w-4" />
             </Button>
-            <Button onClick={handleFitView} variant="secondary" size="icon" title="Ajustar Vista al Grafo">
+            <Button onClick={handleFitView} variant="secondary" size="icon" className="h-8 w-8" title="Ajustar Vista al Grafo">
               <Maximize2 className="h-4 w-4" />
             </Button>
-            <Button onClick={handleReheatSimulation} variant="secondary" size="icon" title="Reorganizar Físicas">
+            <Button onClick={handleReheatSimulation} variant="secondary" size="icon" className="h-8 w-8" title="Reorganizar Físicas">
               <Flame className="h-4 w-4 text-amber-500" />
             </Button>
             {selectedNode && (
-              <Button onClick={() => focusOnNode(selectedNode)} variant="secondary" size="sm" title="Centrar en Nodo Seleccionado">
+              <Button onClick={() => focusOnNode(selectedNode)} variant="secondary" size="sm" className="h-8 text-xs" title="Centrar en Nodo Seleccionado">
                 <Compass className="h-3.5 w-3.5 text-blue-400 mr-1" />
                 <span>Centrar</span>
               </Button>
@@ -1061,11 +1062,11 @@ export default function GraphPage() {
           </div>
 
           {/* Mini-Map Radar HUD in Bottom-Right Corner */}
-          <div className="absolute bottom-4 right-4 z-10 bg-slate-900/85 backdrop-blur-md p-2 rounded-xl border border-slate-800 shadow-2xl">
-            <div className="text-[10px] font-semibold text-slate-400 mb-1 uppercase tracking-wider">
+          <div className="absolute bottom-3 sm:bottom-4 right-3 sm:right-4 z-10 bg-[var(--bg-secondary)]/90 backdrop-blur-md p-2 rounded-xl border border-[var(--border-subtle)] shadow-2xl hidden sm:block">
+            <div className="text-[10px] font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">
               Radar HUD
             </div>
-            <canvas ref={minimapRef} width={140} height={100} className="block rounded-lg bg-slate-950/80 border border-slate-800" />
+            <canvas ref={minimapRef} width={140} height={100} className="block rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]" />
           </div>
 
           {/* Interactive Canvas */}
@@ -1082,10 +1083,10 @@ export default function GraphPage() {
         </Card>
 
         {/* Node Inspector Drawer */}
-        <Card className="flex flex-col justify-between h-[calc(100vh-340px)] overflow-y-auto border-slate-800 bg-slate-900/90 p-5">
+        <Card className="flex flex-col justify-between min-h-[300px] lg:h-[calc(100vh-340px)] overflow-y-auto border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 sm:p-5">
           <div className="space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
                 <Info className="h-4 w-4 text-blue-400" />
                 Detalle del Nodo
               </h2>
