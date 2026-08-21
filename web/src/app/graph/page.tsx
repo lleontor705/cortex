@@ -131,6 +131,9 @@ function GraphPageContent() {
   const [blastData, setBlastData] = useState<BlastRadiusResult | null>(null);
   const [blastLoading, setBlastLoading] = useState(false);
 
+  // Graph Domain Layer: all (unified), knowledge (decisions/memories only), code (AST only)
+  const [graphLayer, setGraphLayer] = useState<"all" | "knowledge" | "code">("all");
+
   // Graph Simulation State
   const nodesRef = useRef<SimulationNode[]>([]);
   const edgesRef = useRef<SimulationLink[]>([]);
@@ -151,6 +154,38 @@ function GraphPageContent() {
     defines: true,
     uses: true,
   });
+
+  const isNodeVisible = useCallback(
+    (node: SimulationNode) => {
+      const isCode =
+        node.kind === "code_entity" ||
+        node.kind === "module" ||
+        node.kind === "function" ||
+        node.kind === "class" ||
+        node.kind === "interface";
+      if (graphLayer === "knowledge" && isCode) return false;
+      if (graphLayer === "code" && !isCode) return false;
+      return true;
+    },
+    [graphLayer],
+  );
+
+  const layerCounts = useMemo(() => {
+    const nodes = nodesRef.current;
+    let knowledge = 0;
+    let code = 0;
+    nodes.forEach((n) => {
+      const isCode =
+        n.kind === "code_entity" ||
+        n.kind === "module" ||
+        n.kind === "function" ||
+        n.kind === "class" ||
+        n.kind === "interface";
+      if (isCode) code++;
+      else knowledge++;
+    });
+    return { knowledge, code, total: nodes.length };
+  }, [nodesRef.current.length]);
 
   // Camera State (Pan & Zoom)
   const [zoom, setZoom] = useState(1.0);
@@ -566,6 +601,7 @@ function GraphPageContent() {
     // Draw Edges
     edges.forEach((edge) => {
       if (!edge.sourceNode || !edge.targetNode) return;
+      if (!isNodeVisible(edge.sourceNode) || !isNodeVisible(edge.targetNode)) return;
       if (activeFilters[edge.type] === false) return;
 
       const isConnected = activeNode
@@ -615,6 +651,7 @@ function GraphPageContent() {
 
     // Draw Nodes
     nodes.forEach((node) => {
+      if (!isNodeVisible(node)) return;
       const isSelected = selectedNode?.id === node.id;
       const isSearchMatch = searchQuery && node.label.toLowerCase().includes(searchQuery.toLowerCase());
 
@@ -766,6 +803,7 @@ function GraphPageContent() {
     const scale = Math.min(sx, sy);
 
     nodes.forEach((n) => {
+      if (!isNodeVisible(n)) return;
       const mx = (n.x - minX) * scale;
       const my = (n.y - minY) * scale;
       mctx.beginPath();
@@ -783,6 +821,7 @@ function GraphPageContent() {
     const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
     const clicked = nodesRef.current.find((n) => {
+      if (!isNodeVisible(n)) return false;
       const dx = n.x - mouseX;
       const dy = n.y - mouseY;
       return dx * dx + dy * dy <= n.radius * n.radius;
@@ -814,6 +853,7 @@ function GraphPageContent() {
       });
     } else {
       const hovered = nodesRef.current.find((n) => {
+        if (!isNodeVisible(n)) return false;
         const dx = n.x - mouseX;
         const dy = n.y - mouseY;
         return dx * dx + dy * dy <= n.radius * n.radius;
@@ -834,6 +874,7 @@ function GraphPageContent() {
     const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
     const clicked = nodesRef.current.find((n) => {
+      if (!isNodeVisible(n)) return false;
       const dx = n.x - mouseX;
       const dy = n.y - mouseY;
       return dx * dx + dy * dy <= n.radius * n.radius;
@@ -849,6 +890,7 @@ function GraphPageContent() {
     const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
     const clicked = nodesRef.current.find((n) => {
+      if (!isNodeVisible(n)) return false;
       const dx = n.x - mouseX;
       const dy = n.y - mouseY;
       return dx * dx + dy * dy <= n.radius * n.radius;
@@ -1204,6 +1246,69 @@ function GraphPageContent() {
             {analyticsReport?.communities?.length || (stats.nodes > 0 ? 1 : 0)}
           </span>
         </Card>
+      </div>
+
+      {/* Domain Layer Selector Bar (Unified vs Knowledge vs Code) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[var(--bg-secondary)] p-2.5 rounded-2xl border border-[var(--border-subtle)] shadow-md">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider px-2 flex items-center gap-1.5">
+            <Layers className="h-3.5 w-3.5 text-blue-400" />
+            VISTA DE CAPAS:
+          </span>
+
+          <button
+            type="button"
+            onClick={() => setGraphLayer("all")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              graphLayer === "all"
+                ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
+          >
+            <span>🌐 Grafo Unificado Completo</span>
+            <Badge variant="secondary" className="text-[9px] px-1.5 py-0">
+              {layerCounts.total}
+            </Badge>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setGraphLayer("knowledge")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              graphLayer === "knowledge"
+                ? "bg-purple-600 text-white shadow-md shadow-purple-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
+            title="Muestra únicamente observaciones de memoria: decisiones, corrección de bugs, patrones, aprendizajes y relaciones de conocimiento"
+          >
+            <span>🧠 Grafo de Conocimiento (Decisiones & Memoria)</span>
+            <Badge variant="purple" className="text-[9px] px-1.5 py-0">
+              {layerCounts.knowledge}
+            </Badge>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setGraphLayer("code")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              graphLayer === "code"
+                ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
+            title="Muestra únicamente entidades de código AST: módulos, clases, funciones, interfaces, imports y llamadas"
+          >
+            <span>💻 Grafo de Código (AST & Estructura)</span>
+            <Badge variant="default" className="text-[9px] px-1.5 py-0">
+              {layerCounts.code}
+            </Badge>
+          </button>
+        </div>
+
+        <div className="text-[11px] text-[var(--text-muted)] px-2 font-mono">
+          {graphLayer === "knowledge" && "Mostrando únicamente memoria & decisiones"}
+          {graphLayer === "code" && "Mostrando únicamente símbolos de código AST"}
+          {graphLayer === "all" && "Mostrando grafo híbrido completo"}
+        </div>
       </div>
 
       {/* Relation Type Filter Chips & Search Bar */}
