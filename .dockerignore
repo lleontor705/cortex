@@ -1,9 +1,8 @@
-.git
-.github
-.husky
-node_modules
-web/node_modules
-web/dist
-bin
-coverage*
-*.db
+﻿bin/
+node_modules/
+web/node_modules/
+web/.next/
+coverage/
+*.out
+*.exe
+.git/
