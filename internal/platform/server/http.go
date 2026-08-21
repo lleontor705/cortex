@@ -16,7 +16,9 @@ import (
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/domain/ast"
 	"github.com/lleontor705/cortex/internal/domain/extraction"
+	"github.com/lleontor705/cortex/internal/domain/graph"
 	"github.com/lleontor705/cortex/internal/identity"
 	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -183,7 +185,9 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
 	mux.HandleFunc("GET /api/search", a.search)
 	mux.HandleFunc("POST /api/graph/edges", a.createEdge)
-	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
+	mux.HandleFunc("GET /api/graph/analytics", a.graphAnalytics)
+	mux.HandleFunc("GET /api/graph/blast-radius", a.graphBlastRadius)
+	mux.HandleFunc("POST /api/graph/ingest-code", a.ingestCode)
 	mux.HandleFunc("GET /api/graph/{id}/related", a.related)
 	mux.HandleFunc("GET /api/graph/{id}/subgraph", a.subgraph)
 	mux.HandleFunc("POST /api/graph/resolve", a.resolveConflict)
@@ -577,6 +581,168 @@ func (a *apiHandler) subgraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *apiHandler) graphAnalytics(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	limit := queryInt(r.URL.Query().Get("limit"), 100, 1, 500)
+
+	observations, err := a.ops.ListObservations(r.Context(), domain.ObservationFilter{
+		Project: project,
+		Limit:   limit,
+	})
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+
+	var nodes []graph.GraphAnalyticsNode
+	var edges []graph.GraphAnalyticsEdge
+	obsIDs := make(map[string]bool)
+
+	for _, obs := range observations {
+		nodeID := "observation:" + obs.PublicID
+		obsIDs[nodeID] = true
+		nodes = append(nodes, graph.GraphAnalyticsNode{
+			ID:         nodeID,
+			Label:      obs.Title,
+			Kind:       "observation",
+			Subtype:    obs.Type,
+			SourceFile: obs.Source,
+			Metadata: map[string]any{
+				"project": obs.Project,
+				"scope":   obs.Scope,
+			},
+		})
+	}
+
+	// Build edges from related subgraphs
+	for _, obs := range observations {
+		sub, err := a.ops.GetGraphSubgraph(r.Context(), obs.PublicID, 1, 50)
+		if err == nil && sub != nil {
+			for _, e := range sub.Edges {
+				edges = append(edges, graph.GraphAnalyticsEdge{
+					ID:         e.ID,
+					Source:     e.Source,
+					Target:     e.Target,
+					Type:       e.Type,
+					Weight:     e.Weight,
+					Confidence: e.Confidence,
+				})
+			}
+			for _, n := range sub.Nodes {
+				if !obsIDs[n.ID] {
+					obsIDs[n.ID] = true
+					sourceFile, _ := n.Metadata["source"].(string)
+					nodes = append(nodes, graph.GraphAnalyticsNode{
+						ID:         n.ID,
+						Label:      n.Label,
+						Kind:       n.Kind,
+						Subtype:    n.Subtype,
+						SourceFile: sourceFile,
+					})
+				}
+			}
+		}
+	}
+
+	report := graph.AnalyzeGraph(nodes, edges)
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (a *apiHandler) graphBlastRadius(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.URL.Query().Get("node_id")
+	if nodeID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_node_id", "node_id query parameter is required")
+		return
+	}
+	depth := queryInt(r.URL.Query().Get("depth"), 3, 1, 10)
+
+	// Fetch observations to build the local dependency graph
+	observations, err := a.ops.ListObservations(r.Context(), domain.ObservationFilter{
+		Limit: 200,
+	})
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+
+	var nodes []graph.GraphAnalyticsNode
+	var edges []graph.GraphAnalyticsEdge
+	nodeSet := make(map[string]bool)
+
+	for _, obs := range observations {
+		nid := "observation:" + obs.PublicID
+		nodeSet[nid] = true
+		nodes = append(nodes, graph.GraphAnalyticsNode{
+			ID:         nid,
+			Label:      obs.Title,
+			Kind:       "observation",
+			Subtype:    obs.Type,
+			SourceFile: obs.Source,
+		})
+
+		sub, err := a.ops.GetGraphSubgraph(r.Context(), obs.PublicID, 1, 30)
+		if err == nil && sub != nil {
+			for _, e := range sub.Edges {
+				edges = append(edges, graph.GraphAnalyticsEdge{
+					ID:     e.ID,
+					Source: e.Source,
+					Target: e.Target,
+					Type:   e.Type,
+				})
+			}
+			for _, n := range sub.Nodes {
+				if !nodeSet[n.ID] {
+					nodeSet[n.ID] = true
+					sourceFile, _ := n.Metadata["source"].(string)
+					nodes = append(nodes, graph.GraphAnalyticsNode{
+						ID:         n.ID,
+						Label:      n.Label,
+						Kind:       n.Kind,
+						Subtype:    n.Subtype,
+						SourceFile: sourceFile,
+					})
+				}
+			}
+		}
+	}
+
+	blast := graph.CalculateBlastRadius(nodeID, nodes, edges, depth)
+	writeJSON(w, http.StatusOK, blast)
+}
+
+func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Directory string `json:"directory"`
+		Project   string `json:"project"`
+		MaxFiles  int    `json:"max_files"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+
+	if input.Directory == "" {
+		input.Directory = "."
+	}
+	if input.Project == "" {
+		input.Project = "default"
+	}
+
+	extractor := ast.NewExtractor(input.Directory)
+	res, err := extractor.ExtractDir(input.Directory, input.MaxFiles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ast_extraction_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"files_scanned":  res.FilesScanned,
+		"entities_count": len(res.Entities),
+		"relations_count": len(res.Relationships),
+		"entities":       res.Entities,
+		"relationships":  res.Relationships,
+	})
 }
 
 func (a *apiHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
@@ -1007,6 +1173,9 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_relate", mcp.WithDescription("Create a graph relationship with provenance metadata."), mcp.WithString("from_id", mcp.Required()), mcp.WithString("to_id", mcp.Required()), mcp.WithString("relation_type", mcp.Required()), mcp.WithNumber("weight"), mcp.WithNumber("confidence"), mcp.WithString("source"), mcp.WithString("reasoning")), relateTool(ops))
 	add(mcp.NewTool("cortex_graph", mcp.WithDescription("Get related observations."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth")), graphTool(ops))
 	add(mcp.NewTool("cortex_graph_subgraph", mcp.WithDescription("Get a bounded heterogeneous graph containing observations, entities, actors, sessions, and projects."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth"), mcp.WithNumber("max_nodes")), graphSubgraphTool(ops))
+	add(mcp.NewTool("cortex_get_blast_radius", mcp.WithDescription("Calculate the blast radius (impacted downstream symbols, callers, and files) when modifying a code entity or observation."), mcp.WithString("node_id", mcp.Required()), mcp.WithNumber("depth")), getBlastRadiusTool(ops))
+	add(mcp.NewTool("cortex_analyze_architecture", mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."), mcp.WithString("project")), analyzeArchitectureTool(ops))
+	add(mcp.NewTool("cortex_detect_cycles", mcp.WithDescription("Detect circular dependencies and import cycles across code entities in the knowledge graph."), mcp.WithString("project")), detectCyclesTool(ops))
 	add(mcp.NewTool("cortex_score", mcp.WithDescription("Get an observation importance score."), mcp.WithString("observation_id", mcp.Required())), scoreTool(ops))
 	add(mcp.NewTool("cortex_get_project_context", mcp.WithDescription("Get corporate & project governance rules, system prompt, and available skills."), mcp.WithString("project")), getProjectContextTool(ops))
 	add(mcp.NewTool("cortex_list_skills", mcp.WithDescription("List available corporate and project skills."), mcp.WithString("project")), listProjectSkillsTool(ops))
@@ -1397,6 +1566,128 @@ func graphSubgraphTool(ops Operations) mcpserver.ToolHandlerFunc {
 		maxNodes := queryInt(strconv.Itoa(toolInt(req, "max_nodes", 100)), 100, 1, 200)
 		value, err := ops.GetGraphSubgraph(ctx, observationID, depth, maxNodes)
 		return toolResult(value, err)
+	}
+}
+
+func getBlastRadiusTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		nodeID := toolString(req, "node_id")
+		if nodeID == "" {
+			return mcp.NewToolResultError("node_id is required"), nil
+		}
+		depth := toolInt(req, "depth", 3)
+
+		observations, err := ops.ListObservations(ctx, domain.ObservationFilter{Limit: 200})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		var nodes []graph.GraphAnalyticsNode
+		var edges []graph.GraphAnalyticsEdge
+		nodeSet := make(map[string]bool)
+
+		for _, obs := range observations {
+			nid := "observation:" + obs.PublicID
+			nodeSet[nid] = true
+			nodes = append(nodes, graph.GraphAnalyticsNode{
+				ID:         nid,
+				Label:      obs.Title,
+				Kind:       "observation",
+				Subtype:    obs.Type,
+				SourceFile: obs.Source,
+			})
+
+			sub, err := ops.GetGraphSubgraph(ctx, obs.PublicID, 1, 30)
+			if err == nil && sub != nil {
+				for _, e := range sub.Edges {
+					edges = append(edges, graph.GraphAnalyticsEdge{
+						ID:     e.ID,
+						Source: e.Source,
+						Target: e.Target,
+						Type:   e.Type,
+					})
+				}
+			}
+		}
+
+		blast := graph.CalculateBlastRadius(nodeID, nodes, edges, depth)
+		return toolResult(blast, nil)
+	}
+}
+
+func analyzeArchitectureTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		observations, err := ops.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 200})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		var nodes []graph.GraphAnalyticsNode
+		var edges []graph.GraphAnalyticsEdge
+		nodeSet := make(map[string]bool)
+
+		for _, obs := range observations {
+			nid := "observation:" + obs.PublicID
+			nodeSet[nid] = true
+			nodes = append(nodes, graph.GraphAnalyticsNode{
+				ID:         nid,
+				Label:      obs.Title,
+				Kind:       "observation",
+				Subtype:    obs.Type,
+				SourceFile: obs.Source,
+			})
+
+			sub, err := ops.GetGraphSubgraph(ctx, obs.PublicID, 1, 30)
+			if err == nil && sub != nil {
+				for _, e := range sub.Edges {
+					edges = append(edges, graph.GraphAnalyticsEdge{
+						ID:     e.ID,
+						Source: e.Source,
+						Target: e.Target,
+						Type:   e.Type,
+					})
+				}
+			}
+		}
+
+		report := graph.AnalyzeGraph(nodes, edges)
+		return toolResult(report, nil)
+	}
+}
+
+func detectCyclesTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		observations, err := ops.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 200})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		var nodes []graph.GraphAnalyticsNode
+		var edges []graph.GraphAnalyticsEdge
+
+		for _, obs := range observations {
+			nodes = append(nodes, graph.GraphAnalyticsNode{
+				ID:    "observation:" + obs.PublicID,
+				Label: obs.Title,
+			})
+
+			sub, err := ops.GetGraphSubgraph(ctx, obs.PublicID, 1, 30)
+			if err == nil && sub != nil {
+				for _, e := range sub.Edges {
+					edges = append(edges, graph.GraphAnalyticsEdge{
+						ID:     e.ID,
+						Source: e.Source,
+						Target: e.Target,
+						Type:   e.Type,
+					})
+				}
+			}
+		}
+
+		cycles := graph.FindCycles(nodes, edges)
+		return toolResult(map[string]any{"cycles_count": len(cycles), "cycles": cycles}, nil)
 	}
 }
 func graphTool(ops Operations) mcpserver.ToolHandlerFunc {

@@ -2,7 +2,14 @@
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { Observation, GraphSubgraph, GraphNode, GraphLink } from "@/lib/api";
+import {
+  Observation,
+  GraphSubgraph,
+  GraphNode,
+  GraphLink,
+  GraphAnalyticsReport,
+  BlastRadiusResult,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -28,6 +35,13 @@ import {
   Copy,
   Check,
   Filter,
+  Zap,
+  Activity,
+  Download,
+  Network,
+  Radio,
+  FileCode,
+  ShieldAlert,
 } from "lucide-react";
 
 interface SimulationNode extends GraphNode {
@@ -51,9 +65,29 @@ const RELATION_COLORS: Record<string, string> = {
   follows: "#f59e0b",
   relates_to: "#8b5cf6",
   caused_by: "#ec4899",
+  calls: "#06b6d4",
+  imports: "#84cc16",
+  implements: "#d946ef",
+  defines: "#6366f1",
+  uses: "#3b82f6",
 };
 
 const DEFAULT_RELATION_COLOR = "#64748b";
+
+const COMMUNITY_COLORS = [
+  "#3b82f6",
+  "#10b981",
+  "#f59e0b",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#eab308",
+  "#14b8a6",
+  "#f43f5e",
+  "#6366f1",
+  "#84cc16",
+  "#d946ef",
+];
 
 const KIND_COLORS: Record<string, { bg: string; border: string; text: string; variant: "default" | "destructive" | "success" | "warning" | "purple" | "secondary" }> = {
   decision: { bg: "#1e3a8a", border: "#3b82f6", text: "#93c5fd", variant: "default" },
@@ -63,6 +97,8 @@ const KIND_COLORS: Record<string, { bg: string; border: string; text: string; va
   learning: { bg: "#4c1d95", border: "#8b5cf6", text: "#c4b5fd", variant: "purple" },
   observation: { bg: "#1e293b", border: "#475569", text: "#cbd5e1", variant: "secondary" },
   session: { bg: "#134e4a", border: "#14b8a6", text: "#5eead4", variant: "success" },
+  code_entity: { bg: "#164e63", border: "#06b6d4", text: "#a5f3fc", variant: "default" },
+  entity: { bg: "#312e81", border: "#6366f1", text: "#c7d2fe", variant: "purple" },
 };
 
 export default function GraphPage() {
@@ -78,6 +114,16 @@ export default function GraphPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // View Mode: subgraph (2D physics), communities (Louvain), blast (blast radius), analytics (diagnostics)
+  const [viewMode, setViewMode] = useState<"subgraph" | "communities" | "blast" | "analytics">("subgraph");
+
+  // Graph Analytics & Blast Radius state
+  const [analyticsReport, setAnalyticsReport] = useState<GraphAnalyticsReport | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [blastData, setBlastData] = useState<BlastRadiusResult | null>(null);
+  const [blastLoading, setBlastLoading] = useState(false);
+  const [activeCommunityId, setActiveCommunityId] = useState<number | null>(null);
+
   // Graph Simulation State
   const nodesRef = useRef<SimulationNode[]>([]);
   const edgesRef = useRef<SimulationLink[]>([]);
@@ -92,6 +138,11 @@ export default function GraphPage() {
     follows: true,
     relates_to: true,
     caused_by: true,
+    calls: true,
+    imports: true,
+    implements: true,
+    defines: true,
+    uses: true,
   });
 
   // Canvas View Transform
@@ -199,153 +250,208 @@ export default function GraphPage() {
         const rootNode = simNodes.find((n) => n.id === data.root) || null;
         setSelectedNode(rootNode);
       } catch (err: any) {
-        console.error("Failed to load subgraph", err);
         setError(err.message || "Error al cargar el subgrafo");
       } finally {
         setLoading(false);
       }
     },
-    [client, depth, maxNodes]
+    [client, depth, maxNodes],
   );
 
   useEffect(() => {
     if (selectedObsId) {
-      loadSubgraph(selectedObsId, depth, maxNodes);
+      loadSubgraph(selectedObsId);
     }
-  }, [selectedObsId, depth, maxNodes, loadSubgraph]);
+  }, [selectedObsId, loadSubgraph]);
 
-  // Physics Simulation Step
-  const stepSimulation = useCallback(() => {
-    if (alphaRef.current < 0.005) {
-      alphaRef.current = 0.005;
-    } else {
-      alphaRef.current *= 0.985;
+  // Load Graph Analytics
+  const loadAnalytics = useCallback(async () => {
+    if (!client) return;
+    setAnalyticsLoading(true);
+    try {
+      const report = await client.analytics();
+      setAnalyticsReport(report);
+    } catch (err: any) {
+      console.error("Failed to load graph analytics", err);
+    } finally {
+      setAnalyticsLoading(false);
     }
+  }, [client]);
 
-    const alpha = alphaRef.current;
+  useEffect(() => {
+    if (viewMode === "communities" || viewMode === "analytics") {
+      loadAnalytics();
+    }
+  }, [viewMode, loadAnalytics]);
+
+  // Calculate Blast Radius for Selected Node
+  const handleInspectBlastRadius = async (nodeId: string) => {
+    if (!client || !nodeId) return;
+    setBlastLoading(true);
+    setViewMode("blast");
+    try {
+      const res = await client.blastRadius(nodeId, 3);
+      setBlastData(res);
+    } catch (err: any) {
+      alert("Error al calcular blast radius: " + (err.message || err));
+    } finally {
+      setBlastLoading(false);
+    }
+  };
+
+  // Node to Community mapping
+  const nodeCommunityMap = useMemo(() => {
+    const map = new Map<string, number>();
+    if (analyticsReport?.communities) {
+      analyticsReport.communities.forEach((comm) => {
+        comm.members.forEach((m) => map.set(m, comm.id));
+      });
+    }
+    return map;
+  }, [analyticsReport]);
+
+  // Export Graph to Obsidian Markdown format
+  const handleExportObsidian = () => {
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
-    const centerX = 400;
-    const centerY = 300;
-
-    // 1. Center Gravity Force
-    for (const node of nodes) {
-      if (node.isPinned) continue;
-      const dx = centerX - node.x;
-      const dy = centerY - node.y;
-      node.vx += dx * 0.001 * alpha;
-      node.vy += dy * 0.001 * alpha;
+    if (nodes.length === 0) {
+      alert("No hay nodos en el grafo para exportar.");
+      return;
     }
 
-    // 2. Node Repulsion
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j++) {
-        const b = nodes[j];
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let distSq = dx * dx + dy * dy;
-        if (distSq === 0) {
-          dx = (Math.random() - 0.5) * 2;
-          dy = (Math.random() - 0.5) * 2;
-          distSq = dx * dx + dy * dy;
+    let md = `# Cortex Knowledge Graph Export\n\n`;
+    md += `*Generado automáticamente: ${new Date().toLocaleString()}*\n\n`;
+    md += `## Resumen del Grafo\n- Nodos totales: ${nodes.length}\n- Aristas totales: ${edges.length}\n\n`;
+
+    md += `## Entidades y WikiLinks\n`;
+    nodes.forEach((n) => {
+      md += `### [[${n.label}]]\n`;
+      md += `- **ID:** \`${n.id}\`\n`;
+      md += `- **Tipo:** \`${n.kind}\`\n`;
+      if (n.project) md += `- **Proyecto:** ${n.project}\n`;
+
+      const outEdges = edges.filter((e) => e.source === n.id);
+      if (outEdges.length > 0) {
+        md += `- **Relaciones Salientes:**\n`;
+        outEdges.forEach((e) => {
+          const target = nodes.find((tn) => tn.id === e.target);
+          if (target) {
+            md += `  - ${e.type} ➔ [[${target.label}]]\n`;
+          }
+        });
+      }
+      md += `\n`;
+    });
+
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `cortex_graph_obsidian_${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 60 FPS Force-Directed Physics Engine
+  useEffect(() => {
+    let animationId: number;
+
+    const stepSimulation = () => {
+      const nodes = nodesRef.current;
+      const edges = edgesRef.current;
+      const alpha = alphaRef.current;
+
+      if (alpha > 0.005) {
+        // Repulsion (Coulomb)
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            const n1 = nodes[i];
+            const n2 = nodes[j];
+            const dx = n2.x - n1.x;
+            const dy = n2.y - n1.y;
+            const distSq = dx * dx + dy * dy || 1;
+            const dist = Math.sqrt(distSq);
+
+            if (dist < 400) {
+              const force = (1800 / distSq) * alpha;
+              const fx = (dx / dist) * force;
+              const fy = (dy / dist) * force;
+
+              if (!n1.isPinned) {
+                n1.vx -= fx;
+                n1.vy -= fy;
+              }
+              if (!n2.isPinned) {
+                n2.vx += fx;
+                n2.vy += fy;
+              }
+            }
+          }
         }
-        const dist = Math.sqrt(distSq);
-        const minDist = a.radius + b.radius + 35;
 
-        const repForce = dist < minDist ? (minDist - dist) * 0.2 : (3500 / (distSq + 200)) * alpha;
-        const fx = (dx / dist) * repForce;
-        const fy = (dy / dist) * repForce;
+        // Attraction (Hooke)
+        for (let i = 0; i < edges.length; i++) {
+          const e = edges[i];
+          if (!e.sourceNode || !e.targetNode) continue;
+          const s = e.sourceNode;
+          const t = e.targetNode;
+          const dx = t.x - s.x;
+          const dy = t.y - s.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const idealDist = 120;
+          const force = (dist - idealDist) * 0.045 * alpha;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
 
-        if (!a.isPinned) {
-          a.vx -= fx;
-          a.vy -= fy;
+          if (!s.isPinned) {
+            s.vx += fx;
+            s.vy += fy;
+          }
+          if (!t.isPinned) {
+            t.vx -= fx;
+            t.vy -= fy;
+          }
         }
-        if (!b.isPinned) {
-          b.vx += fx;
-          b.vy += fy;
+
+        // Center gravity & Damping
+        const cx = 400;
+        const cy = 300;
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (n.isPinned) continue;
+
+          n.vx += (cx - n.x) * 0.003 * alpha;
+          n.vy += (cy - n.y) * 0.003 * alpha;
+
+          n.vx *= 0.88;
+          n.vy *= 0.88;
+
+          n.x += n.vx;
+          n.y += n.vy;
         }
+
+        alphaRef.current = alpha * 0.985;
       }
-    }
 
-    // 3. Link Spring Attraction
-    for (const edge of edges) {
-      const a = edge.sourceNode;
-      const b = edge.targetNode;
-      if (!a || !b) continue;
+      draw();
+      animationId = requestAnimationFrame(stepSimulation);
+    };
 
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const targetDist = 110;
-      const springForce = (dist - targetDist) * 0.04 * alpha;
-
-      const fx = (dx / dist) * springForce;
-      const fy = (dy / dist) * springForce;
-
-      if (!a.isPinned) {
-        a.vx += fx;
-        a.vy += fy;
-      }
-      if (!b.isPinned) {
-        b.vx += fx;
-        b.vy += fy;
-      }
-    }
-
-    // 4. Update Positions
-    for (const node of nodes) {
-      if (node.isPinned) {
-        node.vx = 0;
-        node.vy = 0;
-        continue;
-      }
-      node.vx *= 0.82;
-      node.vy *= 0.82;
-      node.x += node.vx;
-      node.y += node.vy;
-    }
+    animationId = requestAnimationFrame(stepSimulation);
+    return () => cancelAnimationFrame(animationId);
   }, []);
 
-  // Main Canvas & Mini-Map Rendering
-  const renderCanvas = useCallback(() => {
+  // Main Canvas Drawing Loop
+  const draw = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-    }
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
+    const width = canvas.width;
+    const height = canvas.height;
     ctx.clearRect(0, 0, width, height);
 
-    // Background Grid
-    ctx.save();
-    ctx.strokeStyle = "rgba(30, 41, 59, 0.4)";
-    ctx.lineWidth = 1;
-    const gridSize = 40 * zoom;
-    const startX = (offset.x % gridSize) - gridSize;
-    const startY = (offset.y % gridSize) - gridSize;
-    ctx.beginPath();
-    for (let x = startX; x < width + gridSize; x += gridSize) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-    }
-    for (let y = startY; y < height + gridSize; y += gridSize) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-    }
-    ctx.stroke();
-    ctx.restore();
-
-    // World Space Transform
     ctx.save();
     ctx.translate(offset.x, offset.y);
     ctx.scale(zoom, zoom);
@@ -353,108 +459,120 @@ export default function GraphPage() {
     const nodes = nodesRef.current;
     const edges = edgesRef.current;
     const rootId = rootIdRef.current;
-
-    const visibleEdges = edges.filter((e) => activeFilters[e.type] !== false);
-
     const activeNode = hoveredNode || selectedNode;
+
     const connectedNodeIds = new Set<string>();
     if (activeNode) {
       connectedNodeIds.add(activeNode.id);
-      visibleEdges.forEach((e) => {
+      edges.forEach((e) => {
         if (e.source === activeNode.id) connectedNodeIds.add(e.target);
         if (e.target === activeNode.id) connectedNodeIds.add(e.source);
       });
     }
 
-    // 1. Draw Edges
-    for (const edge of visibleEdges) {
-      const from = edge.sourceNode;
-      const to = edge.targetNode;
-      if (!from || !to) continue;
+    // Blast Radius sets
+    const directImpactSet = new Set(blastData?.direct_impact || []);
+    const totalImpactSet = new Set(blastData?.total_impacted || []);
+    const isBlastMode = viewMode === "blast" && !!blastData;
 
-      const isConnected = activeNode ? connectedNodeIds.has(from.id) && connectedNodeIds.has(to.id) : true;
-      const baseColor = RELATION_COLORS[edge.type] || DEFAULT_RELATION_COLOR;
+    // Draw Edges
+    edges.forEach((edge) => {
+      if (!edge.sourceNode || !edge.targetNode) return;
+      if (activeFilters[edge.type] === false) return;
+
+      const isConnected = activeNode
+        ? edge.source === activeNode.id || edge.target === activeNode.id
+        : false;
+      const isDimmed = activeNode ? !isConnected : false;
 
       ctx.save();
       ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
+      ctx.moveTo(edge.sourceNode.x, edge.sourceNode.y);
+      ctx.lineTo(edge.targetNode.x, edge.targetNode.y);
 
-      const midX = (from.x + to.x) / 2;
-      const midY = (from.y + to.y) / 2;
-      ctx.lineTo(to.x, to.y);
+      const color = RELATION_COLORS[edge.type] || DEFAULT_RELATION_COLOR;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isConnected ? 2.5 : 1.2;
+      ctx.globalAlpha = isDimmed ? 0.15 : isConnected ? 0.95 : 0.45;
 
-      ctx.strokeStyle = isConnected ? baseColor : "rgba(51, 65, 85, 0.35)";
-      ctx.lineWidth = isConnected ? (edge.type === "contradicts" || edge.type === "supersedes" ? 3 : 2) : 1;
-
-      if (edge.type === "contradicts" && isConnected) {
-        ctx.setLineDash([6, 4]);
-      } else if (edge.type === "references" && isConnected) {
-        ctx.setLineDash([4, 2]);
+      if (edge.type === "contradicts") {
+        ctx.setLineDash([4, 4]);
       }
-
       ctx.stroke();
-      ctx.setLineDash([]);
 
-      // Directional Arrowhead
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
+      // Direction Arrow
+      const dx = edge.targetNode.x - edge.sourceNode.x;
+      const dy = edge.targetNode.y - edge.sourceNode.y;
       const angle = Math.atan2(dy, dx);
-      const arrowDist = to.radius + 4;
-      const arrowX = to.x - Math.cos(angle) * arrowDist;
-      const arrowY = to.y - Math.sin(angle) * arrowDist;
-      const arrowSize = isConnected ? 8 : 6;
+      const targetRadius = edge.targetNode.radius;
+      const arrowX = edge.targetNode.x - Math.cos(angle) * (targetRadius + 4);
+      const arrowY = edge.targetNode.y - Math.sin(angle) * (targetRadius + 4);
 
-      ctx.fillStyle = isConnected ? baseColor : "rgba(71, 85, 105, 0.4)";
       ctx.beginPath();
       ctx.moveTo(arrowX, arrowY);
       ctx.lineTo(
-        arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+        arrowX - 8 * Math.cos(angle - Math.PI / 6),
+        arrowY - 8 * Math.sin(angle - Math.PI / 6),
       );
       ctx.lineTo(
-        arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+        arrowX - 8 * Math.cos(angle + Math.PI / 6),
+        arrowY - 8 * Math.sin(angle + Math.PI / 6),
       );
       ctx.closePath();
+      ctx.fillStyle = color;
       ctx.fill();
 
-      // Relation Type Badge on Edge
-      if (isConnected && zoom >= 0.7) {
-        ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
-        ctx.fillRect(midX - 25, midY - 9, 50, 18);
-        ctx.strokeStyle = baseColor;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(midX - 25, midY - 9, 50, 18);
-
-        ctx.fillStyle = isConnected ? baseColor : "#94a3b8";
-        ctx.font = "bold 9px Inter, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(edge.type, midX, midY);
-      }
       ctx.restore();
-    }
+    });
 
-    // 2. Draw Nodes
-    for (const node of nodes) {
+    // Draw Nodes
+    nodes.forEach((node) => {
       const isRoot = node.id === rootId;
       const isSelected = selectedNode?.id === node.id;
       const isSearchMatch = searchQuery && node.label.toLowerCase().includes(searchQuery.toLowerCase());
-      const isDimmed = activeNode ? !connectedNodeIds.has(node.id) : false;
+      const isConnected = activeNode ? connectedNodeIds.has(node.id) : true;
+
+      let isDimmed = activeNode ? !connectedNodeIds.has(node.id) : false;
+
+      // Blast Radius logic
+      let isBlastRoot = false;
+      let isDirectImpact = false;
+      let isTotalImpact = false;
+
+      if (isBlastMode) {
+        if (node.id === blastData?.root_node) {
+          isBlastRoot = true;
+        } else if (directImpactSet.has(node.id)) {
+          isDirectImpact = true;
+        } else if (totalImpactSet.has(node.id)) {
+          isTotalImpact = true;
+        } else {
+          isDimmed = true;
+        }
+      }
+
+      // Community Mode logic
+      const commId = nodeCommunityMap.get(node.id);
+      const isCommunityMode = viewMode === "communities" && commId !== undefined;
+      const commColor = commId !== undefined ? COMMUNITY_COLORS[commId % COMMUNITY_COLORS.length] : null;
 
       const kindStyle = KIND_COLORS[node.kind] || KIND_COLORS.observation;
 
       ctx.save();
-      if (isDimmed && !isSearchMatch) {
-        ctx.globalAlpha = 0.25;
+      if (isDimmed && !isSearchMatch && !isBlastRoot && !isDirectImpact && !isTotalImpact) {
+        ctx.globalAlpha = 0.2;
       }
 
       // Outer Glow
-      if (isRoot || isSelected || isSearchMatch) {
+      if (isRoot || isSelected || isSearchMatch || isBlastRoot || isDirectImpact) {
         ctx.beginPath();
         ctx.arc(node.x, node.y, node.radius + (isSelected ? 8 : 5), 0, 2 * Math.PI);
-        ctx.fillStyle = isRoot
-          ? "rgba(59, 130, 246, 0.2)"
+        ctx.fillStyle = isBlastRoot
+          ? "rgba(239, 68, 68, 0.4)"
+          : isDirectImpact
+          ? "rgba(245, 158, 11, 0.35)"
+          : isRoot
+          ? "rgba(59, 130, 246, 0.25)"
           : isSearchMatch
           ? "rgba(245, 158, 11, 0.25)"
           : "rgba(96, 165, 250, 0.25)";
@@ -464,17 +582,36 @@ export default function GraphPage() {
       // Node Body
       ctx.beginPath();
       ctx.arc(node.x, node.y, node.radius, 0, 2 * Math.PI);
-      ctx.fillStyle = isRoot ? "#2563eb" : isSelected ? "#3b82f6" : kindStyle.bg;
+
+      if (isBlastRoot) {
+        ctx.fillStyle = "#ef4444";
+      } else if (isDirectImpact) {
+        ctx.fillStyle = "#f59e0b";
+      } else if (isTotalImpact) {
+        ctx.fillStyle = "#fb923c";
+      } else if (isCommunityMode && commColor) {
+        ctx.fillStyle = commColor;
+      } else if (isRoot) {
+        ctx.fillStyle = "#2563eb";
+      } else if (isSelected) {
+        ctx.fillStyle = "#3b82f6";
+      } else {
+        ctx.fillStyle = kindStyle.bg;
+      }
       ctx.fill();
 
       // Node Border
-      ctx.lineWidth = isSelected ? 3.5 : isRoot ? 2.5 : 1.5;
-      ctx.strokeStyle = isSelected
+      ctx.lineWidth = isSelected ? 3.5 : isRoot || isBlastRoot ? 2.5 : 1.5;
+      ctx.strokeStyle = isBlastRoot
+        ? "#fca5a5"
+        : isDirectImpact
+        ? "#fde68a"
+        : isSelected
         ? "#93c5fd"
         : isRoot
         ? "#60a5fa"
-        : isSearchMatch
-        ? "#f59e0b"
+        : isCommunityMode && commColor
+        ? "#ffffff"
         : kindStyle.border;
       ctx.stroke();
 
@@ -499,7 +636,7 @@ export default function GraphPage() {
 
       // Label
       ctx.fillStyle = isSelected ? "#ffffff" : isDimmed ? "#64748b" : "#f8fafc";
-      ctx.font = isRoot
+      ctx.font = isRoot || isBlastRoot
         ? "bold 12px Inter, sans-serif"
         : isSelected
         ? "600 11px Inter, sans-serif"
@@ -512,32 +649,27 @@ export default function GraphPage() {
       ctx.fillText(labelText, node.x, node.y + node.radius + 6);
 
       if (zoom >= 0.85) {
-        ctx.fillStyle = kindStyle.text;
+        ctx.fillStyle = isCommunityMode ? "#ffffff" : kindStyle.text;
         ctx.font = "9px Inter, sans-serif";
         ctx.fillText(`[${node.kind}]`, node.x, node.y + node.radius + 20);
       }
 
       ctx.restore();
-    }
+    });
 
     ctx.restore();
 
-    // 3. Mini-Map
-    renderMinimap();
-  }, [zoom, offset, selectedNode, hoveredNode, searchQuery, activeFilters]);
+    // Radar Minimap
+    drawRadarHUD();
+  };
 
-  // Mini-Map
-  const renderMinimap = () => {
+  const drawRadarHUD = () => {
     const minimap = minimapRef.current;
-    const mainCanvas = canvasRef.current;
-    if (!minimap || !mainCanvas) return;
+    if (!minimap) return;
     const mctx = minimap.getContext("2d");
     if (!mctx) return;
 
-    const mw = minimap.width;
-    const mh = minimap.height;
-    mctx.clearRect(0, 0, mw, mh);
-
+    mctx.clearRect(0, 0, minimap.width, minimap.height);
     const nodes = nodesRef.current;
     if (nodes.length === 0) return;
 
@@ -545,190 +677,123 @@ export default function GraphPage() {
       maxX = -Infinity,
       minY = Infinity,
       maxY = -Infinity;
-    for (const n of nodes) {
+    nodes.forEach((n) => {
       if (n.x < minX) minX = n.x;
       if (n.x > maxX) maxX = n.x;
       if (n.y < minY) minY = n.y;
       if (n.y > maxY) maxY = n.y;
-    }
-    const padding = 80;
-    minX -= padding;
-    minY -= padding;
-    maxX += padding;
-    maxY += padding;
+    });
 
-    const boxW = Math.max(maxX - minX, 100);
-    const boxH = Math.max(maxY - minY, 100);
-    const scale = Math.min(mw / boxW, mh / boxH);
+    const pad = 80;
+    minX -= pad;
+    maxX += pad;
+    minY -= pad;
+    maxY += pad;
 
-    mctx.save();
-    mctx.translate((mw - boxW * scale) / 2, (mh - boxH * scale) / 2);
-    mctx.scale(scale, scale);
-    mctx.translate(-minX, -minY);
+    const gw = maxX - minX || 1;
+    const gh = maxY - minY || 1;
+    const sx = minimap.width / gw;
+    const sy = minimap.height / gh;
+    const scale = Math.min(sx, sy);
 
-    for (const n of nodes) {
+    nodes.forEach((n) => {
+      const mx = (n.x - minX) * scale;
+      const my = (n.y - minY) * scale;
       mctx.beginPath();
-      mctx.arc(n.x, n.y, n.radius * 0.8, 0, 2 * Math.PI);
+      mctx.arc(mx, my, 2.5, 0, 2 * Math.PI);
       mctx.fillStyle = n.id === rootIdRef.current ? "#3b82f6" : "#64748b";
       mctx.fill();
-    }
-
-    const viewLeft = -offset.x / zoom;
-    const viewTop = -offset.y / zoom;
-    const viewWidth = mainCanvas.clientWidth / zoom;
-    const viewHeight = mainCanvas.clientHeight / zoom;
-
-    mctx.strokeStyle = "rgba(59, 130, 246, 0.8)";
-    mctx.lineWidth = 2 / scale;
-    mctx.strokeRect(viewLeft, viewTop, viewWidth, viewHeight);
-
-    mctx.restore();
+    });
   };
 
-  // Loop
-  useEffect(() => {
-    let active = true;
-    const loop = () => {
-      if (!active) return;
-      stepSimulation();
-      renderCanvas();
-      animationFrameId.current = requestAnimationFrame(loop);
-    };
-    loop();
-
-    return () => {
-      active = false;
-      if (animationFrameId.current) {
-        cancelAnimationFrame(animationFrameId.current);
-      }
-    };
-  }, [stepSimulation, renderCanvas]);
-
+  // Canvas Interactions
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
     const mouseX = (e.clientX - rect.left - offset.x) / zoom;
     const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
-    for (let i = nodesRef.current.length - 1; i >= 0; i--) {
-      const node = nodesRef.current[i];
-      const dist = Math.hypot(mouseX - node.x, mouseY - node.y);
-      if (dist <= node.radius + 5) {
-        draggedNodeRef.current = node;
-        node.isPinned = true;
-        alphaRef.current = 0.3;
-        return;
-      }
-    }
+    const clicked = nodesRef.current.find((n) => {
+      const dx = n.x - mouseX;
+      const dy = n.y - mouseY;
+      return dx * dx + dy * dy <= n.radius * n.radius;
+    });
 
-    isDraggingRef.current = true;
-    dragStartRef.current = { x: e.clientX - offset.x, y: e.clientY - offset.y };
+    if (clicked) {
+      draggedNodeRef.current = clicked;
+      clicked.isPinned = true;
+    } else {
+      isDraggingRef.current = true;
+      dragStartRef.current = { x: e.clientX - offset.x, y: e.clientY - offset.y };
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mouseX = (e.clientX - rect.left - offset.x) / zoom;
+    const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
     if (draggedNodeRef.current) {
-      const mouseX = (e.clientX - rect.left - offset.x) / zoom;
-      const mouseY = (e.clientY - rect.top - offset.y) / zoom;
       draggedNodeRef.current.x = mouseX;
       draggedNodeRef.current.y = mouseY;
-      draggedNodeRef.current.vx = 0;
-      draggedNodeRef.current.vy = 0;
-      alphaRef.current = Math.max(alphaRef.current, 0.2);
-      return;
-    }
-
-    if (isDraggingRef.current) {
+      alphaRef.current = Math.max(alphaRef.current, 0.4);
+    } else if (isDraggingRef.current) {
       setOffset({
         x: e.clientX - dragStartRef.current.x,
         y: e.clientY - dragStartRef.current.y,
       });
-      return;
+    } else {
+      const hovered = nodesRef.current.find((n) => {
+        const dx = n.x - mouseX;
+        const dy = n.y - mouseY;
+        return dx * dx + dy * dy <= n.radius * n.radius;
+      });
+      setHoveredNode(hovered || null);
     }
-
-    const mouseX = (e.clientX - rect.left - offset.x) / zoom;
-    const mouseY = (e.clientY - rect.top - offset.y) / zoom;
-    let foundHover: SimulationNode | null = null;
-    for (let i = nodesRef.current.length - 1; i >= 0; i--) {
-      const node = nodesRef.current[i];
-      const dist = Math.hypot(mouseX - node.x, mouseY - node.y);
-      if (dist <= node.radius + 4) {
-        foundHover = node;
-        break;
-      }
-    }
-    setHoveredNode(foundHover);
   };
 
   const handleMouseUp = () => {
-    isDraggingRef.current = false;
     draggedNodeRef.current = null;
+    isDraggingRef.current = false;
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = (e.clientX - rect.left - offset.x) / zoom;
-    const clickY = (e.clientY - rect.top - offset.y) / zoom;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mouseX = (e.clientX - rect.left - offset.x) / zoom;
+    const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
-    for (let i = nodesRef.current.length - 1; i >= 0; i--) {
-      const node = nodesRef.current[i];
-      const dist = Math.hypot(clickX - node.x, clickY - node.y);
-      if (dist <= node.radius + 6) {
-        setSelectedNode(node);
-        return;
-      }
-    }
+    const clicked = nodesRef.current.find((n) => {
+      const dx = n.x - mouseX;
+      const dy = n.y - mouseY;
+      return dx * dx + dy * dy <= n.radius * n.radius;
+    });
+
+    setSelectedNode(clicked || null);
   };
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = (e.clientX - rect.left - offset.x) / zoom;
-    const clickY = (e.clientY - rect.top - offset.y) / zoom;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mouseX = (e.clientX - rect.left - offset.x) / zoom;
+    const mouseY = (e.clientY - rect.top - offset.y) / zoom;
 
-    for (const node of nodesRef.current) {
-      const dist = Math.hypot(clickX - node.x, clickY - node.y);
-      if (dist <= node.radius + 6) {
-        node.isPinned = !node.isPinned;
-        alphaRef.current = 0.4;
-        return;
-      }
+    const clicked = nodesRef.current.find((n) => {
+      const dx = n.x - mouseX;
+      const dy = n.y - mouseY;
+      return dx * dx + dy * dy <= n.radius * n.radius;
+    });
+
+    if (clicked) {
+      clicked.isPinned = !clicked.isPinned;
     }
   };
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    const zoomFactor = e.deltaY < 0 ? 1.12 : 0.88;
-    const newZoom = Math.min(Math.max(zoom * zoomFactor, 0.25), 3.5);
-
-    const newOffsetX = mouseX - (mouseX - offset.x) * (newZoom / zoom);
-    const newOffsetY = mouseY - (mouseY - offset.y) * (newZoom / zoom);
-
-    setZoom(newZoom);
-    setOffset({ x: newOffsetX, y: newOffsetY });
-  };
-
-  const focusOnNode = (node: SimulationNode) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const targetX = canvas.clientWidth / 2 - node.x * zoom;
-    const targetY = canvas.clientHeight / 2 - node.y * zoom;
-    setOffset({ x: targetX, y: targetY });
-    setSelectedNode(node);
+    const factor = e.deltaY < 0 ? 1.12 : 0.88;
+    setZoom((z) => Math.min(Math.max(z * factor, 0.25), 3.5));
   };
 
   const handleFitView = () => {
@@ -740,55 +805,66 @@ export default function GraphPage() {
       maxX = -Infinity,
       minY = Infinity,
       maxY = -Infinity;
-    for (const n of nodes) {
+    nodes.forEach((n) => {
       if (n.x < minX) minX = n.x;
       if (n.x > maxX) maxX = n.x;
       if (n.y < minY) minY = n.y;
       if (n.y > maxY) maxY = n.y;
-    }
+    });
 
-    const padding = 80;
-    const graphW = Math.max(maxX - minX + padding * 2, 200);
-    const graphH = Math.max(maxY - minY + padding * 2, 200);
+    const padding = 60;
+    const graphWidth = maxX - minX + padding * 2;
+    const graphHeight = maxY - minY + padding * 2;
 
-    const fitZoom = Math.min(
-      Math.max(Math.min(canvas.clientWidth / graphW, canvas.clientHeight / graphH), 0.35),
-      1.6
-    );
-    const fitOffsetX = canvas.clientWidth / 2 - ((minX + maxX) / 2) * fitZoom;
-    const fitOffsetY = canvas.clientHeight / 2 - ((minY + maxY) / 2) * fitZoom;
+    const scaleX = canvas.width / graphWidth;
+    const scaleY = canvas.height / graphHeight;
+    const newZoom = Math.min(scaleX, scaleY, 1.5);
 
-    setZoom(fitZoom);
-    setOffset({ x: fitOffsetX, y: fitOffsetY });
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    setZoom(newZoom);
+    setOffset({
+      x: canvas.width / 2 - centerX * newZoom,
+      y: canvas.height / 2 - centerY * newZoom,
+    });
   };
 
   const handleReheatSimulation = () => {
-    nodesRef.current.forEach((n) => {
-      n.vx += (Math.random() - 0.5) * 8;
-      n.vy += (Math.random() - 0.5) * 8;
-      n.isPinned = false;
-    });
     alphaRef.current = 1.0;
   };
 
+  const focusOnNode = (node: SimulationNode) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setZoom(1.2);
+    setOffset({
+      x: canvas.width / 2 - node.x * 1.2,
+      y: canvas.height / 2 - node.y * 1.2,
+    });
+    setSelectedNode(node);
+  };
+
   const handleExpandNode = async () => {
-    if (!selectedNode || !client) return;
+    if (!client || !selectedNode) return;
     setLoading(true);
     try {
-      const data = await client.subgraph(selectedNode.id, 1, 30);
-      const existingIds = new Set(nodesRef.current.map((n) => n.id));
+      const data: GraphSubgraph = await client.subgraph(selectedNode.id, 1, 20);
+      const existingNodeIds = new Set(nodesRef.current.map((n) => n.id));
+      const existingEdgeKeys = new Set(nodesRef.current.map((e) => `${e.id}`));
 
       const newNodes: SimulationNode[] = [];
-      data.nodes.forEach((n, idx) => {
-        if (!existingIds.has(n.id)) {
-          const angle = (idx / (data.nodes.length || 1)) * 2 * Math.PI;
+      data.nodes.forEach((n) => {
+        if (!existingNodeIds.has(n.id)) {
+          const angle = Math.random() * 2 * Math.PI;
+          const dist = 100 + Math.random() * 40;
           newNodes.push({
             ...n,
-            x: selectedNode.x + 120 * Math.cos(angle),
-            y: selectedNode.y + 120 * Math.sin(angle),
+            x: selectedNode.x + dist * Math.cos(angle),
+            y: selectedNode.y + dist * Math.sin(angle),
             vx: 0,
             vy: 0,
-            radius: 18,
+            radius: 16,
           });
         }
       });
@@ -796,7 +872,6 @@ export default function GraphPage() {
       const nodeMap = new Map<string, SimulationNode>();
       [...nodesRef.current, ...newNodes].forEach((n) => nodeMap.set(n.id, n));
 
-      const existingEdgeKeys = new Set(edgesRef.current.map((e) => `${e.source}->${e.target}`));
       const newEdges: SimulationLink[] = [];
       data.edges.forEach((e) => {
         const key = `${e.source}->${e.target}`;
@@ -905,10 +980,10 @@ export default function GraphPage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
             <Share2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
-            <span>Grafo de Conocimiento & Relaciones</span>
+            <span>Grafo de Conocimiento & Código</span>
           </h1>
           <p className="text-xs text-[var(--text-muted)] mt-1">
-            Explorador visual 2D interactivo a 60 FPS con motor de físicas, detección de conflictos y análisis de dependencias
+            Motor de física 2D a 60 FPS con clustering modular (Louvain), análisis de blast radius y detección de olores arquitectónicos.
           </p>
         </div>
 
@@ -954,33 +1029,116 @@ export default function GraphPage() {
             <RotateCcw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             <span>{loading ? "Cargando..." : "Recargar"}</span>
           </Button>
+
+          <Button
+            onClick={handleExportObsidian}
+            variant="outline"
+            size="sm"
+            className="text-xs gap-1.5 border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+            title="Exportar a Obsidian Vault en Markdown con [[WikiLinks]]"
+          >
+            <Download className="h-3.5 w-3.5 text-purple-400" />
+            <span>Obsidian (.md)</span>
+          </Button>
         </div>
+      </div>
+
+      {/* Mode Switcher Tabs */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] pb-2">
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("subgraph");
+            setBlastData(null);
+          }}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            viewMode === "subgraph"
+              ? "bg-[var(--accent-primary)] text-white shadow-md shadow-blue-600/20"
+              : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+          }`}
+        >
+          <Network className="h-3.5 w-3.5" />
+          <span>Subgrafo 2D</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("communities");
+            setBlastData(null);
+          }}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            viewMode === "communities"
+              ? "bg-purple-600 text-white shadow-md shadow-purple-600/20"
+              : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+          }`}
+        >
+          <Layers className="h-3.5 w-3.5 text-purple-300" />
+          <span>Comunidades Louvain ({analyticsReport?.communities?.length || 0})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (selectedNode) {
+              handleInspectBlastRadius(selectedNode.id);
+            } else {
+              setViewMode("blast");
+            }
+          }}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            viewMode === "blast"
+              ? "bg-rose-600 text-white shadow-md shadow-rose-600/20"
+              : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+          }`}
+        >
+          <Zap className="h-3.5 w-3.5 text-amber-300" />
+          <span>Blast Radius (Impacto)</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("analytics");
+            setBlastData(null);
+          }}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            viewMode === "analytics"
+              ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/20"
+              : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+          }`}
+        >
+          <Activity className="h-3.5 w-3.5 text-emerald-300" />
+          <span>Diagnóstico Arquitectónico</span>
+        </button>
       </div>
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Nodos en el Grafo</span>
           <span className="text-2xl font-bold text-[var(--text-primary)] mt-1 block">{stats.nodes}</span>
         </Card>
-        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Aristas de Relación</span>
           <span className="text-2xl font-bold text-blue-400 mt-1 block">{stats.edges}</span>
         </Card>
-        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Conflictos Detectados</span>
           <span className={`text-2xl font-bold mt-1 block ${stats.contradicts > 0 ? "text-red-400" : "text-[var(--text-muted)]"}`}>
             {stats.contradicts}
           </span>
         </Card>
-        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Superaciones Activas</span>
-          <span className="text-2xl font-bold text-emerald-400 mt-1 block">{stats.supersedes}</span>
+        <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-md">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">Comunidades Funcionales</span>
+          <span className="text-2xl font-bold text-purple-400 mt-1 block">
+            {analyticsReport?.communities?.length || 1}
+          </span>
         </Card>
       </div>
 
       {/* Relation Type Filter Chips & Search Bar */}
-      <Card className="p-3 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+      <Card className="p-3 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3 shadow-md">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-muted)] mr-1">
             <Filter className="h-3.5 w-3.5" />
@@ -1033,11 +1191,11 @@ export default function GraphPage() {
       </Card>
 
       {/* Main Workspace Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 sm:gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-4 sm:gap-5">
         {/* Canvas Explorer Card */}
         <Card
           ref={containerRef}
-          className="relative p-0 overflow-hidden min-h-[420px] sm:min-h-[500px] h-[55vh] lg:h-[calc(100vh-340px)] flex flex-col border-[var(--border-subtle)] bg-[var(--bg-primary)]"
+          className="relative p-0 overflow-hidden min-h-[420px] sm:min-h-[500px] h-[55vh] lg:h-[calc(100vh-340px)] flex flex-col border-[var(--border-subtle)] bg-[var(--bg-primary)] shadow-2xl"
         >
           {/* Floating Canvas Action Overlay */}
           <div className="absolute top-3 sm:top-4 left-3 sm:left-4 flex flex-wrap items-center gap-1.5 sm:gap-2 z-10">
@@ -1061,7 +1219,26 @@ export default function GraphPage() {
             )}
           </div>
 
-          {/* Mini-Map Radar HUD in Bottom-Right Corner */}
+          {/* Blast Radius HUD overlay */}
+          {viewMode === "blast" && blastData && (
+            <div className="absolute top-3 sm:top-4 right-3 sm:right-4 z-10 p-3 rounded-xl bg-rose-950/80 border border-rose-800/60 backdrop-blur-md text-xs space-y-1 shadow-2xl max-w-xs">
+              <div className="flex items-center gap-1.5 text-rose-400 font-bold">
+                <Zap className="h-4 w-4" />
+                <span>Blast Radius: {blastData.blast_radius_pct.toFixed(1)}% del Grafo</span>
+              </div>
+              <div className="text-[11px] text-slate-300">
+                • Impacto Directo: <b>{blastData.direct_impact.length}</b> nodos
+              </div>
+              <div className="text-[11px] text-slate-300">
+                • Impacto Total: <b>{blastData.total_impacted.length}</b> nodos
+              </div>
+              <div className="text-[11px] text-slate-300">
+                • Archivos Afectados: <b>{blastData.impacted_files.length}</b>
+              </div>
+            </div>
+          )}
+
+          {/* Mini-Map Radar HUD */}
           <div className="absolute bottom-3 sm:bottom-4 right-3 sm:right-4 z-10 bg-[var(--bg-secondary)]/90 backdrop-blur-md p-2 rounded-xl border border-[var(--border-subtle)] shadow-2xl hidden sm:block">
             <div className="text-[10px] font-semibold text-[var(--text-muted)] mb-1 uppercase tracking-wider">
               Radar HUD
@@ -1082,100 +1259,195 @@ export default function GraphPage() {
           />
         </Card>
 
-        {/* Node Inspector Drawer */}
-        <Card className="flex flex-col justify-between min-h-[300px] lg:h-[calc(100vh-340px)] overflow-y-auto border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 sm:p-5">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-              <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
-                <Info className="h-4 w-4 text-blue-400" />
-                Detalle del Nodo
-              </h2>
-              {selectedNode && (
-                <Badge variant="default">Hop {selectedNode.hop}</Badge>
+        {/* Right Panel: Node Inspector or Architectural Diagnostics */}
+        <Card className="flex flex-col justify-between min-h-[300px] lg:h-[calc(100vh-340px)] overflow-y-auto border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 sm:p-5 shadow-2xl">
+          {viewMode === "analytics" ? (
+            /* Architectural Intelligence Panel */
+            <div className="space-y-4 text-xs">
+              <div className="pb-3 border-b border-[var(--border-subtle)] flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-emerald-400" />
+                  Diagnóstico Arquitectónico
+                </h2>
+                <Button variant="ghost" size="sm" onClick={loadAnalytics} disabled={analyticsLoading} className="text-xs">
+                  <RotateCcw className={`h-3 w-3 ${analyticsLoading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+
+              {analyticsLoading ? (
+                <div className="py-12 text-center text-[var(--text-muted)]">Calculando métricas...</div>
+              ) : analyticsReport ? (
+                <div className="space-y-4">
+                  {/* God Nodes */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
+                      🔥 GOD NODES (CUELLOS DE BOTELLA)
+                    </span>
+                    <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                      {analyticsReport.god_nodes.map((gn) => (
+                        <div
+                          key={gn.id}
+                          onClick={() => {
+                            const n = nodesRef.current.find((node) => node.id === gn.id);
+                            if (n) focusOnNode(n);
+                          }}
+                          className="p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-amber-500/40 cursor-pointer flex items-center justify-between transition-all"
+                        >
+                          <span className="font-semibold text-slate-200 truncate">{gn.label}</span>
+                          <Badge variant="warning" className="text-[10px]">Grado {gn.degree}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Surprising Connections */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block">
+                      ⚡ CONEXIONES SORPRENDENTES
+                    </span>
+                    <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                      {analyticsReport.surprising_connections.length === 0 ? (
+                        <p className="text-[11px] text-[var(--text-muted)] italic">Sin anomalías estructurales</p>
+                      ) : (
+                        analyticsReport.surprising_connections.map((sc, idx) => (
+                          <div key={idx} className="p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-mono text-purple-300 truncate">{sc.source_node} ➔ {sc.target_node}</span>
+                              <Badge variant="purple" className="text-[9px]">Score {sc.score}</Badge>
+                            </div>
+                            <p className="text-[10px] text-[var(--text-muted)]">{sc.reasons.join(", ")}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Cycles */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider block">
+                      🔄 CICLOS DE DEPENDENCIA
+                    </span>
+                    <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                      {analyticsReport.cycles.length === 0 ? (
+                        <p className="text-[11px] text-emerald-400">✓ 0 dependencias circulares detectadas</p>
+                      ) : (
+                        analyticsReport.cycles.map((c, idx) => (
+                          <div key={idx} className="p-2 rounded-lg bg-rose-950/40 border border-rose-900/50 text-rose-300 text-[10px] font-mono">
+                            {c.nodes.join(" ➔ ")}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            /* Node Inspector Drawer */
+            <div className="space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <h2 className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
+                  <Info className="h-4 w-4 text-blue-400" />
+                  Detalle del Nodo
+                </h2>
+                {selectedNode && (
+                  <Badge variant="default">Hop {selectedNode.hop}</Badge>
+                )}
+              </div>
+
+              {selectedNode ? (
+                <div className="space-y-3.5 text-xs">
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TÍTULO</span>
+                    <div className="font-semibold text-sm text-slate-100 mt-1">
+                      {selectedNode.label}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TIPO DE ENTIDAD</span>
+                      <div className="mt-1">
+                        <Badge variant={KIND_COLORS[selectedNode.kind]?.variant || "secondary"}>
+                          {selectedNode.kind}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ESTADO PIN</span>
+                      <div className="mt-1 text-slate-400">
+                        {selectedNode.isPinned ? "📌 Anclado" : "Dinámico"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ID OPACO</span>
+                    <div
+                      onClick={() => copyNodeId(selectedNode.id)}
+                      className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-slate-700 cursor-pointer mt-1 transition-colors"
+                      title="Haz clic para copiar"
+                    >
+                      <span className="font-mono text-[11px] text-slate-300 overflow-hidden text-ellipsis whitespace-nowrap">
+                        {selectedNode.id}
+                      </span>
+                      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5 text-slate-500" />}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                      VECINOS CONECTADOS ({selectedNodeNeighbors.length})
+                    </span>
+                    <div className="mt-1.5 space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                      {selectedNodeNeighbors.length === 0 ? (
+                        <p className="text-xs text-slate-500 italic">Sin conexiones directas visibles</p>
+                      ) : (
+                        selectedNodeNeighbors.map(({ node, relation, direction }, idx) => (
+                          <div
+                            key={idx}
+                            onClick={() => focusOnNode(node)}
+                            className="flex items-center justify-between p-2 bg-[var(--bg-surface)] rounded-lg border border-[var(--border-subtle)] hover:border-slate-600 cursor-pointer transition-all"
+                          >
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="text-[10px] font-semibold" style={{ color: RELATION_COLORS[relation] || DEFAULT_RELATION_COLOR }}>
+                                {direction === "out" ? "→" : "←"} {relation}
+                              </span>
+                              <span className="text-xs text-slate-200 overflow-hidden text-ellipsis whitespace-nowrap">
+                                {node.label}
+                              </span>
+                            </div>
+                            <ArrowRight className="h-3.5 w-3.5 text-slate-500 flex-shrink-0" />
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-10 px-4 text-slate-500 space-y-2">
+                  <Layers className="h-8 w-8 mx-auto opacity-40" />
+                  <p className="text-xs">Haz clic en cualquier nodo del grafo para inspeccionar sus atributos y relaciones.</p>
+                </div>
               )}
             </div>
-
-            {selectedNode ? (
-              <div className="space-y-3.5 text-xs">
-                <div>
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TÍTULO</span>
-                  <div className="font-semibold text-sm text-slate-100 mt-1">
-                    {selectedNode.label}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">TIPO DE ENTIDAD</span>
-                    <div className="mt-1">
-                      <Badge variant={KIND_COLORS[selectedNode.kind]?.variant || "secondary"}>
-                        {selectedNode.kind}
-                      </Badge>
-                    </div>
-                  </div>
-
-                  <div>
-                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ESTADO PIN</span>
-                    <div className="mt-1 text-slate-400">
-                      {selectedNode.isPinned ? "📌 Anclado" : "Dinámico"}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">ID OPACO</span>
-                  <div
-                    onClick={() => copyNodeId(selectedNode.id)}
-                    className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-800 hover:border-slate-700 cursor-pointer mt-1 transition-colors"
-                    title="Haz clic para copiar"
-                  >
-                    <span className="font-mono text-[11px] text-slate-300 overflow-hidden text-ellipsis whitespace-nowrap">
-                      {selectedNode.id}
-                    </span>
-                    {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5 text-slate-500" />}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                    VECINOS CONECTADOS ({selectedNodeNeighbors.length})
-                  </span>
-                  <div className="mt-1.5 space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {selectedNodeNeighbors.length === 0 ? (
-                      <p className="text-xs text-slate-500 italic">Sin conexiones directas visibles</p>
-                    ) : (
-                      selectedNodeNeighbors.map(({ node, relation, direction }, idx) => (
-                        <div
-                          key={idx}
-                          onClick={() => focusOnNode(node)}
-                          className="flex items-center justify-between p-2 bg-slate-800/60 rounded-lg border border-slate-700/50 hover:bg-slate-800 hover:border-slate-600 cursor-pointer transition-all"
-                        >
-                          <div className="flex items-center gap-2 overflow-hidden">
-                            <span className="text-[10px] font-semibold" style={{ color: RELATION_COLORS[relation] || DEFAULT_RELATION_COLOR }}>
-                              {direction === "out" ? "→" : "←"} {relation}
-                            </span>
-                            <span className="text-xs text-slate-200 overflow-hidden text-ellipsis whitespace-nowrap">
-                              {node.label}
-                            </span>
-                          </div>
-                          <ArrowRight className="h-3.5 w-3.5 text-slate-500 flex-shrink-0" />
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-10 px-4 text-slate-500 space-y-2">
-                <Layers className="h-8 w-8 mx-auto opacity-40" />
-                <p className="text-xs">Haz clic en cualquier nodo del grafo para inspeccionar sus atributos y relaciones.</p>
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Node Action Buttons */}
-          {selectedNode && (
-            <div className="pt-4 border-t border-slate-800 space-y-2">
+          {selectedNode && viewMode !== "analytics" && (
+            <div className="pt-4 border-t border-[var(--border-subtle)] space-y-2">
+              <Button
+                onClick={() => handleInspectBlastRadius(selectedNode.id)}
+                variant="default"
+                size="sm"
+                className="w-full justify-center bg-rose-600 hover:bg-rose-500 text-white gap-1.5 shadow-md shadow-rose-600/20"
+                disabled={blastLoading}
+              >
+                <Zap className="h-3.5 w-3.5 text-amber-300" />
+                <span>Analizar Blast Radius (Impacto)</span>
+              </Button>
+
               <Button
                 onClick={handleExpandNode}
                 variant="secondary"
@@ -1267,6 +1539,11 @@ export default function GraphPage() {
               <option value="supersedes">supersedes (Reemplaza / actualiza)</option>
               <option value="contradicts">contradicts (Conflicto directo)</option>
               <option value="caused_by">caused_by (Causa / origen)</option>
+              <option value="calls">calls (Llamada de función / método)</option>
+              <option value="imports">imports (Importación de módulo)</option>
+              <option value="implements">implements (Implementa interfaz)</option>
+              <option value="defines">defines (Declara símbolo)</option>
+              <option value="uses">uses (Uso de tipo / variable)</option>
             </Select>
           </div>
 

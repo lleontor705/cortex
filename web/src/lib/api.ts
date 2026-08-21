@@ -111,6 +111,55 @@ export type GraphSubgraph = {
   truncated: boolean;
 };
 
+export type Community = {
+  id: number;
+  label: string;
+  hub_node_id: string;
+  members: string[];
+  size: number;
+  cohesion_score: number;
+};
+
+export type GodNode = {
+  id: string;
+  label: string;
+  degree: number;
+  in_degree: number;
+  out_degree: number;
+  source_file?: string;
+};
+
+export type SurprisingConnection = {
+  source_node: string;
+  target_node: string;
+  relation_type: string;
+  score: number;
+  reasons: string[];
+};
+
+export type DependencyCycle = {
+  length: number;
+  nodes: string[];
+};
+
+export type BlastRadiusResult = {
+  root_node: string;
+  direct_impact: string[];
+  total_impacted: string[];
+  impacted_files: string[];
+  blast_radius_pct: number;
+};
+
+export type GraphAnalyticsReport = {
+  total_nodes: number;
+  total_edges: number;
+  density: number;
+  communities: Community[];
+  god_nodes: GodNode[];
+  surprising_connections: SurprisingConnection[];
+  cycles: DependencyCycle[];
+};
+
 export type ExtractedObservation = {
   title: string;
   content: string;
@@ -400,6 +449,26 @@ export class CortexClient {
     reason: string;
   }) {
     return this.request<any>("/api/graph/resolve", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  analytics(project?: string, limit = 100) {
+    const params = new URLSearchParams();
+    if (project) params.set("project", project);
+    params.set("limit", limit.toString());
+    return this.request<GraphAnalyticsReport>(`/api/graph/analytics?${params.toString()}`);
+  }
+
+  blastRadius(nodeId: string, depth = 3) {
+    return this.request<BlastRadiusResult>(
+      `/api/graph/blast-radius?node_id=${encodeURIComponent(nodeId)}&depth=${depth}`,
+    );
+  }
+
+  ingestCode(data: { directory?: string; project?: string; max_files?: number }) {
+    return this.request<any>("/api/graph/ingest-code", {
       method: "POST",
       body: JSON.stringify(data),
     });
