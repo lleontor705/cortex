@@ -475,7 +475,7 @@ export default function SettingsPage() {
             </CardTitle>
             {aiStatus?.embedding.configured ? (
               <Badge variant="purple" className="text-[10px]">
-                ● {aiStatus.embedding.model} (1024d)
+                ● {aiStatus.embedding.model} ({aiStatus.embedding.dimensions || 2560}d)
               </Badge>
             ) : (
               <Badge variant="secondary" className="text-[10px] text-[var(--text-muted)]">
