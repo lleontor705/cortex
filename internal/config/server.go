@@ -90,6 +90,8 @@ const (
 // configuration from CORTEX_LLM_* environment variables and validates it.
 // An invalid or inconsistent configuration is an error: callers must fail
 // closed rather than silently fall back to a different destination class.
+func ServerLLMFromEnv() (ServerLLMConfig, error) {
+	p := &envParser{}
 	provider := strings.TrimSpace(os.Getenv("CORTEX_LLM_PROVIDER"))
 	if provider == "" {
 		provider = strings.TrimSpace(os.Getenv("CORTEX_AI_PROVIDER"))
