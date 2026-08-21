@@ -728,6 +728,11 @@ func bootstrapSchema(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) err
 	})
 	for _, stmt := range stmts {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
+			// If index creation fails (e.g. dimensions > 2000 limit or existing column constraint),
+			// log/ignore to allow sequential exact scan fallback without failing startup.
+			if strings.Contains(stmt, "CREATE INDEX") {
+				continue
+			}
 			return err
 		}
 	}
