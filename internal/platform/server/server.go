@@ -154,6 +154,13 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	if emb != nil {
 		model.Name, model.Dimension = emb.Model(), emb.Dimensions()
 	}
+	if model.Dimension == 0 {
+		if cfg.Vector.Pgvector.Dimension > 0 {
+			model.Dimension = cfg.Vector.Pgvector.Dimension
+		} else if cfg.Vector.Qdrant.Dimension > 0 {
+			model.Dimension = cfg.Vector.Qdrant.Dimension
+		}
+	}
 	vectorCfg := cfg.Vector
 	if vectorCfg.Provider == "" {
 		vectorCfg.Provider = cfg.Server.Provider.Vector
