@@ -30,11 +30,31 @@ Set the named environment variable to a valid server bearer token, then restart 
 
 ## Server Tools
 
-Server MCP currently exposes the authenticated subset:
+Server MCP exposes the authenticated catalog:
 
-`cortex_save`, `cortex_session_start`, `cortex_search`, `cortex_get_observation`, `cortex_update`, `cortex_delete`, `cortex_relate`, `cortex_graph`, `cortex_graph_subgraph`, `cortex_score`.
+| Tool | Purpose | Key Parameters |
+|---|---|---|
+| `cortex_save` | Save durable observation | `title`, `content`, `session_id`, `project`, `type`, `source` |
+| `cortex_handoff` | Idempotent durable memory handoff | `idempotency_key`, `observation`, `relation` |
+| `cortex_session_start` | Start memory session | `project`, `summary` |
+| `cortex_search` | Search observations | `query`, `type`, `project`, `scope`, `limit` |
+| `cortex_get_observation` | Get observation by public UUID | `id` |
+| `cortex_update` | Update observation fields | `id`, `title`, `content`, `type`, `project`, `scope` |
+| `cortex_delete` | Delete observation | `id` |
+| `cortex_relate` | Create semantic graph edge | `from_id`, `to_id`, `relation_type`, `weight`, `confidence`, `reasoning` |
+| `cortex_graph` | Get related observations | `observation_id`, `depth` |
+| `cortex_graph_subgraph` | Get heterogeneous bounded graph | `observation_id`, `depth`, `max_nodes` |
+| `cortex_get_blast_radius` | Calculate blast radius & impacted files | `node_id`, `depth` |
+| `cortex_analyze_architecture` | Full graph architecture & Louvain communities | `project` |
+| `cortex_detect_cycles` | Detect circular dependencies (Tarjan SCC) | `project` |
+| `cortex_score` | Get observation importance score | `observation_id` |
+| `cortex_get_project_context` | Get corporate governance & project rules | `project` |
+| `cortex_list_skills` | List corporate and project skills | `project` |
+| `cortex_get_skill` | Get skill instructions & rules by key | `key`, `project` |
+| `cortex_resolve_query` | Intelligently resolve query in Server mode | `query`, `project`, `limit` |
+| `cortex_get_status` | Operational mode (Server PostgreSQL) & capabilities | - |
 
-Server tools use public UUIDs and operate through `AuthorizedStore`. `cortex_graph_subgraph` returns the bounded heterogeneous projection of observations, entities, actors, sessions, and projects. They do not expose local admin or temporal profiles. Server REST-only capabilities such as stats, sessions, projects, and audit are documented in [HTTP-API.md](HTTP-API.md).
+Server tools use public UUIDs and operate through `AuthorizedStore`. `cortex_graph_subgraph` returns the bounded heterogeneous projection of observations, entities, actors, sessions, and projects. Server REST-only capabilities such as stats, sessions, projects, and audit are documented in [HTTP-API.md](HTTP-API.md).
 
 Agents must use the schema returned by `tools/list`: numeric IDs from a local catalog are not interchangeable with server UUIDs. Switching `mcp.remote.enabled` changes both the catalog and its ID schema.
 
