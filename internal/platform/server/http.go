@@ -748,9 +748,7 @@ func (a *apiHandler) projectGraph(w http.ResponseWriter, r *http.Request) {
 
 		sub, err := a.ops.GetGraphSubgraph(r.Context(), obs.PublicID, 1, 30)
 		if err == nil && sub != nil {
-			for _, e := range sub.Edges {
-				edges = append(edges, e)
-			}
+			edges = append(edges, sub.Edges...)
 			for _, n := range sub.Nodes {
 				if !nodeSet[n.ID] {
 					nodeSet[n.ID] = true
