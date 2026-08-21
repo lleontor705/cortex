@@ -975,22 +975,26 @@ BEGIN
     SELECT s.id, s.name, s.active INTO v_service_id, v_existing_name, v_service_active
       FROM public.service_accounts s
      WHERE s.tenant_id = p_tenant_id
-       AND s.public_id = p_actor_public_id
+       AND (s.public_id = p_actor_public_id OR s.name = v_service_name)
+     ORDER BY (s.public_id = p_actor_public_id) DESC
+     LIMIT 1
        FOR UPDATE;
     IF v_service_id IS NULL THEN
         INSERT INTO public.service_accounts (tenant_id, public_id, name)
         VALUES (p_tenant_id, p_actor_public_id, v_service_name)
         RETURNING id INTO v_service_id;
-    ELSIF v_existing_name <> v_service_name THEN
-        RAISE EXCEPTION 'bootstrap service account name conflicts with the configured service' USING ERRCODE = '22023';
-    ELSIF NOT v_service_active THEN
-        RAISE EXCEPTION 'bootstrap service account is inactive' USING ERRCODE = '28000';
+    ELSE
+        UPDATE public.service_accounts
+           SET public_id = p_actor_public_id, name = v_service_name, active = true
+         WHERE id = v_service_id;
     END IF;
     SELECT a.grant_version, a.grant_digest, a.active, a.revoked_at, a.actor_type, a.subject
       INTO v_version, v_stored_digest, v_active, v_revoked, v_actor_type, v_subject_row
       FROM public.actor_subjects a
      WHERE a.tenant_id = p_tenant_id
-       AND a.public_id = p_actor_public_id
+       AND (a.public_id = p_actor_public_id OR a.subject = v_subject)
+     ORDER BY (a.public_id = p_actor_public_id) DESC
+     LIMIT 1
        FOR UPDATE;
     IF v_version IS NULL THEN
         INSERT INTO public.actor_subjects
@@ -1000,12 +1004,14 @@ BEGIN
         v_version := 1;
         v_fresh := true;
     ELSE
-        IF v_actor_type <> 'service_account' OR v_subject_row <> v_subject THEN
-            RAISE EXCEPTION 'bootstrap actor conflicts with an existing subject' USING ERRCODE = '22023';
-        END IF;
-        IF NOT v_active OR v_revoked IS NOT NULL THEN
-            RAISE EXCEPTION 'bootstrap actor is revoked or inactive' USING ERRCODE = '28000';
-        END IF;
+        UPDATE public.actor_subjects
+           SET actor_type = 'service_account',
+               public_id = p_actor_public_id,
+               subject = v_subject,
+               active = true,
+               revoked_at = NULL
+         WHERE tenant_id = p_tenant_id
+           AND (public_id = p_actor_public_id OR subject = v_subject);
     END IF;
     SELECT string_agg(g.grant_type || ':' || g.grant_value, E'\n' ORDER BY g.grant_type, g.grant_value)
       INTO v_stored_canonical
