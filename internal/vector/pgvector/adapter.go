@@ -676,22 +676,7 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
 	// op class is always vector_cosine_ops regardless of index type.
 	const opClass = "vector_cosine_ops"
 
-	// Emit typed integer WITH options per index type. Only validated integers
-	// are interpolated; there is no string from user input in the DDL.
-	var options string
-	switch t.IndexType {
-	case "ivfflat":
-		options = fmt.Sprintf("WITH (lists = %d)", t.IVFFlatLists)
-	default: // hnsw
-		options = fmt.Sprintf("WITH (m = %d, ef_construction = %d)", t.HNSWM, t.HNSWEfConstruction)
-	}
-
-	indexSQL := fmt.Sprintf(
-		`CREATE INDEX IF NOT EXISTS %s ON %s USING %s (embedding %s) %s`,
-		indexName, qualified, t.IndexType, opClass, options,
-	)
-
-	return []string{
+	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
 		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, schema),
 		fmt.Sprintf(
@@ -709,8 +694,28 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, qualified, dimension),
-		indexSQL,
 	}
+
+	// pgvector HNSW and IVFFlat indexes in PostgreSQL have a hard limit of 2000 dimensions.
+	// For high-dimension embedding models (> 2000, e.g. 2560d, 3072d), vectors are stored
+	// and queried with exact cosine distance scan without index DDL failure.
+	if dimension <= 2000 {
+		var options string
+		switch t.IndexType {
+		case "ivfflat":
+			options = fmt.Sprintf("WITH (lists = %d)", t.IVFFlatLists)
+		default: // hnsw
+			options = fmt.Sprintf("WITH (m = %d, ef_construction = %d)", t.HNSWM, t.HNSWEfConstruction)
+		}
+
+		indexSQL := fmt.Sprintf(
+			`CREATE INDEX IF NOT EXISTS %s ON %s USING %s (embedding %s) %s`,
+			indexName, qualified, t.IndexType, opClass, options,
+		)
+		stmts = append(stmts, indexSQL)
+	}
+
+	return stmts
 }
 
 // bootstrapSchema runs the schema/table/index DDL on a raw pgx.Conn.
