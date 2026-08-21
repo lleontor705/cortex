@@ -770,50 +770,61 @@ func (a *apiHandler) projectGraph(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Directory string `json:"directory"`
-		Project   string `json:"project"`
-		MaxFiles  int    `json:"max_files"`
-		Persist   *bool  `json:"persist"`
+func processIngestCode(ctx context.Context, ops Operations, path string, project string, maxFiles int, persist bool) (map[string]any, error) {
+	if path == "" {
+		path = "."
 	}
-	if !decodeBody(w, r, &input) {
-		return
+	if project == "" {
+		project = "default"
 	}
 
-	if input.Directory == "" {
-		input.Directory = "."
-	}
-	if input.Project == "" {
-		input.Project = "default"
-	}
-	shouldPersist := true
-	if input.Persist != nil {
-		shouldPersist = *input.Persist
-	}
-
-	extractor := ast.NewExtractor(input.Directory)
-	res, err := extractor.ExtractDir(input.Directory, input.MaxFiles)
+	extractor := ast.NewExtractor(path)
+	res, err := extractor.ExtractPath(path, maxFiles)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ast_extraction_failed", err.Error())
-		return
+		return nil, err
 	}
 
 	persistedCount := 0
-	if shouldPersist {
+	updatedCount := 0
+
+	if persist {
+		existingObs, _ := ops.ListObservations(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   500,
+		})
+		existingMap := make(map[string]*domain.Observation)
+		for _, o := range existingObs {
+			key := fmt.Sprintf("%s|%s", o.Title, o.Source)
+			existingMap[key] = o
+		}
+
 		entityObsMap := make(map[string]*domain.Observation)
 		for _, ent := range res.Entities {
-			obs := &domain.Observation{
-				Project: input.Project,
-				Type:    "code_entity",
-				Title:   fmt.Sprintf("[%s] %s", ent.Kind, ent.Name),
-				Content: fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s", ent.File, ent.Line, ent.Kind, ent.Package),
-				Source:  ent.File,
-				Scope:   "project",
-			}
-			if err := a.ops.SaveObservation(r.Context(), obs); err == nil {
-				entityObsMap[ent.ID] = obs
-				persistedCount++
+			title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
+			key := fmt.Sprintf("%s|%s", title, ent.File)
+			content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s", ent.File, ent.Line, ent.Kind, ent.Package)
+
+			if existing, ok := existingMap[key]; ok {
+				existing.Content = content
+				existing.Source = ent.File
+				if err := ops.UpdateObservation(ctx, existing); err == nil {
+					entityObsMap[ent.ID] = existing
+					updatedCount++
+				}
+			} else {
+				obs := &domain.Observation{
+					Project: project,
+					Type:    "code_entity",
+					Title:   title,
+					Content: content,
+					Source:  ent.File,
+					Scope:   "project",
+				}
+				if err := ops.SaveObservation(ctx, obs); err == nil {
+					entityObsMap[ent.ID] = obs
+					existingMap[key] = obs
+					persistedCount++
+				}
 			}
 		}
 
@@ -830,20 +841,52 @@ func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
 					Confidence:   rel.Confidence,
 					Reasoning:    rel.Reasoning,
 				}
-				_ = a.ops.CreateGraphEdge(r.Context(), &edge)
+				_ = ops.CreateGraphEdge(ctx, &edge)
 			}
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"files_scanned":   res.FilesScanned,
 		"entities_count":  len(res.Entities),
 		"relations_count": len(res.Relationships),
 		"persisted_count": persistedCount,
-		"project":         input.Project,
+		"updated_count":   updatedCount,
+		"project":         project,
 		"entities":        res.Entities,
 		"relationships":   res.Relationships,
-	})
+	}, nil
+}
+
+func (a *apiHandler) ingestCode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Path      string `json:"path"`
+		Directory string `json:"directory"`
+		Project   string `json:"project"`
+		MaxFiles  int    `json:"max_files"`
+		Persist   *bool  `json:"persist"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+
+	targetPath := input.Path
+	if targetPath == "" {
+		targetPath = input.Directory
+	}
+
+	shouldPersist := true
+	if input.Persist != nil {
+		shouldPersist = *input.Persist
+	}
+
+	result, err := processIngestCode(r.Context(), a.ops, targetPath, input.Project, input.MaxFiles, shouldPersist)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ast_extraction_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *apiHandler) deleteEdge(w http.ResponseWriter, r *http.Request) {
@@ -1277,6 +1320,7 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_get_blast_radius", mcp.WithDescription("Calculate the blast radius (impacted downstream symbols, callers, and files) when modifying a code entity or observation."), mcp.WithString("node_id", mcp.Required()), mcp.WithNumber("depth")), getBlastRadiusTool(ops))
 	add(mcp.NewTool("cortex_analyze_architecture", mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."), mcp.WithString("project")), analyzeArchitectureTool(ops))
 	add(mcp.NewTool("cortex_detect_cycles", mcp.WithDescription("Detect circular dependencies and import cycles across code entities in the knowledge graph."), mcp.WithString("project")), detectCyclesTool(ops))
+	add(mcp.NewTool("cortex_ingest_code", mcp.WithDescription("Scan, ingest or update codebase AST symbols and dependencies into a project knowledge graph. Supports whole repositories or single modified files during refactoring."), mcp.WithString("path"), mcp.WithString("project"), mcp.WithNumber("max_files")), ingestCodeTool(ops))
 	add(mcp.NewTool("cortex_score", mcp.WithDescription("Get an observation importance score."), mcp.WithString("observation_id", mcp.Required())), scoreTool(ops))
 	add(mcp.NewTool("cortex_get_project_context", mcp.WithDescription("Get corporate & project governance rules, system prompt, and available skills."), mcp.WithString("project")), getProjectContextTool(ops))
 	add(mcp.NewTool("cortex_list_skills", mcp.WithDescription("List available corporate and project skills."), mcp.WithString("project")), listProjectSkillsTool(ops))
@@ -1789,6 +1833,20 @@ func detectCyclesTool(ops Operations) mcpserver.ToolHandlerFunc {
 
 		cycles := graph.FindCycles(nodes, edges)
 		return toolResult(map[string]any{"cycles_count": len(cycles), "cycles": cycles}, nil)
+	}
+}
+
+func ingestCodeTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path := toolString(req, "path")
+		if path == "" {
+			path = toolString(req, "directory")
+		}
+		project := toolString(req, "project")
+		maxFiles := toolInt(req, "max_files", 250)
+
+		result, err := processIngestCode(ctx, ops, path, project, maxFiles, true)
+		return toolResult(result, err)
 	}
 }
 func graphTool(ops Operations) mcpserver.ToolHandlerFunc {

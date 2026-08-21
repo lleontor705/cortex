@@ -52,6 +52,55 @@ func NewExtractor(root string) *Extractor {
 	return &Extractor{RootPath: root}
 }
 
+// ExtractPath scans either a single file or a directory recursively.
+func (e *Extractor) ExtractPath(targetPath string, maxFiles int) (*ExtractionResult, error) {
+	fi, err := os.Stat(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return e.ExtractFile(targetPath)
+	}
+	return e.ExtractDir(targetPath, maxFiles)
+}
+
+// ExtractFile extracts code entities and relationships for a single file.
+func (e *Extractor) ExtractFile(filePath string) (*ExtractionResult, error) {
+	relPath, _ := filepath.Rel(e.RootPath, filePath)
+	if relPath == "" {
+		relPath = filePath
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	result := &ExtractionResult{
+		Entities:      make([]CodeEntity, 0),
+		Relationships: make([]CodeRelationship, 0),
+		FilesScanned:  1,
+	}
+
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".go":
+		entities, rels := extractGoFile(filePath, relPath)
+		result.Entities = entities
+		result.Relationships = rels
+	case ".ts", ".tsx", ".js", ".jsx":
+		entities, rels := extractTSJSFile(filePath, relPath)
+		result.Entities = entities
+		result.Relationships = rels
+	case ".py":
+		entities, rels := extractPythonFile(filePath, relPath)
+		result.Entities = entities
+		result.Relationships = rels
+	case ".sql":
+		entities, rels := extractSQLFile(filePath, relPath)
+		result.Entities = entities
+		result.Relationships = rels
+	}
+
+	return result, nil
+}
+
 // ExtractDir scans a directory recursively and extracts code entities and relationships.
 func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, error) {
 	if maxFiles <= 0 {

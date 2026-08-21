@@ -120,3 +120,30 @@ def process_memory():
 		t.Errorf("expected at least 2 files scanned, got %d", res.FilesScanned)
 	}
 }
+
+func TestExtractSingleFileAndPath(t *testing.T) {
+	tempDir := t.TempDir()
+	goCode := `package refactor
+func OldFunc() {}
+func NewFunc() { OldFunc() }
+`
+	goFilePath := filepath.Join(tempDir, "refactor.go")
+	_ = os.WriteFile(goFilePath, []byte(goCode), 0644)
+
+	extractor := NewExtractor(tempDir)
+	resFile, err := extractor.ExtractFile(goFilePath)
+	if err != nil {
+		t.Fatalf("ExtractFile failed: %v", err)
+	}
+	if len(resFile.Entities) != 3 {
+		t.Errorf("expected 3 entities (module + 2 funcs), got %d", len(resFile.Entities))
+	}
+
+	resPath, err := extractor.ExtractPath(goFilePath, 10)
+	if err != nil {
+		t.Fatalf("ExtractPath on single file failed: %v", err)
+	}
+	if len(resPath.Entities) != 3 {
+		t.Errorf("expected 3 entities from ExtractPath, got %d", len(resPath.Entities))
+	}
+}
