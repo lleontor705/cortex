@@ -10,11 +10,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@types/jszip": "^3.4.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "graphology": "^0.26.0",
     "graphology-layout": "^0.6.1",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^1.16.0",
     "next": "^15.1.7",
     "react": "^19.0.0",

@@ -90,13 +90,31 @@ const (
 // configuration from CORTEX_LLM_* environment variables and validates it.
 // An invalid or inconsistent configuration is an error: callers must fail
 // closed rather than silently fall back to a different destination class.
-func ServerLLMFromEnv() (ServerLLMConfig, error) {
-	p := &envParser{}
+	provider := strings.TrimSpace(os.Getenv("CORTEX_LLM_PROVIDER"))
+	if provider == "" {
+		provider = strings.TrimSpace(os.Getenv("CORTEX_AI_PROVIDER"))
+	}
+	baseURL := strings.TrimSpace(os.Getenv("CORTEX_LLM_BASE_URL"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv("CORTEX_AI_BASE_URL"))
+	}
+	model := strings.TrimSpace(os.Getenv("CORTEX_LLM_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("CORTEX_AI_MODEL"))
+	}
+	apiKey := os.Getenv("CORTEX_LLM_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("CORTEX_AI_API_KEY")
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("GEMINI_API_KEY")
+	}
+
 	cfg := ServerLLMConfig{
-		Provider:             strings.TrimSpace(os.Getenv("CORTEX_LLM_PROVIDER")),
-		BaseURL:              strings.TrimSpace(os.Getenv("CORTEX_LLM_BASE_URL")),
-		Model:                strings.TrimSpace(os.Getenv("CORTEX_LLM_MODEL")),
-		APIKey:               os.Getenv("CORTEX_LLM_API_KEY"),
+		Provider:             provider,
+		BaseURL:              baseURL,
+		Model:                model,
+		APIKey:               apiKey,
 		AllowedHosts:         splitLLMHostList(os.Getenv("CORTEX_LLM_ALLOWED_HOSTS")),
 		AllowedPorts:         splitLLMPortList(os.Getenv("CORTEX_LLM_ALLOWED_PORTS")),
 		AllowLoopback:        p.boolEnv("CORTEX_LLM_ALLOW_LOOPBACK"),
