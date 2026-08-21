@@ -166,6 +166,9 @@ export default function ExtractPage() {
     } else if (p === "together") {
       setBaseURLInput("https://api.together.xyz/v1");
       setModelInput("meta-llama/Llama-3.3-70B-Instruct-Turbo");
+    } else if (p === "gemini") {
+      setBaseURLInput("https://generativelanguage.googleapis.com/v1beta/openai");
+      setModelInput("gemini-2.5-flash");
     } else if (p === "deepseek") {
       setBaseURLInput("https://api.deepseek.com/v1");
       setModelInput("deepseek-chat");
@@ -218,6 +221,7 @@ export default function ExtractPage() {
                   className="h-9 text-xs w-full"
                 >
                   <option value="openai">OpenAI</option>
+                  <option value="gemini">Google Gemini</option>
                   <option value="anthropic">Anthropic Claude</option>
                   <option value="ollama">Ollama (Local)</option>
                   <option value="openrouter">OpenRouter</option>

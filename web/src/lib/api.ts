@@ -350,21 +350,33 @@ export class CortexClient {
     });
   }
 
-  search(query: string, project = "") {
-    return this.request<{ value: Observation[]; Count: number }>(
+  async search(query: string, project = ""): Promise<{ value: Observation[]; Count: number }> {
+    const raw = await this.request<any>(
       `/api/search?q=${encodeURIComponent(query)}${project ? `&project=${encodeURIComponent(project)}` : ""}`,
     );
+    if (Array.isArray(raw)) {
+      return { value: raw, Count: raw.length };
+    }
+    if (raw && Array.isArray(raw.results)) {
+      return { value: raw.results, Count: raw.count ?? raw.results.length };
+    }
+    if (raw && Array.isArray(raw.value)) {
+      return { value: raw.value, Count: raw.Count ?? raw.value.length };
+    }
+    return { value: [], Count: 0 };
   }
 
   subgraph(id: string, depth = 2, maxNodes = 100) {
+    const cleanId = (id || "").replace(/^(observation|session|entity):/, "");
     return this.request<GraphSubgraph>(
-      `/api/graph/${id}/subgraph?depth=${depth}&max_nodes=${maxNodes}`,
+      `/api/graph/${encodeURIComponent(cleanId)}/subgraph?depth=${depth}&max_nodes=${maxNodes}`,
     );
   }
 
   related(id: string, depth = 1) {
+    const cleanId = (id || "").replace(/^(observation|session|entity):/, "");
     return this.request<{ value: Observation[]; Count: number }>(
-      `/api/graph/${id}/related?depth=${depth}`,
+      `/api/graph/${encodeURIComponent(cleanId)}/related?depth=${depth}`,
     );
   }
 

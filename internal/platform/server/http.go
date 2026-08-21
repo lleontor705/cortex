@@ -733,6 +733,9 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 func pathPublicID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
+	id = strings.TrimPrefix(id, "observation:")
+	id = strings.TrimPrefix(id, "session:")
+	id = strings.TrimPrefix(id, "entity:")
 	if _, err := uuid.Parse(id); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_id", "id must be a UUID")
 		return "", false

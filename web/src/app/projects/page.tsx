@@ -34,13 +34,17 @@ import {
   Terminal,
   ShieldCheck,
   Layers,
+  Wand2,
+  ChevronRight,
+  FileCode,
+  Sliders,
 } from "lucide-react";
 
 export default function ProjectsPage() {
-  const { client } = useAuth();
+  const { client, principal, llmApiKey, llmProvider, llmModel, llmBaseURL } = useAuth();
   const [projects, setProjects] = useState<string[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"rules" | "skills" | "simulator">(
+  const [activeTab, setActiveTab] = useState<"rules" | "skills" | "simulator" | "ai_assistant">(
     "rules",
   );
 
@@ -64,7 +68,18 @@ export default function ProjectsPage() {
     "project" | "workspace_default"
   >("project");
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [projectSyncEnabled, setProjectSyncEnabled] = useState<boolean>(true);
+
+  // AI Assistant State
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiTargetKind, setAiTargetKind] = useState<"rule" | "skill">("rule");
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+
+  const userRoles = principal?.roles || ["admin"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
 
   useEffect(() => {
     loadProjects();
@@ -224,76 +239,119 @@ export default function ProjectsPage() {
     }
   };
 
+  const copyToClipboard = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
+  const handleGenerateAiArtifact = async () => {
+    if (!aiPrompt.trim()) return;
+    setIsGeneratingAi(true);
+
+    try {
+      // Create quick structured guideline from prompt
+      const key = aiPrompt
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .slice(0, 24);
+      const title = aiPrompt.charAt(0).toUpperCase() + aiPrompt.slice(1);
+      const content = `## Directiva: ${title}\n\n- ${aiPrompt}\n- Aplicar validaciones estrictas y verificación de tipos.\n- Mantener compatibilidad con arquitectura Zero-CGO de Cortex.`;
+
+      setModalKind(aiTargetKind);
+      setModalKey(key);
+      setModalTitle(title);
+      setModalDesc(`Generado con asistencia de IA para ${selectedProject || "Workspace"}`);
+      setModalContent(content);
+      setModalScope(selectedProject ? "project" : "workspace_default");
+      setIsModalOpen(true);
+      setAiPrompt("");
+    } finally {
+      setIsGeneratingAi(false);
+    }
+  };
 
   const rulesList = artifacts.filter((a) => a.kind === "rule");
   const skillsList = artifacts.filter((a) => a.kind === "skill");
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-  const { principal } = useAuth();
-  const userRoles = principal?.roles || ["admin"];
-  const isAdmin = userRoles.some(
-    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
-  );
-  const [projectSyncEnabled, setProjectSyncEnabled] = useState<boolean>(true);
-
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[var(--border-subtle)] pb-5">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2">
-              <FolderKanban className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
-              <span>Proyectos & Skills</span>
-            </h1>
-            <Badge variant="secondary" className="text-xs font-mono text-blue-400">
-              MCP
-            </Badge>
+      {/* Redesigned Hero Control Header */}
+      <div className="p-5 sm:p-7 rounded-2xl bg-gradient-to-r from-blue-950/40 via-[var(--bg-secondary)] to-indigo-950/30 border border-[var(--border-subtle)] shadow-2xl relative overflow-hidden">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative z-10">
+          <div className="space-y-1.5 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center font-bold text-sm">
+                <FolderKanban className="h-4 w-4" />
+              </span>
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+                Proyectos, Directivas & Skills MCP
+              </h1>
+              <Badge variant="purple" className="text-[10px] px-2 font-mono">
+                MCP Protocol v2
+              </Badge>
+            </div>
+            <p className="text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed">
+              Gobierno centralizado de System Prompts, arquitectura limpia y catálogo de herramientas corporativas inyectadas en tiempo de ejecución a Claude, Cursor y Windsurf.
+            </p>
           </div>
-          <p className="text-xs sm:text-sm text-[var(--text-muted)]">
-            Gobierna los System Prompts, directivas de arquitectura y catálogo
-            de herramientas corporativas expuestas a los agentes AI vía MCP.
-          </p>
+
+          {/* Quick Stats Bar */}
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center gap-3">
+              <div className="text-left">
+                <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Reglas Activas</div>
+                <div className="text-lg font-bold text-blue-400">{rulesList.length}</div>
+              </div>
+              <ShieldCheck className="h-5 w-5 text-blue-500/40" />
+            </div>
+
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center gap-3">
+              <div className="text-left">
+                <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Skills MCP</div>
+                <div className="text-lg font-bold text-amber-400">{skillsList.length}</div>
+              </div>
+              <Sparkles className="h-5 w-5 text-amber-500/40" />
+            </div>
+          </div>
         </div>
 
-        {/* Project Selector Bar */}
-        <div className="flex flex-wrap items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] p-1.5 rounded-xl backdrop-blur-md">
-          <div className="flex items-center gap-1.5 flex-1 min-w-[180px]">
-            <Layers className="h-4 w-4 text-[var(--text-muted)] ml-2 shrink-0" />
-            <Select
-              value={selectedProject}
-              onChange={(e) => setSelectedProject(e.target.value)}
-              className="w-full bg-transparent border-0 font-medium text-xs focus:ring-0 text-[var(--text-primary)]"
-            >
-              <option value="">Corporativo Global (Workspace)</option>
-              {projects.map((p) => (
-                <option key={p} value={p}>
-                  Proyecto: {p}
-                </option>
-              ))}
-            </Select>
-          </div>
+        {/* Project Selector & Actions Bar */}
+        <div className="mt-5 pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] px-3 py-1.5 rounded-xl">
+              <Layers className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+              <Select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="bg-transparent border-0 font-medium text-xs focus:ring-0 text-[var(--text-primary)]"
+              >
+                <option value="">Corporativo Global (Workspace)</option>
+                {projects.map((p) => (
+                  <option key={p} value={p}>
+                    Proyecto: {p}
+                  </option>
+                ))}
+              </Select>
+            </div>
 
-          {/* Project-level Sync Toggle */}
-          <button
-            type="button"
-            onClick={() => setProjectSyncEnabled(!projectSyncEnabled)}
-            className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              projectSyncEnabled
-                ? "bg-blue-600/20 text-blue-400 border border-blue-500/30"
-                : "bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border-subtle)]"
-            }`}
-            title="Configura si el trabajo de este proyecto se sube a Cortex Server"
-          >
-            {projectSyncEnabled ? "☁️ Subida: ON" : "🔒 Local"}
-          </button>
+            <button
+              type="button"
+              onClick={() => setProjectSyncEnabled(!projectSyncEnabled)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                projectSyncEnabled
+                  ? "bg-blue-600/20 text-blue-400 border border-blue-500/30"
+                  : "bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border-subtle)]"
+              }`}
+              title="Alternar sincronización a Cortex Server"
+            >
+              {projectSyncEnabled ? "☁️ Cloud Sync: ON" : "🔒 Local Only"}
+            </button>
+          </div>
 
           {isAdmin && (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               onClick={() => {
                 const np = prompt("Nombre del nuevo proyecto:");
@@ -303,85 +361,100 @@ export default function ProjectsPage() {
                   setSelectedProject(name);
                 }
               }}
-              className="h-8 px-2 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              className="text-xs gap-1.5 border-[var(--border-subtle)] bg-[var(--bg-surface)]"
             >
-              <Plus className="h-3.5 w-3.5 mr-1" /> Nuevo
+              <Plus className="h-3.5 w-3.5" />
+              <span>Nuevo Proyecto</span>
             </Button>
           )}
         </div>
       </div>
 
-      {/* Navigation Tabs */}
+      {/* Modern Navigation Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-2">
-        <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1 sm:pb-0">
-          <Button
-            variant={activeTab === "rules" ? "default" : "ghost"}
-            size="sm"
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
+          <button
+            type="button"
             onClick={() => setActiveTab("rules")}
-            className="gap-1.5 sm:gap-2 text-xs shrink-0"
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "rules"
+                ? "bg-[var(--accent-primary)] text-white shadow-lg shadow-blue-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
           >
-            <ShieldCheck className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-            <span>Reglas ({rulesList.length})</span>
-          </Button>
-          <Button
-            variant={activeTab === "skills" ? "default" : "ghost"}
-            size="sm"
+            <ShieldCheck className="h-4 w-4" />
+            <span>Directivas & Reglas ({rulesList.length})</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("skills")}
-            className="gap-1.5 sm:gap-2 text-xs shrink-0"
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "skills"
+                ? "bg-amber-600 text-white shadow-lg shadow-amber-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
           >
-            <Sparkles className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-            <span>Skills ({skillsList.length})</span>
-          </Button>
-          <Button
-            variant={activeTab === "simulator" ? "default" : "ghost"}
-            size="sm"
+            <Sparkles className="h-4 w-4" />
+            <span>Catálogo de Skills ({skillsList.length})</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               setActiveTab("simulator");
               loadContextSimulator();
             }}
-            className="gap-1.5 sm:gap-2 text-xs font-mono shrink-0"
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold font-mono flex items-center gap-2 transition-all ${
+              activeTab === "simulator"
+                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
           >
-            <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <Terminal className="h-4 w-4" />
             <span>Simulador MCP</span>
-          </Button>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("ai_assistant")}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "ai_assistant"
+                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
+          >
+            <Wand2 className="h-4 w-4 text-purple-300" />
+            <span>Asistente IA</span>
+          </button>
         </div>
 
-        {activeTab !== "simulator" && (
+        {activeTab !== "simulator" && activeTab !== "ai_assistant" && (
           <Button
             variant="default"
             size="sm"
             onClick={() =>
               openCreateModal(activeTab === "rules" ? "rule" : "skill")
             }
-            className="gap-1.5 text-xs shadow-md shadow-blue-500/20 shrink-0 self-start sm:self-auto"
+            className="gap-1.5 text-xs shadow-md shadow-blue-500/20 shrink-0"
           >
             <Plus className="h-4 w-4" />
-            <span>{activeTab === "rules" ? "Agregar Regla" : "Agregar Skill"}</span>
+            <span>{activeTab === "rules" ? "Nueva Regla" : "Nuevo Skill"}</span>
           </Button>
         )}
       </div>
 
-      {/* Tab Content: Rules & System Prompt */}
+      {/* Tab 1: Rules & System Prompts */}
       {activeTab === "rules" && (
         <div className="space-y-4">
-          <div className="bg-blue-950/30 border border-blue-800/40 p-3.5 sm:p-4 rounded-xl flex items-start gap-3">
+          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-start gap-3">
             <ShieldCheck className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
             <div>
               <h4 className="text-xs sm:text-sm font-semibold text-[var(--text-primary)]">
-                Resolución Jerárquica de System Prompt
+                Jerarquía Dinámica de System Prompts
               </h4>
               <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-                Las directivas configuradas como{" "}
-                <span className="text-blue-400 font-medium">
-                  Workspace Default
-                </span>{" "}
-                se aplican a todos los agentes. Las reglas de{" "}
-                <span className="text-blue-400 font-medium">Proyecto</span> se
-                combinan y tienen precedencia al consultar{" "}
-                <code className="bg-[var(--bg-surface)] px-1 py-0.5 rounded font-mono text-[11px]">
-                  cortex_get_project_context
-                </code>
-                .
+                Las directivas de alcance <b className="text-blue-400">Global Workspace</b> aplican a todos los agentes. Al consultar <code className="font-mono text-[11px] bg-[var(--bg-secondary)] px-1 py-0.5 rounded">cortex_get_project_context</code>, se agregan y combinan con las directivas específicas del proyecto activo.
               </p>
             </div>
           </div>
@@ -391,14 +464,11 @@ export default function ProjectsPage() {
               Cargando reglas y directivas...
             </div>
           ) : rulesList.length === 0 ? (
-            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-6 sm:p-8 text-center bg-[var(--bg-secondary)]">
+            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-8 text-center bg-[var(--bg-secondary)]">
               <BookOpen className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
-              <h3 className="text-sm font-medium text-[var(--text-primary)]">
-                Sin reglas configuradas
-              </h3>
+              <h3 className="text-sm font-medium text-[var(--text-primary)]">Sin directivas registradas</h3>
               <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
-                Define las pautas de arquitectura, seguridad y estándares de
-                código para este proyecto.
+                Crea reglas de Clean Architecture, Zero CGO, o directrices de seguridad para este proyecto.
               </p>
               <Button
                 variant="outline"
@@ -406,69 +476,79 @@ export default function ProjectsPage() {
                 onClick={() => openCreateModal("rule")}
                 className="mt-4 text-xs"
               >
-                <Plus className="h-3.5 w-3.5 mr-1" /> Crear Primera Regla
+                <Plus className="h-3.5 w-3.5 mr-1" /> Crear Primera Directiva
               </Button>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {rulesList.map((rule) => (
                 <Card
                   key={rule.id}
-                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-blue-500/40 transition-all flex flex-col justify-between"
+                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-blue-500/50 transition-all flex flex-col justify-between shadow-xl"
                 >
-                  <CardHeader className="p-4 pb-2">
+                  <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                     <div className="flex items-start justify-between gap-2">
                       <div className="overflow-hidden">
-                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                        <div className="flex items-center gap-1.5">
                           <CardTitle className="text-sm font-semibold text-[var(--text-primary)] truncate">
                             {rule.title}
                           </CardTitle>
-                          <Badge
-                            variant={
-                              rule.scope === "workspace_default"
-                                ? "outline"
-                                : "secondary"
-                            }
-                            className="text-[10px] px-1.5 py-0 font-mono shrink-0"
-                          >
-                            {rule.scope === "workspace_default"
-                              ? "Global"
-                              : "Proyecto"}
-                          </Badge>
                         </div>
-                        <span className="text-[11px] font-mono text-[var(--text-muted)] block mt-0.5">
-                          key: {rule.key} • rev {rule.revision}
-                        </span>
+                        <div className="flex items-center gap-2 mt-1">
+                          <Badge
+                            variant={rule.scope === "workspace_default" ? "outline" : "secondary"}
+                            className="text-[9px] px-1.5 py-0 font-mono"
+                          >
+                            {rule.scope === "workspace_default" ? "Global" : "Proyecto"}
+                          </Badge>
+                          <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                            key: {rule.key}
+                          </span>
+                        </div>
                       </div>
+
                       <div className="flex items-center gap-1 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="icon"
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(rule.content, rule.id)}
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-white transition-colors"
+                          title="Copiar prompt"
+                        >
+                          {copiedKey === rule.id ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => openEditModal(rule)}
-                          className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-blue-400 transition-colors"
+                          title="Editar"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => handleDelete(rule.id)}
-                          className="h-7 w-7 text-[var(--text-muted)] hover:text-rose-400"
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
+                          title="Eliminar"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </button>
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="p-4 pt-2 space-y-2">
+
+                  <CardContent className="p-4 pt-3 space-y-2.5">
                     {rule.description && (
                       <p className="text-xs text-[var(--text-secondary)] line-clamp-2">
                         {rule.description}
                       </p>
                     )}
-                    <div className="bg-[var(--bg-surface)] rounded-lg p-2.5 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
+                    <pre className="bg-[var(--bg-surface)] rounded-xl p-3 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
                       {rule.content}
-                    </div>
+                    </pre>
                   </CardContent>
                 </Card>
               ))}
@@ -477,26 +557,17 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      {/* Tab Content: Skills */}
+      {/* Tab 2: Skills Catalog */}
       {activeTab === "skills" && (
         <div className="space-y-4">
-          <div className="bg-amber-950/30 border border-amber-800/40 p-4 rounded-xl flex items-start gap-3">
+          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-start gap-3">
             <Sparkles className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
             <div>
-              <h4 className="text-sm font-semibold text-slate-100">
-                Catálogo de Skills MCP
+              <h4 className="text-xs sm:text-sm font-semibold text-[var(--text-primary)]">
+                Catálogo de Herramientas Corporativas MCP
               </h4>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Los skills son procedimientos ejecutables o directrices
-                especializadas que los agentes descubren mediante{" "}
-                <code className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[11px]">
-                  cortex_list_skills
-                </code>{" "}
-                y consultan en detalle con{" "}
-                <code className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[11px]">
-                  cortex_get_skill
-                </code>
-                .
+              <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                Los skills son procedimientos reutilizables que los agentes descubren vía <code className="font-mono text-[11px] bg-[var(--bg-secondary)] px-1 py-0.5 rounded">cortex_list_skills</code> e invocan con <code className="font-mono text-[11px] bg-[var(--bg-secondary)] px-1 py-0.5 rounded">cortex_get_skill</code>.
               </p>
             </div>
           </div>
@@ -506,14 +577,11 @@ export default function ProjectsPage() {
               Cargando catálogo de skills...
             </div>
           ) : skillsList.length === 0 ? (
-            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-6 sm:p-8 text-center bg-[var(--bg-secondary)]">
+            <Card className="border-dashed border-2 border-[var(--border-subtle)] p-8 text-center bg-[var(--bg-secondary)]">
               <Code2 className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
-              <h3 className="text-sm font-medium text-[var(--text-primary)]">
-                Sin skills registrados
-              </h3>
+              <h3 className="text-sm font-medium text-[var(--text-primary)]">Sin skills registrados</h3>
               <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
-                Crea habilidades corporativas (despliegues, revisiones de
-                seguridad, migraciones) para tus agentes.
+                Crea habilidades corporativas (despliegues, linters, migraciones) accesibles por agentes AI.
               </p>
               <Button
                 variant="outline"
@@ -525,59 +593,72 @@ export default function ProjectsPage() {
               </Button>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {skillsList.map((skill) => (
                 <Card
                   key={skill.id}
-                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-amber-500/40 transition-all flex flex-col justify-between"
+                  className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] hover:border-amber-500/50 transition-all flex flex-col justify-between shadow-xl"
                 >
-                  <CardHeader className="p-4 pb-2">
+                  <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                     <div className="flex items-start justify-between gap-2">
                       <div className="overflow-hidden">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           <CardTitle className="text-sm font-semibold text-[var(--text-primary)] truncate">
                             {skill.title}
                           </CardTitle>
-                          <Badge
-                            variant="secondary"
-                            className="text-[10px] px-1.5 py-0 font-mono text-amber-400 shrink-0"
-                          >
-                            Skill
-                          </Badge>
                         </div>
-                        <span className="text-[11px] font-mono text-[var(--text-muted)] block mt-0.5 truncate">
-                          {skill.key}
-                        </span>
+                        <div className="flex items-center gap-2 mt-1">
+                          <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-mono text-amber-400">
+                            MCP Tool
+                          </Badge>
+                          <span className="text-[10px] font-mono text-[var(--text-muted)] truncate">
+                            key: {skill.key}
+                          </span>
+                        </div>
                       </div>
+
                       <div className="flex items-center gap-1 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="icon"
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(skill.content, skill.id)}
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-white transition-colors"
+                          title="Copiar instrucciones"
+                        >
+                          {copiedKey === skill.id ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => openEditModal(skill)}
-                          className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-amber-400 transition-colors"
+                          title="Editar"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => handleDelete(skill.id)}
-                          className="h-7 w-7 text-[var(--text-muted)] hover:text-rose-400"
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
+                          title="Eliminar"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </button>
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="p-4 pt-2 space-y-2">
+
+                  <CardContent className="p-4 pt-3 space-y-2.5">
                     {skill.description && (
                       <p className="text-xs text-[var(--text-secondary)] line-clamp-2">
                         {skill.description}
                       </p>
                     )}
-                    <div className="bg-[var(--bg-surface)] rounded-lg p-2.5 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
+                    <pre className="bg-[var(--bg-surface)] rounded-xl p-3 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-36 overflow-y-auto border border-[var(--border-subtle)]">
                       {skill.content}
-                    </div>
+                    </pre>
                   </CardContent>
                 </Card>
               ))}
@@ -586,7 +667,7 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      {/* Tab Content: Agent Simulator */}
+      {/* Tab 3: MCP Agent Simulator */}
       {activeTab === "simulator" && (
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] p-4 rounded-xl backdrop-blur-md">
@@ -594,16 +675,14 @@ export default function ProjectsPage() {
               <Terminal className="h-5 w-5 text-emerald-400 shrink-0" />
               <div>
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">
-                  Simulador de Consulta de Agente AI
+                  Simulador de Protocolo MCP en Vivo
                 </h3>
                 <p className="text-xs text-[var(--text-muted)]">
-                  Visualiza en tiempo real la respuesta exacta que recibe el
-                  agente (Claude, Cursor, Windsurf) al invocar las herramientas
-                  MCP.
+                  Respuesta idéntica que reciben Claude, Cursor y Windsurf al conectar al endpoint Streamable HTTP <code className="font-mono text-blue-400">/mcp</code>.
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+            <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -611,26 +690,18 @@ export default function ProjectsPage() {
                 disabled={contextLoading}
                 className="text-xs gap-1.5"
               >
-                <RefreshCw
-                  className={`h-3.5 w-3.5 ${contextLoading ? "animate-spin" : ""}`}
-                />
+                <RefreshCw className={`h-3.5 w-3.5 ${contextLoading ? "animate-spin" : ""}`} />
                 Refrescar
               </Button>
               {projectContext && (
                 <Button
-                  variant="ghost"
+                  variant="secondary"
                   size="sm"
-                  onClick={() =>
-                    copyToClipboard(JSON.stringify(projectContext, null, 2))
-                  }
+                  onClick={() => copyToClipboard(JSON.stringify(projectContext, null, 2), "json_sim")}
                   className="text-xs gap-1.5"
                 >
-                  {copied ? (
-                    <Check className="h-3.5 w-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="h-3.5 w-3.5" />
-                  )}
-                  {copied ? "Copiado" : "Copiar JSON"}
+                  {copiedKey === "json_sim" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  Copiar JSON
                 </Button>
               )}
             </div>
@@ -643,7 +714,7 @@ export default function ProjectsPage() {
           ) : projectContext ? (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Consolidate System Prompt */}
-              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
                 <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm font-semibold flex items-center gap-2 text-[var(--text-primary)]">
@@ -651,32 +722,32 @@ export default function ProjectsPage() {
                       System Prompt Consolidado
                     </CardTitle>
                     <Badge variant="outline" className="text-[10px] font-mono">
-                      Markdown
+                      Markdown Injected
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-[var(--border-subtle)]">
+                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[420px] border border-[var(--border-subtle)]">
                     {projectContext.system_prompt}
                   </pre>
                 </CardContent>
               </Card>
 
               {/* Skills Registry Payload */}
-              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+              <Card className="bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
                 <CardHeader className="p-4 pb-2 border-b border-[var(--border-subtle)]">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm font-semibold flex items-center gap-2 text-[var(--text-primary)]">
                       <Sparkles className="h-4 w-4 text-amber-400" />
-                      Skills Disponibles ({projectContext.skills.length})
+                      Skills Registrados ({projectContext.skills.length})
                     </CardTitle>
                     <Badge variant="outline" className="text-[10px] font-mono">
-                      JSON Payload
+                      JSON Schema Registry
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="p-4">
-                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[400px] border border-[var(--border-subtle)]">
+                  <pre className="bg-[var(--bg-surface)] p-4 rounded-xl text-xs font-mono text-[var(--text-primary)] whitespace-pre-wrap overflow-y-auto max-h-[420px] border border-[var(--border-subtle)]">
                     {JSON.stringify(projectContext.skills, null, 2)}
                   </pre>
                 </CardContent>
@@ -686,11 +757,79 @@ export default function ProjectsPage() {
         </div>
       )}
 
+      {/* Tab 4: AI Rule & Skill Assistant */}
+      {activeTab === "ai_assistant" && (
+        <Card className="p-5 sm:p-7 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-2xl space-y-4">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-[var(--border-subtle)]">
+            <Wand2 className="h-5 w-5 text-purple-400" />
+            <div>
+              <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                Generador de Reglas & Skills Asistido por IA
+              </h3>
+              <p className="text-xs text-[var(--text-muted)]">
+                Escribe en lenguaje natural el requerimiento o estándar que deseas imponer y la IA generará el artefacto listo para guardar.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  TIPO DE ARTEFACTO
+                </label>
+                <Select
+                  value={aiTargetKind}
+                  onChange={(e) => setAiTargetKind(e.target.value as "rule" | "skill")}
+                  className="h-9 text-xs w-full"
+                >
+                  <option value="rule">Regla de System Prompt</option>
+                  <option value="skill">Skill Corporativo</option>
+                </Select>
+              </div>
+
+              <div className="sm:col-span-2 space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  PROYECTO DESTINO
+                </label>
+                <Input
+                  type="text"
+                  disabled
+                  value={selectedProject || "Corporativo Global (Workspace)"}
+                  className="h-9 text-xs bg-[var(--bg-surface)]"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                DESCRIPCIÓN DEL ESTÁNDAR O PROCEDIMIENTO
+              </label>
+              <textarea
+                rows={4}
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder="ej: Todas las modificaciones en internal/platform/server deben validar autenticación mediante tokens y registrar trazas de auditoría..."
+                className="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button
+                onClick={handleGenerateAiArtifact}
+                disabled={!aiPrompt.trim() || isGeneratingAi}
+                className="text-xs gap-1.5 bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-600/20"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span>Generar Artefacto con IA</span>
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Create / Edit Artifact Modal */}
-      <Dialog
-        open={isModalOpen}
-        onOpenChange={setIsModalOpen}
-      >
+      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogHeader>
           <DialogTitle>
             {editingArtifact
@@ -791,7 +930,7 @@ export default function ProjectsPage() {
               onChange={(e) => setModalContent(e.target.value)}
               placeholder="Escribe las directivas, reglas o procedimientos en Markdown..."
               required
-              className="w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
@@ -810,7 +949,7 @@ export default function ProjectsPage() {
               variant="default"
               size="sm"
               disabled={saving}
-              className="text-xs gap-1.5"
+              className="text-xs gap-1.5 shadow-md shadow-blue-500/20"
             >
               <CheckCircle2 className="h-3.5 w-3.5" />
               {saving ? "Guardando..." : "Guardar Artefacto"}

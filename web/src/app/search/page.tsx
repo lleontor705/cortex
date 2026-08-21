@@ -39,8 +39,9 @@ export default function SearchPlaygroundPage() {
     setHasSearched(true);
     try {
       const resp = await client.search(query, projectFilter);
-      setResults(resp.value || []);
-      setCount(resp.Count || 0);
+      const items = Array.isArray(resp) ? resp : (resp?.value || []);
+      setResults(items);
+      setCount(resp?.Count ?? items.length);
     } catch (err: any) {
       alert("Error en la búsqueda: " + (err.message || err));
     } finally {

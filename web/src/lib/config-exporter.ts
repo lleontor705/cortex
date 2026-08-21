@@ -96,6 +96,35 @@ export function generateWindsurfConfig(ctx: AgentExportContext): string {
   );
 }
 
+export function generateVSCodeClineConfig(ctx: AgentExportContext): string {
+  assertDestination(ctx);
+  return JSON.stringify(
+    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
+    null,
+    2,
+  );
+}
+
+export function generateOpenCodeConfig(ctx: AgentExportContext): string {
+  assertDestination(ctx);
+  return JSON.stringify(
+    {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        cortex: {
+          type: "remote",
+          url: remoteMcpUrl(ctx.serverUrl),
+          headers: {
+            Authorization: `Bearer {env:${tokenEnvOf(ctx)}}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 export function generateCortexYaml(ctx: AgentExportContext): string {
   assertDestination(ctx);
   const tokenEnv = tokenEnvOf(ctx);

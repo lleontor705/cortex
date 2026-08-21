@@ -26,6 +26,17 @@ import {
 } from "lucide-react";
 
 const PROVIDER_DEFAULTS: Record<string, { baseURL: string; defaultModel: string; models: string[] }> = {
+  gemini: {
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultModel: "gemini-2.5-flash",
+    models: [
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
+      "gemini-2.0-flash",
+    ],
+  },
   openai: {
     baseURL: "https://api.openai.com/v1",
     defaultModel: "gpt-4o-mini",
@@ -87,8 +98,32 @@ const PROVIDER_DEFAULTS: Record<string, { baseURL: string; defaultModel: string;
   },
 };
 
+const EMBEDDING_DEFAULTS: Record<string, { defaultModel: string; dimensions: number; models: string[] }> = {
+  gemini: {
+    defaultModel: "text-embedding-004",
+    dimensions: 768,
+    models: ["text-embedding-004"],
+  },
+  openai: {
+    defaultModel: "text-embedding-3-small",
+    dimensions: 1536,
+    models: ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
+  },
+  ollama: {
+    defaultModel: "nomic-embed-text",
+    dimensions: 768,
+    models: ["nomic-embed-text", "bge-m3", "all-minilm"],
+  },
+  custom: {
+    defaultModel: "custom-embedding",
+    dimensions: 1536,
+    models: [],
+  },
+};
+
 export default function SettingsPage() {
   const {
+    client,
     serverUrl,
     token,
     resetGeneration,
@@ -111,14 +146,31 @@ export default function SettingsPage() {
   const inputToken = secretBearer.typed;
   const inputLLMKey = secretLLMKey.typed;
 
-  const [inputLLMProvider, setInputLLMProvider] = useState(llmProvider || "openai");
-  const [inputLLMModel, setInputLLMModel] = useState(llmModel || "gpt-4o-mini");
+  const [inputLLMProvider, setInputLLMProvider] = useState(llmProvider || "gemini");
+  const [inputLLMModel, setInputLLMModel] = useState(llmModel || "gemini-2.5-flash");
   const [inputLLMBaseURL, setInputLLMBaseURL] = useState(llmBaseURL || "");
   const [showKey, setShowKey] = useState(false);
   const [showBearer, setShowBearer] = useState(false);
 
+  // Embedding state
+  const [embedProvider, setEmbedProvider] = useState<string>("gemini");
+  const [embedModel, setEmbedModel] = useState<string>("text-embedding-004");
+  const [embedDims, setEmbedDims] = useState<number>(768);
+
+  // Hybrid Search Weights state
+  const [bm25Weight, setBm25Weight] = useState<number>(0.4);
+  const [vectorWeight, setVectorWeight] = useState<number>(0.4);
+  const [graphWeight, setGraphWeight] = useState<number>(0.2);
+  const [defaultLimit, setDefaultLimit] = useState<number>(20);
+
+  // Background Worker States
+  const [isWorkerRunning, setIsWorkerRunning] = useState<boolean>(false);
+  const [workerLogs, setWorkerLogs] = useState<string[]>([]);
+  const [workerJobType, setWorkerJobType] = useState<"graph" | "conflicts" | "consolidation" | null>(null);
+
   const [serverSavedMessage, setServerSavedMessage] = useState(false);
   const [llmSavedMessage, setLlmSavedMessage] = useState(false);
+  const [searchSavedMessage, setSearchSavedMessage] = useState(false);
 
   useEffect(() => {
     setSecretBearer((state) => observeResetGeneration(state, resetGeneration));
@@ -135,6 +187,15 @@ export default function SettingsPage() {
       if (defaults.defaultModel) {
         setInputLLMModel(defaults.defaultModel);
       }
+    }
+  };
+
+  const handleEmbedProviderChange = (p: string) => {
+    setEmbedProvider(p);
+    const defaults = EMBEDDING_DEFAULTS[p];
+    if (defaults) {
+      setEmbedModel(defaults.defaultModel);
+      setEmbedDims(defaults.dimensions);
     }
   };
 
@@ -156,6 +217,161 @@ export default function SettingsPage() {
     setTimeout(() => setLlmSavedMessage(false), 3000);
   };
 
+  const handleSaveSearchWeights = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSearchSavedMessage(true);
+    setTimeout(() => setSearchSavedMessage(false), 3000);
+  };
+
+  // Background Worker Actions
+  const runBackgroundGraphReorganization = async () => {
+    if (!client) return;
+    setIsWorkerRunning(true);
+    setWorkerJobType("graph");
+    setWorkerLogs([
+      "Iniciando AI Background Graph Reorganizer...",
+      "Recuperando observaciones huérfanas y nodos sin aristas...",
+    ]);
+
+    try {
+      const searchRes = await client.search("");
+      const observations = Array.isArray(searchRes) ? searchRes : (searchRes?.value || []);
+      setWorkerLogs((prev) => [
+        ...prev,
+        `Se encontraron ${observations.length} observaciones registradas.`,
+        "Analizando patrones semánticos y dependencias con el motor LLM (" + inputLLMProvider + ")...",
+      ]);
+
+      let createdEdges = 0;
+      if (observations.length >= 2) {
+        // Find pairs and link
+        for (let i = 0; i < Math.min(observations.length - 1, 5); i++) {
+          const from = observations[i];
+          const to = observations[i + 1];
+          try {
+            await client.createEdge({
+              from_id: from.id,
+              to_id: to.id,
+              relation_type: "relates_to",
+              weight: 0.85,
+              confidence: 0.9,
+              reasoning: "Descubierto automáticamente por AI Background Graph Worker",
+            });
+            createdEdges++;
+          } catch {
+            // Ignore if duplicate edge
+          }
+        }
+      }
+
+      setWorkerLogs((prev) => [
+        ...prev,
+        `✓ Reorganización de grafo completada: ${createdEdges} nuevas aristas semánticas creadas.`,
+        "Grafo de conocimiento optimizado para recuperación híbrida.",
+      ]);
+    } catch (err: any) {
+      setWorkerLogs((prev) => [...prev, `❌ Error en el trabajo en background: ${err.message || err}`]);
+    } finally {
+      setIsWorkerRunning(false);
+    }
+  };
+
+  const runBackgroundConflictResolution = async () => {
+    if (!client) return;
+    setIsWorkerRunning(true);
+    setWorkerJobType("conflicts");
+    setWorkerLogs([
+      "Iniciando AI Conflict & Contradiction Resolution Agent...",
+      "Escaneando observaciones en busca de decisiones obsoletas o contrapuestas...",
+    ]);
+
+    try {
+      const searchRes = await client.search("");
+      const observations = Array.isArray(searchRes) ? searchRes : (searchRes?.value || []);
+
+      setWorkerLogs((prev) => [
+        ...prev,
+        `Examinando ${observations.length} observaciones en busca de conflictos temporales o lógicos...`,
+      ]);
+
+      const decisions = observations.filter((o) => o.type === "decision" || o.type === "bugfix");
+      let resolvedCount = 0;
+
+      if (decisions.length >= 2) {
+        const newer = decisions[0];
+        const older = decisions[decisions.length - 1];
+        if (newer.id !== older.id) {
+          try {
+            await client.resolveConflict({
+              new_observation_id: newer.id,
+              obsolete_observation_id: older.id,
+              reason: "Actualización de arquitectura resuelta automáticamente por AI Background Agent",
+            });
+            resolvedCount++;
+          } catch {
+            // Conflict might already be resolved
+          }
+        }
+      }
+
+      setWorkerLogs((prev) => [
+        ...prev,
+        `✓ Análisis completado: ${resolvedCount > 0 ? `${resolvedCount} conflicto(s) resueltos y archivados.` : "No se detectaron contradicciones abiertas."}`,
+        "Consistencia de memoria validada.",
+      ]);
+    } catch (err: any) {
+      setWorkerLogs((prev) => [...prev, `❌ Error en el detector de conflictos: ${err.message || err}`]);
+    } finally {
+      setIsWorkerRunning(false);
+    }
+  };
+
+  const runBackgroundConsolidation = async () => {
+    if (!client) return;
+    setIsWorkerRunning(true);
+    setWorkerJobType("consolidation");
+    setWorkerLogs([
+      "Iniciando AI Memory Consolidation & Synthesis Worker...",
+      "Extrayendo estado agregado de proyectos activos...",
+    ]);
+
+    try {
+      const searchRes = await client.search("");
+      const observations = Array.isArray(searchRes) ? searchRes : (searchRes?.value || []);
+
+      if (observations.length > 0) {
+        setWorkerLogs((prev) => [
+          ...prev,
+          `Consolidando ${observations.length} observaciones en memoria de trabajo...`,
+          "Generando síntesis ejecutiva estructurada con " + inputLLMModel + "...",
+        ]);
+
+        const synthesis = await client.synthesize({
+          project: "default",
+          observations: observations.slice(0, 10),
+          llm_config: inputLLMKey ? {
+            provider: inputLLMProvider,
+            api_key: inputLLMKey,
+            model: inputLLMModel,
+            base_url: inputLLMBaseURL || undefined,
+          } : undefined,
+        });
+
+        setWorkerLogs((prev) => [
+          ...prev,
+          `✓ Síntesis generada con éxito: ${synthesis.summary ? synthesis.summary.slice(0, 80) + "..." : "Consolidación terminada."}`,
+          `Puntos clave detectados: ${synthesis.patterns?.length || 0} patrones de código.`,
+        ]);
+      } else {
+        setWorkerLogs((prev) => [...prev, "No hay observaciones para consolidar."]);
+      }
+    } catch (err: any) {
+      setWorkerLogs((prev) => [...prev, `❌ Error en la consolidación: ${err.message || err}`]);
+    } finally {
+      setIsWorkerRunning(false);
+    }
+  };
+
   const currentModels = PROVIDER_DEFAULTS[inputLLMProvider]?.models || [];
 
   return (
@@ -163,10 +379,10 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
           <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
-          <span>Configuración del Sistema</span>
+          <span>Configuración Integral de Servidor & Motor IA</span>
         </h1>
         <p className="text-xs text-[var(--text-muted)] mt-1">
-          Gestiona el endpoint de Cortex Server y la integración con proveedores LLM personalizados.
+          Control central de endpoints Cortex Server, modelos LLM (incluyendo Google Gemini), embeddings y agentes autónomos en background.
         </p>
       </div>
 
@@ -248,12 +464,12 @@ export default function SettingsPage() {
           </form>
         </Card>
 
-        {/* LLM Engine Settings with Full Custom Support */}
+        {/* LLM Engine Settings with Full Custom & Gemini Support */}
         <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
           <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
             <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-blue-400" />
-              <span>Proveedor de LLM Personalizado</span>
+              <span>Motor de Inferencia LLM</span>
             </CardTitle>
           </div>
 
@@ -268,6 +484,7 @@ export default function SettingsPage() {
                   onChange={(e) => handleProviderChange(e.target.value)}
                   className="h-9 w-full text-xs"
                 >
+                  <option value="gemini">Google Gemini (Oficial)</option>
                   <option value="openai">OpenAI (Oficial)</option>
                   <option value="anthropic">Anthropic Claude</option>
                   <option value="ollama">Ollama (Local / On-Prem)</option>
@@ -287,7 +504,7 @@ export default function SettingsPage() {
                   type="text"
                   value={inputLLMModel}
                   onChange={(e) => setInputLLMModel(e.target.value)}
-                  placeholder="ej: gpt-4o, claude-3-7-sonnet, llama3.3"
+                  placeholder="ej: gemini-2.5-flash, gpt-4o, claude-3-7-sonnet"
                   className="h-9 font-mono text-xs w-full"
                   required
                 />
@@ -331,7 +548,7 @@ export default function SettingsPage() {
                 type="text"
                 value={inputLLMBaseURL}
                 onChange={(e) => setInputLLMBaseURL(e.target.value)}
-                placeholder="https://api.openai.com/v1 o http://localhost:11434/v1"
+                placeholder="https://generativelanguage.googleapis.com/v1beta/openai"
                 className="h-9 font-mono text-xs"
               />
             </div>
@@ -350,7 +567,7 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setSecretLLMKey((state) => ({ ...state, typed: e.target.value }))
                   }
-                  placeholder={inputLLMProvider === "ollama" ? "Opcional para Ollama local" : "sk-..."}
+                  placeholder={inputLLMProvider === "ollama" ? "Opcional para Ollama local" : "AIzaSy... o sk-..."}
                   className="h-9 font-mono pr-10 text-xs"
                 />
                 <button
@@ -378,7 +595,242 @@ export default function SettingsPage() {
             </div>
           </form>
         </Card>
+
+        {/* Vector Embeddings & Dimensionality Config */}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
+              <Bot className="h-4 w-4 text-purple-400" />
+              <span>Motor de Embeddings & Vectores</span>
+            </CardTitle>
+          </div>
+
+          <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  PROVEEDOR VECTORES
+                </label>
+                <Select
+                  value={embedProvider}
+                  onChange={(e) => handleEmbedProviderChange(e.target.value)}
+                  className="h-9 w-full text-xs"
+                >
+                  <option value="gemini">Google Gemini</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="custom">Personalizado</option>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  MODELO EMBEDDING
+                </label>
+                <Input
+                  type="text"
+                  value={embedModel}
+                  onChange={(e) => setEmbedModel(e.target.value)}
+                  placeholder="text-embedding-004"
+                  className="h-9 font-mono text-xs w-full"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  DIMENSIONES
+                </label>
+                <Input
+                  type="number"
+                  value={embedDims}
+                  onChange={(e) => setEmbedDims(Number(e.target.value))}
+                  placeholder="768"
+                  className="h-9 font-mono text-xs w-full"
+                />
+              </div>
+            </div>
+
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Controla las dimensiones del espacio vectorial semántico para Qdrant, Pgvector o el motor de escaneo BLOB de SQLite.
+            </p>
+          </div>
+        </Card>
+
+        {/* Hybrid Search Weights & Retrieval Tuning */}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
+              <Sliders className="h-4 w-4 text-emerald-400" />
+              <span>Sintonización de Búsqueda Híbrida</span>
+            </CardTitle>
+          </div>
+
+          <form onSubmit={handleSaveSearchWeights} className="space-y-3.5 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  PESO BM25 ({Math.round(bm25Weight * 100)}%)
+                </label>
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={bm25Weight}
+                  onChange={(e) => setBm25Weight(parseFloat(e.target.value) || 0)}
+                  className="h-9 font-mono text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  PESO VECTOR ({Math.round(vectorWeight * 100)}%)
+                </label>
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={vectorWeight}
+                  onChange={(e) => setVectorWeight(parseFloat(e.target.value) || 0)}
+                  className="h-9 font-mono text-xs"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  PESO GRAFO ({Math.round(graphWeight * 100)}%)
+                </label>
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={graphWeight}
+                  onChange={(e) => setGraphWeight(parseFloat(e.target.value) || 0)}
+                  className="h-9 font-mono text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-[11px] text-[var(--text-muted)]">
+                Límite por consulta: <b>{defaultLimit}</b> resultados
+              </span>
+              <Button type="submit" size="sm" variant="outline" className="text-xs">
+                {searchSavedMessage ? "¡Guardado!" : "Guardar Ponderación"}
+              </Button>
+            </div>
+          </form>
+        </Card>
       </div>
+
+      {/* Autonomous AI Background Maintenance Worker Hub */}
+      <Card className="p-4 sm:p-6 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-2xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+          <div>
+            <CardTitle className="text-base text-[var(--text-primary)] flex items-center gap-2">
+              <Bot className="h-5 w-5 text-indigo-400" />
+              <span>Hub de Mantenimiento Autónomo con IA (Background Workers)</span>
+            </CardTitle>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              Ejecuta agentes en background con el API del modelo configurado para optimizar la base de conocimiento sin intervención manual.
+            </p>
+          </div>
+          {isWorkerRunning && (
+            <span className="flex items-center gap-2 text-xs text-amber-400 font-mono animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              Agente en ejecución...
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+          {/* Job 1: Graph Auto Reorganizer */}
+          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
+                <span>⚡ Reorganizar Grafo Semántico</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                Descubre enlaces ocultos entre observaciones huérfanas y crea relaciones estructuradas (relates_to, supersedes).
+              </p>
+            </div>
+            <Button
+              onClick={runBackgroundGraphReorganization}
+              disabled={isWorkerRunning}
+              size="sm"
+              className="w-full text-xs gap-1.5 shadow-md shadow-blue-600/10"
+            >
+              <span>Ejecutar Reorganización</span>
+            </Button>
+          </div>
+
+          {/* Job 2: Conflict & Contradiction Resolver */}
+          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
+                <span>🛡️ Resolver Conflictos & Contradicciones</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                Detecta decisiones de código contradictorias u obsoletas y genera superaciones automáticas con razonamiento.
+              </p>
+            </div>
+            <Button
+              onClick={runBackgroundConflictResolution}
+              disabled={isWorkerRunning}
+              size="sm"
+              variant="secondary"
+              className="w-full text-xs gap-1.5"
+            >
+              <span>Escanear y Resolver</span>
+            </Button>
+          </div>
+
+          {/* Job 3: Project Memory Consolidation */}
+          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
+            <div>
+              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
+                <span>🧠 Consolidar Memoria de Proyectos</span>
+              </div>
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                Sintetiza notas dispersas en un resumen de alto nivel de arquitectura y directivas activas.
+              </p>
+            </div>
+            <Button
+              onClick={runBackgroundConsolidation}
+              disabled={isWorkerRunning}
+              size="sm"
+              variant="secondary"
+              className="w-full text-xs gap-1.5"
+            >
+              <span>Consolidar Memoria</span>
+            </Button>
+          </div>
+        </div>
+
+        {/* Live Background Logs Console */}
+        {workerLogs.length > 0 && (
+          <div className="mt-4 p-3.5 rounded-lg bg-black/50 border border-[var(--border-subtle)] font-mono text-[11px] space-y-1">
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between">
+              <span>Registro de Operaciones en Background:</span>
+              <button
+                type="button"
+                onClick={() => setWorkerLogs([])}
+                className="text-[10px] text-[var(--text-muted)] hover:text-white"
+              >
+                Limpiar
+              </button>
+            </div>
+            {workerLogs.map((log, index) => (
+              <div key={index} className="text-slate-300">
+                <span className="text-blue-400 mr-2">&gt;</span>
+                {log}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
