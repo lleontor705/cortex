@@ -602,5 +602,52 @@ export class CortexClient {
       },
     );
   }
+
+  getAIStatus() {
+    return this.request<{
+      llm: {
+        provider: string;
+        model: string;
+        base_url: string;
+        configured: boolean;
+      };
+      embedding: {
+        provider: string;
+        model: string;
+        base_url: string;
+        dimensions: number;
+        configured: boolean;
+      };
+    }>("/api/admin/ai/status");
+  }
+
+  testLLM() {
+    return this.request<{
+      status: "ok" | "error" | "not_configured";
+      provider: string;
+      model: string;
+      latency_ms: number;
+      response?: string;
+      error?: string;
+      message?: string;
+    }>("/api/admin/ai/test-llm", {
+      method: "POST",
+    });
+  }
+
+  testEmbedding() {
+    return this.request<{
+      status: "ok" | "error" | "not_configured";
+      provider: string;
+      model: string;
+      dimensions?: number;
+      latency_ms: number;
+      sample_vector?: number[];
+      error?: string;
+      message?: string;
+    }>("/api/admin/ai/test-embedding", {
+      method: "POST",
+    });
+  }
 }
 

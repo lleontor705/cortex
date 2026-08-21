@@ -10,10 +10,9 @@ import {
 import { Card, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import {
   Server,
-  Key,
   LogOut,
   Save,
   CheckCircle,
@@ -21,190 +20,99 @@ import {
   Sliders,
   Eye,
   EyeOff,
-  Globe,
   Bot,
+  Zap,
+  Layers,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
-const PROVIDER_DEFAULTS: Record<string, { baseURL: string; defaultModel: string; models: string[] }> = {
-  gemini: {
-    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-    defaultModel: "gemini-2.5-flash",
-    models: [
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-1.5-pro",
-      "gemini-1.5-flash",
-      "gemini-2.0-flash",
-    ],
-  },
-  openai: {
-    baseURL: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
-    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini"],
-  },
-  anthropic: {
-    baseURL: "https://api.anthropic.com/v1",
-    defaultModel: "claude-3-5-sonnet-20241022",
-    models: [
-      "claude-3-7-sonnet-20250219",
-      "claude-3-5-sonnet-20241022",
-      "claude-3-5-haiku-20241022",
-      "claude-3-opus-20240229",
-    ],
-  },
-  ollama: {
-    baseURL: "http://localhost:11434/v1",
-    defaultModel: "llama3.3",
-    models: ["llama3.3", "deepseek-r1:8b", "qwen2.5-coder:32b", "mistral", "llama3.2"],
-  },
-  openrouter: {
-    baseURL: "https://openrouter.ai/api/v1",
-    defaultModel: "openai/gpt-4o-mini",
-    models: [
-      "anthropic/claude-3.7-sonnet",
-      "deepseek/deepseek-r1",
-      "openai/gpt-4o",
-      "meta-llama/llama-3.3-70b-instruct",
-    ],
-  },
-  groq: {
-    baseURL: "https://api.groq.com/openai/v1",
-    defaultModel: "llama-3.3-70b-versatile",
-    models: [
-      "llama-3.3-70b-versatile",
-      "deepseek-r1-distill-llama-70b",
-      "llama-3.1-8b-instant",
-      "mixtral-8x7b-32768",
-    ],
-  },
-  together: {
-    baseURL: "https://api.together.xyz/v1",
-    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    models: [
-      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-      "deepseek-ai/DeepSeek-R1",
-      "Qwen/Qwen2.5-Coder-32B-Instruct",
-    ],
-  },
-  deepseek: {
-    baseURL: "https://api.deepseek.com/v1",
-    defaultModel: "deepseek-chat",
-    models: ["deepseek-chat", "deepseek-reasoner"],
-  },
-  custom: {
-    baseURL: "",
-    defaultModel: "",
-    models: [],
-  },
-};
-
-const EMBEDDING_DEFAULTS: Record<string, { defaultModel: string; dimensions: number; models: string[] }> = {
-  gemini: {
-    defaultModel: "text-embedding-004",
-    dimensions: 768,
-    models: ["text-embedding-004"],
-  },
-  openai: {
-    defaultModel: "text-embedding-3-small",
-    dimensions: 1536,
-    models: ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"],
-  },
-  ollama: {
-    defaultModel: "nomic-embed-text",
-    dimensions: 768,
-    models: ["nomic-embed-text", "bge-m3", "all-minilm"],
-  },
-  custom: {
-    defaultModel: "custom-embedding",
-    dimensions: 1536,
-    models: [],
-  },
-};
+interface AIStatusData {
+  llm: {
+    provider: string;
+    model: string;
+    base_url: string;
+    configured: boolean;
+  };
+  embedding: {
+    provider: string;
+    model: string;
+    base_url: string;
+    dimensions: number;
+    configured: boolean;
+  };
+}
 
 export default function SettingsPage() {
-  const {
-    client,
-    serverUrl,
-    token,
-    resetGeneration,
-    llmApiKey,
-    llmProvider,
-    llmModel,
-    llmBaseURL,
-    embeddingProvider,
-    embeddingModel,
-    embeddingDimensions,
-    vectorProvider,
-    setCredentials,
-    setLLMCredentials,
-    setEmbeddingCredentials,
-    logout,
-  } = useAuth();
+  const { client, serverUrl, token, resetGeneration, setCredentials, logout } = useAuth();
 
   const [inputUrl, setInputUrl] = useState(serverUrl);
   const [secretBearer, setSecretBearer] = useState<SecretInputState>(() =>
     initialSecretInput(token, resetGeneration),
   );
-  const [secretLLMKey, setSecretLLMKey] = useState<SecretInputState>(() =>
-    initialSecretInput(llmApiKey, resetGeneration),
-  );
   const inputToken = secretBearer.typed;
-  const inputLLMKey = secretLLMKey.typed;
-
-  const [inputLLMProvider, setInputLLMProvider] = useState(llmProvider || "gemini");
-  const [inputLLMModel, setInputLLMModel] = useState(llmModel || "gemini-2.5-flash");
-  const [inputLLMBaseURL, setInputLLMBaseURL] = useState(llmBaseURL || "");
-  const [showKey, setShowKey] = useState(false);
   const [showBearer, setShowBearer] = useState(false);
+  const [serverSavedMessage, setServerSavedMessage] = useState(false);
 
-  // Embedding state
-  const [embedProvider, setEmbedProvider] = useState<string>(embeddingProvider || "gemini");
-  const [embedModel, setEmbedModel] = useState<string>(embeddingModel || "text-embedding-004");
-  const [embedDims, setEmbedDims] = useState<number>(embeddingDimensions || 768);
-  const [vecBackend, setVecBackend] = useState<string>(vectorProvider || "pgvector");
+  // Server AI Runtime Info State
+  const [aiStatus, setAiStatus] = useState<AIStatusData | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
+  // LLM Test State
+  const [isTestingLLM, setIsTestingLLM] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState<{
+    status: "ok" | "error" | "not_configured";
+    latency_ms: number;
+    response?: string;
+    error?: string;
+    message?: string;
+  } | null>(null);
+
+  // Embedding Test State
+  const [isTestingEmbedding, setIsTestingEmbedding] = useState(false);
+  const [embeddingTestResult, setEmbeddingTestResult] = useState<{
+    status: "ok" | "error" | "not_configured";
+    dimensions?: number;
+    latency_ms: number;
+    sample_vector?: number[];
+    error?: string;
+    message?: string;
+  } | null>(null);
 
   // Hybrid Search Weights state
   const [bm25Weight, setBm25Weight] = useState<number>(0.4);
   const [vectorWeight, setVectorWeight] = useState<number>(0.4);
   const [graphWeight, setGraphWeight] = useState<number>(0.2);
   const [defaultLimit, setDefaultLimit] = useState<number>(20);
+  const [searchSavedMessage, setSearchSavedMessage] = useState(false);
 
   // Background Worker States
   const [isWorkerRunning, setIsWorkerRunning] = useState<boolean>(false);
   const [workerLogs, setWorkerLogs] = useState<string[]>([]);
-  const [workerJobType, setWorkerJobType] = useState<"graph" | "conflicts" | "consolidation" | null>(null);
-
-  const [serverSavedMessage, setServerSavedMessage] = useState(false);
-  const [llmSavedMessage, setLlmSavedMessage] = useState(false);
-  const [embedSavedMessage, setEmbedSavedMessage] = useState(false);
-  const [searchSavedMessage, setSearchSavedMessage] = useState(false);
 
   useEffect(() => {
     setSecretBearer((state) => observeResetGeneration(state, resetGeneration));
-    setSecretLLMKey((state) => observeResetGeneration(state, resetGeneration));
   }, [resetGeneration]);
 
-  const handleProviderChange = (newProvider: string) => {
-    setInputLLMProvider(newProvider);
-    const defaults = PROVIDER_DEFAULTS[newProvider];
-    if (defaults) {
-      if (defaults.baseURL) {
-        setInputLLMBaseURL(defaults.baseURL);
-      }
-      if (defaults.defaultModel) {
-        setInputLLMModel(defaults.defaultModel);
-      }
+  // Fetch Server AI Configuration on mount
+  const fetchAIStatus = async () => {
+    if (!client) return;
+    setLoadingStatus(true);
+    setStatusError(null);
+    try {
+      const data = await client.getAIStatus();
+      setAiStatus(data);
+    } catch (err: any) {
+      setStatusError(err.message || "No se pudo obtener el estado de IA del servidor");
+    } finally {
+      setLoadingStatus(false);
     }
   };
 
-  const handleEmbedProviderChange = (p: string) => {
-    setEmbedProvider(p);
-    const defaults = EMBEDDING_DEFAULTS[p];
-    if (defaults) {
-      setEmbedModel(defaults.defaultModel);
-      setEmbedDims(defaults.dimensions);
-    }
-  };
+  useEffect(() => {
+    fetchAIStatus();
+  }, [client]);
 
   const handleSaveServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,23 +120,46 @@ export default function SettingsPage() {
     if (success) {
       setServerSavedMessage(true);
       setTimeout(() => setServerSavedMessage(false), 3000);
+      fetchAIStatus();
     } else {
       alert("No se pudo conectar con las nuevas credenciales");
     }
   };
 
-  const handleSaveLLM = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLLMCredentials(inputLLMKey, inputLLMProvider, inputLLMModel, inputLLMBaseURL);
-    setLlmSavedMessage(true);
-    setTimeout(() => setLlmSavedMessage(false), 3000);
+  const handleTestLLM = async () => {
+    if (!client) return;
+    setIsTestingLLM(true);
+    setLlmTestResult(null);
+    try {
+      const res = await client.testLLM();
+      setLlmTestResult(res);
+    } catch (err: any) {
+      setLlmTestResult({
+        status: "error",
+        latency_ms: 0,
+        error: err.message || "Error al invocar endpoint de prueba LLM",
+      });
+    } finally {
+      setIsTestingLLM(false);
+    }
   };
 
-  const handleSaveEmbedding = (e: React.FormEvent) => {
-    e.preventDefault();
-    setEmbeddingCredentials(embedProvider, embedModel, embedDims, vecBackend);
-    setEmbedSavedMessage(true);
-    setTimeout(() => setEmbedSavedMessage(false), 3000);
+  const handleTestEmbedding = async () => {
+    if (!client) return;
+    setIsTestingEmbedding(true);
+    setEmbeddingTestResult(null);
+    try {
+      const res = await client.testEmbedding();
+      setEmbeddingTestResult(res);
+    } catch (err: any) {
+      setEmbeddingTestResult({
+        status: "error",
+        latency_ms: 0,
+        error: err.message || "Error al invocar endpoint de prueba de Embedding",
+      });
+    } finally {
+      setIsTestingEmbedding(false);
+    }
   };
 
   const handleSaveSearchWeights = (e: React.FormEvent) => {
@@ -241,7 +172,6 @@ export default function SettingsPage() {
   const runBackgroundGraphReorganization = async () => {
     if (!client) return;
     setIsWorkerRunning(true);
-    setWorkerJobType("graph");
     setWorkerLogs([
       "Iniciando AI Background Graph Reorganizer...",
       "Recuperando observaciones huérfanas y nodos sin aristas...",
@@ -253,12 +183,11 @@ export default function SettingsPage() {
       setWorkerLogs((prev) => [
         ...prev,
         `Se encontraron ${observations.length} observaciones registradas.`,
-        "Analizando patrones semánticos y dependencias con el motor LLM (" + inputLLMProvider + ")...",
+        `Analizando patrones semánticos con el motor configurado en el servidor...`,
       ]);
 
       let createdEdges = 0;
       if (observations.length >= 2) {
-        // Find pairs and link
         for (let i = 0; i < Math.min(observations.length - 1, 5); i++) {
           const from = observations[i];
           const to = observations[i + 1];
@@ -293,7 +222,6 @@ export default function SettingsPage() {
   const runBackgroundConflictResolution = async () => {
     if (!client) return;
     setIsWorkerRunning(true);
-    setWorkerJobType("conflicts");
     setWorkerLogs([
       "Iniciando AI Conflict & Contradiction Resolution Agent...",
       "Escaneando observaciones en busca de decisiones obsoletas o contrapuestas...",
@@ -340,64 +268,30 @@ export default function SettingsPage() {
     }
   };
 
-  const runBackgroundConsolidation = async () => {
-    if (!client) return;
-    setIsWorkerRunning(true);
-    setWorkerJobType("consolidation");
-    setWorkerLogs([
-      "Iniciando AI Memory Consolidation & Synthesis Worker...",
-      "Extrayendo estado agregado de proyectos activos...",
-    ]);
-
-    try {
-      const searchRes = await client.search("");
-      const observations = Array.isArray(searchRes) ? searchRes : (searchRes?.value || []);
-
-      if (observations.length > 0) {
-        setWorkerLogs((prev) => [
-          ...prev,
-          `Consolidando ${observations.length} observaciones en memoria de trabajo...`,
-          "Generando síntesis ejecutiva estructurada con " + inputLLMModel + "...",
-        ]);
-
-        const synthesis = await client.synthesize({
-          project: "default",
-          observations: observations.slice(0, 10),
-          llm_config: inputLLMKey ? {
-            provider: inputLLMProvider,
-            api_key: inputLLMKey,
-            model: inputLLMModel,
-            base_url: inputLLMBaseURL || undefined,
-          } : undefined,
-        });
-
-        setWorkerLogs((prev) => [
-          ...prev,
-          `✓ Síntesis generada con éxito: ${synthesis.summary ? synthesis.summary.slice(0, 80) + "..." : "Consolidación terminada."}`,
-          `Puntos clave detectados: ${synthesis.patterns?.length || 0} patrones de código.`,
-        ]);
-      } else {
-        setWorkerLogs((prev) => [...prev, "No hay observaciones para consolidar."]);
-      }
-    } catch (err: any) {
-      setWorkerLogs((prev) => [...prev, `❌ Error en la consolidación: ${err.message || err}`]);
-    } finally {
-      setIsWorkerRunning(false);
-    }
-  };
-
-  const currentModels = PROVIDER_DEFAULTS[inputLLMProvider]?.models || [];
-
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
-          <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
-          <span>Configuración Integral de Servidor & Motor IA</span>
-        </h1>
-        <p className="text-xs text-[var(--text-muted)] mt-1">
-          Control central de endpoints Cortex Server, modelos LLM (incluyendo Google Gemini), embeddings y agentes autónomos en background.
-        </p>
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+            <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+            <span>Configuración de Servidor & Motores de IA</span>
+          </h1>
+          <p className="text-xs text-[var(--text-muted)] mt-1">
+            Información del runtime gestionado en el servidor (Ollama / Cloud LLM / Vector Embeddings) y pruebas de conexión en vivo.
+          </p>
+        </div>
+
+        <Button
+          onClick={fetchAIStatus}
+          variant="outline"
+          size="sm"
+          disabled={loadingStatus}
+          className="text-xs gap-1.5"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${loadingStatus ? "animate-spin" : ""}`} />
+          <span>Refrescar Estado</span>
+        </Button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
@@ -429,7 +323,7 @@ export default function SettingsPage() {
                 type="text"
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="http://localhost:7438"
+                placeholder="https://cortex-server-production-cb53.up.railway.app"
                 className="h-9 font-mono"
                 required
               />
@@ -439,7 +333,7 @@ export default function SettingsPage() {
               <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
                 BEARER TOKEN
                 <span className="font-normal text-[var(--text-muted)] lowercase">
-                  {" "}(solo en memoria; no se persiste)
+                  {" "}(en memoria de sesión; nunca persistido en disco)
                 </span>
               </label>
               <div className="relative">
@@ -478,227 +372,198 @@ export default function SettingsPage() {
           </form>
         </Card>
 
-        {/* LLM Engine Settings with Full Custom & Gemini Support */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+        {/* Server LLM Engine Runtime Card */}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
             <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-blue-400" />
-              <span>Motor de Inferencia LLM</span>
+              <span>Motor LLM del Servidor</span>
             </CardTitle>
+            {aiStatus?.llm.configured ? (
+              <Badge variant="default" className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+                ● Servidor Activo
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="text-[10px] text-[var(--text-muted)]">
+                No Configurado
+              </Badge>
+            )}
           </div>
 
-          <form onSubmit={handleSaveLLM} className="space-y-4 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  PROVEEDOR
-                </label>
-                <Select
-                  value={inputLLMProvider}
-                  onChange={(e) => handleProviderChange(e.target.value)}
-                  className="h-9 w-full text-xs"
-                >
-                  <option value="gemini">Google Gemini (Oficial)</option>
-                  <option value="openai">OpenAI (Oficial)</option>
-                  <option value="anthropic">Anthropic Claude</option>
-                  <option value="ollama">Ollama (Local / On-Prem)</option>
-                  <option value="openrouter">OpenRouter (Multi-Provider)</option>
-                  <option value="groq">Groq (Ultra-Fast LPU)</option>
-                  <option value="together">Together AI</option>
-                  <option value="deepseek">DeepSeek (Direct)</option>
-                  <option value="custom">Personalizado (OpenAI Compatible)</option>
-                </Select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  MODELO
-                </label>
-                <Input
-                  type="text"
-                  value={inputLLMModel}
-                  onChange={(e) => setInputLLMModel(e.target.value)}
-                  placeholder="ej: gemini-2.5-flash, gpt-4o, claude-3-7-sonnet"
-                  className="h-9 font-mono text-xs w-full"
-                  required
-                />
-              </div>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">PROVEEDOR</span>
+              <span className="text-sm font-semibold text-[var(--text-primary)] mt-0.5 block font-mono">
+                {aiStatus?.llm.provider || "Cargando..."}
+              </span>
             </div>
-
-            {/* Model Suggestions Chips */}
-            {currentModels.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                <span className="text-[10px] text-[var(--text-muted)] uppercase font-mono mr-1 flex items-center gap-1">
-                  <Bot className="h-3 w-3" /> Sugeridos:
-                </span>
-                {currentModels.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setInputLLMModel(m)}
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded-full border transition-all ${
-                      inputLLMModel === m
-                        ? "bg-blue-600/30 border-blue-500 text-blue-300"
-                        : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-focus)]"
-                    }`}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] flex flex-wrap items-center justify-between gap-1 uppercase">
-                <span className="flex items-center gap-1.5">
-                  <Globe className="h-3.5 w-3.5 text-blue-400" />
-                  API ENDPOINT / BASE URL
-                </span>
-                <span className="font-normal text-[var(--text-muted)] lowercase">
-                  (Opcional, compatible con proxy)
-                </span>
-              </label>
-              <Input
-                type="text"
-                value={inputLLMBaseURL}
-                onChange={(e) => setInputLLMBaseURL(e.target.value)}
-                placeholder="https://generativelanguage.googleapis.com/v1beta/openai"
-                className="h-9 font-mono text-xs"
-              />
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">MODELO</span>
+              <span className="text-sm font-semibold text-blue-400 mt-0.5 block font-mono">
+                {aiStatus?.llm.model || "Cargando..."}
+              </span>
             </div>
+          </div>
 
-            <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                API KEY / TOKEN DE LLM
-                <span className="font-normal text-[var(--text-muted)] lowercase">
-                  {" "}(solo en memoria; no se persiste en disco)
-                </span>
-              </label>
-              <div className="relative">
-                <Input
-                  type={showKey ? "text" : "password"}
-                  value={inputLLMKey}
-                  onChange={(e) =>
-                    setSecretLLMKey((state) => ({ ...state, typed: e.target.value }))
-                  }
-                  placeholder={inputLLMProvider === "ollama" ? "Opcional para Ollama local" : "AIzaSy... o sk-..."}
-                  className="h-9 font-mono pr-10 text-xs"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowKey(!showKey)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
+          <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs space-y-1">
+            <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">ENDPOINT BASE / BASE URL</span>
+            <span className="text-xs text-[var(--text-secondary)] font-mono block break-all">
+              {aiStatus?.llm.base_url || "Configuración por defecto del proveedor"}
+            </span>
+          </div>
 
-            {llmSavedMessage && (
-              <div className="flex items-center gap-2 text-emerald-400 text-xs py-1">
-                <CheckCircle className="h-4 w-4" />
-                <span>¡Configuración de LLM guardada con éxito!</span>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-2">
-              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20 text-xs">
-                <Save className="h-3.5 w-3.5" />
-                <span>Guardar Configuración LLM</span>
+          {/* LLM Test Action & Results */}
+          <div className="pt-2 border-t border-[var(--border-subtle)] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--text-muted)]">
+                Prueba de latencia y disponibilidad con el modelo configurado.
+              </span>
+              <Button
+                onClick={handleTestLLM}
+                disabled={isTestingLLM || !client}
+                size="sm"
+                className="text-xs gap-1.5 bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-600/20 text-white"
+              >
+                <Zap className={`h-3.5 w-3.5 ${isTestingLLM ? "animate-pulse text-amber-300" : ""}`} />
+                <span>{isTestingLLM ? "Probando LLM..." : "Probar Conexión LLM"}</span>
               </Button>
             </div>
-          </form>
+
+            {llmTestResult && (
+              <div
+                className={`p-3 rounded-xl text-xs space-y-1.5 border ${
+                  llmTestResult.status === "ok"
+                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-200"
+                    : llmTestResult.status === "not_configured"
+                    ? "bg-amber-950/30 border-amber-500/40 text-amber-200"
+                    : "bg-rose-950/30 border-rose-500/40 text-rose-200"
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    {llmTestResult.status === "ok" && <CheckCircle className="h-4 w-4 text-emerald-400" />}
+                    {llmTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-rose-400" />}
+                    {llmTestResult.status === "not_configured" && <AlertCircle className="h-4 w-4 text-amber-400" />}
+                    <span>
+                      {llmTestResult.status === "ok"
+                        ? "LLM Conectado y Operativo"
+                        : llmTestResult.status === "not_configured"
+                        ? "LLM No Configurado en el Servidor"
+                        : "Error al Conectar con el LLM"}
+                    </span>
+                  </span>
+                  <span className="font-mono text-[11px] opacity-80">{llmTestResult.latency_ms} ms</span>
+                </div>
+                {llmTestResult.response && (
+                  <p className="font-mono text-[11px] bg-black/30 p-2 rounded-lg text-slate-200">
+                    &quot;{llmTestResult.response}&quot;
+                  </p>
+                )}
+                {llmTestResult.error && <p className="font-mono text-[11px] text-rose-300">{llmTestResult.error}</p>}
+                {llmTestResult.message && <p className="text-[11px] text-amber-300">{llmTestResult.message}</p>}
+              </div>
+            )}
+          </div>
         </Card>
 
-        {/* Vector Embeddings & Dimensionality Config */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+        {/* Server Vector Embedding Runtime Card */}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
             <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
               <Bot className="h-4 w-4 text-purple-400" />
               <span>Motor de Embeddings & Vectores</span>
             </CardTitle>
+            {aiStatus?.embedding.configured ? (
+              <Badge variant="purple" className="text-[10px]">
+                ● {aiStatus.embedding.model} (1024d)
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="text-[10px] text-[var(--text-muted)]">
+                No Configurado
+              </Badge>
+            )}
           </div>
 
-          <form onSubmit={handleSaveEmbedding} className="space-y-4 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  PROVEEDOR EMBEDDINGS
-                </label>
-                <Select
-                  value={embedProvider}
-                  onChange={(e) => handleEmbedProviderChange(e.target.value)}
-                  className="h-9 w-full text-xs"
-                >
-                  <option value="gemini">Google Gemini</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="ollama">Ollama</option>
-                  <option value="custom">Personalizado</option>
-                </Select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  MODELO EMBEDDING
-                </label>
-                <Input
-                  type="text"
-                  value={embedModel}
-                  onChange={(e) => setEmbedModel(e.target.value)}
-                  placeholder="text-embedding-004"
-                  className="h-9 font-mono text-xs w-full"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  DIMENSIONES
-                </label>
-                <Input
-                  type="number"
-                  value={embedDims}
-                  onChange={(e) => setEmbedDims(Number(e.target.value))}
-                  placeholder="768"
-                  className="h-9 font-mono text-xs w-full"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  MOTOR VECTORIAL
-                </label>
-                <Select
-                  value={vecBackend}
-                  onChange={(e) => setVecBackend(e.target.value)}
-                  className="h-9 w-full text-xs"
-                >
-                  <option value="pgvector">PostgreSQL (pgvector)</option>
-                  <option value="qdrant">Qdrant Server</option>
-                  <option value="sqlite_blob">SQLite BLOB Cosine</option>
-                </Select>
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">PROVEEDOR</span>
+              <span className="text-sm font-semibold text-[var(--text-primary)] mt-0.5 block font-mono">
+                {aiStatus?.embedding.provider || "Ollama"}
+              </span>
             </div>
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">MODELO</span>
+              <span className="text-sm font-semibold text-purple-400 mt-0.5 block font-mono">
+                {aiStatus?.embedding.model || "bge-m3"}
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">DIMENSIONES</span>
+              <span className="text-sm font-semibold text-emerald-400 mt-0.5 block font-mono">
+                {aiStatus?.embedding.dimensions || 1024} floats
+              </span>
+            </div>
+          </div>
 
-            <p className="text-[11px] text-[var(--text-muted)]">
-              Controla las dimensiones del espacio vectorial semántico y el adaptador de indexación para búsqueda híbrida y similitud de embeddings.
-            </p>
+          <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs space-y-1">
+            <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">ENDPOINT DE OLLAMA / EMBEDDINGS</span>
+            <span className="text-xs text-[var(--text-secondary)] font-mono block break-all">
+              {aiStatus?.embedding.base_url || "http://ollama.railway.internal:11434"}
+            </span>
+          </div>
 
-            {embedSavedMessage && (
-              <div className="flex items-center gap-2 text-emerald-400 text-xs py-1">
-                <CheckCircle className="h-4 w-4" />
-                <span>¡Configuración del Motor de Embeddings guardada y persistida con éxito!</span>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-2">
-              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-purple-600/20 text-xs bg-purple-600 hover:bg-purple-500 text-white">
-                <Save className="h-3.5 w-3.5" />
-                <span>Guardar Motor de Embeddings & Vectores</span>
+          {/* Embedding Test Action & Results */}
+          <div className="pt-2 border-t border-[var(--border-subtle)] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--text-muted)]">
+                Genera un vector en vivo para validar dimensiones y latencia.
+              </span>
+              <Button
+                onClick={handleTestEmbedding}
+                disabled={isTestingEmbedding || !client}
+                size="sm"
+                className="text-xs gap-1.5 bg-purple-600 hover:bg-purple-500 shadow-md shadow-purple-600/20 text-white"
+              >
+                <Layers className={`h-3.5 w-3.5 ${isTestingEmbedding ? "animate-pulse text-amber-300" : ""}`} />
+                <span>{isTestingEmbedding ? "Generando Vector..." : "Probar Embeddings"}</span>
               </Button>
             </div>
-          </form>
+
+            {embeddingTestResult && (
+              <div
+                className={`p-3 rounded-xl text-xs space-y-1.5 border ${
+                  embeddingTestResult.status === "ok"
+                    ? "bg-purple-950/30 border-purple-500/40 text-purple-200"
+                    : embeddingTestResult.status === "not_configured"
+                    ? "bg-amber-950/30 border-amber-500/40 text-amber-200"
+                    : "bg-rose-950/30 border-rose-500/40 text-rose-200"
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    {embeddingTestResult.status === "ok" && <CheckCircle className="h-4 w-4 text-purple-400" />}
+                    {embeddingTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-rose-400" />}
+                    {embeddingTestResult.status === "not_configured" && <AlertCircle className="h-4 w-4 text-amber-400" />}
+                    <span>
+                      {embeddingTestResult.status === "ok"
+                        ? `Vector Generado: ${embeddingTestResult.dimensions} Dimensiones`
+                        : embeddingTestResult.status === "not_configured"
+                        ? "Embedding No Configurado"
+                        : "Error en Generación de Embeddings"}
+                    </span>
+                  </span>
+                  <span className="font-mono text-[11px] opacity-80">{embeddingTestResult.latency_ms} ms</span>
+                </div>
+                {embeddingTestResult.sample_vector && (
+                  <p className="font-mono text-[10px] bg-black/30 p-2 rounded-lg text-purple-200 break-all">
+                    Muestra del vector: [{embeddingTestResult.sample_vector.map((v) => v.toFixed(4)).join(", ")}, ...]
+                  </p>
+                )}
+                {embeddingTestResult.error && <p className="font-mono text-[11px] text-rose-300">{embeddingTestResult.error}</p>}
+                {embeddingTestResult.message && <p className="text-[11px] text-amber-300">{embeddingTestResult.message}</p>}
+              </div>
+            )}
+          </div>
         </Card>
 
         {/* Hybrid Search Weights & Retrieval Tuning */}
@@ -779,7 +644,7 @@ export default function SettingsPage() {
               <span>Hub de Mantenimiento Autónomo con IA (Background Workers)</span>
             </CardTitle>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">
-              Ejecuta agentes en background con el API del modelo configurado para optimizar la base de conocimiento sin intervención manual.
+              Ejecuta agentes en background utilizando los modelos configurados en el servidor para optimizar la base de conocimiento.
             </p>
           </div>
           {isWorkerRunning && (
@@ -790,7 +655,7 @@ export default function SettingsPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
           {/* Job 1: Graph Auto Reorganizer */}
           <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
             <div>
@@ -829,27 +694,6 @@ export default function SettingsPage() {
               className="w-full text-xs gap-1.5"
             >
               <span>Escanear y Resolver</span>
-            </Button>
-          </div>
-
-          {/* Job 3: Project Memory Consolidation */}
-          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
-            <div>
-              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
-                <span>🧠 Consolidar Memoria de Proyectos</span>
-              </div>
-              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
-                Sintetiza notas dispersas en un resumen de alto nivel de arquitectura y directivas activas.
-              </p>
-            </div>
-            <Button
-              onClick={runBackgroundConsolidation}
-              disabled={isWorkerRunning}
-              size="sm"
-              variant="secondary"
-              className="w-full text-xs gap-1.5"
-            >
-              <span>Consolidar Memoria</span>
             </Button>
           </div>
         </div>

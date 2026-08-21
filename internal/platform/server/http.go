@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -124,6 +126,7 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 		defaultLimit: boundedDefault(cfg.Search.DefaultLimit),
 		maxLimit:     boundedMax(cfg.Search.MaxLimit),
 		extractor:    extractor,
+		cfg:          cfg,
 	}
 	mux.Handle("/api/", protect(api.routes()))
 	mux.Handle("/mcp", protect(guard.wrap(transport)))
@@ -160,6 +163,7 @@ type apiHandler struct {
 	defaultLimit int
 	maxLimit     int
 	extractor    *extraction.Service
+	cfg          config.Config
 }
 
 func (a *apiHandler) routes() http.Handler {
@@ -180,6 +184,9 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/tokens", a.issueToken)
 	mux.HandleFunc("POST /api/admin/tokens/{id}/rotate", a.rotateToken)
 	mux.HandleFunc("DELETE /api/admin/tokens/{id}", a.revokeToken)
+	mux.HandleFunc("GET /api/admin/ai/status", a.aiStatus)
+	mux.HandleFunc("POST /api/admin/ai/test-llm", a.testLLM)
+	mux.HandleFunc("POST /api/admin/ai/test-embedding", a.testEmbedding)
 	mux.HandleFunc("GET /api/observations/{id}", a.getObservation)
 	mux.HandleFunc("PUT /api/observations/{id}", a.updateObservation)
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
@@ -2007,4 +2014,303 @@ func (a *apiHandler) deleteProjectArtifact(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {
+	llmProvider := a.cfg.AI.Provider
+	if llmProvider == "" {
+		llmProvider = "none"
+	}
+	llmModel := a.cfg.AI.Model
+	if llmModel == "" {
+		llmModel = "default"
+	}
+	llmBaseURL := a.cfg.AI.BaseURL
+
+	embProvider := a.cfg.Search.EmbeddingProvider
+	if embProvider == "" {
+		embProvider = "none"
+	}
+	embModel := a.cfg.Search.EmbeddingModel
+	if embModel == "" {
+		embModel = "bge-m3"
+	}
+	embBaseURL := a.cfg.Search.EmbeddingBaseURL
+	embDim := 1024
+	if embModel == "nomic-embed-text" {
+		embDim = 768
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"llm": map[string]any{
+			"provider":   llmProvider,
+			"model":      llmModel,
+			"base_url":   llmBaseURL,
+			"configured": llmProvider != "" && llmProvider != "none",
+		},
+		"embedding": map[string]any{
+			"provider":   embProvider,
+			"model":      embModel,
+			"base_url":   embBaseURL,
+			"dimensions": embDim,
+			"configured": embProvider != "" && embProvider != "none",
+		},
+	})
+}
+
+func (a *apiHandler) testLLM(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	provider := a.cfg.AI.Provider
+	model := a.cfg.AI.Model
+	baseURL := a.cfg.AI.BaseURL
+	apiKey := os.Getenv("CORTEX_AI_API_KEY")
+
+	if provider == "" || provider == "none" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "not_configured",
+			"provider":   "none",
+			"model":      "none",
+			"latency_ms": 0,
+			"message":    "El motor LLM del servidor no está configurado (define CORTEX_AI_PROVIDER y CORTEX_AI_MODEL en el servidor)",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	var promptResponse string
+	var err error
+
+	if provider == "ollama" {
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/generate"
+		reqBody, _ := json.Marshal(map[string]any{
+			"model":  model,
+			"prompt": "Respond with 'Cortex LLM Online and Ready' in 10 words or less.",
+			"stream": false,
+		})
+		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if httpErr != nil {
+			err = httpErr
+		} else {
+			httpReq.Header.Set("Content-Type", "application/json")
+			resp, doErr := http.DefaultClient.Do(httpReq)
+			if doErr != nil {
+				err = doErr
+			} else {
+				defer resp.Body.Close()
+				var oResp struct {
+					Response string `json:"response"`
+					Error    string `json:"error"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&oResp) == nil {
+					if oResp.Error != "" {
+						err = fmt.Errorf("%s", oResp.Error)
+					} else {
+						promptResponse = strings.TrimSpace(oResp.Response)
+					}
+				}
+			}
+		}
+	} else {
+		// Generic OpenAI-compatible endpoint
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
+		reqBody, _ := json.Marshal(map[string]any{
+			"model": model,
+			"messages": []map[string]string{
+				{"role": "user", "content": "Respond with 'Cortex LLM Online and Ready' in 10 words or less."},
+			},
+			"max_tokens": 30,
+		})
+		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if httpErr != nil {
+			err = httpErr
+		} else {
+			httpReq.Header.Set("Content-Type", "application/json")
+			if apiKey != "" {
+				httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+			resp, doErr := http.DefaultClient.Do(httpReq)
+			if doErr != nil {
+				err = doErr
+			} else {
+				defer resp.Body.Close()
+				var cResp struct {
+					Choices []struct {
+						Message struct {
+							Content string `json:"content"`
+						} `json:"message"`
+					} `json:"choices"`
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&cResp) == nil {
+					if cResp.Error.Message != "" {
+						err = fmt.Errorf("%s", cResp.Error.Message)
+					} else if len(cResp.Choices) > 0 {
+						promptResponse = strings.TrimSpace(cResp.Choices[0].Message.Content)
+					}
+				}
+			}
+		}
+	}
+
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "error",
+			"provider":   provider,
+			"model":      model,
+			"latency_ms": latency,
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	if promptResponse == "" {
+		promptResponse = "Cortex LLM Online and Ready"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "ok",
+		"provider":   provider,
+		"model":      model,
+		"latency_ms": latency,
+		"response":   promptResponse,
+	})
+}
+
+func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	provider := a.cfg.Search.EmbeddingProvider
+	model := a.cfg.Search.EmbeddingModel
+	baseURL := a.cfg.Search.EmbeddingBaseURL
+	apiKey := os.Getenv("CORTEX_SEARCH_EMBEDDING_API_KEY")
+
+	if provider == "" || provider == "none" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "not_configured",
+			"provider":   "none",
+			"model":      "none",
+			"latency_ms": 0,
+			"message":    "El motor de embeddings no está configurado (define CORTEX_SEARCH_EMBEDDING_PROVIDER y CORTEX_SEARCH_EMBEDDING_MODEL en el servidor)",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	var vector []float64
+	var err error
+
+	if provider == "ollama" {
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/embeddings"
+		reqBody, _ := json.Marshal(map[string]any{
+			"model":  model,
+			"prompt": "cortex architectural memory embedding test",
+		})
+		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if httpErr != nil {
+			err = httpErr
+		} else {
+			httpReq.Header.Set("Content-Type", "application/json")
+			resp, doErr := http.DefaultClient.Do(httpReq)
+			if doErr != nil {
+				err = doErr
+			} else {
+				defer resp.Body.Close()
+				var oResp struct {
+					Embedding []float64 `json:"embedding"`
+					Error     string    `json:"error"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&oResp) == nil {
+					if oResp.Error != "" {
+						err = fmt.Errorf("%s", oResp.Error)
+					} else {
+						vector = oResp.Embedding
+					}
+				}
+			}
+		}
+	} else {
+		// Generic OpenAI-compatible embeddings
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/embeddings"
+		reqBody, _ := json.Marshal(map[string]any{
+			"model": model,
+			"input": "cortex architectural memory embedding test",
+		})
+		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if httpErr != nil {
+			err = httpErr
+		} else {
+			httpReq.Header.Set("Content-Type", "application/json")
+			if apiKey != "" {
+				httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+			resp, doErr := http.DefaultClient.Do(httpReq)
+			if doErr != nil {
+				err = doErr
+			} else {
+				defer resp.Body.Close()
+				var cResp struct {
+					Data []struct {
+						Embedding []float64 `json:"embedding"`
+					} `json:"data"`
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&cResp) == nil {
+					if cResp.Error.Message != "" {
+						err = fmt.Errorf("%s", cResp.Error.Message)
+					} else if len(cResp.Data) > 0 {
+						vector = cResp.Data[0].Embedding
+					}
+				}
+			}
+		}
+	}
+
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "error",
+			"provider":   provider,
+			"model":      model,
+			"latency_ms": latency,
+			"error":      err.Error(),
+		})
+		return
+	}
+
+	var sample []float64
+	if len(vector) > 5 {
+		sample = vector[:5]
+	} else {
+		sample = vector
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "ok",
+		"provider":      provider,
+		"model":         model,
+		"dimensions":    len(vector),
+		"latency_ms":    latency,
+		"sample_vector": sample,
+	})
+}
+
 
