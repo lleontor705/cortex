@@ -1,45 +1,126 @@
 #!/bin/bash
 # Cortex — SessionStart hook for Claude Code
 #
-# 1. Ensures the cortex HTTP server is reachable
-# 2. Creates a session in cortex
-# 3. Injects Memory Protocol instructions + memory context
+# 1. Validates CORTEX_URL and reads the configured credential
+# 2. Ensures the cortex HTTP server is reachable (only with a credential)
+# 3. Creates a session, confirmed only by an exact persisted-identity echo
+#    or a 409 proven through the read endpoint (SEC-04)
+# 4. Injects the static Memory Protocol plus validated, authenticated
+#    memory context
+#
+# Hook failures are observable through classifications but never block the host.
 
+set -u
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 CORTEX_HTTP_PORT="${CORTEX_HTTP_PORT:-7438}"
-CORTEX_URL="http://127.0.0.1:${CORTEX_HTTP_PORT}"
+CORTEX_URL=${CORTEX_URL:-http://127.0.0.1:${CORTEX_HTTP_PORT}}
+DELIVERY_TIMEOUT_SECONDS=2
 
-# Load shared helpers
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/_helpers.sh"
 
-# Read hook input from stdin
-INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
-CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-PROJECT=$(detect_project "$CWD")
+# A 2xx body confirms the session only when it is the persisted Session for
+# the exact identity that was sent (or read back on conflict).
+session_echo_ok() {
+  local file=$1 sid=$2 project=$3 dir=$4
+  jq -e --arg sid "$sid" --arg project "$project" --arg dir "$dir" '
+    type == "object" and
+    .id == $sid and .project == $project and .directory == $dir and
+    (.started_at | type == "string")' "$file" >/dev/null 2>&1
+}
 
-# Ensure cortex server is running
-if ! curl -sf "${CORTEX_URL}/health" --max-time 1 > /dev/null 2>&1; then
-  cortex serve &>/dev/null &
-  sleep 0.5
-fi
+main() {
+  local input session_id cwd project token encoded_session encoded_project
+  local response http_status curl_status outcome confirmed=0 context_ok=0
+  input=$(cat) || { cortex_signal validation; return; }
+  session_id=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+  cwd=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)
+  project=$(detect_project "$cwd")
 
-# Create session
-if [ -n "$SESSION_ID" ] && [ -n "$PROJECT" ]; then
-  curl -sf "${CORTEX_URL}/api/sessions" \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n --arg id "$SESSION_ID" --arg project "$PROJECT" --arg dir "$CWD" \
-      '{id: $id, project: $project, directory: $dir}')" \
-    > /dev/null 2>&1
-fi
+  validate_url || { cortex_signal config; return; }
+  token=$(credential)
+  if [[ -z $token ]]; then cortex_signal config; return; fi
 
-# Fetch memory context
-ENCODED_PROJECT=$(printf '%s' "$PROJECT" | jq -sRr @uri)
-CONTEXT=$(curl -sf "${CORTEX_URL}/api/search?q=*&project=${ENCODED_PROJECT}&limit=10" --max-time 3 2>/dev/null | jq -r '.[].title // empty' 2>/dev/null | head -20)
+  # Ensure the server is reachable. The spawn attempt happens only with a
+  # configured credential: an unauthenticated hook sends nothing and starts
+  # nothing.
+  if ! curl -sf --max-time 1 "${CORTEX_URL}/health" >/dev/null 2>&1; then
+    cortex serve >/dev/null 2>&1 &
+    sleep 0.5
+  fi
 
-# Inject Memory Protocol + context — stdout goes to Claude as additionalContext
-cat <<'PROTOCOL'
+  if [[ -n $session_id && -n $project ]]; then
+    response=$(mktemp "${TMPDIR:-/tmp}/cortex-session-start.XXXXXX") || { cortex_signal unavailable; return; }
+    http_status=$(curl --silent --show-error --max-time "$DELIVERY_TIMEOUT_SECONDS" \
+      --output "$response" --write-out '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $token" \
+      --data-binary "$(jq -cn --arg id "$session_id" --arg project "$project" --arg dir "$cwd" \
+        '{id: $id, project: $project, directory: $dir}')" \
+      "${CORTEX_URL}/api/sessions" 2>/dev/null)
+    curl_status=$?
+    outcome=$(cortex_classify "$curl_status" "$http_status")
+    case "$outcome" in
+      success)
+        if session_echo_ok "$response" "$session_id" "$project" "$cwd"; then
+          confirmed=1
+        else
+          cortex_signal invalid_response
+        fi
+        ;;
+      conflict)
+        # A bare 409 body is an error object and cannot prove which session
+        # exists: confirm the exact persisted identity through the read
+        # endpoint before trusting it.
+        encoded_session=$(printf '%s' "$session_id" | jq -sRr @uri)
+        http_status=$(curl --silent --show-error --max-time "$DELIVERY_TIMEOUT_SECONDS" \
+          --output "$response" --write-out '%{http_code}' \
+          -H "Authorization: Bearer $token" \
+          "${CORTEX_URL}/api/sessions/${encoded_session}" 2>/dev/null)
+        curl_status=$?
+        outcome=$(cortex_classify "$curl_status" "$http_status")
+        if [[ $outcome == success ]] && session_echo_ok "$response" "$session_id" "$project" "$cwd"; then
+          confirmed=1
+        else
+          cortex_signal invalid_response
+        fi
+        ;;
+      *)
+        cortex_signal "$outcome"
+        ;;
+    esac
+    rm -f "$response"
+  fi
+
+  # Memory context is trusted only from an authenticated read after a
+  # confirmed session, and only when every item is an object with a string
+  # title. Anything else is classified and injected as nothing.
+  CONTEXT=''
+  if [[ $confirmed == 1 ]]; then
+    encoded_project=$(printf '%s' "$project" | jq -sRr @uri)
+    if response=$(mktemp "${TMPDIR:-/tmp}/cortex-search.XXXXXX"); then
+      http_status=$(curl --silent --show-error --max-time "$DELIVERY_TIMEOUT_SECONDS" \
+        --output "$response" --write-out '%{http_code}' \
+        -H "Authorization: Bearer $token" \
+        "${CORTEX_URL}/api/search?q=*&project=${encoded_project}&limit=10" 2>/dev/null)
+      curl_status=$?
+      outcome=$(cortex_classify "$curl_status" "$http_status")
+      if [[ $outcome == success ]]; then
+        if jq -e 'type == "array" and all(.[]; type == "object" and (.title | type == "string"))' \
+          "$response" >/dev/null 2>&1; then
+          CONTEXT=$(jq -r '.[].title' "$response" 2>/dev/null | head -20)
+          context_ok=1
+        else
+          cortex_signal invalid_response
+        fi
+      else
+        cortex_signal "$outcome"
+      fi
+      rm -f "$response"
+    fi
+  fi
+
+  # Inject Memory Protocol + context — stdout goes to Claude as additionalContext
+  cat <<'PROTOCOL'
 ## Cortex Persistent Memory — ACTIVE PROTOCOL
 
 You have cortex memory tools. This protocol is MANDATORY and ALWAYS ACTIVE.
@@ -72,15 +153,23 @@ Use `cortex_graph` to explore connections from any observation.
 - User asks to recall anything
 - Starting work on something that might have been done before
 - User mentions a topic you have no context on
-- User's FIRST message references the project — call `cortex_search` with keywords
+- User's FIRST message references the project — call cortex_search with keywords
 
 ### SESSION CLOSE — before saying "done"/"listo":
-Call `cortex_session_summary` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+Call cortex_session_summary with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 PROTOCOL
 
-# Inject memory context if available
-if [ -n "$CONTEXT" ]; then
-  printf "\n### Recent memories for project '%s':\n%s\n" "$PROJECT" "$CONTEXT"
-fi
+  # Inject memory context only when it was read and validated
+  if [ -n "$CONTEXT" ]; then
+    printf "\n### Recent memories for project '%s':\n%s\n" "$project" "$CONTEXT"
+  fi
 
+  # Exactly one success classification, and only when the whole protected
+  # flow completed: session identity confirmed and context read validated.
+  if [[ $confirmed == 1 && $context_ok == 1 ]]; then
+    cortex_signal success
+  fi
+}
+
+main "$@"
 exit 0

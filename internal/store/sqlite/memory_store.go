@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -43,6 +44,16 @@ const (
 // and soft/hard delete support.
 type Store struct {
 	db *sql.DB
+
+	// getByIDsStmts caches prepared GetByIDs hydration statements keyed by
+	// IN-list placeholder count (VEC-01 R1). modernc.org/sqlite v1.47.0
+	// re-parses the SQL text on every one-shot QueryContext, so caching the
+	// prepared statement removes the per-call parse of the long IN-list SQL.
+	// The cache is bounded by maxGetByIDsParameters distinct placeholder
+	// counts; *sql.Stmt is safe for concurrent use and database/sql closes
+	// the statements together with the owning *sql.DB.
+	getByIDsMu    sync.RWMutex
+	getByIDsStmts map[int]*sql.Stmt
 }
 
 type observationRevisionSnapshot struct {
@@ -319,6 +330,252 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*domain.Observation, err
 	`, id)
 
 	return s.scanObservation(row)
+}
+
+// maxGetByIDsParameters bounds the number of IN-list placeholders used by
+// GetByIDs (VEC-01). 999 is the conservative SQLITE_MAX_VARIABLE_NUMBER
+// bound that covers BOTH classic SQLite builds (pre-3.32 hard limit of 999)
+// and modern builds (32766), so the statement shape stays valid regardless
+// of which sqlite driver/library compiled the binary.
+//
+// Documented query budget: GetByIDs issues ceil(n / maxGetByIDsParameters)
+// SELECT statements for n requested IDs (one for any n <= 999, e.g. the
+// N=100 vector-candidate pool) and issues ZERO statements for empty input.
+const maxGetByIDsParameters = 999
+
+// nullStringValue is a scan destination for nullable TEXT columns that
+// behaves exactly like sql.NullString's final string value (NULL scans as
+// "", non-string driver values error) while implementing sql.Scanner
+// directly. database/sql's convertAssign dispatches Scanner destinations
+// through a fast type switch instead of the generic reflection path used
+// for *sql.NullString struct pointers, which measurably matters on the
+// 13-column batch hydration scan (VEC-01 R1).
+type nullStringValue struct{ s string }
+
+// Scan implements sql.Scanner. Accepted source types mirror
+// sql.NullString.Scan exactly: nil, string, and []byte; anything else is an
+// error. NULL yields "" — identical to reading NullString.String after a
+// NULL scan — so hydrated Observation values are unchanged.
+func (n *nullStringValue) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		n.s = ""
+	case string:
+		n.s = v
+	case []byte:
+		n.s = string(v)
+	default:
+		return fmt.Errorf("memory store: unsupported Scan, storing driver.Value type %T into type *nullStringValue", src)
+	}
+	return nil
+}
+
+// GetByIDs retrieves live (non-soft-deleted) observations for a batch of IDs
+// in as few statements as possible (VEC-01 batch hydration).
+//
+// Semantics mirror GetByID exactly: the same canonical column set, the same
+// deleted_at IS NULL visibility rule, and field-for-field identical row
+// values, so hydrated rows are indistinguishable from per-ID lookups.
+//
+//   - Empty/nil ids returns an empty map and issues NO SQL.
+//   - Soft-deleted and missing IDs are simply absent from the map.
+//   - Duplicate IDs in the request are harmless (idempotent map inserts).
+//   - Request lists longer than maxGetByIDsParameters are transparently
+//     chunked; each chunk runs its prepared statement once.
+//
+// The hydration statements are prepared once per placeholder count and cached
+// on the Store (see getByIDsStmts), eliminating the per-call SQL parse the
+// one-shot path pays. This changes NO observable semantics: same statement
+// text, same rows, same errors.
+//
+// Errors propagate to the caller — the retrieval layer owns the legacy
+// per-ID fallback when this optional batch path fails.
+func (s *Store) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Observation, error) {
+	byID := make(map[int64]*domain.Observation, len(ids))
+	if len(ids) == 0 {
+		return byID, nil // zero SQL for empty input
+	}
+
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	// One reusable destination vector for every row of every chunk: the
+	// scanned values are copied into a fresh Observation per row, so the
+	// per-row Scan calls never re-allocate the destinations. Nullable TEXT
+	// columns use nullStringValue (Scanner fast path, NullString semantics).
+	var (
+		id                                        int64
+		sessionID, obsType, title, content, scope string
+		project, topicKey, source, tagsJSON       nullStringValue
+		confidence                                float64
+		createdAtStr, updatedAtStr                string
+	)
+	dest := []any{
+		&id, &sessionID, &obsType, &title, &content,
+		&project, &scope, &topicKey,
+		&confidence, &source, &tagsJSON,
+		&createdAtStr, &updatedAtStr,
+	}
+
+	// Rows are materialized into ONE pre-sized backing array (a query can
+	// never return more rows than requested IDs), and the map points into it.
+	// Pre-sizing avoids append growth checks and keeps per-call heap churn
+	// low and predictable (VEC-01 R1).
+	observations := make([]domain.Observation, len(ids))
+	obsCount := 0
+	type tagCacheEntry struct {
+		tags     []string
+		firstIdx int
+		shared   bool
+	}
+	// Candidate rows often reuse small tag vocabulary. Parse each JSON string
+	// once, then duplicate mutable slices only when the value repeats.
+	tagCache := make(map[string]tagCacheEntry)
+	// Timestamp parsing still dominates materialization; cache decoded values by
+	// wire format so repeated values parse once per call.
+	createdAtCache := make(map[string]time.Time, 4)
+	updatedAtCache := make(map[string]time.Time, 4)
+	for start := 0; start < len(ids); start += maxGetByIDsParameters {
+		end := start + maxGetByIDsParameters
+		if end > len(ids) {
+			end = len(ids)
+		}
+
+		stmt, err := s.getByIDsStmt(ctx, end-start)
+		if err != nil {
+			return nil, fmt.Errorf("memory store: get observations by ids: %w", err)
+		}
+
+		rows, err := stmt.QueryContext(ctx, args[start:end]...)
+		if err != nil {
+			return nil, fmt.Errorf("memory store: get observations by ids: %w", err)
+		}
+
+		for rows.Next() {
+			if err := rows.Scan(dest...); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("memory store: scan observations by ids: %w", err)
+			}
+			tags, ok := tagCache[tagsJSON.s]
+			if !ok {
+				parsedTags := tagsFromJSON(tagsJSON.s)
+				tags = tagCacheEntry{tags: parsedTags, firstIdx: obsCount, shared: false}
+				tagCache[tagsJSON.s] = tags
+			}
+
+			tagList := tags.tags
+			copiedTags := tagList
+			if tags.shared {
+				if len(tagList) > 0 {
+					copiedTags = make([]string, len(tagList))
+					copy(copiedTags, tagList)
+				} else if tagList != nil {
+					copiedTags = make([]string, 0)
+				}
+			} else if !ok {
+				// first occurrence keeps the canonical slice for zero-allocation reuse
+				if len(tagList) > 0 {
+					copiedTags = tagList
+				} else if tagList != nil {
+					copiedTags = make([]string, 0)
+				}
+			} else {
+				// This is the second use of this tag payload. Clone the earlier row
+				// and this row so future mutations do not alias.
+				if len(tagList) > 0 {
+					firstCopy := make([]string, len(tagList))
+					copy(firstCopy, tagList)
+					observations[tags.firstIdx].Tags = firstCopy
+					copiedTags = make([]string, len(tagList))
+					copy(copiedTags, tagList)
+				} else if tagList != nil {
+					observations[tags.firstIdx].Tags = make([]string, 0)
+					copiedTags = make([]string, 0)
+				}
+				tags.shared = true
+				tagCache[tagsJSON.s] = tags
+			}
+
+			createdAt, ok := createdAtCache[createdAtStr]
+			if !ok {
+				createdAt = parseTime(createdAtStr)
+				createdAtCache[createdAtStr] = createdAt
+			}
+			updatedAt, ok := updatedAtCache[updatedAtStr]
+			if !ok {
+				updatedAt = parseTime(updatedAtStr)
+				updatedAtCache[updatedAtStr] = updatedAt
+			}
+			observations[obsCount] = domain.Observation{
+				ID:         id,
+				SessionID:  sessionID,
+				Type:       obsType,
+				Title:      title,
+				Content:    content,
+				Project:    project.s,
+				Scope:      scope,
+				TopicKey:   topicKey.s,
+				Confidence: confidence,
+				Source:     source.s,
+				Tags:       copiedTags,
+				CreatedAt:  createdAt,
+				UpdatedAt:  updatedAt,
+			}
+			byID[id] = &observations[obsCount]
+			obsCount++
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("memory store: scan observations by ids: %w", err)
+		}
+	}
+
+	return byID, nil
+}
+
+// getByIDsStmt returns the prepared hydration statement for an IN-list of
+// exactly n placeholders, preparing and caching it on first use. Statements
+// are keyed by placeholder count, so the cache holds at most
+// maxGetByIDsParameters entries (in practice one or two: the vector pool
+// sizes); they are finalized by database/sql when the owning DB closes.
+//
+// The mutex is held across Prepare so a concurrent first use cannot prepare
+// the same shape twice; cached hits (the steady state) take and release the
+// mutex without contention on the statement itself, which database/sql
+// serializes internally.
+func (s *Store) getByIDsStmt(ctx context.Context, n int) (*sql.Stmt, error) {
+	s.getByIDsMu.RLock()
+	if stmt, ok := s.getByIDsStmts[n]; ok {
+		s.getByIDsMu.RUnlock()
+		return stmt, nil
+	}
+	s.getByIDsMu.RUnlock()
+
+	s.getByIDsMu.Lock()
+	defer s.getByIDsMu.Unlock()
+	if stmt, ok := s.getByIDsStmts[n]; ok {
+		return stmt, nil
+	}
+
+	// Bounded placeholder list, one ? per requested ID in this chunk. The
+	// statement text is byte-identical to the pre-cache one-shot query.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", n), ",")
+
+	stmt, err := s.db.PrepareContext(ctx, `
+		SELECT id, session_id, type, title, content, project, scope, topic_key,
+		       confidence, source, tags, created_at, updated_at
+		FROM observations
+		WHERE id IN (`+placeholders+`) AND deleted_at IS NULL
+	`)
+	if err != nil {
+		return nil, err
+	}
+	if s.getByIDsStmts == nil {
+		s.getByIDsStmts = make(map[int]*sql.Stmt)
+	}
+	s.getByIDsStmts[n] = stmt
+	return stmt, nil
 }
 
 // GetByTopicKey retrieves an observation by its topic key within a project.
@@ -1259,11 +1516,89 @@ func tagsFromJSON(s string) []string {
 	if s == "" {
 		return nil
 	}
+	if tags, ok := parseSimpleJSONArray(s); ok {
+		return tags
+	}
 	var tags []string
 	if err := json.Unmarshal([]byte(s), &tags); err != nil {
 		return nil
 	}
 	return tags
+}
+
+// parseSimpleJSONArray decodes the strict subset of JSON arrays of plain
+// strings without escapes: optional surrounding whitespace, '[' , then
+// comma-separated JSON strings whose bytes are all >= 0x20 (no backslash,
+// no embedded quote), then ']'. For every input in this subset the result is
+// value-identical to json.Unmarshal into []string (including the non-nil
+// empty slice for "[]"); the decoded strings share s's backing memory, which
+// is safe because strings are immutable. ok=false means the input is outside
+// the subset and the caller must fall back to encoding/json.
+func parseSimpleJSONArray(s string) ([]string, bool) {
+	i := 0
+	n := len(s)
+	skipSpace := func() {
+		for i < n {
+			switch s[i] {
+			case ' ', '\t', '\n', '\r':
+				i++
+			default:
+				return
+			}
+		}
+	}
+
+	skipSpace()
+	if i >= n || s[i] != '[' {
+		return nil, false
+	}
+	i++
+	skipSpace()
+	if i < n && s[i] == ']' {
+		i++
+		skipSpace()
+		if i == n {
+			return []string{}, true // non-nil empty slice, matching json.Unmarshal
+		}
+		return nil, false
+	}
+
+	// Upper bound: at most n/2+1 elements; used only to size one allocation.
+	tags := make([]string, 0, n/2+1)
+	for {
+		skipSpace()
+		if i >= n || s[i] != '"' {
+			return nil, false
+		}
+		start := i + 1
+		j := start
+		for j < n && s[j] >= 0x20 && s[j] != '"' && s[j] != '\\' {
+			j++
+		}
+		if j >= n || s[j] != '"' {
+			return nil, false // unterminated, escape, or control char: fall back
+		}
+		tags = append(tags, s[start:j])
+		i = j + 1
+
+		skipSpace()
+		if i >= n {
+			return nil, false
+		}
+		switch s[i] {
+		case ',':
+			i++
+		case ']':
+			i++
+			skipSpace()
+			if i == n {
+				return tags, true
+			}
+			return nil, false // trailing content after the array
+		default:
+			return nil, false
+		}
+	}
 }
 
 // "-"-"- Utility Functions "-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-"-
@@ -1347,6 +1682,20 @@ func isMissingTableError(err error, table string) bool {
 
 // parseTime parses a time string in RFC3339, RFC3339Nano, or SQLite datetime format.
 func parseTime(s string) time.Time {
+	// Fast path (VEC-01 R1): the dominant stored timestamp shape is SQLite's
+	// datetime('now') output, "2006-01-02 15:04:05" (19 bytes, '-' at 4,
+	// space at 10). RFC3339[RFC3339Nano] can NEVER match that shape — both
+	// require a 'T' separator at index 10 — so for this shape the first two
+	// Parse attempts are guaranteed failures. parseSQLiteDatetime decodes
+	// the strict digit layout directly, skipping the general layout
+	// machinery (nextStdChunk etc.) on every row scan.
+	if len(s) == len(sqliteDatetimeFormat) && s[4] == '-' && s[10] == ' ' {
+		if t, ok := parseSQLiteDatetime(s); ok {
+			return t
+		}
+		// Malformed SQLite-shaped string: fall through to the original
+		// chain so behavior (including the parse-failure log) is identical.
+	}
 	// Try RFC3339Nano first (most precise)
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return t
@@ -1363,6 +1712,46 @@ func parseTime(s string) time.Time {
 		log.Printf("sqlite: failed to parse time %q", s)
 	}
 	return time.Time{}
+}
+
+// parseSQLiteDatetime decodes the exact layout "2006-01-02 15:04:05" with
+// strict zero-padded digit fields, returning the UTC time time.Parse would
+// produce for the same input. ok=false for ANY deviation (non-digit,
+// out-of-range, or normalized-away components such as April 31st); the
+// caller then falls back to time.Parse, which errors on those inputs
+// exactly as before. The component round-trip check preserves time.Parse's
+// strictness — time.Date would silently normalize out-of-range values that
+// time.Parse rejects.
+func parseSQLiteDatetime(s string) (time.Time, bool) {
+	// The shape guard (length 19, '-' at 4 and 10=' ') plus fixed offsets
+	// make index access safe.
+	year := int(s[0]-'0')*1000 + int(s[1]-'0')*100 + int(s[2]-'0')*10 + int(s[3]-'0')
+	month := int(s[5]-'0')*10 + int(s[6]-'0')
+	day := int(s[8]-'0')*10 + int(s[9]-'0')
+	hour := int(s[11]-'0')*10 + int(s[12]-'0')
+	minute := int(s[14]-'0')*10 + int(s[15]-'0')
+	second := int(s[17]-'0')*10 + int(s[18]-'0')
+
+	// Cheap range gates before the allocation: digits guaranteed by the
+	// byte checks below, ranges checked first so non-digits short-circuit.
+	if month < 1 || month > 12 || day < 1 || day > 31 ||
+		hour > 23 || minute > 59 || second > 60 {
+		return time.Time{}, false
+	}
+	for _, i := range [...]int{0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18} {
+		if s[i] < '0' || s[i] > '9' {
+			return time.Time{}, false
+		}
+	}
+
+	t := time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+	// Round-trip: catches month-length overflow (e.g. April 31) and any
+	// normalization time.Parse would have rejected instead.
+	if t.Year() != year || int(t.Month()) != month || t.Day() != day ||
+		t.Hour() != hour || t.Minute() != minute || t.Second() != second {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func validateObservation(obs *domain.Observation) error {

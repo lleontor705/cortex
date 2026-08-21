@@ -12,6 +12,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -359,6 +360,10 @@ var embeddingProviders = []string{"none", "ollama", "openai"}
 
 type localConfigValues struct {
 	databasePath          string
+	format                int // 0=yaml, 1=json, 2=toml
+	llmProvider           int
+	llmModel              string
+	llmBaseURL            string
 	httpEnabled           bool
 	httpHost, httpPort    string
 	mcpRemote             bool
@@ -383,15 +388,45 @@ func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
 		}
 		next := *d.Config
 		next.Database.Path = strings.TrimSpace(values.databasePath)
+
+		providers := []string{"none", "ollama", "openai", "anthropic", "openrouter", "groq", "deepseek", "custom"}
+		if values.llmProvider >= 0 && values.llmProvider < len(providers) {
+			if providers[values.llmProvider] == "none" {
+				next.Search.EmbeddingProvider = ""
+			} else {
+				next.Search.EmbeddingProvider = providers[values.llmProvider]
+			}
+		}
+		if values.llmModel != "" {
+			next.Search.EmbeddingModel = strings.TrimSpace(values.llmModel)
+		}
+		if values.llmBaseURL != "" {
+			next.Search.EmbeddingBaseURL = strings.TrimSpace(values.llmBaseURL)
+		}
+
 		next.HTTP.Enabled, next.HTTP.Host, next.HTTP.Port = values.httpEnabled, strings.TrimSpace(values.httpHost), port
 		next.MCP.Remote.Enabled, next.MCP.Remote.URL, next.MCP.Remote.TokenEnv = values.mcpRemote, strings.TrimSpace(values.mcpURL), strings.TrimSpace(values.mcpTokenEnv)
 		next.Sync.Enabled, next.Sync.URL, next.Sync.TokenEnv, next.Sync.Interval = values.syncEnabled, strings.TrimSpace(values.syncURL), strings.TrimSpace(values.syncTokenEnv), interval
 		if err := config.Validate(&next); err != nil {
 			return localConfigSavedMsg{err: err}
 		}
-		if err := config.Save(&next, ""); err != nil {
+
+		targetPath := next.LoadedFrom
+		exts := []string{"yaml", "json", "toml"}
+		if values.format >= 0 && values.format < len(exts) {
+			targetExt := exts[values.format]
+			if targetPath == "" {
+				targetPath = filepath.Join(config.CortexDir(), "cortex."+targetExt)
+			} else {
+				dir := filepath.Dir(targetPath)
+				targetPath = filepath.Join(dir, "cortex."+targetExt)
+			}
+		}
+
+		if err := config.Save(&next, targetPath); err != nil {
 			return localConfigSavedMsg{err: err}
 		}
+		next.LoadedFrom = targetPath
 		d.Config = &next
 		return localConfigSavedMsg{}
 	}
@@ -544,3 +579,25 @@ func reloadConfigCmd(d *Deps) tea.Cmd {
 		return configReloadedMsg{cfg: d.App.Config}
 	}
 }
+
+func createObservationCmd(d *Deps, obs *domain.Observation) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Observations == nil {
+			return observationCreatedMsg{err: fmt.Errorf("observations store not available")}
+		}
+		ctx := context.Background()
+		if obs.SessionID == "" {
+			obs.SessionID = "manual-tui-" + obs.Project
+		}
+		if d.Sessions != nil {
+			_ = d.Sessions.Create(ctx, &domain.Session{
+				ID:        obs.SessionID,
+				Project:   obs.Project,
+				Directory: ".",
+			})
+		}
+		err := d.Observations.Save(ctx, obs)
+		return observationCreatedMsg{observation: obs, err: err}
+	}
+}
+

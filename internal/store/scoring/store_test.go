@@ -381,7 +381,7 @@ func TestGetIncomingEdgeCount(t *testing.T) {
 
 	// Create edges: obs1->obs2, obs3->obs2
 	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'references', 1.0)`, obs1, obs2) //nolint:errcheck
-	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2)  //nolint:errcheck
+	db.Exec(`INSERT INTO edges (from_obs_id, to_obs_id, relation_type, weight) VALUES (?, ?, 'relates_to', 1.0)`, obs3, obs2) //nolint:errcheck
 
 	t.Run("with edges", func(t *testing.T) {
 		count, err := store.GetIncomingEdgeCount(ctx, obs2)
@@ -400,6 +400,54 @@ func TestGetIncomingEdgeCount(t *testing.T) {
 		}
 		if count != 0 {
 			t.Errorf("expected 0 incoming edges, got %d", count)
+		}
+	})
+}
+
+func TestBatchGetScoresByObservationIDs(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	createTestSession(t, db, "s1", "test-project")
+	obs1 := createTestObservation(t, db, "Obs 1", "test-project", "s1")
+	obs2 := createTestObservation(t, db, "Obs 2", "test-project", "s1")
+	obs3 := createTestObservation(t, db, "Obs 3", "test-project", "s1")
+
+	ctx := context.Background()
+	store.SetScore(ctx, obs1, 4.0) //nolint:errcheck
+	store.SetScore(ctx, obs3, 2.5) //nolint:errcheck
+
+	t.Run("batch hydrates existing scores and ignores missing", func(t *testing.T) {
+		ids := []int64{obs1, obs2, obs3, obs1, 99999}
+		got, err := store.GetScoresByObservationIDs(ctx, ids)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 scores, got %d", len(got))
+		}
+		if got[obs1] == nil || got[obs1].Score != 4.0 {
+			t.Errorf("expected obs %d score 4.0, got %+v", obs1, got[obs1])
+		}
+		if got[obs3] == nil || got[obs3].Score != 2.5 {
+			t.Errorf("expected obs %d score 2.5, got %+v", obs3, got[obs3])
+		}
+		// The trigger auto-creates 0.0 rows for new observations.
+		if got[obs2] == nil || got[obs2].Score != 0.0 {
+			t.Errorf("expected obs %d auto score 0.0, got %+v", obs2, got[obs2])
+		}
+		if _, ok := got[99999]; ok {
+			t.Errorf("missing observation id must be absent from the batch result")
+		}
+	})
+
+	t.Run("empty input yields empty result", func(t *testing.T) {
+		got, err := store.GetScoresByObservationIDs(ctx, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("expected empty map, got %d entries", len(got))
 		}
 	})
 }

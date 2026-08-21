@@ -94,6 +94,21 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 	}
 	sql105 := normalizeLF(servermigrations.ServerWorkspaceBindingSQL)
 	sum105 := sha256.Sum256([]byte(sql105))
+	if servermigrations.ServerProjectArtifactsSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL project artifacts SQL is empty")
+	}
+	sql106 := normalizeLF(servermigrations.ServerProjectArtifactsSQL)
+	sum106 := sha256.Sum256([]byte(sql106))
+	if servermigrations.ServerWorkspaceSyncSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL workspace sync SQL is empty")
+	}
+	sql107 := normalizeLF(servermigrations.ServerWorkspaceSyncSQL)
+	sum107 := sha256.Sum256([]byte(sql107))
+	if servermigrations.ServerPrincipalRWGatingSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL principal rw gating SQL is empty")
+	}
+	sql108 := normalizeLF(servermigrations.ServerPrincipalRWGatingSQL)
+	sum108 := sha256.Sum256([]byte(sql108))
 	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
@@ -109,6 +124,21 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		name:     "workspace_binding",
 		sql:      sql105,
 		checksum: hex.EncodeToString(sum105[:]),
+	}, {
+		version:  106,
+		name:     "project_artifacts",
+		sql:      sql106,
+		checksum: hex.EncodeToString(sum106[:]),
+	}, {
+		version:  107,
+		name:     "workspace_sync",
+		sql:      sql107,
+		checksum: hex.EncodeToString(sum107[:]),
+	}, {
+		version:  108,
+		name:     "principal_rw_gating",
+		sql:      sql108,
+		checksum: hex.EncodeToString(sum108[:]),
 	}}
 	// Every migration carries the runtime head so any single Apply refuses
 	// databases ledgered by a newer runtime (ErrFutureMigration).
@@ -221,8 +251,95 @@ func (m *PostgresServerMigration) Apply(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// Preflight runs the READ-ONLY rollout preflight for this migration (the
+// 106 project_artifacts train) against cortex_server_migrations. It issues
+// SELECTs only: ledger presence is probed with to_regclass (never DDL), no
+// row is written, and no advisory lock is taken. The expected rollout state
+// is unledgered; any recorded checksum or any newer-runtime ledger row
+// yields an ErrPreflightStop verdict for operator escalation (IDP-T05).
+// Behavioral coverage runs in postgres_integration.
+func (m *PostgresServerMigration) Preflight(ctx context.Context, db *sql.DB) (LedgerPreflight, error) {
+	if db == nil {
+		return LedgerPreflight{}, errors.New("migration: PostgreSQL database connection is nil")
+	}
+	head := m.maxKnownVersion
+	if head < m.version {
+		head = m.version
+	}
+	preflight := LedgerPreflight{
+		Version:          m.version,
+		ExpectedChecksum: m.checksum,
+		Head:             head,
+	}
+
+	// Ledger presence via to_regclass: a NULL result is a database that never
+	// ran a server migration — unledgered and left untouched (read-only,
+	// unlike Apply, which creates the ledger).
+	var ledger sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('cortex_server_migrations')::text`,
+	).Scan(&ledger); err != nil {
+		return preflight, fmt.Errorf("migration: probe PostgreSQL migration ledger presence: %w", err)
+	}
+	if !ledger.Valid {
+		return preflight, preflight.Verdict()
+	}
+	preflight.LedgerTable = true
+
+	var recorded sql.NullString
+	err := db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_server_migrations WHERE version = $1`, m.version,
+	).Scan(&recorded)
+	switch {
+	case errors.Is(err, sql.ErrNoRows): // no ledger row for the target: unledgered
+	case err != nil:
+		return preflight, fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
+	default:
+		preflight.Ledgered = true
+		preflight.RecordedChecksum = recorded.String
+	}
+
+	var future sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT max(version) FROM cortex_server_migrations WHERE version > $1`, head,
+	).Scan(&future); err != nil {
+		return preflight, fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
+	}
+	if future.Valid {
+		preflight.FutureLedgerVersion = int(future.Int64)
+	}
+	return preflight, preflight.Verdict()
+}
+
+// VerifyApplied is the POST-APPLY check for this migration: the ledger must
+// record a row whose checksum matches the embedded SQL (exactly the
+// acceptance Apply's idempotent path uses). A missing row means the
+// migration was not applied; a mismatched checksum fails closed. It is
+// read-only (a single SELECT). Behavioral coverage runs in
+// postgres_integration.
+func (m *PostgresServerMigration) VerifyApplied(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return errors.New("migration: PostgreSQL database connection is nil")
+	}
+	var recorded string
+	err := db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_server_migrations WHERE version = $1`, m.version,
+	).Scan(&recorded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("migration: PostgreSQL migration %d is not recorded in the ledger; the apply did not complete", m.version)
+	}
+	if err != nil {
+		return fmt.Errorf("migration: read PostgreSQL migration ledger: %w", err)
+	}
+	if !m.MatchesChecksum(recorded) {
+		return fmt.Errorf("migration: PostgreSQL migration %d recorded checksum %s does not match the embedded SQL",
+			m.version, recorded)
+	}
+	return nil
+}
+
 // Down is the forward-only guard for the PostgreSQL server migration line.
-// For EVERY version — 100 through 105, ledgered or unledgered — it returns an
+// For EVERY version — 100 through 106, ledgered or unledgered — it returns an
 // ErrForwardOnly-wrapped error and executes NO DDL/DML: no transaction, no
 // query; schema, data, and the migration ledger remain untouched. There is no
 // artifact-cleanup exception: stale unledgered artifacts and newer-runtime

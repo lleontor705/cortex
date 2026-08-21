@@ -38,7 +38,11 @@ func (r *PromptRepository) List(ctx context.Context, project string, limit int) 
 		limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,content,session_id::text,created_at FROM prompts WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 ORDER BY created_at DESC LIMIT $2`, project, limit)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,content,session_id::text,created_at FROM prompts WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND workspace_id=$3 ORDER BY created_at DESC LIMIT $2`, project, limit, ws)
 		if e != nil {
 			return e
 		}
@@ -139,7 +143,11 @@ func (r *GraphRepository) GetEdgeByPublicID(ctx context.Context, publicID string
 }
 func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) (out []*domain.Edge, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tx_until,assertion_kind,assertion_status,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND EXISTS (SELECT 1 FROM observations a WHERE a.tenant_id=public.cortex_current_tenant() AND a.id=edges.from_observation_id AND a.deleted_at IS NULL) AND EXISTS (SELECT 1 FROM observations b WHERE b.tenant_id=public.cortex_current_tenant() AND b.id=edges.to_observation_id AND b.deleted_at IS NULL)`, id)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, e := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,invalid_at,valid_until,tx_from,tx_until,assertion_kind,assertion_status,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND workspace_id=$2 AND EXISTS (SELECT 1 FROM observations a WHERE a.tenant_id=public.cortex_current_tenant() AND a.id=edges.from_observation_id AND a.deleted_at IS NULL AND a.workspace_id=$2) AND EXISTS (SELECT 1 FROM observations b WHERE b.tenant_id=public.cortex_current_tenant() AND b.id=edges.to_observation_id AND b.deleted_at IS NULL AND b.workspace_id=$2)`, id, ws)
 		if e != nil {
 			return e
 		}
@@ -165,14 +173,24 @@ func (r *GraphRepository) GetEdgesForObservation(ctx context.Context, id int64) 
 }
 
 func (r *GraphRepository) populateEdgeEndpoints(ctx context.Context, tx pgx.Tx, e *domain.Edge) error {
-	return tx.QueryRow(ctx, `SELECT a.public_id::text,b.public_id::text FROM observations a JOIN observations b ON b.id=$2 WHERE a.id=$1 AND a.tenant_id=public.cortex_current_tenant() AND b.tenant_id=public.cortex_current_tenant()`, e.FromObsID, e.ToObsID).Scan(&e.FromPublicID, &e.ToPublicID)
+	// Edge endpoints must resolve inside the bound workspace (SEC-01);
+	// a missing binding fails closed instead of resolving tenant-wide.
+	ws, err := requireWorkspaceScope(ctx)
+	if err != nil {
+		return err
+	}
+	return tx.QueryRow(ctx, `SELECT a.public_id::text,b.public_id::text FROM observations a JOIN observations b ON b.id=$2 WHERE a.id=$1 AND a.tenant_id=public.cortex_current_tenant() AND b.tenant_id=public.cortex_current_tenant() AND a.workspace_id=$3 AND b.workspace_id=$3`, e.FromObsID, e.ToObsID, ws).Scan(&e.FromPublicID, &e.ToPublicID)
 }
 func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (out []*domain.Observation, err error) {
 	if depth <= 0 {
 		depth = 1
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.tenant_id=public.cortex_current_tenant() AND af.deleted_at IS NULL JOIN observations at ON at.id=e.to_observation_id AND at.tenant_id=public.cortex_current_tenant() AND at.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant() AND af.project_key=(SELECT project_key FROM observations WHERE id=$1) AND at.project_key=(SELECT project_key FROM observations WHERE id=$1) AND d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.project_key=(SELECT project_key FROM observations WHERE id=$1)`, id, depth)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, e := tx.Query(ctx, `WITH RECURSIVE reach(id,d) AS (SELECT $1::bigint,0 UNION SELECT DISTINCT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END,d+1 FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations af ON af.id=e.from_observation_id AND af.tenant_id=public.cortex_current_tenant() AND af.deleted_at IS NULL AND af.workspace_id=$3 JOIN observations at ON at.id=e.to_observation_id AND at.tenant_id=public.cortex_current_tenant() AND at.deleted_at IS NULL AND at.workspace_id=$3 WHERE e.tenant_id=public.cortex_current_tenant() AND e.workspace_id=$3 AND af.project_key=(SELECT project_key FROM observations WHERE id=$1 AND workspace_id=$3) AND at.project_key=(SELECT project_key FROM observations WHERE id=$1 AND workspace_id=$3) AND d<$2::int) SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at FROM observations o JOIN reach r ON r.id=o.id WHERE r.d>0 AND o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.workspace_id=$3 AND o.project_key=(SELECT project_key FROM observations WHERE id=$1 AND workspace_id=$3)`, id, depth, ws)
 		if e != nil {
 			return e
 		}
@@ -191,7 +209,11 @@ func (r *GraphRepository) GetRelated(ctx context.Context, id int64, depth int) (
 func (r *GraphRepository) GetEvolutionChain(ctx context.Context, a, b int64) ([]*domain.Edge, error) {
 	var out []*domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (evolution_id=(SELECT evolution_id FROM edges WHERE tenant_id=public.cortex_current_tenant() AND from_observation_id=$1 AND to_observation_id=$2 LIMIT 1) OR (from_observation_id=$1 AND to_observation_id=$2)) ORDER BY created_at`, a, b)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$3 AND (evolution_id=(SELECT evolution_id FROM edges WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$3 AND from_observation_id=$1 AND to_observation_id=$2 LIMIT 1) OR (from_observation_id=$1 AND to_observation_id=$2)) ORDER BY created_at`, a, b, ws)
 		if err != nil {
 			return err
 		}
@@ -217,20 +239,32 @@ func (r *GraphRepository) GetEvolutionChain(ctx context.Context, a, b int64) ([]
 }
 func (r *GraphRepository) CountEdgesByObservation(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1)`, id).Scan(&n)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant() AND (from_observation_id=$1 OR to_observation_id=$1) AND workspace_id=$2`, id, ws).Scan(&n)
 	})
 	return
 }
 func (r *GraphRepository) CountAllEdges(ctx context.Context) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant()`).Scan(&n)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM edges WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1`, ws).Scan(&n)
 	})
 	return
 }
 func (r *GraphRepository) GetContradictions(ctx context.Context, from, to time.Time) ([]*domain.Edge, error) {
 	var out []*domain.Edge
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND relation_type=$1 AND created_at >= $2 AND created_at < $3 ORDER BY created_at`, domain.RelationContradicts, from, to)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT public_id::text,id,from_observation_id,to_observation_id,relation_type,valid_from,valid_until,created_at FROM edges WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$4 AND relation_type=$1 AND created_at >= $2 AND created_at < $3 ORDER BY created_at`, domain.RelationContradicts, from, to, ws)
 		if err != nil {
 			return err
 		}
@@ -359,8 +393,14 @@ func (r *SearchRepository) Search(ctx context.Context, query string, opts domain
 		opts.Limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		q := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
-		args := []any{opts.Query}
+		// SEC-01: search is scoped by the transaction-resolved workspace
+		// before ranking; a missing binding fails closed.
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		q := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.workspace_id=$2 AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
+		args := []any{opts.Query, ws}
 		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
 			if len(projects) == 0 {
 				q += ` AND FALSE`

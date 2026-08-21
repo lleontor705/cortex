@@ -3,6 +3,8 @@ package domain
 import (
 	"context"
 	"time"
+
+	"github.com/lleontor705/cortex/internal/domain/projectprotocol"
 )
 
 // ObservationRepository defines the interface for observation persistence operations.
@@ -499,3 +501,83 @@ const (
 	StatusDegraded  = "degraded"
 	StatusUnhealthy = "unhealthy"
 )
+
+// ---------------------------------------------------------------------------
+// Project Context Protocol port (R1-T03 + LIM-T01)
+//
+// ProjectProtocolStore is the persistence port for skill/rule artifacts,
+// their immutable revisions, activation CAS pointers and the deterministic
+// effective protocol. Tenant/workspace/project identity always comes from
+// the resolved Principal (server) or the local composition (local mode),
+// NEVER from client input.
+//
+// v1 retention contract (REQ-RET-001): revisions, activations and audit
+// events are immutable and retained indefinitely. Deletion exists ONLY as
+// the SoftDelete state transition — this port deliberately defines NO
+// hard-delete, purge, truncate or compaction method, and implementations
+// MUST NOT add one behind it.
+// ---------------------------------------------------------------------------
+
+// ProjectProtocolStore is the store-side port of the Project Context
+// Protocol. All validation limits and canonical forms live in the
+// projectprotocol package so local, HTTP and MCP paths cannot diverge.
+type ProjectProtocolStore interface {
+	// SaveArtifact creates an artifact with its first revision. Input
+	// validation (key, limits, canonical metadata, REQUIRED idempotency key)
+	// is owned by projectprotocol.ValidateSaveArtifactInput; the store MUST
+	// honor artifact-level idempotency (replay/conflict) via the input's
+	// idempotency key and RequestDigest.
+	SaveArtifact(ctx context.Context, in projectprotocol.SaveArtifactInput) (projectprotocol.Artifact, error)
+
+	// SaveRevision appends an immutable revision under optimistic
+	// concurrency (expected_revision or If-Match ETag). RevisionInput
+	// carries a REQUIRED typed IdempotencyKey (REQ-ART-002): same
+	// key+digest replays the original result, key reuse with a different
+	// payload returns idempotency_conflict. A stale precondition returns
+	// revision_conflict with zero effects.
+	SaveRevision(ctx context.Context, artifactID string, in projectprotocol.RevisionInput, pre projectprotocol.Preconditions) (projectprotocol.Revision, error)
+
+	// GetArtifact returns the artifact record, including soft-deleted ones
+	// (authorized history remains readable; REQ-RET-002).
+	GetArtifact(ctx context.Context, artifactID string) (projectprotocol.Artifact, error)
+
+	// ListArtifacts returns a bounded, cursor-paginated artifact page
+	// (REQ-PAGE-001): opaque snapshot-bound cursors, limit normalized by
+	// PageRequest.Normalize (default 20, max 100).
+	ListArtifacts(ctx context.Context, filter projectprotocol.ArtifactFilter, page projectprotocol.PageRequest) (projectprotocol.ArtifactPage, error)
+
+	// ListRevisions returns a bounded, cursor-paginated revision history.
+	ListRevisions(ctx context.Context, artifactID string, page projectprotocol.PageRequest) (projectprotocol.RevisionPage, error)
+
+	// ListEvents returns a bounded, cursor-paginated audit-event history for
+	// one artifact (activations, rollbacks, revision appends, soft delete).
+	// Events are immutable and retained indefinitely, including for
+	// soft-deleted artifacts (REQ-RET-001/002).
+	ListEvents(ctx context.Context, artifactID string, page projectprotocol.PageRequest) (projectprotocol.ArtifactEventPage, error)
+
+	// Activate points the artifact at one revision under activation CAS
+	// (expected_activation_revision); stale tokens fail with
+	// activation_conflict and leave exactly one active revision.
+	Activate(ctx context.Context, in projectprotocol.ActivateInput) (projectprotocol.Activation, error)
+
+	// Rollback repoints the activation at an earlier revision under
+	// activation CAS, appending a new audited activation event.
+	Rollback(ctx context.Context, in projectprotocol.RollbackInput) (projectprotocol.Activation, error)
+
+	// SoftDelete marks the artifact deleted (actor, reason, time) and
+	// excludes it from default lists and the effective protocol. The input
+	// carries a REQUIRED If-Match ETag as the ONLY precondition form
+	// (REQ-API-003: delete requires If-Match; there is no expected_revision
+	// path for deletion): a stale ETag returns revision_conflict with zero
+	// effects. DeletedBy and Reason are mandatory. The returned Artifact
+	// carries the full delete provenance (deleted_at/deleted_by/
+	// delete_reason) and a freshly derived canonical ETag. Revisions and
+	// events are retained. This is the ONLY deletion transition in v1.
+	SoftDelete(ctx context.Context, in projectprotocol.SoftDeleteInput) (projectprotocol.Artifact, error)
+
+	// EffectiveProtocol resolves the deterministic effective protocol for a
+	// project (project-over-workspace precedence), rejecting beyond
+	// projectprotocol.MaxEffectiveArtifacts and
+	// projectprotocol.MaxProtocolBundleBytes without partial results.
+	EffectiveProtocol(ctx context.Context, project string) (projectprotocol.Protocol, error)
+}

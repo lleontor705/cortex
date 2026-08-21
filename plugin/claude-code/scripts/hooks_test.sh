@@ -8,6 +8,8 @@ set -uo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SUBAGENT_HOOK="$SCRIPT_DIR/subagent-stop.sh"
 SESSION_HOOK="$SCRIPT_DIR/session-stop.sh"
+START_HOOK="$SCRIPT_DIR/session-start.sh"
+PROMPT_HOOK="$SCRIPT_DIR/user-prompt-submit.sh"
 API_KEY='cortex-secret-T23-canary'
 PAYLOAD_CANARY='private-payload-T23-canary'
 PASS=0
@@ -32,7 +34,9 @@ require python3
 require timeout
 
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cortex-hooks-test.XXXXXX") || exit 1
-trap 'rm -rf "$TMP_ROOT"' EXIT HUP INT TERM
+prompt_sid="prompt-T24-$$"
+prompt_state="/tmp/cortex-claude-${prompt_sid}-tools-loaded"
+trap 'rm -rf "$TMP_ROOT"; rm -f "$prompt_state"' EXIT HUP INT TERM
 mkdir -p "$TMP_ROOT/bin"
 
 cat >"$TMP_ROOT/bin/curl" <<'FIXTURE'
@@ -45,12 +49,14 @@ printf '\n' >>"$CORTEX_FIXTURE_LOG"
 output=''
 write_out=''
 data=''
+url=''
 while (($#)); do
   case "$1" in
     -o|--output) output=${2-}; shift 2 ;;
     -w|--write-out) write_out=${2-}; shift 2 ;;
     -d|--data|--data-raw|--data-binary) data=${2-}; shift 2 ;;
-    *) shift ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
   esac
 done
 printf '%s' "$data" >"${CORTEX_FIXTURE_LOG}.body"
@@ -61,22 +67,72 @@ case "${CORTEX_FIXTURE_MODE:-http}" in
 esac
 
 body='{"id":1,"status":"created"}'
-if [[ -n ${CORTEX_FIXTURE_ECHO:-} ]]; then
-  # Echo the exact persisted Observation the real server returns for the
-  # request this fixture just captured, optionally tampered per case. The
-  # additive tags field proves the contract tolerates extra server fields.
-  body=$(jq -c '{id:42,title:"Passive capture from subagent",type:"passive",scope:"project",topic_key:"",confidence:0,source:"",tags:[],created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"} + {session_id:.session_id,project:.project,content:.content}' \
-    "${CORTEX_FIXTURE_LOG}.body") || exit 9
-  case "${CORTEX_FIXTURE_TAMPER:-}" in
-    session_id) body=$(printf '%s' "$body" | jq -c '.session_id = "tampered-session"') ;;
-    content) body=$(printf '%s' "$body" | jq -c '.content = "tampered-content"') ;;
-    title) body=$(printf '%s' "$body" | jq -c '.title = "tampered-title"') ;;
-    project) body=$(printf '%s' "$body" | jq -c '.project = "tampered-project"') ;;
-    id) body=$(printf '%s' "$body" | jq -c '.id = 0') ;;
-  esac
+code=200
+
+if [[ $url == */health ]]; then
+  if [[ -n ${CORTEX_FIXTURE_HEALTH_FAIL:-} ]]; then exit 7; fi
+  body='{"status":"ok"}'
+  code=200
+elif [[ $url == */api/search* ]]; then
+  body=${CORTEX_FIXTURE_SEARCH-'[]'}
+  code=${CORTEX_FIXTURE_SEARCH_STATUS:-200}
+elif [[ $url == */end ]]; then
+  body=${CORTEX_FIXTURE_BODY-'{"status":"ended"}'}
+  code=${CORTEX_FIXTURE_STATUS:-200}
+elif [[ $url == */api/sessions/* ]]; then
+  # GET /api/sessions/{id}: the persisted-identity read-back used to prove a
+  # 409 conflict. Defaults intentionally mismatch unless the harness sets
+  # the expected identity, so a forgotten fixture fails closed.
+  if [[ -n ${CORTEX_FIXTURE_SESSION_GET:-} ]]; then
+    body=$CORTEX_FIXTURE_SESSION_GET
+  else
+    body=$(jq -cn --arg id "${url##*/}" \
+      --arg project "${CORTEX_FIXTURE_SESSION_PROJECT:-tampered-project}" \
+      --arg dir "${CORTEX_FIXTURE_SESSION_DIR:-tampered-dir}" \
+      --arg started "${CORTEX_FIXTURE_SESSION_STARTED_AT:-2026-01-01T00:00:00Z}" \
+      '{id:$id,project:$project,directory:$dir,started_at:$started}')
+  fi
+  code=${CORTEX_FIXTURE_SESSION_GET_STATUS:-200}
+elif [[ $url == */api/sessions ]]; then
+  if [[ -n ${CORTEX_FIXTURE_SESSION_ECHO:-} ]]; then
+    # Echo the persisted Session identity for the request body this fixture
+    # just captured, optionally tampered per case.
+    body=$(jq -c '{id:.id,project:.project,directory:.directory,started_at:"2026-01-01T00:00:00Z"}' \
+      "${CORTEX_FIXTURE_LOG}.body") || exit 9
+    case "${CORTEX_FIXTURE_SESSION_TAMPER:-}" in
+      project) body=$(printf '%s' "$body" | jq -c '.project = "tampered-project"') ;;
+      directory) body=$(printf '%s' "$body" | jq -c '.directory = "tampered-dir"') ;;
+      id) body=$(printf '%s' "$body" | jq -c '.id = "tampered-session"') ;;
+    esac
+  else
+    body=${CORTEX_FIXTURE_BODY-'{"id":1,"status":"created"}'}
+  fi
+  code=${CORTEX_FIXTURE_STATUS:-201}
+elif [[ $url == */api/observations* ]]; then
+  if [[ -n ${CORTEX_FIXTURE_ECHO:-} ]]; then
+    # Echo the exact persisted Observation the real server returns for the
+    # request this fixture just captured, optionally tampered per case. The
+    # additive tags field proves the contract tolerates extra server fields.
+    body=$(jq -c '{id:42,title:"Passive capture from subagent",type:"passive",scope:"project",topic_key:"",confidence:0,source:"",tags:[],created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z"} + {session_id:.session_id,project:.project,content:.content}' \
+      "${CORTEX_FIXTURE_LOG}.body") || exit 9
+    case "${CORTEX_FIXTURE_TAMPER:-}" in
+      session_id) body=$(printf '%s' "$body" | jq -c '.session_id = "tampered-session"') ;;
+      content) body=$(printf '%s' "$body" | jq -c '.content = "tampered-content"') ;;
+      title) body=$(printf '%s' "$body" | jq -c '.title = "tampered-title"') ;;
+      project) body=$(printf '%s' "$body" | jq -c '.project = "tampered-project"') ;;
+      id) body=$(printf '%s' "$body" | jq -c '.id = 0') ;;
+    esac
+  elif [[ -n $data ]]; then
+    body=${CORTEX_FIXTURE_BODY-'{"id":1,"status":"created"}'}
+  else
+    body=${CORTEX_FIXTURE_OBSERVATIONS-'[]'}
+  fi
+  code=${CORTEX_FIXTURE_STATUS:-200}
+else
+  body=${CORTEX_FIXTURE_BODY-'{"id":1,"status":"created"}'}
+  code=${CORTEX_FIXTURE_STATUS:-200}
 fi
-body=${CORTEX_FIXTURE_BODY-$body}
-code=${CORTEX_FIXTURE_STATUS:-200}
+
 if [[ -n "$output" ]]; then
   printf '%s' "$body" >"$output"
 else
@@ -88,6 +144,21 @@ fi
 exit 0
 FIXTURE
 chmod +x "$TMP_ROOT/bin/curl"
+
+cat >"$TMP_ROOT/bin/cortex" <<'FIXTURE'
+#!/usr/bin/env bash
+set -u
+: "${CORTEX_FIXTURE_LOG:?}"
+printf 'spawn %q ' "$@" >>"${CORTEX_FIXTURE_LOG}.spawn"
+printf '\n' >>"${CORTEX_FIXTURE_LOG}.spawn"
+exit 0
+FIXTURE
+chmod +x "$TMP_ROOT/bin/cortex"
+
+# Expected persisted-session identity for read-back proofs: the hooks derive
+# project from the cwd they are given.
+export CORTEX_FIXTURE_SESSION_DIR="$TMP_ROOT"
+export CORTEX_FIXTURE_SESSION_PROJECT="$(basename "$TMP_ROOT")"
 
 run_hook() {
   local hook=$1 input=$2 name=$3
@@ -408,6 +479,261 @@ for corpus in ascii unicode; do
   assert_outcome "subagent-$corpus" success
   assert_no_canaries "subagent-$corpus"
 done
+
+# ── SEC-04: SessionStart/UserPromptSubmit auth and confirmed-session gating ──
+
+start_input=$(jq -cn --arg sid "session-start-T24" --arg cwd "$TMP_ROOT" \
+  '{session_id:$sid,cwd:$cwd}')
+prompt_input=$(jq -cn --arg sid "$prompt_sid" --arg cwd "$TMP_ROOT" \
+  '{session_id:$sid,cwd:$cwd}')
+
+assert_no_context_injection() {
+  local name=$1
+  if grep -Fq 'Recent memories' "$TMP_ROOT/$name/stdout"; then
+    fail "$name injects untrusted memory context"
+  else
+    pass "$name injects no untrusted memory context"
+  fi
+}
+
+assert_request_count() {
+  local name=$1 pattern=$2 expected=$3
+  local count
+  count=$(grep -Fc "$pattern" "$TMP_ROOT/$name/request" || true)
+  [[ $count == "$expected" ]] \
+    && pass "$name made $expected '$pattern' request(s)" \
+    || fail "$name must make exactly $expected '$pattern' request(s) (found $count)"
+}
+
+# ORACLE-PLUGIN-006a: credential present → authenticated create, exact echo
+# confirmation, validated context read, static protocol always injected.
+run_hook "$START_HOOK" "$start_input" "start-credential" CORTEX_FIXTURE_SESSION_ECHO=1
+assert_nonblocking "start-credential"
+if grep -F "$API_KEY" "$TMP_ROOT/start-credential/request" >/dev/null; then
+  pass "start-credential authenticates the session create"
+else
+  fail "start-credential must authenticate from CORTEX_API_KEY"
+fi
+successes=$(combined_output "start-credential" | grep -Eic 'outcome[\"'"'"': =]+success' || true)
+[[ $successes == 1 ]] && pass "start-credential reports exactly one success" \
+  || fail "start-credential must report exactly one success"
+if grep -Fq 'Cortex Persistent Memory' "$TMP_ROOT/start-credential/stdout"; then
+  pass "start-credential injects the static protocol"
+else
+  fail "start-credential must inject the static protocol"
+fi
+assert_no_canaries "start-credential"
+
+# ORACLE-PLUGIN-006b: no credential → zero requests, zero spawns, config.
+run_hook "$START_HOOK" "$start_input" "start-missing" -u CORTEX_API_KEY CORTEX_FIXTURE_HEALTH_FAIL=1
+assert_nonblocking "start-missing"
+assert_outcome "start-missing" config
+assert_no_success "start-missing"
+[[ ! -s "$TMP_ROOT/start-missing/request" ]] \
+  && pass "start-missing sends no unauthenticated request" \
+  || fail "start-missing must send nothing without a credential"
+if [[ ! -s "$TMP_ROOT/start-missing/request.spawn" ]]; then
+  pass "start-missing never spawns the server"
+else
+  fail "start-missing must not spawn cortex serve without a credential"
+fi
+assert_no_canaries "start-missing"
+
+# ORACLE-PLUGIN-006c: auth failures on the protected write.
+for code in 401 403; do
+  label=unauthorized; [[ $code == 403 ]] && label=forbidden
+  run_hook "$START_HOOK" "$start_input" "start-$code" \
+    CORTEX_FIXTURE_STATUS="$code" \
+    CORTEX_FIXTURE_BODY="{\"error\":\"$API_KEY $PAYLOAD_CANARY\"}"
+  assert_nonblocking "start-$code"
+  assert_outcome "start-$code" "$label"
+  assert_no_success "start-$code"
+  assert_no_context_injection "start-$code"
+  assert_no_canaries "start-$code"
+done
+
+# ORACLE-PLUGIN-006d: a 2xx body that is not the exact persisted identity is
+# a false success and must not unlock the context read.
+run_hook "$START_HOOK" "$start_input" "start-echo-tamper" \
+  CORTEX_FIXTURE_SESSION_ECHO=1 CORTEX_FIXTURE_SESSION_TAMPER=project
+assert_nonblocking "start-echo-tamper"
+assert_outcome "start-echo-tamper" invalid_response
+assert_no_success "start-echo-tamper"
+if grep -Fq '/api/search' "$TMP_ROOT/start-echo-tamper/request"; then
+  fail "start-echo-tamper must not read context after an unconfirmed session"
+else
+  pass "start-echo-tamper skips the context read"
+fi
+assert_no_context_injection "start-echo-tamper"
+assert_no_canaries "start-echo-tamper"
+
+# ORACLE-PLUGIN-006e: a 409 is confirmed only through the persisted-identity
+# read-back.
+run_hook "$START_HOOK" "$start_input" "start-conflict-proof" CORTEX_FIXTURE_STATUS=409
+assert_nonblocking "start-conflict-proof"
+assert_outcome "start-conflict-proof" success
+assert_request_count "start-conflict-proof" '/api/sessions' 2
+if grep -F "$API_KEY" "$TMP_ROOT/start-conflict-proof/request" >/dev/null; then
+  pass "start-conflict-proof authenticates create and read-back"
+else
+  fail "start-conflict-proof must authenticate both requests"
+fi
+assert_no_canaries "start-conflict-proof"
+
+run_hook "$START_HOOK" "$start_input" "start-conflict-mismatch" \
+  CORTEX_FIXTURE_STATUS=409 CORTEX_FIXTURE_SESSION_PROJECT=tampered-project
+assert_nonblocking "start-conflict-mismatch"
+assert_outcome "start-conflict-mismatch" invalid_response
+assert_no_success "start-conflict-mismatch"
+if grep -Fq '/api/search' "$TMP_ROOT/start-conflict-mismatch/request"; then
+  fail "start-conflict-mismatch must not read context after a mismatched identity"
+else
+  pass "start-conflict-mismatch skips the context read"
+fi
+assert_no_canaries "start-conflict-mismatch"
+
+# ORACLE-PLUGIN-006f: returned context is trusted only when every item is an
+# object with a string title; otherwise nothing is injected.
+for row in 'non-object ["not-an-object"]' 'non-string-title [{"title":5}]'; do
+  read -r case_name search_body <<<"$row"
+  name="start-search-$case_name"
+  run_hook "$START_HOOK" "$start_input" "$name" \
+    CORTEX_FIXTURE_SESSION_ECHO=1 CORTEX_FIXTURE_SEARCH="$search_body"
+  assert_nonblocking "$name"
+  assert_outcome "$name" invalid_response
+  assert_no_success "$name"
+  assert_no_context_injection "$name"
+  assert_no_canaries "$name"
+done
+
+run_hook "$START_HOOK" "$start_input" "start-memories" \
+  CORTEX_FIXTURE_SESSION_ECHO=1 \
+  CORTEX_FIXTURE_SEARCH='[{"title":"Use zero-downtime deploys"}]'
+assert_nonblocking "start-memories"
+assert_outcome "start-memories" success
+if grep -Fq 'Recent memories' "$TMP_ROOT/start-memories/stdout" \
+  && grep -Fq 'Use zero-downtime deploys' "$TMP_ROOT/start-memories/stdout"; then
+  pass "start-memories injects validated context"
+else
+  fail "start-memories must inject validated memory titles"
+fi
+if grep -F '/api/search' "$TMP_ROOT/start-memories/request" | grep -Fq "$API_KEY"; then
+  pass "start-memories authenticates the context read"
+else
+  fail "start-memories must authenticate the search read"
+fi
+assert_no_canaries "start-memories"
+
+# ORACLE-PLUGIN-006g: the spawn attempt happens only with a credential.
+run_hook "$START_HOOK" "$start_input" "start-spawn" \
+  CORTEX_FIXTURE_HEALTH_FAIL=1 CORTEX_FIXTURE_SESSION_ECHO=1
+assert_nonblocking "start-spawn"
+if [[ -s "$TMP_ROOT/start-spawn/request.spawn" ]]; then
+  pass "start-spawn attempts the local server with a credential"
+else
+  fail "start-spawn must attempt cortex serve when health fails"
+fi
+
+# ORACLE-PLUGIN-006h: plaintext non-loopback targets are refused before the
+# credential is read.
+for row in 'remote http://10.0.0.5:7438' 'lookalike http://127.0.0.1.evil.com:7438' 'empty-host http://:7438'; do
+  read -r case_name url <<<"$row"
+  name="start-url-$case_name"
+  run_hook "$START_HOOK" "$start_input" "$name" CORTEX_URL="$url"
+  assert_nonblocking "$name"
+  assert_outcome "$name" config
+  assert_no_success "$name"
+  [[ ! -s "$TMP_ROOT/$name/request" ]] \
+    && pass "$name sends no request" \
+    || fail "$name must not send any request or read the credential"
+done
+
+# ORACLE-PLUGIN-006i: first message stays offline; subsequent messages gate
+# every protected read on the credential and validate responses.
+rm -f "$prompt_state"
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-first"
+assert_nonblocking "prompt-first"
+[[ ! -s "$TMP_ROOT/prompt-first/request" ]] \
+  && pass "prompt-first uses no network" \
+  || fail "prompt-first must not use the network"
+if grep -Fq 'ToolSearch' "$TMP_ROOT/prompt-first/stdout"; then
+  pass "prompt-first injects the static ToolSearch message"
+else
+  fail "prompt-first must inject the static ToolSearch message"
+fi
+assert_no_canaries "prompt-first"
+
+touch "$prompt_state"
+
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-subsequent-missing" -u CORTEX_API_KEY
+assert_nonblocking "prompt-subsequent-missing"
+assert_outcome "prompt-subsequent-missing" config
+[[ ! -s "$TMP_ROOT/prompt-subsequent-missing/request" ]] \
+  && pass "prompt-subsequent-missing sends no unauthenticated read" \
+  || fail "prompt-subsequent-missing must not read without a credential"
+if grep -Fq 'MEMORY REMINDER' "$TMP_ROOT/prompt-subsequent-missing/stdout"; then
+  fail "prompt-subsequent-missing nudges without authenticated reads"
+else
+  pass "prompt-subsequent-missing injects no nudge"
+fi
+assert_no_canaries "prompt-subsequent-missing"
+
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-url-remote" CORTEX_URL=http://10.0.0.5:7438
+assert_nonblocking "prompt-url-remote"
+assert_outcome "prompt-url-remote" config
+[[ ! -s "$TMP_ROOT/prompt-url-remote/request" ]] \
+  && pass "prompt-url-remote sends no request" \
+  || fail "prompt-url-remote must not send any request or read the credential"
+
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-nudge" \
+  CORTEX_FIXTURE_OBSERVATIONS='[{"created_at":"2026-01-01T00:00:00Z"}]'
+assert_nonblocking "prompt-nudge"
+if grep -Fq 'MEMORY REMINDER' "$TMP_ROOT/prompt-nudge/stdout"; then
+  pass "prompt-nudge nudges after a stale last save"
+else
+  fail "prompt-nudge must nudge after a stale last save"
+fi
+if grep -F "$API_KEY" "$TMP_ROOT/prompt-nudge/request" >/dev/null; then
+  pass "prompt-nudge authenticates protected reads"
+else
+  fail "prompt-nudge must authenticate protected reads"
+fi
+assert_no_canaries "prompt-nudge"
+
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-read-401" CORTEX_FIXTURE_SESSION_GET_STATUS=401
+assert_nonblocking "prompt-read-401"
+assert_outcome "prompt-read-401" unauthorized
+if grep -Fq 'MEMORY REMINDER' "$TMP_ROOT/prompt-read-401/stdout"; then
+  fail "prompt-read-401 nudges after a failed read"
+else
+  pass "prompt-read-401 injects no nudge"
+fi
+if grep -Fq '/api/observations' "$TMP_ROOT/prompt-read-401/request"; then
+  fail "prompt-read-401 must stop at the first failed read"
+else
+  pass "prompt-read-401 stops at the first failed read"
+fi
+assert_no_canaries "prompt-read-401"
+
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-invalid-session-body" \
+  CORTEX_FIXTURE_SESSION_GET='{"id":"x"}'
+assert_nonblocking "prompt-invalid-session-body"
+assert_outcome "prompt-invalid-session-body" invalid_response
+if grep -Fq 'MEMORY REMINDER' "$TMP_ROOT/prompt-invalid-session-body/stdout"; then
+  fail "prompt-invalid-session-body nudges after an invalid body"
+else
+  pass "prompt-invalid-session-body injects no nudge"
+fi
+assert_no_canaries "prompt-invalid-session-body"
+
+now_iso=$(date -u '+%Y-%m-%dT%H:%M:%S')
+run_hook "$PROMPT_HOOK" "$prompt_input" "prompt-recent" \
+  CORTEX_FIXTURE_SESSION_STARTED_AT="$now_iso" \
+  CORTEX_FIXTURE_OBSERVATIONS="[{\"created_at\":\"$now_iso\"}]"
+assert_nonblocking "prompt-recent"
+[[ $(cat "$TMP_ROOT/prompt-recent/stdout") == '{}' ]] \
+  && pass "prompt-recent stays silent for fresh sessions" \
+  || fail "prompt-recent must not nudge a fresh session"
 
 printf '1..%d\n' "$((PASS + FAIL))"
 printf '# pass=%d fail=%d\n' "$PASS" "$FAIL"

@@ -1,102 +1,158 @@
+// Secret-free agent configuration exports.
+//
+// Exported files NEVER contain bearer tokens or LLM keys. Every export
+// references the token through an environment variable name (token_env,
+// matching the Cortex CLI's `mcp.remote.token_env` config key) that the
+// user fills in outside the downloaded file.
+//
+// The transport policy mirrors internal/transportpolicy: HTTPS everywhere,
+// plain HTTP only for strict loopback destinations.
+
+import { validateBearerDestination } from "./transport-policy";
+
+// Re-exported for existing consumers; the canonical home is
+// ./transport-policy, shared with the API client.
+export {
+  validateBearerDestination,
+  InsecureTransportError as ExportTransportError,
+} from "./transport-policy";
+
+export const DEFAULT_TOKEN_ENV = "CORTEX_REMOTE_TOKEN";
+
 export interface AgentExportContext {
   serverUrl: string;
-  token: string;
+  /** Environment variable name that will hold the bearer token. */
+  tokenEnv?: string;
   userEmail?: string;
   tokenName?: string;
   projectName?: string;
 }
 
-export function generateClaudeDesktopConfig(ctx: AgentExportContext): string {
-  const mcpUrl = `${ctx.serverUrl.replace(/\/$/, "")}/mcp`;
-  const config = {
-    mcpServers: {
-      cortex: {
-        command: "npx",
-        args: [
-          "-y",
-          "@modelcontextprotocol/server-fetch",
-          mcpUrl,
-        ],
-        env: {
-          CORTEX_SERVER_URL: ctx.serverUrl,
-          CORTEX_TOKEN: ctx.token,
-          AUTHORIZATION: `Bearer ${ctx.token}`,
-        },
-      },
-    },
+function assertDestination(ctx: AgentExportContext): void {
+  validateBearerDestination(ctx.serverUrl);
+}
+
+function tokenEnvOf(ctx: AgentExportContext): string {
+  return ctx.tokenEnv || DEFAULT_TOKEN_ENV;
+}
+
+/** Strips a trailing slash and appends the Streamable HTTP MCP path. */
+export function remoteMcpUrl(serverUrl: string): string {
+  return `${serverUrl.replace(/\/$/, "")}/mcp`;
+}
+
+interface McpRemoteServer {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+// `mcp-remote` is the supported stdio bridge for remote HTTP MCP servers in
+// Claude Desktop, Cursor and Windsurf. The header value is resolved from the
+// environment at runtime; the exported file only carries the variable NAME.
+function mcpRemoteServer(ctx: AgentExportContext): McpRemoteServer {
+  const tokenEnv = tokenEnvOf(ctx);
+  return {
+    command: "npx",
+    args: [
+      "-y",
+      "mcp-remote",
+      remoteMcpUrl(ctx.serverUrl),
+      "--header",
+      `Authorization:Bearer \${${tokenEnv}}`,
+    ],
+    // The child process must inherit ${tokenEnv} from the parent shell.
+    // Declaring the variable here — even as an inert placeholder — would
+    // overlay (and therefore override) the user's exported value, so env
+    // stays empty by design.
+    env: {},
   };
-  return JSON.stringify(config, null, 2);
+}
+
+export function generateClaudeDesktopConfig(ctx: AgentExportContext): string {
+  assertDestination(ctx);
+  return JSON.stringify(
+    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
+    null,
+    2,
+  );
 }
 
 export function generateCursorMcpConfig(ctx: AgentExportContext): string {
-  const mcpUrl = `${ctx.serverUrl.replace(/\/$/, "")}/mcp`;
-  const config = {
-    mcpServers: {
-      cortex: {
-        url: mcpUrl,
-        headers: {
-          Authorization: `Bearer ${ctx.token}`,
-        },
-      },
-    },
-  };
-  return JSON.stringify(config, null, 2);
+  assertDestination(ctx);
+  return JSON.stringify(
+    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
+    null,
+    2,
+  );
 }
 
 export function generateWindsurfConfig(ctx: AgentExportContext): string {
-  const mcpUrl = `${ctx.serverUrl.replace(/\/$/, "")}/mcp`;
-  const config = {
-    mcpServers: {
-      cortex: {
-        serverUrl: mcpUrl,
-        headers: {
-          Authorization: `Bearer ${ctx.token}`,
-        },
-      },
-    },
-  };
-  return JSON.stringify(config, null, 2);
+  assertDestination(ctx);
+  return JSON.stringify(
+    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
+    null,
+    2,
+  );
 }
 
 export function generateCortexYaml(ctx: AgentExportContext): string {
+  assertDestination(ctx);
+  const tokenEnv = tokenEnvOf(ctx);
   return `# Cortex Client & Agent Configuration
-version: "2"
-project: "${ctx.projectName || "default"}"
-server:
-  url: "${ctx.serverUrl}"
-  token: "${ctx.token}"
-storage:
-  mode: "server"
+# Cortex never stores tokens in this file. Export the token into your
+# environment before starting the Cortex CLI:
+#   export ${tokenEnv}="<paste-your-cortex-token>"     # sh/bash
+#   $env:${tokenEnv} = "<paste-your-cortex-token>"     # PowerShell
+mcp:
+  remote:
+    enabled: true
+    url: "${remoteMcpUrl(ctx.serverUrl)}"
+    token_env: "${tokenEnv}"
+    timeout: 30s
 search:
   default_limit: 20
-  vector_threshold: 0.7
 `;
 }
 
 export function generateEnvFile(ctx: AgentExportContext): string {
+  assertDestination(ctx);
+  const tokenEnv = tokenEnvOf(ctx);
   return `# Cortex Environment Variables
-CORTEX_SERVER_URL=${ctx.serverUrl}
-CORTEX_TOKEN=${ctx.token}
+# ${tokenEnv} is the bearer token for the remote MCP server.
+# Set it in your shell session — never in this file, never committed:
+#   export ${tokenEnv}="<paste-your-cortex-token>"     # sh/bash
+#   $env:${tokenEnv} = "<paste-your-cortex-token>"     # PowerShell
+CORTEX_SERVER_URL=${ctx.serverUrl.replace(/\/$/, "")}
 CORTEX_PROJECT=${ctx.projectName || "default"}
 `;
 }
 
 export function generateQuickstartScript(ctx: AgentExportContext, os: "sh" | "ps1"): string {
+  assertDestination(ctx);
+  const tokenEnv = tokenEnvOf(ctx);
+  const serverUrl = ctx.serverUrl.replace(/\/$/, "");
   if (os === "ps1") {
     return `# Cortex Quickstart Connection Script (PowerShell)
-$env:CORTEX_SERVER_URL = "${ctx.serverUrl}"
-$env:CORTEX_TOKEN = "${ctx.token}"
-Write-Host "Connecting to Cortex Server at ${ctx.serverUrl}..." -ForegroundColor Cyan
-Invoke-RestMethod -Uri "${ctx.serverUrl}/health" -Method Get | Format-Table
+# Set your token first: $env:${tokenEnv} = "<paste-your-cortex-token>"
+$ErrorActionPreference = "Stop"
+$env:CORTEX_SERVER_URL = "${serverUrl}"
+if (-not $env:${tokenEnv}) {
+  throw "${tokenEnv} must be set to your Cortex bearer token"
+}
+Write-Host "Connecting to Cortex Server at $($env:CORTEX_SERVER_URL)..." -ForegroundColor Cyan
+Invoke-RestMethod -Uri "$($env:CORTEX_SERVER_URL)/health" -Method Get | Format-Table
 Write-Host "Cortex Agent environment configured successfully!" -ForegroundColor Green
 `;
   }
   return `#!/usr/bin/env bash
 # Cortex Quickstart Connection Script (Bash)
-export CORTEX_SERVER_URL="${ctx.serverUrl}"
-export CORTEX_TOKEN="${ctx.token}"
-echo "Connecting to Cortex Server at ${ctx.serverUrl}..."
-curl -s -H "Authorization: Bearer ${ctx.token}" "${ctx.serverUrl}/health"
+# Set your token first: export ${tokenEnv}="<paste-your-cortex-token>"
+set -euo pipefail
+export CORTEX_SERVER_URL="${serverUrl}"
+: "\${${tokenEnv}?:${tokenEnv} must be set to your Cortex bearer token}"
+echo "Connecting to Cortex Server at \${CORTEX_SERVER_URL}..."
+curl -s -H "Authorization: Bearer \${${tokenEnv}}" "\${CORTEX_SERVER_URL}/health"
 echo ""
 echo "Cortex Agent environment configured successfully!"
 `;

@@ -235,3 +235,46 @@ func (requestOperations) RotateToken(ctx context.Context, id string) (identity.I
 	}
 	return ops.RotateToken(ctx, id)
 }
+func (requestOperations) GetProjectContext(ctx context.Context, project string) (*domain.ProjectContext, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectContext(ctx, project)
+}
+func (requestOperations) ListProjectSkills(ctx context.Context, project string) ([]*domain.ProjectSkill, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListProjectSkills(ctx, project)
+}
+func (requestOperations) GetProjectSkill(ctx context.Context, project, key string) (*domain.ProjectSkill, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectSkill(ctx, project, key)
+}
+func (requestOperations) SaveProjectArtifact(ctx context.Context, in domain.SaveProjectArtifactInput) (*domain.ProjectArtifactItem, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.SaveProjectArtifact(ctx, in)
+}
+func (requestOperations) ListProjectArtifacts(ctx context.Context, project string, kind string) ([]*domain.ProjectArtifactItem, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListProjectArtifacts(ctx, project, kind)
+}
+func (requestOperations) DeleteProjectArtifact(ctx context.Context, id string, reason string) error {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	return ops.DeleteProjectArtifact(ctx, id, reason)
+}
+

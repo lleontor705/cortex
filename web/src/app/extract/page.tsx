@@ -3,6 +3,11 @@
 import React, { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { ExtractionResult, ExtractedObservation, ExtractedEdge, SynthesisResult } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import {
   Sparkles,
   Layers,
@@ -18,7 +23,14 @@ import {
 } from "lucide-react";
 
 export default function ExtractPage() {
-  const { client, llmApiKey, llmProvider, llmModel, setLLMCredentials } = useAuth();
+  const {
+    client,
+    llmApiKey,
+    llmProvider,
+    llmModel,
+    llmBaseURL,
+    setLLMCredentials,
+  } = useAuth();
 
   const [rawText, setRawText] = useState("");
   const [project, setProject] = useState("default");
@@ -32,11 +44,12 @@ export default function ExtractPage() {
   const [apiKeyInput, setApiKeyInput] = useState(llmApiKey);
   const [providerInput, setProviderInput] = useState(llmProvider || "openai");
   const [modelInput, setModelInput] = useState(llmModel || "gpt-4o-mini");
+  const [baseURLInput, setBaseURLInput] = useState(llmBaseURL || "");
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
   const handleSaveLLMSettings = (e: React.FormEvent) => {
     e.preventDefault();
-    setLLMCredentials(apiKeyInput, providerInput, modelInput);
+    setLLMCredentials(apiKeyInput, providerInput, modelInput, baseURLInput);
     setShowLLMSettings(false);
   };
 
@@ -51,10 +64,11 @@ export default function ExtractPage() {
       const res = await client.extract({
         text: rawText,
         project: project,
-        llm_config: apiKeyInput ? {
+        llm_config: (apiKeyInput || baseURLInput || providerInput === "ollama") ? {
           provider: providerInput,
           api_key: apiKeyInput,
           model: modelInput,
+          base_url: baseURLInput || undefined,
         } : undefined,
       });
       setExtractionResult(res);
@@ -83,7 +97,6 @@ export default function ExtractPage() {
         savedObs.push(o);
       }
 
-      // Save edges if we have matching titles
       for (const edge of extractionResult.edges) {
         const fromObs = savedObs.find((o) => o.title === edge.from_title);
         const toObs = savedObs.find((o) => o.title === edge.to_title);
@@ -118,10 +131,11 @@ export default function ExtractPage() {
       const res = await client.synthesize({
         project,
         observations: obsList,
-        llm_config: apiKeyInput ? {
+        llm_config: (apiKeyInput || baseURLInput || providerInput === "ollama") ? {
           provider: providerInput,
           api_key: apiKeyInput,
           model: modelInput,
+          base_url: baseURLInput || undefined,
         } : undefined,
       });
       setSynthesisResult(res);
@@ -132,273 +146,308 @@ export default function ExtractPage() {
     }
   };
 
+  const handleProviderSelect = (p: string) => {
+    setProviderInput(p);
+    if (p === "openai") {
+      setBaseURLInput("https://api.openai.com/v1");
+      setModelInput("gpt-4o-mini");
+    } else if (p === "anthropic") {
+      setBaseURLInput("https://api.anthropic.com/v1");
+      setModelInput("claude-3-5-sonnet-20241022");
+    } else if (p === "ollama") {
+      setBaseURLInput("http://localhost:11434/v1");
+      setModelInput("llama3.3");
+    } else if (p === "openrouter") {
+      setBaseURLInput("https://openrouter.ai/api/v1");
+      setModelInput("openai/gpt-4o-mini");
+    } else if (p === "groq") {
+      setBaseURLInput("https://api.groq.com/openai/v1");
+      setModelInput("llama-3.3-70b-versatile");
+    } else if (p === "together") {
+      setBaseURLInput("https://api.together.xyz/v1");
+      setModelInput("meta-llama/Llama-3.3-70B-Instruct-Turbo");
+    } else if (p === "deepseek") {
+      setBaseURLInput("https://api.deepseek.com/v1");
+      setModelInput("deepseek-chat");
+    }
+  };
+
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 style={{ fontSize: "24px", fontWeight: "700", marginBottom: "4px" }}>
+          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+            <Sparkles className="h-6 w-6 text-blue-500" />
             Extracción y Síntesis Automática con IA
           </h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
+          <p className="text-xs text-slate-400 mt-1">
             Extrae observaciones estructuradas, entidades y relaciones desde transcripciones de sesiones o notas de código
           </p>
         </div>
 
-        <button
+        <Button
           onClick={() => setShowLLMSettings(!showLLMSettings)}
-          className="btn btn-secondary"
+          variant="secondary"
+          size="sm"
+          className="gap-2"
         >
-          <Settings size={15} />
-          <span>{apiKeyInput ? "LLM Configurado" : "Configurar LLM (API Key)"}</span>
-        </button>
+          <Settings className="h-4 w-4" />
+          <span>{apiKeyInput || baseURLInput ? "LLM Configurado" : "Configurar LLM (API / Token)"}</span>
+        </Button>
       </div>
 
       {/* LLM Settings Collapsible Card */}
       {showLLMSettings && (
-        <div className="card" style={{ marginBottom: "24px", borderColor: "var(--border-default)" }}>
-          <div className="card-header">
-            <h2 className="card-title">
-              <Key size={17} color="var(--accent-primary)" />
-              Configuración de Proveedor LLM para Extracción
-            </h2>
+        <Card className="p-5 bg-slate-900/80 border-slate-800 shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+            <CardTitle className="text-sm">
+              <Key className="h-4 w-4 text-blue-400" />
+              Configuración de Proveedor LLM Personalizado
+            </CardTitle>
           </div>
 
-          <form onSubmit={handleSaveLLMSettings} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: "12px", alignItems: "flex-end" }}>
-            <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                PROVEEDOR
-              </label>
-              <select
-                className="select"
-                value={providerInput}
-                onChange={(e) => setProviderInput(e.target.value)}
-              >
-                <option value="openai">OpenAI (o compatible)</option>
-                <option value="anthropic">Anthropic Claude</option>
-                <option value="ollama">Ollama Local</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
+          <form onSubmit={handleSaveLLMSettings} className="space-y-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                  PROVEEDOR
+                </label>
+                <Select
+                  value={providerInput}
+                  onChange={(e) => handleProviderSelect(e.target.value)}
+                  className="h-9 text-xs"
+                >
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                  <option value="ollama">Ollama (Local)</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="groq">Groq LPU</option>
+                  <option value="together">Together AI</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="custom">Personalizado (OpenAI-compatible)</option>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                  MODELO
+                </label>
+                <Input
+                  type="text"
+                  placeholder="gpt-4o-mini / llama3.3 / claude-3-5-sonnet"
+                  value={modelInput}
+                  onChange={(e) => setModelInput(e.target.value)}
+                  className="h-9 text-xs font-mono"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                  API ENDPOINT / BASE URL
+                </label>
+                <Input
+                  type="text"
+                  placeholder="https://api.openai.com/v1"
+                  value={baseURLInput}
+                  onChange={(e) => setBaseURLInput(e.target.value)}
+                  className="h-9 text-xs font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                  API KEY / TOKEN
+                </label>
+                <Input
+                  type="password"
+                  placeholder={providerInput === "ollama" ? "Opcional (Ollama)" : "sk-..."}
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  className="h-9 text-xs font-mono"
+                />
+              </div>
             </div>
 
-            <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                MODELO
-              </label>
-              <input
-                type="text"
-                className="input"
-                placeholder="gpt-4o-mini / claude-3-5-sonnet"
-                value={modelInput}
-                onChange={(e) => setModelInput(e.target.value)}
-              />
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[11px] text-slate-500">
+                Si no configuras credenciales, Cortex ejecutará el extractor heurístico integrado.
+              </span>
+              <Button type="submit" size="sm" className="h-8">
+                Guardar Configuración
+              </Button>
             </div>
-
-            <div>
-              <label style={{ display: "block", fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                API KEY / TOKEN
-              </label>
-              <input
-                type="password"
-                className="input"
-                placeholder="sk-..."
-                value={apiKeyInput}
-                onChange={(e) => setApiKeyInput(e.target.value)}
-              />
-            </div>
-
-            <button type="submit" className="btn btn-primary">
-              Guardar
-            </button>
           </form>
-          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "8px" }}>
-            Si no configuras una API Key, Cortex usará el extractor heurístico determinista integrado.
-          </div>
-        </div>
+        </Card>
       )}
 
       {/* Input Section */}
-      <div className="card" style={{ marginBottom: "24px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-          <label style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)" }}>
+      <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="text-xs font-semibold text-slate-200">
             Transcripción de Sesión, Notas de Arquitectura o Logs de Código:
           </label>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Proyecto:</span>
-            <input
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Proyecto:</span>
+            <Input
               type="text"
-              className="input"
-              style={{ width: "160px", padding: "4px 8px", fontSize: "12px" }}
               value={project}
               onChange={(e) => setProject(e.target.value)}
+              className="w-40 h-8 text-xs bg-slate-950/80"
             />
           </div>
         </div>
 
         <textarea
-          className="textarea"
+          className="flex min-h-[140px] w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3.5 py-2.5 text-xs text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 font-mono"
           rows={7}
           placeholder="Pega aquí el registro de una sesión, decisiones tomadas, explicaciones de bugfixes o notas técnicas..."
           value={rawText}
           onChange={(e) => setRawText(e.target.value)}
         />
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "14px" }}>
-          <button
+        <div className="flex justify-end gap-2.5 pt-1">
+          <Button
             onClick={handleSynthesize}
-            className="btn btn-secondary"
+            variant="secondary"
+            size="sm"
             disabled={isExtracting}
+            className="gap-2"
           >
-            <Layers size={15} />
+            <Layers className="h-4 w-4" />
             <span>Sintetizar Proyecto</span>
-          </button>
+          </Button>
 
-          <button
+          <Button
             onClick={handleExtract}
-            className="btn btn-primary"
+            size="sm"
             disabled={isExtracting || !rawText.trim()}
+            className="gap-2 shadow-lg shadow-blue-600/20"
           >
-            <Sparkles size={15} />
+            <Sparkles className="h-4 w-4" />
             <span>{isExtracting ? "Analizando y Extrayendo..." : "Extraer Conocimiento con IA"}</span>
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {saveSuccessMessage && (
-        <div
-          style={{
-            backgroundColor: "var(--success-bg)",
-            border: "1px solid rgba(16, 185, 129, 0.3)",
-            color: "var(--success)",
-            padding: "14px 18px",
-            borderRadius: "var(--radius-md)",
-            fontSize: "13px",
-            marginBottom: "24px",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
-        >
-          <CheckCircle size={18} />
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-xl text-xs flex items-center gap-2.5">
+          <CheckCircle className="h-5 w-5 shrink-0" />
           <span>{saveSuccessMessage}</span>
         </div>
       )}
 
       {/* Extraction Results */}
       {extractionResult && (
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 style={{ fontSize: "17px", fontWeight: "600" }}>
+              <h2 className="text-base font-semibold text-white">
                 Resultado de la Extracción ({extractionResult.source_method.toUpperCase()})
               </h2>
-              <p style={{ color: "var(--text-secondary)", fontSize: "12px" }}>
+              <p className="text-xs text-slate-400">
                 {extractionResult.summary}
               </p>
             </div>
 
-            <button
+            <Button
               onClick={handleSaveToCortex}
-              className="btn btn-primary"
+              size="sm"
               disabled={isSaving}
+              className="gap-2 shadow-lg shadow-blue-600/20"
             >
-              <Database size={15} />
+              <Database className="h-4 w-4" />
               <span>{isSaving ? "Guardando..." : "Guardar Todo en Cortex"}</span>
-            </button>
+            </Button>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "16px", marginBottom: "24px" }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {extractionResult.observations.map((obs, idx) => (
-              <div key={idx} className="card" style={{ padding: "16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                  <h3 style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
+              <Card key={idx} className="p-4 bg-slate-900/80 border-slate-800 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <h3 className="text-xs font-semibold text-slate-100 line-clamp-1">
                     {obs.title}
                   </h3>
-                  <span className={`badge ${obs.type === "decision" ? "badge-blue" : obs.type === "bugfix" ? "badge-amber" : "badge-zinc"}`}>
+                  <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"}>
                     {obs.type}
-                  </span>
+                  </Badge>
                 </div>
-                <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px", lineHeight: "1.5" }}>
+                <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
                   {obs.content}
                 </p>
                 {obs.tags && obs.tags.length > 0 && (
-                  <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                  <div className="flex flex-wrap gap-1 pt-1">
                     {obs.tags.map((t, i) => (
-                      <span key={i} className="badge badge-zinc" style={{ fontSize: "10px" }}>
+                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400 font-mono">
                         #{t}
                       </span>
                     ))}
                   </div>
                 )}
-              </div>
+              </Card>
             ))}
           </div>
 
           {extractionResult.edges.length > 0 && (
-            <div className="card" style={{ padding: "18px" }}>
-              <h3 style={{ fontSize: "14px", fontWeight: "600", marginBottom: "12px", display: "flex", alignItems: "center", gap: "6px" }}>
-                <Share2 size={16} color="var(--accent-primary)" />
+            <Card className="p-5 bg-slate-900/80 border-slate-800 space-y-3">
+              <CardTitle className="text-sm">
+                <Share2 className="h-4 w-4 text-blue-400" />
                 Relaciones Detectadas para el Grafo
-              </h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              </CardTitle>
+              <div className="space-y-2">
                 {extractionResult.edges.map((e, idx) => (
                   <div
                     key={idx}
-                    style={{
-                      padding: "8px 12px",
-                      backgroundColor: "var(--bg-input)",
-                      borderRadius: "var(--radius-sm)",
-                      fontSize: "12px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "10px",
-                    }}
+                    className="p-3 bg-slate-950/70 rounded-lg border border-slate-800/80 text-xs flex flex-wrap items-center gap-2.5"
                   >
-                    <span style={{ fontWeight: "600" }}>{e.from_title}</span>
-                    <span className="badge badge-blue">{e.relation_type}</span>
-                    <span style={{ fontWeight: "600" }}>{e.to_title}</span>
-                    <span style={{ color: "var(--text-muted)", marginLeft: "auto" }}>{e.reasoning}</span>
+                    <span className="font-semibold text-slate-200">{e.from_title}</span>
+                    <Badge variant="default" className="text-[10px]">{e.relation_type}</Badge>
+                    <span className="font-semibold text-slate-200">{e.to_title}</span>
+                    <span className="text-slate-500 ml-auto text-[11px]">{e.reasoning}</span>
                   </div>
                 ))}
               </div>
-            </div>
+            </Card>
           )}
         </div>
       )}
 
       {/* Synthesis Results */}
       {synthesisResult && (
-        <div className="card" style={{ padding: "22px" }}>
-          <h2 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "8px" }}>
-            Mapa de Conocimiento Consolidado: {synthesisResult.project}
-          </h2>
-          <p style={{ color: "var(--text-secondary)", fontSize: "13px", marginBottom: "18px" }}>
-            {synthesisResult.summary}
-          </p>
+        <Card className="p-6 bg-slate-900/80 border-slate-800 space-y-4">
+          <div>
+            <h2 className="text-base font-bold text-white">
+              Mapa de Conocimiento Consolidado: {synthesisResult.project}
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              {synthesisResult.summary}
+            </p>
+          </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "18px" }}>
-            <div>
-              <h3 style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "8px" }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-2">
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
                 Decisiones Clave
               </h3>
-              <ul style={{ paddingLeft: "18px", color: "var(--text-secondary)", fontSize: "12px", display: "flex", flexDirection: "column", gap: "4px" }}>
+              <ul className="space-y-1.5 pl-4 text-xs text-slate-300 list-disc">
                 {synthesisResult.key_decisions.map((d, i) => (
                   <li key={i}>{d}</li>
                 ))}
               </ul>
             </div>
 
-            <div>
-              <h3 style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "8px" }}>
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider">
                 Patrones y Estándares
               </h3>
-              <ul style={{ paddingLeft: "18px", color: "var(--text-secondary)", fontSize: "12px", display: "flex", flexDirection: "column", gap: "4px" }}>
+              <ul className="space-y-1.5 pl-4 text-xs text-slate-300 list-disc">
                 {synthesisResult.patterns.map((p, i) => (
                   <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>
           </div>
-        </div>
+        </Card>
       )}
     </div>
   );

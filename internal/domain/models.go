@@ -301,10 +301,30 @@ type SearchOptions struct {
 type GraphTraversalOptions struct {
 	Depth       int
 	MaxVisited  int
+	MaxResults  int
 	TenantID    string
 	WorkspaceID string
 	Project     string
 	AsOf        *time.Time
+}
+
+// Truncation reasons reported by bounded local graph traversal (GRAPH-02).
+const (
+	// TruncationReasonMaxVisited marks eligible nodes omitted because the
+	// max_visited budget (root plus unique admitted nodes) was exhausted.
+	TruncationReasonMaxVisited = "max_visited"
+	// TruncationReasonMaxResults marks eligible rows omitted because the
+	// max_results budget (emitted unique non-root observations) was exhausted.
+	TruncationReasonMaxResults = "max_results"
+)
+
+// GraphTraversalResult is the bounded local traversal envelope. Truncated is
+// true ONLY when a one-past-the-limit sentinel probe admitted/emitted eligible
+// data that was then dropped; a result exactly equal to a limit is complete.
+type GraphTraversalResult struct {
+	Observations      []*Observation `json:"observations"`
+	Truncated         bool           `json:"truncated"`
+	TruncationReasons []string       `json:"truncation_reasons,omitempty"`
 }
 
 // SearchResult represents a search result with relevance ranking.

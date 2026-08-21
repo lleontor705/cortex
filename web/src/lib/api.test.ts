@@ -93,3 +93,121 @@ describe("CortexClient request plumbing", () => {
     );
   });
 });
+
+describe("CortexClient bearer transport policy", () => {
+  it("rejects bearer requests to plain-HTTP non-loopback hosts before fetching", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CortexClient("http://10.0.0.5:7438", "secret");
+    await expect(client.me()).rejects.toThrow(/HTTPS/i);
+    await expect(client.health()).rejects.toThrow(/HTTPS/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects bearer requests to lookalike loopback hostnames before fetching", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CortexClient("http://localhost.evil.example:7438", "secret");
+    await expect(client.me()).rejects.toThrow(/HTTPS/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still sends the bearer token over plain HTTP to strict loopback hosts", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: "p1", type: "user", org_id: "o", workspaces: [], projects: [], roles: [], scopes: [], classification_clearance: [], auth_method: "token" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CortexClient("http://127.0.0.1:7438", "secret").me();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:7438/api/me");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret");
+  });
+
+  it("still sends the bearer token over HTTPS", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: "p1", type: "user", org_id: "o", workspaces: [], projects: [], roles: [], scopes: [], classification_clearance: [], auth_method: "token" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CortexClient("https://cortex.example", "secret").me();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer secret");
+  });
+
+  it("anonymous requests are not blocked by the bearer transport policy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CortexClient("http://10.0.0.5:7438", "").health();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+});
+
+describe("CortexClient session invalidation", () => {
+  it("on 401 clears the live token, aborts in-flight siblings and notifies", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes("/api/me")) {
+        return Promise.resolve(jsonResponse({ error: { message: "expired" } }, 401));
+      }
+      // Any other endpoint hangs until its request signal is aborted.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted by session invalidation")),
+        );
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const unauthorized = vi.fn();
+    const client = new CortexClient("https://cortex.example", "secret", unauthorized);
+
+    const hanging = client.stats();
+    await expect(client.me()).rejects.toMatchObject({
+      name: "APIError",
+      status: 401,
+      message: "expired",
+    });
+    await expect(hanging).rejects.toThrow("aborted by session invalidation");
+    expect(unauthorized).toHaveBeenCalledOnce();
+
+    // The live token reference is gone: subsequent requests are anonymous.
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(jsonResponse({ status: "ok" })),
+    );
+    await client.health();
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("invalidate() (logout path) aborts in-flight requests and drops the token", async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted by logout")),
+        );
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CortexClient("https://cortex.example", "secret");
+    const hanging = client.stats();
+
+    client.invalidate();
+
+    await expect(hanging).rejects.toThrow("aborted by logout");
+
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(jsonResponse({ status: "ok" })),
+    );
+    await client.health();
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+});

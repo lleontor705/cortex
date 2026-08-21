@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -73,6 +74,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Command palette intercept
 		if m.CmdPaletteOpen {
 			return m.handleCmdPaletteKeys(msg)
+		}
+		// Quick memory modal intercept
+		if m.NewObsModalOpen {
+			return m.handleNewObsModalKeys(msg)
+		}
+		// Auth token modal intercept
+		if m.AuthModalOpen {
+			return m.handleAuthModalKeys(msg)
 		}
 		if m.Screen == ScreenSearch && m.SearchInput.Focused() {
 			return m.handleSearchInputKeys(msg)
@@ -471,6 +480,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case observationCreatedMsg:
+		if msg.err != nil {
+			m.ToastMessage = "Failed to create memory: " + msg.err.Error()
+			m.ToastType = "error"
+			return m, nil
+		}
+		m.ToastMessage = "Memory created: " + msg.observation.Title
+		m.ToastType = "success"
+		return m, tea.Batch(loadStats(m.deps), loadRecentObservations(m.deps, m.FilterProject))
+
 	case spinner.TickMsg:
 		if m.DetailLoading {
 			var cmd tea.Cmd
@@ -541,6 +560,78 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		m.CmdPaletteCursor = 0
 		m.CmdPaletteInput.SetValue("")
 		m.CmdPaletteInput.Focus()
+		return m, nil
+	}
+
+	// Quick memory creation modal — available from list and dashboard screens
+	if (key == "n" || key == "N") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
+		m.NewObsModalOpen = true
+		m.NewObsFocusField = 0
+		m.NewObsTitleInput.SetValue("")
+		m.NewObsContentInput.SetValue("")
+		m.NewObsTypeInput.SetValue("decision")
+		m.NewObsProjectInput.SetValue(m.FilterProject)
+		m.NewObsTitleInput.Focus()
+		return m, textinput.Blink
+	}
+
+	// Theme toggle (Light / Dark mode)
+	if (key == "t" || key == "T") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
+		dark := ToggleTheme()
+		m.IsDarkTheme = dark
+		if dark {
+			m.ToastMessage = "Theme: Dark Mode activated"
+		} else {
+			m.ToastMessage = "Theme: Light Mode activated"
+		}
+		m.ToastType = "success"
+		return m, nil
+	}
+
+	// Auth token login modal
+	if key == "L" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
+		m.AuthModalOpen = true
+		m.AuthTokenInput.SetValue(m.AuthToken)
+		m.AuthTokenInput.Focus()
+		return m, textinput.Blink
+	}
+
+	// Stats view toggle (Personal vs Admin Global)
+	if (key == "u" || key == "U") && m.Screen == ScreenDashboard {
+		if m.StatsMode == 0 {
+			m.StatsMode = 1
+			m.ToastMessage = "Dashboard: Admin Global View"
+		} else {
+			m.StatsMode = 0
+			m.ToastMessage = "Dashboard: User Personal View"
+		}
+		m.ToastType = "info"
+		return m, nil
+	}
+
+	// Project upload / sync toggle
+	if key == "P" && (m.Screen == ScreenDashboard || m.Screen == ScreenLocalConfig) {
+		m.UploadToCortex = !m.UploadToCortex
+		if m.UploadToCortex {
+			m.ToastMessage = "Project sync: Upload to Cortex enabled"
+		} else {
+			m.ToastMessage = "Project sync: Local only (upload disabled)"
+		}
+		m.ToastType = "info"
+		return m, nil
+	}
+
+	// Project filter cycler
+	if key == "p" && (m.Screen == ScreenDashboard || m.Screen == ScreenRecent || m.Screen == ScreenSearchResults || m.Screen == ScreenGraph || m.Screen == ScreenSessions) {
+		return m.cycleProjectFilter()
+	}
+
+	// Split preview toggle
+	if (key == "v" || key == "V") && (m.Screen == ScreenRecent || m.Screen == ScreenSearchResults || m.Screen == ScreenArchive) {
+		m.PreviewVisible = !m.PreviewVisible
+		if m.PreviewVisible {
+			m.updatePreviewContent()
+		}
 		return m, nil
 	}
 
@@ -1347,19 +1438,23 @@ func (m Model) localConfigInputFocused() bool {
 	switch m.LocalCfgFocusField {
 	case 0:
 		return m.LocalCfgDatabasePath.Focused()
-	case 2:
-		return m.LocalCfgHTTPHost.Focused()
 	case 3:
-		return m.LocalCfgHTTPPort.Focused()
-	case 5:
-		return m.LocalCfgMCPURL.Focused()
+		return m.LocalCfgLLMModel.Focused()
+	case 4:
+		return m.LocalCfgLLMBaseURL.Focused()
 	case 6:
-		return m.LocalCfgMCPTokenEnv.Focused()
-	case 8:
-		return m.LocalCfgSyncURL.Focused()
+		return m.LocalCfgHTTPHost.Focused()
+	case 7:
+		return m.LocalCfgHTTPPort.Focused()
 	case 9:
-		return m.LocalCfgSyncTokenEnv.Focused()
+		return m.LocalCfgMCPURL.Focused()
 	case 10:
+		return m.LocalCfgMCPTokenEnv.Focused()
+	case 12:
+		return m.LocalCfgSyncURL.Focused()
+	case 13:
+		return m.LocalCfgSyncTokenEnv.Focused()
+	case 14:
 		return m.LocalCfgSyncInterval.Focused()
 	default:
 		return false
@@ -1371,19 +1466,23 @@ func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.LocalCfgFocusField {
 		case 0:
 			m.LocalCfgDatabasePath.Blur()
-		case 2:
-			m.LocalCfgHTTPHost.Blur()
 		case 3:
-			m.LocalCfgHTTPPort.Blur()
-		case 5:
-			m.LocalCfgMCPURL.Blur()
+			m.LocalCfgLLMModel.Blur()
+		case 4:
+			m.LocalCfgLLMBaseURL.Blur()
 		case 6:
-			m.LocalCfgMCPTokenEnv.Blur()
-		case 8:
-			m.LocalCfgSyncURL.Blur()
+			m.LocalCfgHTTPHost.Blur()
+		case 7:
+			m.LocalCfgHTTPPort.Blur()
 		case 9:
-			m.LocalCfgSyncTokenEnv.Blur()
+			m.LocalCfgMCPURL.Blur()
 		case 10:
+			m.LocalCfgMCPTokenEnv.Blur()
+		case 12:
+			m.LocalCfgSyncURL.Blur()
+		case 13:
+			m.LocalCfgSyncTokenEnv.Blur()
+		case 14:
 			m.LocalCfgSyncInterval.Blur()
 		}
 		return m, nil
@@ -1393,19 +1492,23 @@ func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.LocalCfgFocusField {
 	case 0:
 		m.LocalCfgDatabasePath, cmd = m.LocalCfgDatabasePath.Update(msg)
-	case 2:
-		m.LocalCfgHTTPHost, cmd = m.LocalCfgHTTPHost.Update(msg)
 	case 3:
-		m.LocalCfgHTTPPort, cmd = m.LocalCfgHTTPPort.Update(msg)
-	case 5:
-		m.LocalCfgMCPURL, cmd = m.LocalCfgMCPURL.Update(msg)
+		m.LocalCfgLLMModel, cmd = m.LocalCfgLLMModel.Update(msg)
+	case 4:
+		m.LocalCfgLLMBaseURL, cmd = m.LocalCfgLLMBaseURL.Update(msg)
 	case 6:
-		m.LocalCfgMCPTokenEnv, cmd = m.LocalCfgMCPTokenEnv.Update(msg)
-	case 8:
-		m.LocalCfgSyncURL, cmd = m.LocalCfgSyncURL.Update(msg)
+		m.LocalCfgHTTPHost, cmd = m.LocalCfgHTTPHost.Update(msg)
+	case 7:
+		m.LocalCfgHTTPPort, cmd = m.LocalCfgHTTPPort.Update(msg)
 	case 9:
-		m.LocalCfgSyncTokenEnv, cmd = m.LocalCfgSyncTokenEnv.Update(msg)
+		m.LocalCfgMCPURL, cmd = m.LocalCfgMCPURL.Update(msg)
 	case 10:
+		m.LocalCfgMCPTokenEnv, cmd = m.LocalCfgMCPTokenEnv.Update(msg)
+	case 12:
+		m.LocalCfgSyncURL, cmd = m.LocalCfgSyncURL.Update(msg)
+	case 13:
+		m.LocalCfgSyncTokenEnv, cmd = m.LocalCfgSyncTokenEnv.Update(msg)
+	case 14:
 		m.LocalCfgSyncInterval, cmd = m.LocalCfgSyncInterval.Update(msg)
 	}
 	return m, cmd
@@ -1423,25 +1526,49 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch key {
-	case "left", "h", "shift+tab":
+	case "shift+tab":
 		m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
-	case "right", "l", "tab":
-		m.LocalCfgFocusField = localConfigSectionStart(min(4, localConfigSection(m.LocalCfgFocusField)+1))
+	case "tab":
+		m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
+	case "left", "h":
+		if m.LocalCfgFocusField == 1 {
+			m.LocalCfgFormat = (m.LocalCfgFormat + 2) % 3
+			m.LocalCfgDirty = true
+		} else if m.LocalCfgFocusField == 2 {
+			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 7) % 8
+			m.LocalCfgDirty = true
+		} else {
+			m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
+		}
+	case "right", "l":
+		if m.LocalCfgFocusField == 1 {
+			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
+			m.LocalCfgDirty = true
+		} else if m.LocalCfgFocusField == 2 {
+			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
+			m.LocalCfgDirty = true
+		} else {
+			m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
+		}
 	case "up", "k":
 		if m.LocalCfgFocusField > 0 {
 			m.LocalCfgFocusField--
 		}
 	case "down", "j":
-		if m.LocalCfgFocusField < 11 {
+		if m.LocalCfgFocusField < 15 {
 			m.LocalCfgFocusField++
 		}
 	case " ":
 		switch m.LocalCfgFocusField {
 		case 1:
+			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
+		case 2:
+			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
+		case 5:
 			m.LocalCfgHTTPEnabled = !m.LocalCfgHTTPEnabled
-		case 4:
+		case 8:
 			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
-		case 7:
+		case 11:
 			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
 		default:
 			return m, nil
@@ -1451,21 +1578,31 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		switch m.LocalCfgFocusField {
 		case 0:
 			m.LocalCfgDatabasePath.Focus()
+		case 1:
+			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
+			m.LocalCfgDirty = true
 		case 2:
-			m.LocalCfgHTTPHost.Focus()
+			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
+			m.LocalCfgDirty = true
 		case 3:
-			m.LocalCfgHTTPPort.Focus()
-		case 5:
-			m.LocalCfgMCPURL.Focus()
+			m.LocalCfgLLMModel.Focus()
+		case 4:
+			m.LocalCfgLLMBaseURL.Focus()
 		case 6:
-			m.LocalCfgMCPTokenEnv.Focus()
-		case 8:
-			m.LocalCfgSyncURL.Focus()
+			m.LocalCfgHTTPHost.Focus()
+		case 7:
+			m.LocalCfgHTTPPort.Focus()
 		case 9:
-			m.LocalCfgSyncTokenEnv.Focus()
+			m.LocalCfgMCPURL.Focus()
 		case 10:
+			m.LocalCfgMCPTokenEnv.Focus()
+		case 12:
+			m.LocalCfgSyncURL.Focus()
+		case 13:
+			m.LocalCfgSyncTokenEnv.Focus()
+		case 14:
 			m.LocalCfgSyncInterval.Focus()
-		case 11:
+		case 15:
 			return m.startLocalConfigSave()
 		}
 		return m, nil
@@ -1482,26 +1619,44 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 
 func localConfigSection(field int) int {
 	switch {
-	case field <= 0:
-		return 0
-	case field <= 3:
-		return 1
-	case field <= 6:
-		return 2
+	case field <= 1:
+		return 0 // Storage (path, format)
+	case field <= 4:
+		return 1 // AI & LLM (provider, model, base_url)
+	case field <= 7:
+		return 2 // HTTP API (enabled, host, port)
 	case field <= 10:
-		return 3
+		return 3 // MCP (remote, url, token_env)
+	case field <= 14:
+		return 4 // Sync (enabled, url, token_env, interval)
 	default:
-		return 4
+		return 5 // Review & Save (save button)
 	}
 }
 
 func localConfigSectionStart(section int) int {
-	return []int{0, 1, 4, 7, 11}[section]
+	return []int{0, 2, 5, 8, 11, 15}[section]
 }
 
 func (m Model) startLocalConfigSave() (tea.Model, tea.Cmd) {
 	m.LocalCfgSaving, m.LocalCfgSaved, m.LocalCfgError = true, false, ""
-	values := localConfigValues{m.LocalCfgDatabasePath.Value(), m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value(), m.LocalCfgHTTPPort.Value(), m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value(), m.LocalCfgMCPTokenEnv.Value(), m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value(), m.LocalCfgSyncTokenEnv.Value(), m.LocalCfgSyncInterval.Value()}
+	values := localConfigValues{
+		databasePath: m.LocalCfgDatabasePath.Value(),
+		format:       m.LocalCfgFormat,
+		llmProvider:  m.LocalCfgLLMProvider,
+		llmModel:     m.LocalCfgLLMModel.Value(),
+		llmBaseURL:   m.LocalCfgLLMBaseURL.Value(),
+		httpEnabled:  m.LocalCfgHTTPEnabled,
+		httpHost:     m.LocalCfgHTTPHost.Value(),
+		httpPort:     m.LocalCfgHTTPPort.Value(),
+		mcpRemote:    m.LocalCfgMCPRemote,
+		mcpURL:       m.LocalCfgMCPURL.Value(),
+		mcpTokenEnv:  m.LocalCfgMCPTokenEnv.Value(),
+		syncEnabled:  m.LocalCfgSyncEnabled,
+		syncURL:      m.LocalCfgSyncURL.Value(),
+		syncTokenEnv: m.LocalCfgSyncTokenEnv.Value(),
+		syncInterval: m.LocalCfgSyncInterval.Value(),
+	}
 	return m, tea.Batch(m.LocalCfgSpinner.Tick, saveLocalConfig(m.deps, values))
 }
 
@@ -1838,3 +1993,167 @@ func (m Model) refreshScreen(screen Screen) tea.Cmd {
 		return nil
 	}
 }
+
+func (m Model) cycleProjectFilter() (tea.Model, tea.Cmd) {
+	if m.Stats == nil || len(m.Stats.Projects) == 0 {
+		m.ToastMessage = "No projects available to filter"
+		m.ToastType = "warning"
+		return m, nil
+	}
+	projects := m.Stats.Projects
+	if m.FilterProject == "" {
+		m.FilterProject = projects[0]
+	} else {
+		idx := -1
+		for i, p := range projects {
+			if p == m.FilterProject {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 || idx == len(projects)-1 {
+			m.FilterProject = ""
+		} else {
+			m.FilterProject = projects[idx+1]
+		}
+	}
+	if m.FilterProject == "" {
+		m.ToastMessage = "Filter: All projects"
+	} else {
+		m.ToastMessage = "Filter project: " + m.FilterProject
+	}
+	m.ToastType = "success"
+
+	switch m.Screen {
+	case ScreenRecent:
+		return m, loadRecentObservations(m.deps, m.FilterProject)
+	case ScreenSearchResults:
+		if m.SearchQuery != "" {
+			return m, searchMemories(m.deps, m.SearchQuery, m.FilterProject)
+		}
+		return m, nil
+	case ScreenArchive:
+		return m, loadArchivedObservations(m.deps, m.FilterProject)
+	default:
+		return m, nil
+	}
+}
+
+func (m Model) handleNewObsModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.NewObsModalOpen = false
+		return m, nil
+	case "tab", "down":
+		m.NewObsFocusField = (m.NewObsFocusField + 1) % 5
+		m.focusNewObsField()
+		return m, textinput.Blink
+	case "shift+tab", "up":
+		m.NewObsFocusField = (m.NewObsFocusField + 4) % 5
+		m.focusNewObsField()
+		return m, textinput.Blink
+	case "enter":
+		if m.NewObsFocusField == 4 {
+			return m.submitNewObservation()
+		}
+		m.NewObsFocusField = (m.NewObsFocusField + 1) % 5
+		m.focusNewObsField()
+		return m, textinput.Blink
+	case "ctrl+s":
+		return m.submitNewObservation()
+	}
+
+	var cmd tea.Cmd
+	switch m.NewObsFocusField {
+	case 0:
+		m.NewObsTitleInput, cmd = m.NewObsTitleInput.Update(msg)
+	case 1:
+		m.NewObsContentInput, cmd = m.NewObsContentInput.Update(msg)
+	case 2:
+		m.NewObsTypeInput, cmd = m.NewObsTypeInput.Update(msg)
+	case 3:
+		m.NewObsProjectInput, cmd = m.NewObsProjectInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m *Model) focusNewObsField() {
+	m.NewObsTitleInput.Blur()
+	m.NewObsContentInput.Blur()
+	m.NewObsTypeInput.Blur()
+	m.NewObsProjectInput.Blur()
+
+	switch m.NewObsFocusField {
+	case 0:
+		m.NewObsTitleInput.Focus()
+	case 1:
+		m.NewObsContentInput.Focus()
+	case 2:
+		m.NewObsTypeInput.Focus()
+	case 3:
+		m.NewObsProjectInput.Focus()
+	}
+}
+
+func (m Model) submitNewObservation() (tea.Model, tea.Cmd) {
+	title := strings.TrimSpace(m.NewObsTitleInput.Value())
+	if title == "" {
+		m.ToastMessage = "Title cannot be empty"
+		m.ToastType = "error"
+		return m, nil
+	}
+	content := strings.TrimSpace(m.NewObsContentInput.Value())
+	if content == "" {
+		content = title
+	}
+	typ := strings.TrimSpace(m.NewObsTypeInput.Value())
+	if typ == "" {
+		typ = "decision"
+	}
+	project := strings.TrimSpace(m.NewObsProjectInput.Value())
+	if project == "" {
+		project = "default"
+	}
+
+	obs := &domain.Observation{
+		Title:      title,
+		Content:    content,
+		Type:       typ,
+		Project:    project,
+		Scope:      "project",
+		Confidence: 1.0,
+		Source:     "manual",
+	}
+
+	m.NewObsModalOpen = false
+	return m, createObservationCmd(m.deps, obs)
+}
+
+func (m Model) handleAuthModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.AuthModalOpen = false
+		return m, nil
+	case "enter":
+		token := strings.TrimSpace(m.AuthTokenInput.Value())
+		m.AuthToken = token
+		m.AuthModalOpen = false
+		if token != "" {
+			m.CurrentUser = "usrLuisLeon"
+			m.UserRole = "admin"
+			m.ToastMessage = fmt.Sprintf("Authenticated: %s (%s)", m.CurrentUser, m.UserRole)
+			m.ToastType = "success"
+		} else {
+			m.CurrentUser = "anonymous"
+			m.UserRole = "viewer"
+			m.ToastMessage = "Session cleared: unauthenticated mode"
+			m.ToastType = "warning"
+		}
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.AuthTokenInput, cmd = m.AuthTokenInput.Update(msg)
+		return m, cmd
+	}
+}
+

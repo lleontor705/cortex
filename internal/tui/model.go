@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
@@ -177,6 +179,11 @@ type unarchiveObservationMsg struct {
 	err error
 }
 
+type observationCreatedMsg struct {
+	observation *domain.Observation
+	err         error
+}
+
 // ─── Model ──────────────────────────────────────────────────────────────────
 
 // Model holds the TUI state.
@@ -294,6 +301,10 @@ type Model struct {
 
 	// Local-first configuration. Values are staged until Save is selected.
 	LocalCfgDatabasePath textinput.Model
+	LocalCfgFormat       int // 0=YAML, 1=JSON, 2=TOML
+	LocalCfgLLMProvider  int // 0=none, 1=ollama, 2=openai, 3=anthropic, 4=openrouter, 5=groq, 6=deepseek, 7=custom
+	LocalCfgLLMModel     textinput.Model
+	LocalCfgLLMBaseURL   textinput.Model
 	LocalCfgHTTPEnabled  bool
 	LocalCfgHTTPHost     textinput.Model
 	LocalCfgHTTPPort     textinput.Model
@@ -332,6 +343,30 @@ type Model struct {
 	CmdPaletteOpen   bool
 	CmdPaletteInput  textinput.Model
 	CmdPaletteCursor int
+
+	// Quick memory modal
+	NewObsModalOpen    bool
+	NewObsTitleInput   textinput.Model
+	NewObsContentInput textinput.Model
+	NewObsTypeInput    textinput.Model
+	NewObsProjectInput textinput.Model
+	NewObsFocusField   int
+
+	// Theme
+	IsDarkTheme bool
+
+	// Auth & Identity
+	AuthToken      string
+	CurrentUser    string
+	UserRole       string // "admin", "owner", "member", "viewer"
+	AuthModalOpen  bool
+	AuthTokenInput textinput.Model
+
+	// Project & Upload Policy
+	UploadToCortex bool // whether current project uploads to Cortex server
+
+	// Stats display
+	StatsMode int // 0 = User personal stats, 1 = Admin global tenant stats
 
 	// List components (bubbles/list)
 	SearchListModel  list.Model
@@ -385,17 +420,31 @@ func New(deps *Deps) Model {
 	cmdInput.Width = 40
 
 	// Initialize embedding config from current config if available
+	cfgFormat := 0
+	llmProvider := 0
 	embProvider := 0
 	embVector := false
 	embAutoStart := false
+	llmModel := localInput("e.g. qwen3-embedding:8b or text-embedding-3-small", 128)
+	llmBaseURL := localInput("http://localhost:11434", 255)
+
 	if deps.Config != nil {
 		switch deps.Config.Search.EmbeddingProvider {
 		case "ollama":
 			embProvider = 1
+			llmProvider = 1
 		case "openai":
 			embProvider = 2
+			llmProvider = 2
+		}
+		if strings.HasSuffix(strings.ToLower(deps.Config.LoadedFrom), ".json") || strings.HasSuffix(strings.ToLower(deps.Config.LoadedFrom), ".jsonc") {
+			cfgFormat = 1
+		} else if strings.HasSuffix(strings.ToLower(deps.Config.LoadedFrom), ".toml") {
+			cfgFormat = 2
 		}
 		embModel.SetValue(deps.Config.Search.EmbeddingModel)
+		llmModel.SetValue(deps.Config.Search.EmbeddingModel)
+		llmBaseURL.SetValue(deps.Config.Search.EmbeddingBaseURL)
 		embVector = deps.Config.Search.Vector
 		embAutoStart = deps.Config.Search.OllamaAutoStart
 		databasePath.SetValue(deps.Config.Database.Path)
@@ -419,15 +468,68 @@ func New(deps *Deps) Model {
 		return l
 	}
 
+	obsTitle := textinput.New()
+	obsTitle.Placeholder = "Observation title..."
+	obsTitle.CharLimit = 128
+	obsTitle.Width = 50
+
+	obsContent := textinput.New()
+	obsContent.Placeholder = "What, Why, Where, Learned..."
+	obsContent.CharLimit = 1024
+	obsContent.Width = 50
+
+	obsType := textinput.New()
+	obsType.Placeholder = "decision, bugfix, architecture, pattern, config, discovery, learning"
+	obsType.SetValue("decision")
+	obsType.CharLimit = 32
+	obsType.Width = 50
+
+	obsProject := textinput.New()
+	obsProject.Placeholder = "Project name (e.g. cortex)"
+	obsProject.CharLimit = 64
+	obsProject.Width = 50
+
+	authInput := textinput.New()
+	authInput.Placeholder = "Enter bearer token (e.g. ctx_...)"
+	authInput.CharLimit = 256
+	authInput.Width = 50
+	authInput.EchoMode = textinput.EchoPassword
+
+	currentUser := "usrLuisLeon"
+	userRole := "admin"
+	authToken := ""
+	if deps != nil && deps.Config != nil {
+		if deps.Config.HTTP.Token != "" {
+			authToken = deps.Config.HTTP.Token
+		}
+		if deps.Config.Server.PrincipalSubject != "" {
+			currentUser = deps.Config.Server.PrincipalSubject
+		}
+		if len(deps.Config.Server.Roles) > 0 {
+			userRole = deps.Config.Server.Roles[0]
+		}
+	}
+
 	return Model{
 		deps:                 deps,
 		Version:              deps.Version,
 		Screen:               ScreenDashboard,
+		IsDarkTheme:          true,
+		AuthToken:            authToken,
+		CurrentUser:          currentUser,
+		UserRole:             userRole,
+		AuthTokenInput:       authInput,
+		UploadToCortex:       true,
+		StatsMode:            0,
 		SearchInput:          ti,
 		SetupSpinner:         sp,
 		EmbCfgSpinner:        embSp,
 		EmbCfgModel:          embModel,
 		LocalCfgDatabasePath: databasePath,
+		LocalCfgFormat:       cfgFormat,
+		LocalCfgLLMProvider:  llmProvider,
+		LocalCfgLLMModel:     llmModel,
+		LocalCfgLLMBaseURL:   llmBaseURL,
 		LocalCfgHTTPEnabled:  deps.Config != nil && deps.Config.HTTP.Enabled,
 		LocalCfgHTTPHost:     httpHost,
 		LocalCfgHTTPPort:     httpPort,
@@ -444,6 +546,10 @@ func New(deps *Deps) Model {
 		EmbCfgAutoStart:      embAutoStart,
 		ReindexProgressBar:   progress.New(progress.WithDefaultGradient()),
 		CmdPaletteInput:      cmdInput,
+		NewObsTitleInput:     obsTitle,
+		NewObsContentInput:   obsContent,
+		NewObsTypeInput:      obsType,
+		NewObsProjectInput:   obsProject,
 		SearchListModel:      newEmptyList(),
 		RecentList:           newEmptyList(),
 		SessionListModel:     newEmptyList(),

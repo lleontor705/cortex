@@ -4,10 +4,14 @@ package postgres
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,12 +23,13 @@ import (
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/domain/lifecycle"
+	"github.com/lleontor705/cortex/internal/identity"
 	"github.com/lleontor705/cortex/internal/migration"
-	servermigrations "github.com/lleontor705/cortex/migrations/v2"
 )
 
 // postgresHarness deliberately uses a real PostgreSQL connection and applies
-// the same embedded W11 schema used by the migration runner. The dedicated
+// the complete embedded server migration line (100 through the current head)
+// through the checksummed migration runner. The dedicated
 // postgres_integration tag makes the database dependency explicit.
 type postgresHarness struct {
 	t      *testing.T
@@ -37,13 +42,60 @@ func appRoleGrantSQL(role string) string {
 	return `GRANT cortex_app TO ` + pgx.Identifier{role}.Sanitize()
 }
 
-func newAuthorizedTestStore(t *testing.T, h *postgresHarness, tenant, workspace, subject uuid.UUID) *AuthorizedStore {
+// mintBindingProvenance provisions — through the privileged migration
+// handle only — the app_users, actor_subjects and api_tokens fixtures a
+// mediated bind requires, and returns the harness secret plus the
+// verify-minted binding provenance v1:<token uuid>:<hexmac> that
+// cortex_bind_principal accepts for the actor at the given grant version.
+// It mirrors the 106 HMAC construction exactly: token digest =
+// HMAC-SHA256(keyed by the tenant UUID, over the secret); provenance MAC =
+// HMAC-SHA256(keyed by the token digest, over
+// tenant:actor:grant_version:token). Verifying the returned secret through
+// the repository must reproduce the returned provenance byte for byte,
+// proving the Go and SQL HMAC constructions agree.
+func mintBindingProvenance(t *testing.T, h *postgresHarness, tenant, subject uuid.UUID, grantVersion int64, storedGrantDigest string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := h.admin.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'test',$3,'test-digest',1) ON CONFLICT (tenant_id,subject) DO UPDATE SET public_id=EXCLUDED.public_id,active=true,revoked_at=NULL,grant_digest=EXCLUDED.grant_digest,grant_version=1`, tenant, subject.String(), subject); err != nil {
-		t.Fatal(err)
+	secret := "ctx_harness_" + subject.String()
+	digestMac := hmac.New(sha256.New, []byte(tenant.String()))
+	digestMac.Write([]byte(secret))
+	digest := digestMac.Sum(nil)
+	if _, err := h.admin.Exec(ctx, `INSERT INTO app_users(tenant_id,public_id,email,display_name) VALUES($1,$2,$3,$4) ON CONFLICT (tenant_id,public_id) DO UPDATE SET active=true,disabled_at=NULL`, tenant, subject, "harness-"+subject.String()+"@cortex.test", subject.String()); err != nil {
+		t.Fatalf("seed app user: %v", err)
 	}
-	p := domain.Principal{Subject: subject.String(), Type: "user", OrgID: tenant.String(), GrantDigest: "test-digest", GrantVersion: 1}
+	if _, err := h.admin.Exec(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type,public_id,grant_digest,grant_version) VALUES($1,$2,'user',$3,$4,$5) ON CONFLICT (tenant_id,subject) DO UPDATE SET public_id=EXCLUDED.public_id,active=true,revoked_at=NULL,grant_version=EXCLUDED.grant_version,grant_digest=EXCLUDED.grant_digest`, tenant, subject.String(), subject, storedGrantDigest, grantVersion); err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+	// The durable owner grant authorizes the harness actor for the
+	// mediated definer routines that require a bound owner/admin caller.
+	if _, err := h.admin.Exec(ctx, `INSERT INTO principal_grants(tenant_id,actor_public_id,grant_type,grant_value) VALUES($1,$2,'role','owner') ON CONFLICT (tenant_id,actor_public_id,grant_type,grant_value) DO NOTHING`, tenant, subject); err != nil {
+		t.Fatalf("seed owner grant: %v", err)
+	}
+	var tokenID uuid.UUID
+	// api_tokens enforces UNIQUE (tenant_id, token_prefix), so the stored
+	// prefix cannot be the bare textual head (constant per secret scheme,
+	// colliding on the second mint in one tenant). Mirror the 106 bootstrap
+	// derivation instead: the 12-character head plus a colon and the first
+	// 16 hex characters of the digest. Verification matches on
+	// left(token_prefix, 12) plus exact digest equality, so the suffixed
+	// form resolves exactly the same row while staying unique per subject.
+	prefix := secret[:12] + ":" + hex.EncodeToString(digest)[:16]
+	if err := h.admin.QueryRow(ctx, `INSERT INTO api_tokens(tenant_id,public_id,name,token_prefix,token_digest,subject_user_id,scopes,workspace_ids) SELECT $1,$2,'harness',$3,$4,u.id,'{}','{}' FROM app_users u WHERE u.tenant_id=$1 AND u.public_id=$5 ON CONFLICT (tenant_id,token_digest) DO UPDATE SET revoked_at=NULL,updated_at=now() RETURNING public_id`, tenant, uuid.New(), prefix, digest, subject).Scan(&tokenID); err != nil {
+		t.Fatalf("seed harness token: %v", err)
+	}
+	provenanceMac := hmac.New(sha256.New, digest)
+	provenanceMac.Write([]byte(tenant.String() + ":" + subject.String() + ":" + strconv.FormatInt(grantVersion, 10) + ":" + tokenID.String()))
+	return secret, "v1:" + tokenID.String() + ":" + hex.EncodeToString(provenanceMac.Sum(nil))
+}
+
+// newAuthorizedTestStore builds an AuthorizedStore whose grant digest is
+// verify-minted binding provenance, matching the mediated
+// cortex_bind_principal contract installed by 106: a configured or
+// arbitrary digest string can no longer authenticate a bind.
+func newAuthorizedTestStore(t *testing.T, h *postgresHarness, tenant, workspace, subject uuid.UUID) *AuthorizedStore {
+	t.Helper()
+	_, provenance := mintBindingProvenance(t, h, tenant, subject, 1, "test-digest")
+	p := domain.Principal{Subject: subject.String(), Type: "user", OrgID: tenant.String(), GrantDigest: provenance, GrantVersion: 1}
 	if workspace != uuid.Nil {
 		p.WorkspaceIDs = []string{workspace.String()}
 	}
@@ -58,13 +110,28 @@ func newAuthorizedTestStore(t *testing.T, h *postgresHarness, tenant, workspace,
 	return store
 }
 
+// listedUser locates one user by public id in a mediated listing. Listings
+// can contain the harness binder alongside the users under test, and
+// created_at ties make positional indexing non-deterministic, so assertions
+// resolve their subject by identity instead of by order.
+func listedUser(t *testing.T, users []identity.UserRecord, id string) identity.UserRecord {
+	t.Helper()
+	for i := range users {
+		if users[i].ID == id {
+			return users[i]
+		}
+	}
+	t.Fatalf("user %s missing from listing", id)
+	return identity.UserRecord{}
+}
+
 func newPostgresHarness(t *testing.T) *postgresHarness {
 	t.Helper()
 	dsn := os.Getenv("CORTEX_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Fatal("CORTEX_TEST_POSTGRES_DSN is required for postgres_integration tests")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	adminDSN := os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
 	if adminDSN == "" {
@@ -82,11 +149,28 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 		adminPool.Close()
 		t.Fatal(err)
 	}
-	if _, err := adminPool.Exec(ctx, `CREATE TABLE IF NOT EXISTS cortex_server_migrations (version integer PRIMARY KEY, name text NOT NULL, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		t.Fatalf("create migration ledger: %v", err)
+	// Apply the COMPLETE embedded server migration line (100..head) through
+	// the checksummed migration runner in deterministic version order —
+	// never a single raw baseline exec. A raw 100-only exec leaves 101-106
+	// unapplied and, because migration 100 CREATE OR REPLACEs
+	// cortex_bind_principal, re-running it on an already-migrated database
+	// silently reverts the 106-mediated binder to the baseline definition,
+	// making mediated identity/token results depend on which test ran first.
+	adminDB, err := sql.Open("pgx", adminDSN)
+	if err != nil {
+		t.Fatalf("open migration runner database: %v", err)
 	}
-	if _, err := adminPool.Exec(ctx, servermigrations.ServerSQL); err != nil {
-		t.Fatalf("apply W11 server schema: %v", err)
+	if err := adminDB.PingContext(ctx); err != nil {
+		_ = adminDB.Close()
+		t.Fatalf("ping migration runner database: %v", err)
+	}
+	if err := migration.ApplyPostgresServerMigrations(ctx, adminDB); err != nil {
+		_ = adminDB.Close()
+		t.Fatalf("apply embedded server migration sequence: %v", err)
+	}
+	assertServerMigrationHead(t, adminDB)
+	if err := adminDB.Close(); err != nil {
+		t.Fatalf("close migration runner database: %v", err)
 	}
 	// The application DSN is a real login, never a superuser session that is
 	// narrowed with SET ROLE. Grant only the schema role to that login. Table,
@@ -130,6 +214,48 @@ func migrationDSN() string {
 		return dsn
 	}
 	return os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+}
+
+// assertServerMigrationHead proves the harness database carries exactly the
+// complete embedded server migration line before any test logic runs: every
+// migration 100..head is ledgered with a checksum-matching row, the ledger
+// records no extra or missing versions, and the mediated identity path the
+// store package depends on (the 106 verify-minted provenance machinery) is
+// actually installed in the schema. It fails closed on any drift so a stale,
+// partially migrated, or reverted database can never produce order-dependent
+// results.
+func assertServerMigrationHead(t *testing.T, db *sql.DB) {
+	t.Helper()
+	migrations, err := migration.NewPostgresServerMigrations()
+	if err != nil {
+		t.Fatalf("load embedded server migrations: %v", err)
+	}
+	head := 0
+	for _, m := range migrations {
+		if err := m.VerifyApplied(context.Background(), db); err != nil {
+			t.Fatalf("server migration sequence incomplete: %v", err)
+		}
+		if m.Version() > head {
+			head = m.Version()
+		}
+	}
+	var ledgerHead, ledgerRows int
+	if err := db.QueryRow(`SELECT max(version), count(*) FROM cortex_server_migrations`).Scan(&ledgerHead, &ledgerRows); err != nil {
+		t.Fatalf("read migration ledger head: %v", err)
+	}
+	if ledgerHead != head || ledgerRows != len(migrations) {
+		t.Fatalf("migration ledger head=%d rows=%d; want head=%d rows=%d (exactly versions 100..%d)", ledgerHead, ledgerRows, head, len(migrations), head)
+	}
+	// The mediated verify/binder contract from the head migration must be
+	// present: every mediated identity/token test binds through
+	// verify-minted provenance rather than a stored grant digest.
+	var mediated bool
+	if err := db.QueryRow(`SELECT to_regprocedure('public.cortex_verify_token_principal(text,bytea,text)') IS NOT NULL`).Scan(&mediated); err != nil {
+		t.Fatalf("probe mediated verifier: %v", err)
+	}
+	if !mediated {
+		t.Fatal("public.cortex_verify_token_principal(text,bytea,text) is absent; the mediated identity path from the migration head is not installed")
+	}
 }
 
 func (h *postgresHarness) begin(t *testing.T) (pgx.Tx, context.Context) {
@@ -252,7 +378,11 @@ func TestPostgresW11MigrationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Errorf("close migration database: %v", closeErr)
+		}
+	}()
 	m, err := migration.NewPostgresServerMigration()
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +476,9 @@ func w11ForwardOnlySnapshot(t *testing.T, db *sql.DB) string {
 		}
 		fmt.Fprintf(&b, "col|%s|%s|%s\n", table, column, dataType)
 	}
-	columns.Close()
+	if err := columns.Close(); err != nil {
+		t.Fatalf("close columns snapshot rows: %v", err)
+	}
 	if err := columns.Err(); err != nil {
 		t.Fatalf("iterate columns: %v", err)
 	}
@@ -363,7 +495,9 @@ func w11ForwardOnlySnapshot(t *testing.T, db *sql.DB) string {
 		}
 		fmt.Fprintf(&b, "ledger|%d|%s|%s\n", version, name, checksum)
 	}
-	ledger.Close()
+	if err := ledger.Close(); err != nil {
+		t.Fatalf("close ledger snapshot rows: %v", err)
+	}
 	if err := ledger.Err(); err != nil {
 		t.Fatalf("iterate ledger: %v", err)
 	}
@@ -410,7 +544,11 @@ func TestPostgresW11AppRoleRequiresBoundTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+			t.Errorf("rollback unbound-role transaction: %v", rollbackErr)
+		}
+	}()
 	var tenant any
 	if err := tx.QueryRow(ctx, `SELECT public.cortex_current_tenant()`).Scan(&tenant); err != nil {
 		t.Fatal(err)
@@ -670,5 +808,128 @@ func TestPostgresW11RepositoryConformance(t *testing.T) {
 	}
 	if _, err := store.observations().GetByPublicID(ctx, o.PublicID); err == nil {
 		t.Fatal("soft-deleted observation remained visible")
+	}
+}
+
+// TestPostgresUserRepositoryMediatedLifecycle pins REQ-IDP-009/010: user
+// creation, listing, and activation execute through the mediated definer
+// routines, stay transaction-atomic, and surface the historical public
+// behavior (records, grant versions, not-found taxonomy).
+func TestPostgresUserRepositoryMediatedLifecycle(t *testing.T) {
+	h := newPostgresHarness(t)
+	ctx := context.Background()
+	tenant := uuid.New()
+	if _, err := h.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,$2)`, tenant, "user-org"); err != nil {
+		t.Fatal(err)
+	}
+	// The admin caller carries the durable owner role so the ActionManage
+	// gates on the public operations still front the mediated repositories.
+	adminSubject := uuid.New()
+	_, adminProvenance := mintBindingProvenance(t, h, tenant, adminSubject, 1, "test-digest")
+	adminPrincipal := domain.Principal{Subject: adminSubject.String(), Type: "user", OrgID: tenant.String(), Roles: []string{"owner"}, GrantDigest: adminProvenance, GrantVersion: 1}
+	admin, err := NewAuthorizedStore(h.pool, authz.AuthorizedContext{Principal: adminPrincipal, Tenant: domain.TenantContext{TenantID: tenant.String()}, GrantDigest: adminProvenance})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := admin.CreateUser(ctx, identity.UserCreate{
+		Email: "Mediated@Cortex.Test", DisplayName: " Mediated User ",
+		Roles: []string{"admin", "admin"}, Workspaces: []string{uuid.NewString()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.GrantVersion != 1 || !created.Active || created.Email != "mediated@cortex.test" || created.DisplayName != "Mediated User" {
+		t.Fatalf("created record=%+v", created)
+	}
+	if created.CreatedAt.IsZero() {
+		t.Fatal("created_at missing")
+	}
+	// Duplicate grants are canonicalized; provisioning is mediated and
+	// audit-atomic, and the persisted actor digest is recomputed in SQL.
+	var storedDigest string
+	var storedVersion int64
+	if err := h.admin.QueryRow(ctx, `SELECT grant_digest,grant_version FROM actor_subjects WHERE tenant_id=$1 AND public_id=$2`, tenant, created.ID).Scan(&storedDigest, &storedVersion); err != nil {
+		t.Fatalf("mediated provisioning left no actor row: %v", err)
+	}
+	if storedVersion != 1 || len(storedDigest) != 64 {
+		// The digest value itself is never printable in a diagnostic; its
+		// length carries the same assertion strength without the secret.
+		t.Fatalf("stored actor digest length=%d version=%d", len(storedDigest), storedVersion)
+	}
+	var grantCount int
+	if err := h.admin.QueryRow(ctx, `SELECT count(*) FROM principal_grants WHERE tenant_id=$1 AND actor_public_id=$2`, tenant, created.ID).Scan(&grantCount); err != nil {
+		t.Fatal(err)
+	}
+	if grantCount != 2 {
+		t.Fatalf("persisted grants=%d, want 2 (role+workspace after dedup)", grantCount)
+	}
+
+	// The mediated listing is app_users-driven and keeps every user whose
+	// provisioned actor reads back, so the harness binder itself (a seeded
+	// app_user with an owner grant) lists alongside the created user:
+	// exactly two, located by public id since created_at ties make the
+	// ordering non-deterministic.
+	users, err := admin.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("listed users=%d, want 2 (harness binder + created)", len(users))
+	}
+	got := listedUser(t, users, created.ID)
+	if got.Email != created.Email || got.GrantVersion != 1 {
+		t.Fatalf("listed user=%+v", got)
+	}
+	if len(got.Roles) != 1 || got.Roles[0] != "admin" || len(got.Workspaces) != 1 {
+		t.Fatalf("listed grants roles=%v workspaces=%v", got.Roles, got.Workspaces)
+	}
+
+	if err := admin.SetUserActive(ctx, created.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	afterDisable, err := admin.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := listedUser(t, afterDisable, created.ID)
+	if disabled.Active {
+		t.Fatal("disabled user still listed active")
+	}
+	if disabled.GrantVersion != 2 {
+		t.Fatalf("disable grant version=%d, want 2", disabled.GrantVersion)
+	}
+	if err := admin.SetUserActive(ctx, created.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	afterEnable, err := admin.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := listedUser(t, afterEnable, created.ID)
+	if !enabled.Active || enabled.GrantVersion != 3 {
+		t.Fatalf("enable record=%+v", enabled)
+	}
+	// Disabling again revokes live tokens of the actor in the same mediated
+	// transaction; reactivation never revives them.
+	issued, err := admin.tokens().Issue(ctx, identity.TokenIssue{Subject: created.ID, OrgID: tenant.String(), Scopes: []string{"read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.SetUserActive(ctx, created.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.tokens().Verify(ctx, issued.Secret, "read"); !errors.Is(err, identity.ErrInvalidToken) {
+		t.Fatalf("disabled actor token error=%v, want ErrInvalidToken", err)
+	}
+
+	if err := admin.SetUserActive(ctx, uuid.NewString(), false); err == nil || !strings.Contains(err.Error(), "user") {
+		t.Fatalf("unknown user error=%v, want user not found", err)
+	}
+	if _, err := admin.CreateUser(ctx, identity.UserCreate{Email: "mediated@cortex.test", DisplayName: "Dup", Roles: []string{"admin"}}); err == nil {
+		t.Fatal("duplicate email accepted")
+	}
+	if _, err := admin.CreateUser(ctx, identity.UserCreate{Email: "", DisplayName: "No Email", Roles: []string{"admin"}}); err == nil {
+		t.Fatal("invalid user accepted")
 	}
 }

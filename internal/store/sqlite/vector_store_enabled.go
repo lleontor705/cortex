@@ -8,7 +8,6 @@
 package sqlite
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -140,18 +139,47 @@ func (s *VectorStore) SearchByVector(ctx context.Context, opts domain.VectorSear
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Calculate similarity for each result
+	// Calculate similarity for each result. The scratch buffer (reused
+	// across rows, call-local so concurrent searches never share it)
+	// eliminates the per-row embedding/normalization allocations of the
+	// previous pipeline.
+	var scratch []float64
 	results := make([]*domain.VectorSearchResult, 0, opts.Limit)
 	for rows.Next() {
-		result, similarity, err := s.scanVectorResultWithSimilarity(rows, queryNorm)
+		var result domain.VectorSearchResult
+		var createdAtStr, updatedAtStr string
+		var topicKey sql.NullString
+		var project sql.NullString
+		var embeddingBlob []byte
+		var model string
+
+		err := rows.Scan(
+			&result.ID, &result.SessionID, &result.Type, &result.Title, &result.Content,
+			&project, &result.Scope, &topicKey,
+			&createdAtStr, &updatedAtStr,
+			&embeddingBlob, &model,
+		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("vector store: scan result: %w", err)
+		}
+
+		result.Project = project.String
+		if topicKey.Valid {
+			result.TopicKey = topicKey.String
+		}
+		result.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		result.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
+
+		var similarity float64
+		similarity, scratch, err = similarityFromEmbeddingBlob(queryNorm, embeddingBlob, scratch)
+		if err != nil {
+			return nil, fmt.Errorf("vector store: deserialize embedding: %w", err)
 		}
 
 		// Apply threshold filter
 		if similarity >= opts.Threshold {
 			result.Similarity = similarity
-			results = append(results, result)
+			results = append(results, &result)
 		}
 	}
 
@@ -235,6 +263,12 @@ func serializeEmbedding(embedding []float32) ([]byte, error) {
 }
 
 // deserializeEmbedding converts a binary BLOB back to a float32 slice.
+// It decodes each element with the same math.Float32frombits(
+// binary.LittleEndian.Uint32(...)) conversion the previous bytes.NewReader +
+// per-element binary.Read pipeline performed, bit-for-bit, without the
+// per-element reflection overhead. Trailing bytes of a blob whose length is
+// not a multiple of 4 are ignored, exactly like the previous reader-based
+// decode, which consumed only len(data)/4 complete floats.
 func deserializeEmbedding(data []byte) ([]float32, error) {
 	dimension := len(data) / 4 // float32 is 4 bytes
 	if dimension == 0 {
@@ -242,11 +276,8 @@ func deserializeEmbedding(data []byte) ([]float32, error) {
 	}
 
 	embedding := make([]float32, dimension)
-	buf := bytes.NewReader(data)
 	for i := range embedding {
-		if err := binary.Read(buf, binary.LittleEndian, &embedding[i]); err != nil {
-			return nil, err
-		}
+		embedding[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
 	}
 	return embedding, nil
 }
@@ -321,49 +352,57 @@ func computeCosineSimilarity(queryNorm []float64, embedding []float32) float64 {
 	return dot
 }
 
+// similarityFromEmbeddingBlob computes the cosine similarity between the
+// normalized query and a raw little-endian float32 embedding BLOB without
+// materializing an intermediate []float32 per row.
+//
+// It is bit-exact with the previous deserializeEmbedding +
+// computeCosineSimilarity pipeline: every element is decoded with the same
+// float32 bit conversion, widened to float64, squared/accumulated in the same
+// element order, normalized with the same float64 division per element, and
+// dot-accumulated in the same order. scratch is reused across rows of one
+// scan and grown on demand; it MUST NOT be shared between concurrent calls
+// (SearchByVector allocates it per invocation).
+func similarityFromEmbeddingBlob(queryNorm []float64, data []byte, scratch []float64) (float64, []float64, error) {
+	dimension := len(data) / 4
+	if dimension == 0 {
+		return 0, scratch, fmt.Errorf("empty embedding data")
+	}
+	if cap(scratch) < dimension {
+		scratch = make([]float64, dimension)
+	}
+	emb := scratch[:dimension]
+
+	var norm float64
+	for i := range emb {
+		v := math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
+		emb[i] = float64(v)
+		norm += emb[i] * emb[i]
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for i := range emb {
+			emb[i] /= norm
+		}
+	}
+
+	// Since the query is normalized, cosine similarity = dot product.
+	if len(queryNorm) != len(emb) {
+		log.Printf("warning: cosine similarity dimension mismatch: query=%d stored=%d", len(queryNorm), len(emb))
+		return 0, scratch, nil
+	}
+	var dot float64
+	for i := range queryNorm {
+		dot += queryNorm[i] * emb[i]
+	}
+	return dot, scratch, nil
+}
+
 // sortBySimilarity sorts results by similarity score in descending order.
 func sortBySimilarity(results []*domain.VectorSearchResult) {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Similarity > results[j].Similarity
 	})
-}
-
-// scanVectorResultWithSimilarity scans a row and computes similarity.
-func (s *VectorStore) scanVectorResultWithSimilarity(rows *sql.Rows, queryNorm []float64) (*domain.VectorSearchResult, float64, error) {
-	var result domain.VectorSearchResult
-	var createdAtStr, updatedAtStr string
-	var topicKey sql.NullString
-	var project sql.NullString
-	var embeddingBlob []byte
-	var model string
-
-	err := rows.Scan(
-		&result.ID, &result.SessionID, &result.Type, &result.Title, &result.Content,
-		&project, &result.Scope, &topicKey,
-		&createdAtStr, &updatedAtStr,
-		&embeddingBlob, &model,
-	)
-	if err != nil {
-		return nil, 0, fmt.Errorf("vector store: scan result: %w", err)
-	}
-
-	result.Project = project.String
-	if topicKey.Valid {
-		result.TopicKey = topicKey.String
-	}
-	result.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
-	result.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
-
-	// Deserialize embedding and compute similarity
-	embedding, err := deserializeEmbedding(embeddingBlob)
-	if err != nil {
-		return nil, 0, fmt.Errorf("vector store: deserialize embedding: %w", err)
-	}
-
-	similarity := computeCosineSimilarity(queryNorm, embedding)
-
-	result.Similarity = similarity
-	return &result, similarity, nil
 }
 
 // Ensure VectorStore implements domain.VectorRepository

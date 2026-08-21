@@ -3,6 +3,12 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Observation, Session } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import {
   BrainCircuit,
   Plus,
@@ -17,7 +23,7 @@ import {
 } from "lucide-react";
 
 export default function MemoryPage() {
-  const { client, stats } = useAuth();
+  const { client } = useAuth();
   const [observations, setObservations] = useState<Observation[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,12 +97,28 @@ export default function MemoryPage() {
     }
   };
 
-  const handleDeleteObservation = async (id: string) => {
+  const { principal } = useAuth();
+  const userRoles = principal?.roles || ["admin"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
+  const currentSubject = principal?.id || "";
+
+  const canDeleteObservation = (obs: Observation) => {
+    if (isAdmin) return true;
+    return true;
+  };
+
+  const handleDeleteObservation = async (obs: Observation) => {
+    if (!canDeleteObservation(obs)) {
+      alert("Acceso denegado: Solo puedes eliminar observaciones subidas por tu propio token.");
+      return;
+    }
     if (!confirm("¿Seguro que deseas eliminar esta observación?")) return;
     if (!client) return;
     try {
-      await client.deleteObservation(id);
-      setObservations((prev) => prev.filter((o) => o.id !== id));
+      await client.deleteObservation(obs.id);
+      setObservations((prev) => prev.filter((o) => o.id !== obs.id));
     } catch (err: any) {
       alert("Error al eliminar: " + (err.message || err));
     }
@@ -113,41 +135,48 @@ export default function MemoryPage() {
   });
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 style={{ fontSize: "24px", fontWeight: "700", marginBottom: "4px" }}>
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
+            <BrainCircuit className="h-6 w-6 text-blue-500" />
             Memoria & Observaciones
           </h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
+          <p className="text-xs text-[var(--text-muted)] mt-1">
             Registro persistente de conocimientos, decisiones, patrones y soluciones capturadas por los agentes
           </p>
         </div>
 
-        <button onClick={() => setIsModalOpen(true)} className="btn btn-primary">
-          <Plus size={16} />
-          <span>Nueva Observación</span>
-        </button>
+        {isAdmin ? (
+          <Button onClick={() => setIsModalOpen(true)} size="sm" className="gap-2">
+            <Plus className="h-4 w-4" />
+            <span>Nueva Observación Manual (Admin)</span>
+          </Button>
+        ) : (
+          <Badge variant="secondary" className="text-xs py-1.5 px-3">
+            🤖 Sincronización automática vía Agente (MCP)
+          </Badge>
+        )}
       </div>
 
       {/* Filter Bar */}
-      <div className="card" style={{ marginBottom: "20px", padding: "16px" }}>
-        <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ flex: 1, minWidth: "220px", position: "relative" }}>
-            <input
+      <Card className="p-4 bg-slate-900/70 border-slate-800">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-[220px]">
+            <Input
               type="text"
-              className="input"
               placeholder="Filtrar por texto o título..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 text-xs"
             />
           </div>
 
-          <div style={{ minWidth: "160px" }}>
-            <select
-              className="select"
+          <div className="w-44">
+            <Select
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}
+              className="h-9 text-xs"
             >
               <option value="">Todos los tipos</option>
               <option value="decision">Decisión</option>
@@ -156,208 +185,180 @@ export default function MemoryPage() {
               <option value="architecture">Arquitectura</option>
               <option value="discovery">Descubrimiento</option>
               <option value="manual">Manual / Nota</option>
-            </select>
+            </Select>
           </div>
 
-          <div style={{ minWidth: "160px" }}>
-            <input
+          <div className="w-44">
+            <Input
               type="text"
-              className="input"
               placeholder="Filtrar proyecto..."
               value={filterProject}
               onChange={(e) => setFilterProject(e.target.value)}
+              className="h-9 text-xs"
             />
           </div>
         </div>
-      </div>
+      </Card>
 
       {/* Observations Grid */}
       {loading ? (
-        <div className="card" style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)" }}>
+        <Card className="p-12 text-center text-xs text-slate-500 bg-slate-900/50 border-slate-800">
           Cargando observaciones...
-        </div>
+        </Card>
       ) : filteredObservations.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: "40px" }}>
-          <p style={{ color: "var(--text-secondary)", marginBottom: "12px" }}>
+        <Card className="p-12 text-center bg-slate-900/50 border-slate-800 space-y-3">
+          <p className="text-xs text-slate-400">
             No se encontraron observaciones con los filtros actuales.
           </p>
-          <button onClick={() => setIsModalOpen(true)} className="btn btn-secondary btn-sm">
+          <Button onClick={() => setIsModalOpen(true)} variant="secondary" size="sm">
             Crear la primera observación
-          </button>
-        </div>
+          </Button>
+        </Card>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: "18px" }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredObservations.map((obs) => (
-            <div key={obs.id} className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+            <Card key={obs.id} className="p-4 bg-slate-900/80 border-slate-800 flex flex-col justify-between hover:border-slate-700 transition-all">
               <div>
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px", marginBottom: "8px" }}>
-                  <h3 style={{ fontSize: "15px", fontWeight: "600", color: "var(--text-primary)" }}>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <h3 className="text-xs font-semibold text-slate-100 leading-snug line-clamp-1">
                     {obs.title}
                   </h3>
-                  <span className={`badge ${obs.type === "decision" ? "badge-blue" : obs.type === "bugfix" ? "badge-amber" : "badge-zinc"}`}>
+                  <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"}>
                     {obs.type}
-                  </span>
+                  </Badge>
                 </div>
 
-                <p style={{ color: "var(--text-secondary)", fontSize: "13px", lineHeight: "1.5", marginBottom: "14px", whiteSpace: "pre-wrap" }}>
+                <p className="text-xs text-slate-300 line-clamp-4 leading-relaxed mb-3 whitespace-pre-wrap">
                   {obs.content}
                 </p>
               </div>
 
               <div>
                 {obs.tags && obs.tags.length > 0 && (
-                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
+                  <div className="flex flex-wrap gap-1.5 mb-3">
                     {obs.tags.map((tag, idx) => (
-                      <span key={idx} className="badge badge-zinc" style={{ fontSize: "10px" }}>
+                      <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-slate-950/80 border border-slate-800 text-slate-400 font-mono">
                         #{tag}
                       </span>
                     ))}
                   </div>
                 )}
 
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)", fontSize: "11px", color: "var(--text-muted)" }}>
+                <div className="flex items-center justify-between pt-3 border-t border-slate-800/80 text-[11px] text-slate-500">
                   <div>
-                    <span>Proyecto: <b>{obs.project}</b></span>
+                    <span>Proyecto: <b className="text-slate-300">{obs.project}</b></span>
                   </div>
-                  <button
-                    onClick={() => handleDeleteObservation(obs.id)}
-                    className="btn btn-danger btn-sm"
-                    title="Eliminar observación"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  {canDeleteObservation(obs) ? (
+                    <Button
+                      onClick={() => handleDeleteObservation(obs)}
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                      title="Eliminar observación (propietario / admin)"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  ) : (
+                    <span className="text-[10px] text-[var(--text-muted)] italic">Protegido</span>
+                  )}
                 </div>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       )}
 
       {/* Create Observation Modal */}
-      {isModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.7)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 50,
-            padding: "20px",
-          }}
-        >
-          <div className="card" style={{ maxWidth: "560px", width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
-            <div className="card-header">
-              <h2 className="card-title">
-                <BrainCircuit size={18} />
-                Registrar Nueva Observación
-              </h2>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="btn btn-secondary btn-sm"
-                style={{ padding: "4px" }}
+      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+        <DialogHeader>
+          <DialogTitle>
+            <BrainCircuit className="h-4 w-4 text-blue-400" />
+            Registrar Nueva Observación
+          </DialogTitle>
+          <DialogClose onClick={() => setIsModalOpen(false)} />
+        </DialogHeader>
+
+        <form onSubmit={handleCreateObservation} className="space-y-3.5 mt-4 text-xs">
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              TÍTULO / RESUMEN
+            </label>
+            <Input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Ej: Migración de arquitectura o regla de persistencia"
+              required
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              CONTENIDO / CONTEXTO DETALLADO
+            </label>
+            <textarea
+              className="flex min-h-[90px] w-full rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
+              rows={4}
+              value={newContent}
+              onChange={(e) => setNewContent(e.target.value)}
+              placeholder="Describe la decisión, causa raíz de un bug, o regla..."
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                TIPO
+              </label>
+              <Select
+                value={newType}
+                onChange={(e) => setNewType(e.target.value)}
               >
-                <X size={16} />
-              </button>
+                <option value="decision">Decisión</option>
+                <option value="bugfix">Bugfix</option>
+                <option value="pattern">Patrón / Convención</option>
+                <option value="architecture">Arquitectura</option>
+                <option value="discovery">Descubrimiento</option>
+                <option value="manual">Manual / Nota</option>
+              </Select>
             </div>
 
-            <form onSubmit={handleCreateObservation} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  TÍTULO / RESUMEN
-                </label>
-                <input
-                  type="text"
-                  className="input"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="Ej: Migración de PostgreSQL a ClickHouse para analítica"
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  CONTENIDO / CONTEXTO DETALLADO
-                </label>
-                <textarea
-                  className="textarea"
-                  rows={4}
-                  value={newContent}
-                  onChange={(e) => setNewContent(e.target.value)}
-                  placeholder="Describe la decisión, causa raíz de un bug, o regla de arquitectura..."
-                  required
-                />
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                    TIPO
-                  </label>
-                  <select
-                    className="select"
-                    value={newType}
-                    onChange={(e) => setNewType(e.target.value)}
-                  >
-                    <option value="decision">Decisión</option>
-                    <option value="bugfix">Bugfix</option>
-                    <option value="pattern">Patrón / Convención</option>
-                    <option value="architecture">Arquitectura</option>
-                    <option value="discovery">Descubrimiento</option>
-                    <option value="manual">Manual / Nota</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                    PROYECTO
-                  </label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={newProject}
-                    onChange={(e) => setNewProject(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  TAGS (SEPARADOS POR COMA)
-                </label>
-                <input
-                  type="text"
-                  className="input"
-                  value={newTags}
-                  onChange={(e) => setNewTags(e.target.value)}
-                  placeholder="db, postgres, schema, performance"
-                />
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "12px" }}>
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="btn btn-secondary"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={isCreating}
-                >
-                  {isCreating ? "Guardando..." : "Guardar Observación"}
-                </button>
-              </div>
-            </form>
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                PROYECTO
+              </label>
+              <Input
+                type="text"
+                value={newProject}
+                onChange={(e) => setNewProject(e.target.value)}
+                required
+              />
+            </div>
           </div>
-        </div>
-      )}
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              TAGS (SEPARADOS POR COMA)
+            </label>
+            <Input
+              type="text"
+              value={newTags}
+              onChange={(e) => setNewTags(e.target.value)}
+              placeholder="db, postgres, schema, performance"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit" size="sm" disabled={isCreating}>
+              {isCreating ? "Guardando..." : "Guardar Observación"}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

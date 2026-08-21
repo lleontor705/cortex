@@ -1,14 +1,32 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useRef, useState, useEffect } from "react";
 import { CortexClient, Principal, ServerStats } from "./api";
+import { AuthAttemptCoordinator } from "./auth-attempts";
+import {
+  loadPreferences,
+  purgeLegacySecrets,
+  saveLLMPreferences,
+  saveServerUrl,
+} from "./prefs";
+import { refreshSnapshot, runLoginHandshake } from "./auth-handshake";
+import { validateBearerDestination } from "./transport-policy";
 
 interface AuthContextType {
   serverUrl: string;
   token: string;
+  /**
+   * Reset generation: advances on every terminal auth event (initial-login
+   * 401, logout, 401 invalidation, or a superseded/abandoned attempt).
+   * Secret-holding components key their local secret reset on this number
+   * instead of on the token VALUE, because a value-keyed mirror cannot
+   * clear typed state when the provider token was already empty.
+   */
+  resetGeneration: number;
   llmApiKey: string;
   llmProvider: string;
   llmModel: string;
+  llmBaseURL: string;
   client: CortexClient | null;
   principal: Principal | null;
   stats: ServerStats | null;
@@ -16,7 +34,7 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   setCredentials: (url: string, token: string) => Promise<boolean>;
-  setLLMCredentials: (apiKey: string, provider: string, model: string) => void;
+  setLLMCredentials: (apiKey: string, provider: string, model: string, baseURL?: string) => void;
   refreshState: () => Promise<void>;
   logout: () => void;
 }
@@ -29,6 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [llmApiKey, setLlmApiKey] = useState<string>("");
   const [llmProvider, setLlmProvider] = useState<string>("openai");
   const [llmModel, setLlmModel] = useState<string>("gpt-4o-mini");
+  const [llmBaseURL, setLlmBaseURL] = useState<string>("");
 
   const [client, setClient] = useState<CortexClient | null>(null);
   const [principal, setPrincipal] = useState<Principal | null>(null);
@@ -36,113 +55,158 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [resetGeneration, setResetGeneration] = useState<number>(0);
+
+  // Serializes concurrent logins and makes logout/401 terminal: a handshake
+  // may only commit while it still owns the coordinator's session slot.
+  // Every terminal supersede advances the coordinator's epoch and pushes it
+  // into resetGeneration, the explicit reset EVENT consumed by every
+  // secret-holding component.
+  const attemptsRef = useRef<AuthAttemptCoordinator | null>(null);
+  if (!attemptsRef.current) {
+    attemptsRef.current = new AuthAttemptCoordinator((generation) => {
+      setResetGeneration(generation);
+    });
+  }
 
   useEffect(() => {
-    // Load persisted credentials on mount
-    const savedUrl = localStorage.getItem("cortex_server_url") || "http://localhost:7438";
-    const savedToken = localStorage.getItem("cortex_token") || "";
-    const savedLLMKey = localStorage.getItem("cortex_llm_key") || "";
-    const savedLLMProvider = localStorage.getItem("cortex_llm_provider") || "openai";
-    const savedLLMModel = localStorage.getItem("cortex_llm_model") || "gpt-4o-mini";
-
-    setServerUrl(savedUrl);
-    setToken(savedToken);
-    setLlmApiKey(savedLLMKey);
-    setLlmProvider(savedLLMProvider);
-    setLlmModel(savedLLMModel);
-
-    if (savedToken) {
-      const cli = new CortexClient(savedUrl, savedToken, () => {
-        setIsConnected(false);
-        setError("Session expired or unauthorized");
-      });
-      setClient(cli);
-
-      cli.health()
-        .then(() => cli.me())
-        .then((p) => {
-          setPrincipal(p);
-          setIsConnected(true);
-          return cli.stats();
-        })
-        .then((s) => {
-          setStats(s);
-          setError(null);
-        })
-        .catch((err) => {
-          setIsConnected(false);
-          setError(err.message || "Failed to connect to Cortex server");
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    } else {
-      setIsLoading(false);
-    }
+    // Bearer tokens and LLM keys are memory-only: they are never read from
+    // (or written to) any persistent storage, so a reload always starts
+    // disconnected. Only non-secret preferences survive restarts, and any
+    // secrets persisted by legacy builds are purged eagerly.
+    const storage = window.localStorage;
+    purgeLegacySecrets(storage);
+    const prefs = loadPreferences(storage);
+    setServerUrl(prefs.serverUrl);
+    setLlmProvider(prefs.llmProvider);
+    setLlmModel(prefs.llmModel);
+    setLlmBaseURL(prefs.llmBaseURL);
+    setIsLoading(false);
   }, []);
+
+  // Single sweeper for every live secret reference in this provider.
+  // Used by both logout and the 401 invalidation callback so no path can
+  // leave a bearer token, LLM key, client, or snapshot behind. It also
+  // supersedes the attempt coordinator, so any still-pending handshake
+  // becomes terminal and its client is aborted before state is cleared.
+  const clearLiveSecrets = () => {
+    attemptsRef.current?.supersede();
+    setToken("");
+    setLlmApiKey("");
+    setClient(null);
+    setPrincipal(null);
+    setStats(null);
+    setIsConnected(false);
+    setIsLoading(false);
+  };
 
   const setCredentials = async (url: string, tok: string): Promise<boolean> => {
     setIsLoading(true);
     setError(null);
-    try {
-      const cli = new CortexClient(url, tok, () => {
-        setIsConnected(false);
-        setError("Unauthorized");
-      });
 
-      await cli.health();
-      const p = await cli.me().catch(() => null);
-      const s = await cli.stats().catch(() => null);
+    // Enforce HTTPS (or strict-loopback HTTP) before any client exists
+    // that could transmit the bearer token.
+    try {
+      validateBearerDestination(url);
+    } catch (err: any) {
+      setError(err.message || "Failed to authenticate with Cortex");
+      setIsConnected(false);
+      setIsLoading(false);
+      return false;
+    }
+
+    const coordinator = attemptsRef.current!;
+    // Set when the client invalidates itself (401) during the handshake.
+    let invalidated = false;
+    let epoch = -1;
+    const cli = new CortexClient(url, tok, () => {
+      // The client already invalidated itself (token cleared, in-flight
+      // requests aborted) before invoking this callback. The sweep is only
+      // allowed while this attempt still owns the session slot: a stale
+      // attempt's late 401 must not clear a newer session's state.
+      invalidated = true;
+      if (epoch >= 0 && coordinator.isCurrent(epoch)) {
+        clearLiveSecrets();
+        setError("Session expired or unauthorized");
+      }
+    });
+    // Supersedes (and aborts) any earlier pending attempt before this one
+    // becomes the slot owner.
+    epoch = coordinator.begin(cli);
+
+    try {
+      const result = await runLoginHandshake(cli);
+      if (!coordinator.finish(epoch, cli)) {
+        // A logout, 401 invalidation, or newer attempt superseded this
+        // handshake while it was in flight: terminal, commit nothing.
+        return false;
+      }
+      if (!result.ok || invalidated) {
+        // A 401 anywhere in the handshake is terminal: the client has
+        // already cleared its token, so the React token/connected state
+        // must never be restored from this attempt.
+        coordinator.abandon(epoch, cli);
+        setIsConnected(false);
+        setError(
+          result.ok
+            ? "Session expired or unauthorized"
+            : result.message || "Failed to authenticate with Cortex",
+        );
+        return false;
+      }
 
       setServerUrl(url);
       setToken(tok);
       setClient(cli);
-      setPrincipal(p);
-      setStats(s);
+      setPrincipal(result.principal);
+      setStats(result.stats);
       setIsConnected(true);
 
-      localStorage.setItem("cortex_server_url", url);
-      localStorage.setItem("cortex_token", tok);
+      saveServerUrl(window.localStorage, url);
       return true;
-    } catch (err: any) {
-      setError(err.message || "Failed to authenticate with Cortex");
-      setIsConnected(false);
-      return false;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const setLLMCredentials = (apiKey: string, provider: string, model: string) => {
+  const setLLMCredentials = (
+    apiKey: string,
+    provider: string,
+    model: string,
+    baseURL: string = "",
+  ) => {
+    // The API key lives only in the memory of this tab; provider, model, and baseURL
+    // are non-secret preferences and may be persisted.
     setLlmApiKey(apiKey);
     setLlmProvider(provider);
     setLlmModel(model);
-    localStorage.setItem("cortex_llm_key", apiKey);
-    localStorage.setItem("cortex_llm_provider", provider);
-    localStorage.setItem("cortex_llm_model", model);
+    setLlmBaseURL(baseURL);
+    saveLLMPreferences(window.localStorage, provider, model, baseURL);
   };
 
   const refreshState = async () => {
     if (!client) return;
-    try {
-      const [p, s] = await Promise.all([
-        client.me().catch(() => null),
-        client.stats().catch(() => null),
-      ]);
-      setPrincipal(p);
-      setStats(s);
-    } catch (err) {
-      console.error("Failed to refresh state", err);
+    const snapshot = await refreshSnapshot(client);
+    if (snapshot.expired) {
+      // A 401 fired the invalidation callback, which already cleared the
+      // session state. Writing the stale snapshot would resurrect it.
+      return;
     }
+    if (!attemptsRef.current?.owns(client)) {
+      // A logout or newer login superseded this client mid-refresh: the
+      // stale snapshot must not overwrite the newer session state.
+      return;
+    }
+    setPrincipal(snapshot.principal);
+    setStats(snapshot.stats);
   };
 
   const logout = () => {
-    setToken("");
-    setClient(null);
-    setPrincipal(null);
-    setStats(null);
-    setIsConnected(false);
-    localStorage.removeItem("cortex_token");
+    // Abort in-flight requests and clear every live secret reference. The
+    // coordinator supersede inside clearLiveSecrets also aborts any client
+    // still held by a pending handshake, so it can never commit afterwards.
+    client?.invalidate();
+    clearLiveSecrets();
   };
 
   return (
@@ -150,9 +214,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         serverUrl,
         token,
+        resetGeneration,
         llmApiKey,
         llmProvider,
         llmModel,
+        llmBaseURL,
         client,
         principal,
         stats,

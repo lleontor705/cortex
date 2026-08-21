@@ -49,7 +49,11 @@ func TestEnsureMigrationRolesSerializesConcurrentBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(context.Background())
+	defer func() {
+		if closeErr := conn.Close(context.Background()); closeErr != nil {
+			t.Errorf("close role verification connection: %v", closeErr)
+		}
+	}()
 	var count int
 	if err := conn.QueryRow(context.Background(), `SELECT count(*) FROM pg_roles WHERE rolname IN ('cortex_app','cortex_admin','cortex_migration')`).Scan(&count); err != nil {
 		t.Fatal(err)

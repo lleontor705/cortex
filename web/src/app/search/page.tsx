@@ -3,6 +3,10 @@
 import React, { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Observation } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Search,
   Sliders,
@@ -12,6 +16,10 @@ import {
   Clock,
   CheckCircle,
   FolderGit2,
+  Layers,
+  ArrowRight,
+  Copy,
+  Check,
 } from "lucide-react";
 
 export default function SearchPlaygroundPage() {
@@ -22,6 +30,7 @@ export default function SearchPlaygroundPage() {
   const [count, setCount] = useState<number | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,131 +48,131 @@ export default function SearchPlaygroundPage() {
     }
   };
 
+  const copyId = (id: string) => {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1800);
+  };
+
   return (
-    <div>
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ fontSize: "24px", fontWeight: "700", marginBottom: "4px" }}>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+          <Search className="h-6 w-6 text-blue-500" />
           Retrieval Playground & Búsqueda Híbrida
         </h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-          Prueba de recuperación semántica con ponderación combinada de BM25, similitud vectorial coseno y expansión de grafo
+        <p className="text-xs text-slate-400 mt-1">
+          Motor de recuperación semántica con ponderación combinada de BM25, similitud vectorial coseno y reranking de grafo
         </p>
       </div>
 
       {/* Search Input Card */}
-      <div className="card" style={{ marginBottom: "24px" }}>
-        <form onSubmit={handleSearch} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-            <div style={{ flex: 1, minWidth: "280px", position: "relative" }}>
-              <input
+      <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl">
+        <form onSubmit={handleSearch} className="space-y-3.5">
+          <div className="flex flex-wrap gap-3">
+            <div className="flex-1 min-w-[280px] relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+              <Input
                 type="text"
-                className="input"
-                style={{ paddingLeft: "38px", fontSize: "14px" }}
                 placeholder="Escribe una consulta semántica o técnica (ej: 'decisión base de datos postgres')..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 required
-              />
-              <Search
-                size={18}
-                color="var(--text-muted)"
-                style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)" }}
+                className="pl-10 h-10 text-xs bg-slate-950/80"
               />
             </div>
 
-            <div style={{ width: "180px" }}>
-              <input
+            <div className="w-52">
+              <Input
                 type="text"
-                className="input"
                 placeholder="Proyecto (opcional)"
                 value={projectFilter}
                 onChange={(e) => setProjectFilter(e.target.value)}
+                className="h-10 text-xs bg-slate-950/80"
               />
             </div>
 
-            <button type="submit" className="btn btn-primary" disabled={isSearching}>
-              <Zap size={15} />
+            <Button type="submit" disabled={isSearching} className="h-10 px-5 gap-2 font-semibold shadow-lg shadow-blue-600/20">
+              <Zap className="h-4 w-4" />
               <span>{isSearching ? "Buscando..." : "Ejecutar Búsqueda"}</span>
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
+      </Card>
 
       {/* Results Header */}
       {hasSearched && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-          <div style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
-            Se encontraron <b>{count ?? results.length}</b> resultados para &ldquo;<span style={{ color: "var(--text-primary)" }}>{query}</span>&rdquo;
+        <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+          <div className="text-xs text-slate-400">
+            Se encontraron <b className="text-white">{count ?? results.length}</b> resultados para &ldquo;<span className="text-blue-400">{query}</span>&rdquo;
           </div>
-          <span className="badge badge-zinc">
+          <Badge variant="secondary" className="text-[10px] font-mono bg-slate-900/80 border-slate-800 text-slate-400">
             Ponderación: BM25 + Vector + Graph Reranking
-          </span>
+          </Badge>
         </div>
       )}
 
       {/* Results List */}
       {isSearching ? (
-        <div className="card" style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)" }}>
+        <Card className="p-12 text-center text-xs text-slate-500 bg-slate-900/50 border-slate-800">
           Calculando similitudes y ranking híbrido...
-        </div>
+        </Card>
       ) : hasSearched && results.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: "40px" }}>
-          <p style={{ color: "var(--text-secondary)" }}>
+        <Card className="p-12 text-center bg-slate-900/50 border-slate-800">
+          <p className="text-xs text-slate-400">
             No se encontraron observaciones que coincidan con los criterios de búsqueda.
           </p>
-        </div>
+        </Card>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+        <div className="space-y-3.5">
           {results.map((item, idx) => (
-            <div key={item.id} className="card" style={{ padding: "18px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span
-                    style={{
-                      width: "24px",
-                      height: "24px",
-                      borderRadius: "50%",
-                      backgroundColor: "rgba(59, 130, 246, 0.15)",
-                      color: "var(--accent-primary)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontWeight: "700",
-                      fontSize: "11px",
-                    }}
-                  >
+            <Card key={item.id} className="p-5 bg-slate-900/80 border-slate-800 hover:border-slate-700 transition-all shadow-lg">
+              <div className="flex items-start justify-between gap-3 mb-2.5">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-6 h-6 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30 flex items-center justify-center font-bold text-[11px]">
                     #{idx + 1}
                   </span>
-                  <h3 style={{ fontSize: "15px", fontWeight: "600", color: "var(--text-primary)" }}>
+                  <h3 className="text-sm font-semibold text-white">
                     {item.title}
                   </h3>
                 </div>
 
-                <span className={`badge ${item.type === "decision" ? "badge-blue" : item.type === "bugfix" ? "badge-amber" : "badge-zinc"}`}>
+                <Badge variant={item.type === "decision" ? "default" : item.type === "bugfix" ? "destructive" : "secondary"}>
                   {item.type}
-                </span>
+                </Badge>
               </div>
 
-              <p style={{ color: "var(--text-secondary)", fontSize: "13px", lineHeight: "1.6", marginBottom: "12px", whiteSpace: "pre-wrap" }}>
+              <p className="text-xs text-slate-300 leading-relaxed mb-3.5 whitespace-pre-wrap">
                 {item.content}
               </p>
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "11px", color: "var(--text-muted)", borderTop: "1px solid var(--border-subtle)", paddingTop: "10px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                    <FolderGit2 size={12} />
-                    {item.project}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-800/80 text-[11px] text-slate-500">
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1.5">
+                    <FolderGit2 className="h-3 w-3 text-slate-400" />
+                    <b className="text-slate-300">{item.project}</b>
                   </span>
                   <span>•</span>
-                  <span>Confianza: {(item.confidence * 100).toFixed(0)}%</span>
+                  <span>Confianza: <b className="text-emerald-400">{(item.confidence * 100).toFixed(0)}%</b></span>
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                  <Clock size={11} />
-                  {new Date(item.created_at).toLocaleString()}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => copyId(item.id)}
+                    className="flex items-center gap-1 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+                    title="Copiar ID"
+                  >
+                    <span>ID: {item.id.slice(0, 8)}...</span>
+                    {copiedId === item.id ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                  </button>
+                  <span>•</span>
+                  <div className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {new Date(item.created_at).toLocaleString()}
+                  </div>
                 </div>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       )}

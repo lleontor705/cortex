@@ -443,6 +443,117 @@ func TestHandleGraphStructuredToolsRejectFractionalIDs(t *testing.T) {
 	}
 }
 
+func TestHandleGraphBoundsAndTruncation(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	obs := make([]*domain.Observation, 5)
+	for i := range obs {
+		obs[i] = saveObs(t, stores, fmt.Sprintf("Bound %d", i), "demo", "s1")
+	}
+	// Star: obs[0] connects to obs[1..4] (hop 1); obs[1] connects to obs[4] (hop 2 for obs[4] via obs[1] is not reachable -- obs[4] already hop 1).
+	for _, target := range obs[1:4] {
+		if err := stores.Graph.CreateEdge(context.Background(), &domain.Edge{FromObsID: obs[0].ID, ToObsID: target.ID, RelationType: "references", Weight: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	handler := handleGraph(stores)
+
+	t.Run("default bounds return complete ordered rows", func(t *testing.T) {
+		text := resultText(callTool(t, handler, map[string]interface{}{"observation_id": float64(obs[0].ID), "depth": float64(1)}))
+		pos := []int{}
+		for i := 1; i <= 3; i++ {
+			p := strings.Index(text, fmt.Sprintf("[%d]", obs[i].ID))
+			if p < 0 {
+				t.Fatalf("missing observation %d in %q", obs[i].ID, text)
+			}
+			pos = append(pos, p)
+		}
+		for i := 1; i < len(pos); i++ {
+			if pos[i] <= pos[i-1] {
+				t.Fatalf("rows not in ascending ID order: %v in %q", pos, text)
+			}
+		}
+		if strings.Contains(text, "runcated") {
+			t.Fatalf("complete traversal must not report truncation: %q", text)
+		}
+	})
+
+	t.Run("max_visited truncation reports the reason", func(t *testing.T) {
+		text := resultText(callTool(t, handler, map[string]interface{}{"observation_id": float64(obs[0].ID), "depth": float64(1), "max_visited": float64(3)}))
+		if !strings.Contains(text, "truncated") {
+			t.Fatalf("expected truncation notice, got %q", text)
+		}
+		if !strings.Contains(text, "max_visited") {
+			t.Fatalf("expected max_visited reason, got %q", text)
+		}
+	})
+
+	t.Run("max_results truncation reports the reason", func(t *testing.T) {
+		text := resultText(callTool(t, handler, map[string]interface{}{"observation_id": float64(obs[0].ID), "depth": float64(1), "max_results": float64(2)}))
+		if !strings.Contains(text, "truncated") || !strings.Contains(text, "max_results") {
+			t.Fatalf("expected max_results truncation notice, got %q", text)
+		}
+	})
+
+	t.Run("exact bounds are not truncated", func(t *testing.T) {
+		text := resultText(callTool(t, handler, map[string]interface{}{"observation_id": float64(obs[0].ID), "depth": float64(1), "max_visited": float64(4), "max_results": float64(3)}))
+		if strings.Contains(text, "truncated") {
+			t.Fatalf("exact limits must not report truncation: %q", text)
+		}
+	})
+}
+
+func TestHandleGraphPathMaxVisitedBounds(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	obs := make([]*domain.Observation, 4)
+	for i := range obs {
+		obs[i] = saveObs(t, stores, fmt.Sprintf("Chain %d", i), "demo", "s1")
+	}
+	for i := 0; i+1 < len(obs); i++ {
+		if err := stores.Graph.CreateEdge(context.Background(), &domain.Edge{FromObsID: obs[i].ID, ToObsID: obs[i+1].ID, RelationType: "references", Weight: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	handler := handleGraphPath(stores)
+
+	t.Run("exact budget returns the []int64 path unchanged", func(t *testing.T) {
+		result := callTool(t, handler, map[string]interface{}{
+			"from_id":    float64(obs[0].ID),
+			"to_id":      float64(obs[3].ID),
+			"max_depth":  float64(5),
+			"max_visited": float64(4),
+		})
+		text := resultText(result)
+		want := fmt.Sprintf("[%d,%d,%d,%d]", obs[0].ID, obs[1].ID, obs[2].ID, obs[3].ID)
+		if text != want {
+			t.Fatalf("path payload = %q, want %q", text, want)
+		}
+		var path []int64
+		if err := json.Unmarshal([]byte(text), &path); err != nil {
+			t.Fatalf("success payload must stay []int64: %v", err)
+		}
+	})
+
+	t.Run("one less returns the stable truncation error", func(t *testing.T) {
+		result := callTool(t, handler, map[string]interface{}{
+			"from_id":    float64(obs[0].ID),
+			"to_id":      float64(obs[3].ID),
+			"max_depth":  float64(5),
+			"max_visited": float64(3),
+		})
+		text := resultText(result)
+		if !strings.Contains(text, "Failed to find graph path") {
+			t.Fatalf("expected error envelope, got %q", text)
+		}
+		if !strings.Contains(text, "truncated") {
+			t.Fatalf("expected stable truncation error, got %q", text)
+		}
+	})
+}
+
 func TestHandleScore(t *testing.T) {
 	stores := setupTestStores(t)
 	createSession(t, stores, "s1", "demo")
@@ -505,8 +616,8 @@ func TestHandleRelate_MissingParams(t *testing.T) {
 	result := callTool(t, handler, map[string]interface{}{})
 
 	text := resultText(result)
-	if !strings.Contains(text, "required") {
-		t.Errorf("expected error about required params, got %q", text)
+	if !strings.Contains(text, "from_id and to_id must be positive integers") {
+		t.Errorf("expected strict positive-integer rejection, got %q", text)
 	}
 }
 
@@ -545,5 +656,44 @@ func TestHandleMergeProjects_MissingParams(t *testing.T) {
 	}
 }
 
+func TestHandleResolveQuery(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	saveObs(t, stores, "Architecture Pattern Decision", "demo", "s1")
+
+	handler := handleResolveQuery(stores)
+	result := callTool(t, handler, map[string]interface{}{
+		"query":   "Architecture",
+		"project": "demo",
+	})
+	text := resultText(result)
+	if !strings.Contains(text, `"mode": "local"`) {
+		t.Errorf("expected mode local, got %q", text)
+	}
+	if !strings.Contains(text, `"database": "sqlite"`) {
+		t.Errorf("expected database sqlite, got %q", text)
+	}
+	if !strings.Contains(text, "Architecture Pattern Decision") {
+		t.Errorf("expected observation title in result, got %q", text)
+	}
+}
+
+func TestHandleGetStatus(t *testing.T) {
+	stores := setupTestStores(t)
+	handler := handleGetStatus(stores)
+	result := callTool(t, handler, map[string]interface{}{})
+	text := resultText(result)
+	if !strings.Contains(text, `"mode": "local"`) {
+		t.Errorf("expected mode local, got %q", text)
+	}
+	if !strings.Contains(text, `"database": "sqlite"`) {
+		t.Errorf("expected database sqlite, got %q", text)
+	}
+	if !strings.Contains(text, "fts5_search") {
+		t.Errorf("expected capabilities in result, got %q", text)
+	}
+}
+
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)
+

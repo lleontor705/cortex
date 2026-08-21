@@ -29,6 +29,18 @@ type EdgeCounter interface {
 	CountEdgesByObservation(ctx context.Context, obsID int64) (int, error)
 }
 
+// BatchScoreProvider is an optional capability that hydrates importance
+// scores for many observations with a single store call.
+type BatchScoreProvider interface {
+	GetScoresByObservationIDs(ctx context.Context, obsIDs []int64) (map[int64]*domain.ImportanceScore, error)
+}
+
+// BatchEdgeCounter is an optional capability that counts connected edges for
+// many observations with a single store call.
+type BatchEdgeCounter interface {
+	CountEdgesByObservationIDs(ctx context.Context, obsIDs []int64) (map[int64]int, error)
+}
+
 // Service generates Project DNA from observations.
 type Service struct {
 	observations ObservationLister
@@ -48,6 +60,9 @@ type scored struct {
 	edges int
 }
 
+// defaultScore is the base score applied when no importance score exists.
+const defaultScore = 0.5
+
 // Generate creates a Project DNA markdown summary for the given project.
 func (s *Service) Generate(ctx context.Context, project string) (string, error) {
 	// Fetch all observations for the project
@@ -63,33 +78,53 @@ func (s *Service) Generate(ctx context.Context, project string) (string, error) 
 		return fmt.Sprintf("# Project DNA: %s\n\nNo observations found.", project), nil
 	}
 
-	// Score and sort observations
-	var items []scored
+	// Hydrate scores and edge counts (batched when the optional capabilities
+	// are available, per-item otherwise).
+	ids := make([]int64, len(obs))
+	for i, o := range obs {
+		ids[i] = o.ID
+	}
+	scores := s.fetchScores(ctx, ids)
+	edgeCounts := s.fetchEdgeCounts(ctx, ids)
+
+	items := make([]scored, 0, len(obs))
 	for _, o := range obs {
-		sc := scored{obs: o, score: 0.5} // base score
-		if s.scoring != nil {
-			if is, err := s.scoring.GetScore(ctx, o.ID); err == nil && is != nil {
-				sc.score = is.Score
-			}
+		sc := scored{obs: o, score: defaultScore} // base score
+		if v, ok := scores[o.ID]; ok {
+			sc.score = v
 		}
-		if s.edges != nil {
-			if cnt, err := s.edges.CountEdgesByObservation(ctx, o.ID); err == nil {
-				sc.edges = cnt
-			}
+		if cnt, ok := edgeCounts[o.ID]; ok {
+			sc.edges = cnt
 		}
 		items = append(items, sc)
 	}
 
-	sort.Slice(items, func(i, j int) bool { return items[i].score > items[j].score })
+	// Total deterministic order: score descending, then created_at
+	// descending, then observation ID descending. Equivalent rows therefore
+	// render byte-identical markdown independent of insertion/query order.
+	sort.Slice(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.score != b.score {
+			return a.score > b.score
+		}
+		if !a.obs.CreatedAt.Equal(b.obs.CreatedAt) {
+			return a.obs.CreatedAt.After(b.obs.CreatedAt)
+		}
+		return a.obs.ID > b.obs.ID
+	})
 
 	// Group by type
-	byType := make(map[string][]scored)
+	byType := make(map[string][]scored, 5)
 	for _, it := range items {
 		byType[it.obs.Type] = append(byType[it.obs.Type], it)
 	}
 
 	// Build DNA markdown
 	var b strings.Builder
+	// The summary is dominated by the bounded per-type previews. Reserving a
+	// useful lower bound avoids repeated growth for the common N=500 path while
+	// retaining the exact output and its deterministic ordering.
+	b.Grow(128 + len(obs)*24)
 	fmt.Fprintf(&b, "# Project DNA: %s\n\n", project)
 	fmt.Fprintf(&b, "Auto-generated from %d observations.\n\n", len(obs))
 
@@ -184,4 +219,57 @@ func firstLine(s string) string {
 		return s[:120] + "..."
 	}
 	return s
+}
+
+// fetchScores hydrates importance scores for the given observation IDs.
+// When the scoring provider implements BatchScoreProvider, one batch call
+// replaces the per-ID loop; a batch error falls back to the tolerant
+// per-item lookups so output remains identical to the legacy path.
+// IDs missing from the result keep the default score.
+func (s *Service) fetchScores(ctx context.Context, ids []int64) map[int64]float64 {
+	if s.scoring == nil || len(ids) == 0 {
+		return nil
+	}
+	if batch, ok := s.scoring.(BatchScoreProvider); ok {
+		if rows, err := batch.GetScoresByObservationIDs(ctx, ids); err == nil {
+			out := make(map[int64]float64, len(rows))
+			for id, is := range rows {
+				if is != nil {
+					out[id] = is.Score
+				}
+			}
+			return out
+		}
+		// Batch failed: degrade to the compatible per-item path.
+	}
+	out := make(map[int64]float64, len(ids))
+	for _, id := range ids {
+		if is, err := s.scoring.GetScore(ctx, id); err == nil && is != nil {
+			out[id] = is.Score
+		}
+	}
+	return out
+}
+
+// fetchEdgeCounts hydrates connected-edge counts for the given observation
+// IDs. When the edge provider implements BatchEdgeCounter, one batch call
+// replaces the per-ID loop; a batch error falls back to the tolerant
+// per-item counts. IDs missing from the result keep a zero count.
+func (s *Service) fetchEdgeCounts(ctx context.Context, ids []int64) map[int64]int {
+	if s.edges == nil || len(ids) == 0 {
+		return nil
+	}
+	if batch, ok := s.edges.(BatchEdgeCounter); ok {
+		if counts, err := batch.CountEdgesByObservationIDs(ctx, ids); err == nil {
+			return counts
+		}
+		// Batch failed: degrade to the compatible per-item path.
+	}
+	out := make(map[int64]int, len(ids))
+	for _, id := range ids {
+		if cnt, err := s.edges.CountEdgesByObservation(ctx, id); err == nil {
+			out[id] = cnt
+		}
+	}
+	return out
 }

@@ -69,6 +69,7 @@ async function createHarness(
   sessionsFixture?: FetchFixture,
   endFixture?: FetchFixture,
   getFixture?: FetchFixture,
+  sessionGetFixture?: FetchFixture,
 ) {
   vi.resetModules()
   vi.stubEnv("CORTEX_HTTP_TOKEN", token)
@@ -91,6 +92,10 @@ async function createHarness(
     if (url.endsWith("/api/sessions")) {
       if (!sessionsFixture) return jsonResponse(201, VALID_SESSION)
       return await dispatchFixture(sessionsFixture)
+    }
+    if (url.includes("/api/sessions/")) {
+      if (!sessionGetFixture) return jsonResponse(200, VALID_SESSION)
+      return await dispatchFixture(sessionGetFixture)
     }
     const isDelivery = url.endsWith("/api/prompts") || url.endsWith("/api/observations") || url.includes("/api/handoffs")
     if (!isDelivery) return jsonResponse(200, {})
@@ -158,12 +163,14 @@ async function createHarness(
   }
 
   async function compact() {
+    const output = { context: [] as string[] }
     await expect(
       hooks["experimental.session.compacting"]?.(
         { sessionID: "session-1" } as never,
-        { context: [] } as never,
+        output as never,
       ),
     ).resolves.toBeUndefined()
+    return output.context
   }
 
   async function deliverDurable(content: string, callID = "call-1") {
@@ -190,6 +197,12 @@ async function createHarness(
   function sessionPosts(): RecordedRequest[] {
     return requests.filter(
       (request) => request.url.endsWith("/api/sessions") && request.init?.method === "POST",
+    )
+  }
+
+  function sessionGets(): RecordedRequest[] {
+    return requests.filter(
+      (request) => request.url.includes("/api/sessions/") && !request.url.endsWith("/end"),
     )
   }
 
@@ -226,6 +239,7 @@ async function createHarness(
     passiveRequest,
     promptRequest,
     requests,
+    sessionGets,
     sessionPosts,
   }
 }
@@ -732,7 +746,7 @@ describe("ORACLE-PLUGIN-004 protected GET and ensureSession result contract", ()
     expect(harness.output().match(/session delivery unauthorized/g)).toHaveLength(2)
   })
 
-  it("treats an explicit 409 conflict as session idempotency and stops re-creating", async () => {
+  it("confirms a 409 conflict only through the exact persisted read-back echo", async () => {
     const harness = await createHarness(
       {
         kind: "response",
@@ -747,6 +761,9 @@ describe("ORACLE-PLUGIN-004 protected GET and ensureSession result contract", ()
       },
       TOKEN_CANARY,
       { kind: "sequence", responses: [{ status: 409, body: JSON.stringify({ error: "exists" }) }] },
+      undefined,
+      undefined,
+      { kind: "response", status: 200, body: JSON.stringify(VALID_SESSION) },
     )
 
     await harness.deliver()
@@ -754,6 +771,11 @@ describe("ORACLE-PLUGIN-004 protected GET and ensureSession result contract", ()
     await harness.emitSessionDeleted()
 
     expect(harness.sessionPosts()).toHaveLength(1)
+    expect(harness.sessionGets()).toHaveLength(1)
+    const request = harness.promptRequest()
+    expect(request).toBeDefined()
+    expect(new Headers(request?.init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN_CANARY}`)
+    expect(harness.endRequest()).toBeDefined()
   })
 
   it("ends only a session whose create was actually confirmed", async () => {
@@ -927,5 +949,213 @@ describe("ORACLE-PLUGIN-005 review fixes: exact session-end body, additive obser
     await harness.compact()
 
     expect(harness.output()).toBe("")
+  })
+})
+
+describe("ORACLE-PLUGIN-006 SEC-04 auth-gated writes and confirmed-session context", () => {
+  const promptEcho = {
+    kind: "response",
+    status: 201,
+    body: JSON.stringify({
+      id: 41,
+      content: `safe prompt ${PAYLOAD_CANARY}`,
+      project: "project",
+      session_id: "session-1",
+      created_at: "2026-08-12T00:00:00Z",
+    }),
+  } as const
+
+  const observationEcho = {
+    kind: "response",
+    status: 201,
+    body: JSON.stringify({
+      id: 42,
+      title: "Passive capture from task",
+      content: "x".repeat(60),
+      type: "passive",
+      project: "project",
+      scope: "project",
+      session_id: "session-1",
+      topic_key: "",
+      confidence: 0,
+      source: "",
+      created_at: "2026-08-12T00:00:00Z",
+      updated_at: "2026-08-12T00:00:00Z",
+    }),
+  } as const
+
+  const conflictTwice: FetchFixture = {
+    kind: "sequence",
+    responses: [
+      { status: 409, body: JSON.stringify({ error: "exists" }) },
+      { status: 409, body: JSON.stringify({ error: "exists" }) },
+    ],
+  }
+
+  it("sends zero prompt writes when the session create fails", async () => {
+    const harness = await createHarness(promptEcho, TOKEN_CANARY, { kind: "transport" })
+
+    await harness.deliver()
+
+    expect(harness.promptRequest()).toBeUndefined()
+    expect(harness.output()).toContain("session delivery unavailable")
+    expect(harness.output()).not.toContain("success")
+    expect(harness.output()).not.toContain(TOKEN_CANARY)
+    expect(harness.output()).not.toContain(PAYLOAD_CANARY)
+  })
+
+  it("sends zero passive observation writes when the session create fails", async () => {
+    const harness = await createHarness(
+      observationEcho,
+      TOKEN_CANARY,
+      { kind: "response", status: 500, body: JSON.stringify({ error: "failed" }) },
+    )
+
+    await harness.deliverPassive("x".repeat(60))
+
+    expect(harness.passiveRequest()).toBeUndefined()
+    expect(harness.output()).toContain("session delivery unavailable")
+    expect(harness.output()).not.toContain("success")
+  })
+
+  it("sends zero prompt writes when the session identity echo mismatches", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      { kind: "response", status: 201, body: JSON.stringify({ ...VALID_SESSION, project: "sibling" }) },
+    )
+
+    await harness.deliver()
+
+    expect(harness.promptRequest()).toBeUndefined()
+    expect(harness.output()).toContain("session delivery invalid_response")
+  })
+
+  it("does not confirm a 409 conflict when the read-back identity mismatches", async () => {
+    const mismatchedRead: FetchFixture = {
+      kind: "response",
+      status: 200,
+      body: JSON.stringify({ ...VALID_SESSION, project: "sibling-project" }),
+    }
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      conflictTwice,
+      undefined,
+      undefined,
+      mismatchedRead,
+    )
+
+    await harness.deliver()
+    await harness.deliver()
+
+    expect(harness.promptRequest()).toBeUndefined()
+    expect(harness.sessionPosts()).toHaveLength(2)
+    expect(harness.sessionGets()).toHaveLength(2)
+    expect(harness.output()).toContain("session delivery invalid_response")
+    expect(harness.output()).not.toContain("success")
+  })
+
+  it("does not confirm a 409 conflict when the read-back request fails", async () => {
+    const singleConflict: FetchFixture = {
+      kind: "sequence",
+      responses: [{ status: 409, body: JSON.stringify({ error: "exists" }) }],
+    }
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      singleConflict,
+      undefined,
+      undefined,
+      { kind: "timeout" },
+    )
+
+    await harness.deliver()
+
+    expect(harness.promptRequest()).toBeUndefined()
+    expect(harness.output()).toContain("session delivery timeout")
+    expect(harness.output()).not.toContain("success")
+  })
+
+  it("keeps a rejected session unconfirmed and retryable on the next host event", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      {
+        kind: "sequence",
+        responses: [
+          { status: 500, body: JSON.stringify({ error: "boom" }) },
+          { status: 401, body: JSON.stringify({ error: "no" }) },
+        ],
+      },
+    )
+
+    await harness.deliver()
+    await harness.deliver()
+
+    expect(harness.sessionPosts()).toHaveLength(2)
+    expect(harness.promptRequest()).toBeUndefined()
+    expect(harness.output()).toContain("session delivery unavailable")
+    expect(harness.output()).toContain("session delivery unauthorized")
+  })
+
+  it("injects no compaction context and issues no protected read without a confirmed session", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      { kind: "response", status: 401, body: JSON.stringify({ error: "no token" }) },
+    )
+
+    const context = await harness.compact()
+
+    expect(harness.observationsQuery()).toBeUndefined()
+    expect(context).toHaveLength(1)
+    expect(context.join("\n")).not.toContain("Recent Cortex memories")
+    expect(harness.output()).toContain("session delivery unauthorized")
+  })
+
+  for (const [name, items] of [
+    ["a non-object item", ["not-an-object"]],
+    ["an item without a string title", [{ type: "decision" }]],
+    ["an item without a string type", [{ title: "T" }]],
+  ] as const) {
+    it(`rejects compaction context with ${name} without injecting or crashing`, async () => {
+      const harness = await createHarness(
+        promptEcho,
+        TOKEN_CANARY,
+        undefined,
+        undefined,
+        {
+          kind: "response",
+          status: 200,
+          body: JSON.stringify([{ title: "ok", type: "decision" }, ...items]),
+        },
+      )
+
+      const context = await harness.compact()
+
+      expect(context).toHaveLength(1)
+      expect(context.join("\n")).not.toContain("Recent Cortex memories")
+      expect(harness.output()).toContain("observation delivery invalid_response")
+    })
+  }
+
+  it("still injects validated compaction context from a confirmed session", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      undefined,
+      undefined,
+      {
+        kind: "response",
+        status: 200,
+        body: JSON.stringify([{ title: "Use zero-downtime deploys", type: "decision" }]),
+      },
+    )
+
+    const context = await harness.compact()
+
+    expect(context.join("\n")).toContain("Recent Cortex memories")
+    expect(context.join("\n")).toContain("- [decision] Use zero-downtime deploys")
   })
 })

@@ -967,6 +967,37 @@ func TestConfigStringRedactsAllCredentialFields(t *testing.T) {
 	}
 }
 
+// TestConfigStringNeverRendersBootstrapBearer pins the server-composition
+// contract (IDP-T03B): the configured bootstrap bearer is a secret and must
+// never appear in the debug representation, because Runtime.Config retains
+// the original configuration while provenance stays transient.
+func TestConfigStringNeverRendersBootstrapBearer(t *testing.T) {
+	const bearer = "configured-bootstrap-bearer-sentinel"
+	cfg := validBaseline()
+	cfg.HTTP.Token = bearer
+	if s := cfg.String(); strings.Contains(s, bearer) {
+		t.Fatalf("bootstrap bearer leaked into Config.String(): %s", s)
+	}
+}
+
+// TestConfigStringNeverRendersNonCanonicalBearer extends the bearer redaction
+// pin to non-canonical (whitespace/control padded) bearers: the loader keeps
+// the configured value byte-exact for server-side canonicality rejection and
+// String() never renders any form of it.
+func TestConfigStringNeverRendersNonCanonicalBearer(t *testing.T) {
+	for _, bearer := range []string{
+		"   configured-bootstrap-bearer",
+		"configured-bootstrap-bearer\t\n",
+		"configured\x7f-bootstrap-bearer",
+	} {
+		cfg := validBaseline()
+		cfg.HTTP.Token = bearer
+		if s := cfg.String(); strings.Contains(s, bearer) {
+			t.Fatalf("non-canonical bearer leaked into Config.String(): %s", s)
+		}
+	}
+}
+
 // TestValidate_ErrorNeverContainsAPIKey verifies validation errors NEVER echo
 // the API key, regardless of which field triggers the error (REQ-CP-002).
 func TestValidate_ErrorNeverContainsAPIKey(t *testing.T) {
@@ -1107,3 +1138,147 @@ func TestValidateBearerTransportPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadMultiFormat(t *testing.T) {
+	t.Run("load from JSON", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		jsonPath := filepath.Join(tmpDir, "cortex.json")
+		jsonContent := `{
+			"database": { "path": "/custom/from-json.db" },
+			"http": { "port": 8888, "token": "json-secret" },
+			"logging": { "level": "warn" }
+		}`
+		if err := os.WriteFile(jsonPath, []byte(jsonContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(jsonPath)
+		if err != nil {
+			t.Fatalf("Load(json) failed: %v", err)
+		}
+		if cfg.Database.Path != "/custom/from-json.db" {
+			t.Errorf("expected db path '/custom/from-json.db', got %q", cfg.Database.Path)
+		}
+		if cfg.HTTP.Port != 8888 {
+			t.Errorf("expected port 8888, got %d", cfg.HTTP.Port)
+		}
+		if cfg.HTTP.Token != "json-secret" {
+			t.Errorf("expected token 'json-secret', got %q", cfg.HTTP.Token)
+		}
+		if cfg.Logging.Level != "warn" {
+			t.Errorf("expected level 'warn', got %q", cfg.Logging.Level)
+		}
+	})
+
+	t.Run("load from TOML", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tomlPath := filepath.Join(tmpDir, "cortex.toml")
+		tomlContent := `
+[database]
+path = "/custom/from-toml.db"
+
+[http]
+port = 7777
+token = "toml-token"
+
+[logging]
+level = "debug"
+`
+		if err := os.WriteFile(tomlPath, []byte(tomlContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(tomlPath)
+		if err != nil {
+			t.Fatalf("Load(toml) failed: %v", err)
+		}
+		if cfg.Database.Path != "/custom/from-toml.db" {
+			t.Errorf("expected db path '/custom/from-toml.db', got %q", cfg.Database.Path)
+		}
+		if cfg.HTTP.Port != 7777 {
+			t.Errorf("expected port 7777, got %d", cfg.HTTP.Port)
+		}
+		if cfg.HTTP.Token != "toml-token" {
+			t.Errorf("expected token 'toml-token', got %q", cfg.HTTP.Token)
+		}
+	})
+}
+
+func TestInitConfigAndSaveMultiFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("init yaml", func(t *testing.T) {
+		p := filepath.Join(tmpDir, "cortex.yaml")
+		out, err := InitConfig(p, "yaml", false)
+		if err != nil {
+			t.Fatalf("InitConfig(yaml) failed: %v", err)
+		}
+		if out != p {
+			t.Errorf("expected %s, got %s", p, out)
+		}
+		// Second init without force should fail
+		if _, err := InitConfig(p, "yaml", false); err == nil {
+			t.Error("expected error when file already exists")
+		}
+		// Second init with force should succeed
+		if _, err := InitConfig(p, "yaml", true); err != nil {
+			t.Errorf("expected success with force: %v", err)
+		}
+	})
+
+	t.Run("init json", func(t *testing.T) {
+		p := filepath.Join(tmpDir, "cortex.json")
+		if _, err := InitConfig(p, "json", false); err != nil {
+			t.Fatalf("InitConfig(json) failed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load after InitConfig(json) failed: %v", err)
+		}
+		if cfg.HTTP.Port != 7438 {
+			t.Errorf("expected default port 7438, got %d", cfg.HTTP.Port)
+		}
+	})
+
+	t.Run("init toml", func(t *testing.T) {
+		p := filepath.Join(tmpDir, "cortex.toml")
+		if _, err := InitConfig(p, "toml", false); err != nil {
+			t.Fatalf("InitConfig(toml) failed: %v", err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load after InitConfig(toml) failed: %v", err)
+		}
+		if cfg.HTTP.Port != 7438 {
+			t.Errorf("expected default port 7438, got %d", cfg.HTTP.Port)
+		}
+	})
+
+	t.Run("save json and toml", func(t *testing.T) {
+		cfg := defaults
+		cfg.Database.Path = "/saved/test.db"
+
+		jsonTarget := filepath.Join(tmpDir, "saved.json")
+		if err := Save(&cfg, jsonTarget); err != nil {
+			t.Fatalf("Save(json) failed: %v", err)
+		}
+		loadedJSON, err := Load(jsonTarget)
+		if err != nil {
+			t.Fatalf("Load(saved.json) failed: %v", err)
+		}
+		if loadedJSON.Database.Path != "/saved/test.db" {
+			t.Errorf("expected db path '/saved/test.db', got %s", loadedJSON.Database.Path)
+		}
+
+		tomlTarget := filepath.Join(tmpDir, "saved.toml")
+		if err := Save(&cfg, tomlTarget); err != nil {
+			t.Fatalf("Save(toml) failed: %v", err)
+		}
+		loadedTOML, err := Load(tomlTarget)
+		if err != nil {
+			t.Fatalf("Load(saved.toml) failed: %v", err)
+		}
+		if loadedTOML.Database.Path != "/saved/test.db" {
+			t.Errorf("expected db path '/saved/test.db', got %s", loadedTOML.Database.Path)
+		}
+	})
+}
+

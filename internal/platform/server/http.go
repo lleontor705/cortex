@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/util"
 )
 
 const (
@@ -63,17 +63,45 @@ type Operations interface {
 	RotateToken(context.Context, string) (identity.IssuedToken, error)
 	PushSync(context.Context, *domain.SyncBatch) (*domain.SyncResult, error)
 	PullSync(context.Context, int64, int) (*domain.SyncPage, error)
+	GetProjectContext(context.Context, string) (*domain.ProjectContext, error)
+	ListProjectSkills(context.Context, string) ([]*domain.ProjectSkill, error)
+	GetProjectSkill(context.Context, string, string) (*domain.ProjectSkill, error)
+	SaveProjectArtifact(context.Context, domain.SaveProjectArtifactInput) (*domain.ProjectArtifactItem, error)
+	ListProjectArtifacts(context.Context, string, string) ([]*domain.ProjectArtifactItem, error)
+	DeleteProjectArtifact(context.Context, string, string) error
 }
 
 type healthCheck func(context.Context) error
 
-func newHTTPHandler(cfg config.Config, ops Operations, health healthCheck) (http.Handler, *mcpserver.StreamableHTTPServer) {
-	return newHTTPHandlerWithAuth(cfg, ops, health, func(next http.Handler) http.Handler { return bearerAuth(cfg.HTTP.Token, next) })
-}
-
-func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler) (http.Handler, *mcpserver.StreamableHTTPServer) {
+// Every authenticated route is wired through newHTTPHandlerWithAuth with a
+// verifier-backed middleware (requestAuthenticator in production). There is
+// deliberately no static-compare constructor: the configured bearer is a
+// secret to verify through TokenPrincipalVerifier, never a comparison value.
+//
+// The optional extractor argument (SEC-02) injects a server-composed
+// extraction service whose outbound destination policy and provider
+// credentials come exclusively from administrator configuration. When
+// omitted, the default service is heuristic-only: its strict policy approves
+// no outbound destination.
+func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler, extractors ...*extraction.Service) (http.Handler, *mcpserver.StreamableHTTPServer) {
 	mcpCore := newServerMCP(ops)
-	transport := mcpserver.NewStreamableHTTPServer(mcpCore)
+	sessions := newMCPSessionRegistry(mcpSessionLimits{
+		IdleTTL:      mcpSessionIdleTTLDefault,
+		AbsoluteTTL:  mcpSessionAbsoluteTTLDefault,
+		PerPrincipal: mcpMaxSessionsPerPrincipal,
+		Total:        mcpMaxSessionsTotal,
+	})
+	transport := mcpserver.NewStreamableHTTPServer(mcpCore,
+		mcpserver.WithSessionIdManagerResolver(sessions),
+		mcpserver.WithSessionIdleTTL(mcpSessionIdleTTLDefault),
+		mcpserver.WithLogger(redactingLogger{next: util.DefaultLogger()}),
+	)
+	guard := newMCPGuardWithTools(newMCPAdmission(mcpAdmissionLimits{
+		PerPrincipal: mcpPrincipalInflightBytes,
+		Global:       mcpGlobalInflightBytes,
+	}), sessions, func(name string) bool {
+		return mcpCore.GetTool(name) != nil
+	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -85,14 +113,18 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	extractor := extraction.NewServiceWithPolicy(extraction.Config{}, extraction.DefaultOutboundPolicy())
+	if len(extractors) > 0 && extractors[0] != nil {
+		extractor = extractors[0]
+	}
 	api := &apiHandler{
 		ops:          ops,
 		defaultLimit: boundedDefault(cfg.Search.DefaultLimit),
 		maxLimit:     boundedMax(cfg.Search.MaxLimit),
-		extractor:    extraction.NewService(extraction.Config{}),
+		extractor:    extractor,
 	}
 	mux.Handle("/api/", protect(api.routes()))
-	mux.Handle("/mcp", protect(transport))
+	mux.Handle("/mcp", protect(guard.wrap(transport)))
 	return corsHandler(cfg.HTTP.AllowedOrigins, mux), transport
 }
 
@@ -160,6 +192,10 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("POST /api/synthesize", a.synthesize)
 	mux.HandleFunc("POST /api/sync/push", a.pushSync)
 	mux.HandleFunc("GET /api/sync/changes", a.pullSync)
+	mux.HandleFunc("GET /api/projects/context", a.getProjectContext)
+	mux.HandleFunc("GET /api/projects/artifacts", a.listProjectArtifacts)
+	mux.HandleFunc("POST /api/projects/artifacts", a.saveProjectArtifact)
+	mux.HandleFunc("DELETE /api/projects/artifacts/{id}", a.deleteProjectArtifact)
 	return mux
 }
 
@@ -583,9 +619,13 @@ func (a *apiHandler) extract(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if requestLLMConfigRejection(w, req.LLMConfig) {
+		return
+	}
+	req.LLMConfig = nil
 	result, err := a.extractor.Extract(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "extraction_failed", err.Error())
+		respondExtractionError(w, err, "extraction_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -596,12 +636,47 @@ func (a *apiHandler) synthesize(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if requestLLMConfigRejection(w, req.LLMConfig) {
+		return
+	}
+	req.LLMConfig = nil
 	result, err := a.extractor.Synthesize(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "synthesis_failed", err.Error())
+		respondExtractionError(w, err, "synthesis_failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// requestLLMConfigRejection enforces SEC-02 at the server boundary: a request
+// body can never select the outbound destination or the credential. The
+// llm_config field stays decodable for compatibility, but supplying a
+// base_url or api_key is rejected with a stable invalid_configuration error
+// before any outbound attempt. Benign remainder fields are ignored.
+func requestLLMConfigRejection(w http.ResponseWriter, cfg *extraction.Config) bool {
+	if cfg == nil || (cfg.BaseURL == "" && cfg.APIKey == "") {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, "invalid_configuration", "llm_config credentials cannot be supplied by request; provider destinations are server-managed")
+	return true
+}
+
+// respondExtractionError maps extraction failures to bounded, stable public
+// codes. Messages are static: upstream URLs, addresses, bodies, and
+// credentials never appear in responses.
+func respondExtractionError(w http.ResponseWriter, err error, fallbackCode string) {
+	switch {
+	case errors.Is(err, extraction.ErrUnsafeDestination):
+		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider destination is not permitted by server policy")
+	case errors.Is(err, extraction.ErrResponseTooLarge):
+		writeError(w, http.StatusServiceUnavailable, "provider_unavailable", "provider response exceeded configured limits")
+	case errors.Is(err, extraction.ErrProviderRejected),
+		errors.Is(err, extraction.ErrProviderUnavailable),
+		errors.Is(err, extraction.ErrInvalidProviderResponse):
+		writeError(w, http.StatusBadGateway, "provider_unavailable", "provider request failed")
+	default:
+		writeError(w, http.StatusBadRequest, fallbackCode, "request could not be processed")
+	}
 }
 
 func (a *apiHandler) resolveConflict(w http.ResponseWriter, r *http.Request) {
@@ -639,19 +714,6 @@ func (a *apiHandler) resolveConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, edgeResponse(edge))
-}
-
-func bearerAuth(token string, next http.Handler) http.Handler {
-	expected := "Bearer " + token
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := r.Header.Get("Authorization")
-		if token == "" || len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="cortex"`)
-			writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer token required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -943,6 +1005,11 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_graph", mcp.WithDescription("Get related observations."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth")), graphTool(ops))
 	add(mcp.NewTool("cortex_graph_subgraph", mcp.WithDescription("Get a bounded heterogeneous graph containing observations, entities, actors, sessions, and projects."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth"), mcp.WithNumber("max_nodes")), graphSubgraphTool(ops))
 	add(mcp.NewTool("cortex_score", mcp.WithDescription("Get an observation importance score."), mcp.WithString("observation_id", mcp.Required())), scoreTool(ops))
+	add(mcp.NewTool("cortex_get_project_context", mcp.WithDescription("Get corporate & project governance rules, system prompt, and available skills."), mcp.WithString("project")), getProjectContextTool(ops))
+	add(mcp.NewTool("cortex_list_skills", mcp.WithDescription("List available corporate and project skills."), mcp.WithString("project")), listProjectSkillsTool(ops))
+	add(mcp.NewTool("cortex_get_skill", mcp.WithDescription("Get full skill instructions, rules, and parameters by key."), mcp.WithString("key", mcp.Required()), mcp.WithString("project")), getProjectSkillTool(ops))
+	add(mcp.NewTool("cortex_resolve_query", mcp.WithDescription("Intelligently resolve a query in Server mode (PostgreSQL RLS, corporate rules, project context, skills, and observations)."), mcp.WithString("query", mcp.Required()), mcp.WithString("project"), mcp.WithNumber("limit")), resolveQueryTool(ops))
+	add(mcp.NewTool("cortex_get_status", mcp.WithDescription("Get the active operational mode (Server PostgreSQL), version, and capabilities.")), getStatusTool(ops))
 }
 
 func sessionStartTool(ops Operations) mcpserver.ToolHandlerFunc {
@@ -972,9 +1039,17 @@ func toolFloat(req mcp.CallToolRequest, key string, fallback float64) float64 {
 	}
 	return v
 }
+
+// toolResult lowers a tool outcome. Failures are published through the shared
+// structured error contract with a stable code and a constant, bounded
+// message — never the raw operation error (T08: replaces the universal
+// opaque "operation failed" text while preserving its prefix).
 func toolResult(value any, err error) (*mcp.CallToolResult, error) {
 	if err != nil {
-		return mcp.NewToolResultError("operation failed"), nil
+		payload := serverMemoryError(err)
+		result := mcp.NewToolResultStructured(payload, fmt.Sprintf("operation failed: %s [code: %s]", payload.Error.Message, payload.Error.Code))
+		result.IsError = true
+		return result, nil
 	}
 	b, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
@@ -1007,9 +1082,11 @@ func saveStructuredFromEffect(effect domain.SaveEffect) any {
 }
 
 // serverMemoryError lowers any operation error into the shared structured
-// error contract. Authorization denials map to the forbidden class and invalid
-// input to validation; everything else keeps memorycontract's stable
-// classification. Raw denial reasons and driver text never surface.
+// error contract. Authorization denials map to the forbidden class, invalid
+// input to validation, and missing resources to the additive not_found code
+// (read tools only; the frozen save/handoff code set is unchanged); everything
+// else keeps memorycontract's stable classification. Raw denial reasons and
+// driver text never surface.
 func serverMemoryError(err error) memorycontract.ErrorStructured {
 	if isAuthorizationDenial(err) {
 		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
@@ -1023,8 +1100,19 @@ func serverMemoryError(err error) memorycontract.ErrorStructured {
 			Message: "invalid operation input",
 		}}
 	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
+			Code:    serverCodeNotFound,
+			Message: "resource not found",
+		}}
+	}
 	return memorycontract.FromError(err)
 }
+
+// serverCodeNotFound is the additive public code for missing resources on
+// server read tools. It is intentionally outside the frozen save/handoff
+// closed code set, which remains byte-identical.
+const serverCodeNotFound = "not_found"
 
 // structuredTextResult returns the legacy text content plus the additive
 // structuredContent payload. A nil structured value yields a plain text
@@ -1334,3 +1422,136 @@ func scoreTool(ops Operations) mcpserver.ToolHandlerFunc {
 		return toolResult(map[string]any{"observation_id": o.PublicID, "score": v.Score, "access_count": v.AccessCount, "last_accessed": v.LastAccessed, "updated_at": v.UpdatedAt}, nil)
 	}
 }
+
+func getProjectContextTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		if project == "" {
+			project = "default"
+		}
+		res, err := ops.GetProjectContext(ctx, project)
+		return toolResult(res, err)
+	}
+}
+
+func listProjectSkillsTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		res, err := ops.ListProjectSkills(ctx, project)
+		return toolResult(res, err)
+	}
+}
+
+func getProjectSkillTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		key := toolString(req, "key")
+		project := toolString(req, "project")
+		res, err := ops.GetProjectSkill(ctx, project, key)
+		return toolResult(res, err)
+	}
+}
+
+func resolveQueryTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query := toolString(req, "query")
+		if query == "" {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+		project := toolString(req, "project")
+		limit := toolInt(req, "limit", 10)
+
+		// Get project context (system prompt, governance rules, and skills)
+		projCtx, _ := ops.GetProjectContext(ctx, project)
+
+		// Search authorized observations
+		opts := domain.SearchOptions{
+			Query:   query,
+			Project: project,
+			Limit:   limit,
+		}
+		searchRes, _ := ops.SearchObservations(ctx, query, opts)
+
+		response := map[string]any{
+			"mode":            "server",
+			"database":        "postgresql",
+			"query":           query,
+			"project":         project,
+			"project_context": projCtx,
+			"total_matches":   len(searchRes),
+			"observations":    searchRes,
+		}
+
+		b, err := json.MarshalIndent(response, "", "  ")
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func getStatusTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		status := map[string]any{
+			"mode":         "server",
+			"database":     "postgresql",
+			"version":      "2.0.0",
+			"capabilities": []string{"authorized_rls", "project_context", "corporate_skills", "vector_embeddings", "knowledge_graph", "scoring", "handoff"},
+		}
+		b, err := json.MarshalIndent(status, "", "  ")
+		if err != nil {
+			return toolResult(nil, err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func (a *apiHandler) getProjectContext(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = "default"
+	}
+	res, err := a.ops.GetProjectContext(r.Context(), project)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (a *apiHandler) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	kind := r.URL.Query().Get("kind")
+	items, err := a.ops.ListProjectArtifacts(r.Context(), project, kind)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (a *apiHandler) saveProjectArtifact(w http.ResponseWriter, r *http.Request) {
+	var input domain.SaveProjectArtifactInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	item, err := a.ops.SaveProjectArtifact(r.Context(), input)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *apiHandler) deleteProjectArtifact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	reason := r.URL.Query().Get("reason")
+	if reason == "" {
+		reason = "deleted from admin interface"
+	}
+	if err := a.ops.DeleteProjectArtifact(r.Context(), id, reason); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+

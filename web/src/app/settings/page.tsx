@@ -1,39 +1,142 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import {
-  Settings,
+  initialSecretInput,
+  observeResetGeneration,
+  SecretInputState,
+} from "@/lib/form-secret-reset";
+import { Card, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import {
   Server,
   Key,
-  Sparkles,
-  CheckCircle,
-  Save,
   LogOut,
-  Shield,
+  Save,
+  CheckCircle,
+  Sparkles,
+  Sliders,
+  Eye,
+  EyeOff,
+  Globe,
+  Bot,
 } from "lucide-react";
+
+const PROVIDER_DEFAULTS: Record<string, { baseURL: string; defaultModel: string; models: string[] }> = {
+  openai: {
+    baseURL: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o3-mini"],
+  },
+  anthropic: {
+    baseURL: "https://api.anthropic.com/v1",
+    defaultModel: "claude-3-5-sonnet-20241022",
+    models: [
+      "claude-3-7-sonnet-20250219",
+      "claude-3-5-sonnet-20241022",
+      "claude-3-5-haiku-20241022",
+      "claude-3-opus-20240229",
+    ],
+  },
+  ollama: {
+    baseURL: "http://localhost:11434/v1",
+    defaultModel: "llama3.3",
+    models: ["llama3.3", "deepseek-r1:8b", "qwen2.5-coder:32b", "mistral", "llama3.2"],
+  },
+  openrouter: {
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultModel: "openai/gpt-4o-mini",
+    models: [
+      "anthropic/claude-3.7-sonnet",
+      "deepseek/deepseek-r1",
+      "openai/gpt-4o",
+      "meta-llama/llama-3.3-70b-instruct",
+    ],
+  },
+  groq: {
+    baseURL: "https://api.groq.com/openai/v1",
+    defaultModel: "llama-3.3-70b-versatile",
+    models: [
+      "llama-3.3-70b-versatile",
+      "deepseek-r1-distill-llama-70b",
+      "llama-3.1-8b-instant",
+      "mixtral-8x7b-32768",
+    ],
+  },
+  together: {
+    baseURL: "https://api.together.xyz/v1",
+    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    models: [
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "deepseek-ai/DeepSeek-R1",
+      "Qwen/Qwen2.5-Coder-32B-Instruct",
+    ],
+  },
+  deepseek: {
+    baseURL: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  custom: {
+    baseURL: "",
+    defaultModel: "",
+    models: [],
+  },
+};
 
 export default function SettingsPage() {
   const {
     serverUrl,
     token,
+    resetGeneration,
     llmApiKey,
     llmProvider,
     llmModel,
+    llmBaseURL,
     setCredentials,
     setLLMCredentials,
     logout,
   } = useAuth();
 
   const [inputUrl, setInputUrl] = useState(serverUrl);
-  const [inputToken, setInputToken] = useState(token);
+  const [secretBearer, setSecretBearer] = useState<SecretInputState>(() =>
+    initialSecretInput(token, resetGeneration),
+  );
+  const [secretLLMKey, setSecretLLMKey] = useState<SecretInputState>(() =>
+    initialSecretInput(llmApiKey, resetGeneration),
+  );
+  const inputToken = secretBearer.typed;
+  const inputLLMKey = secretLLMKey.typed;
 
-  const [inputLLMKey, setInputLLMKey] = useState(llmApiKey);
-  const [inputLLMProvider, setInputLLMProvider] = useState(llmProvider);
-  const [inputLLMModel, setInputLLMModel] = useState(llmModel);
+  const [inputLLMProvider, setInputLLMProvider] = useState(llmProvider || "openai");
+  const [inputLLMModel, setInputLLMModel] = useState(llmModel || "gpt-4o-mini");
+  const [inputLLMBaseURL, setInputLLMBaseURL] = useState(llmBaseURL || "");
+  const [showKey, setShowKey] = useState(false);
+  const [showBearer, setShowBearer] = useState(false);
 
   const [serverSavedMessage, setServerSavedMessage] = useState(false);
   const [llmSavedMessage, setLlmSavedMessage] = useState(false);
+
+  useEffect(() => {
+    setSecretBearer((state) => observeResetGeneration(state, resetGeneration));
+    setSecretLLMKey((state) => observeResetGeneration(state, resetGeneration));
+  }, [resetGeneration]);
+
+  const handleProviderChange = (newProvider: string) => {
+    setInputLLMProvider(newProvider);
+    const defaults = PROVIDER_DEFAULTS[newProvider];
+    if (defaults) {
+      if (defaults.baseURL) {
+        setInputLLMBaseURL(defaults.baseURL);
+      }
+      if (defaults.defaultModel) {
+        setInputLLMModel(defaults.defaultModel);
+      }
+    }
+  };
 
   const handleSaveServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,148 +151,233 @@ export default function SettingsPage() {
 
   const handleSaveLLM = (e: React.FormEvent) => {
     e.preventDefault();
-    setLLMCredentials(inputLLMKey, inputLLMProvider, inputLLMModel);
+    setLLMCredentials(inputLLMKey, inputLLMProvider, inputLLMModel, inputLLMBaseURL);
     setLlmSavedMessage(true);
     setTimeout(() => setLlmSavedMessage(false), 3000);
   };
 
+  const currentModels = PROVIDER_DEFAULTS[inputLLMProvider]?.models || [];
+
   return (
-    <div>
-      <div style={{ marginBottom: "24px" }}>
-        <h1 style={{ fontSize: "24px", fontWeight: "700", marginBottom: "4px" }}>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2">
+          <Sliders className="h-6 w-6 text-blue-500" />
           Configuración del Sistema
         </h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-          Ajustes de conexión al servidor Cortex, credenciales de autenticación y proveedores de modelos de lenguaje
+        <p className="text-sm text-slate-400">
+          Gestiona el endpoint de Cortex Server y la integración con proveedores LLM personalizados.
         </p>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "24px", maxWidth: "800px" }}>
-        {/* Server Connection Settings */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">
-              <Server size={18} />
-              Conexión al Servidor Cortex
-            </h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* Cortex Server Connection Settings */}
+        <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+            <CardTitle className="text-sm">
+              <Server className="h-4 w-4 text-blue-400" />
+              Conexión Cortex Server
+            </CardTitle>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={logout}
+              className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-950/30 border-rose-900/50"
+            >
+              <LogOut className="h-3.5 w-3.5 mr-1" />
+              Desconectar
+            </Button>
           </div>
 
-          <form onSubmit={handleSaveServer} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                ENDPOINT URL
+          <form onSubmit={handleSaveServer} className="space-y-4 text-xs">
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                URL DEL SERVIDOR CORTEX
               </label>
-              <input
+              <Input
                 type="text"
-                className="input"
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
+                placeholder="http://localhost:7438"
+                className="h-9 font-mono"
                 required
               />
             </div>
 
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
                 BEARER TOKEN
+                <span className="font-normal text-slate-500 lowercase">
+                  {" "}(solo en memoria; no se persiste)
+                </span>
               </label>
-              <input
-                type="password"
-                className="input"
-                value={inputToken}
-                onChange={(e) => setInputToken(e.target.value)}
-                required
-              />
+              <div className="relative">
+                <Input
+                  type={showBearer ? "text" : "password"}
+                  value={inputToken}
+                  onChange={(e) =>
+                    setSecretBearer((state) => ({ ...state, typed: e.target.value }))
+                  }
+                  placeholder="ctx_..."
+                  className="h-9 font-mono pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowBearer(!showBearer)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                >
+                  {showBearer ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
             {serverSavedMessage && (
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--success)", fontSize: "13px" }}>
-                <CheckCircle size={15} />
-                <span>¡Conexión y credenciales actualizadas con éxito!</span>
+              <div className="flex items-center gap-2 text-emerald-400 text-xs py-1">
+                <CheckCircle className="h-4 w-4" />
+                <span>¡Conexión actualizada y verificada!</span>
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "4px" }}>
-              <button type="button" onClick={logout} className="btn btn-danger">
-                <LogOut size={14} />
-                <span>Cerrar Sesión</span>
-              </button>
-              <button type="submit" className="btn btn-primary">
-                <Save size={14} />
-                <span>Guardar Cambios</span>
-              </button>
+            <div className="flex justify-end pt-2">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20">
+                <Save className="h-3.5 w-3.5" />
+                <span>Actualizar Conexión</span>
+              </Button>
             </div>
           </form>
-        </div>
+        </Card>
 
-        {/* LLM Engine Settings (Mejora 4.1) */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">
-              <Sparkles size={18} color="var(--accent-primary)" />
-              Motor de Extracción Semántica (LLM)
-            </h2>
+        {/* LLM Engine Settings with Full Custom Support */}
+        <Card className="p-5 bg-slate-900/70 border-slate-800 shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+            <CardTitle className="text-sm">
+              <Sparkles className="h-4 w-4 text-blue-400" />
+              Proveedor de LLM Personalizado
+            </CardTitle>
           </div>
 
-          <form onSubmit={handleSaveLLM} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
+          <form onSubmit={handleSaveLLM} className="space-y-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
                   PROVEEDOR
                 </label>
-                <select
-                  className="select"
+                <Select
                   value={inputLLMProvider}
-                  onChange={(e) => setInputLLMProvider(e.target.value)}
+                  onChange={(e) => handleProviderChange(e.target.value)}
+                  className="h-9"
                 >
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="ollama">Ollama (Local)</option>
-                  <option value="openrouter">OpenRouter</option>
-                </select>
+                  <option value="openai">OpenAI (Oficial)</option>
+                  <option value="anthropic">Anthropic Claude</option>
+                  <option value="ollama">Ollama (Local / On-Prem)</option>
+                  <option value="openrouter">OpenRouter (Multi-Provider)</option>
+                  <option value="groq">Groq (Ultra-Fast LPU)</option>
+                  <option value="together">Together AI</option>
+                  <option value="deepseek">DeepSeek (Direct)</option>
+                  <option value="custom">Personalizado (OpenAI Compatible)</option>
+                </Select>
               </div>
 
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase">
                   MODELO
                 </label>
-                <input
+                <Input
                   type="text"
-                  className="input"
                   value={inputLLMModel}
                   onChange={(e) => setInputLLMModel(e.target.value)}
-                  placeholder="gpt-4o-mini"
+                  placeholder="ej: gpt-4o, claude-3-7-sonnet, llama3.3"
+                  className="h-9 font-mono"
+                  required
                 />
               </div>
             </div>
 
-            <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                API KEY / BEARER TOKEN DE LLM
+            {/* Model Suggestions Chips */}
+            {currentModels.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span className="text-[10px] text-slate-500 uppercase font-mono mr-1 flex items-center gap-1">
+                  <Bot className="h-3 w-3" /> Sugeridos:
+                </span>
+                {currentModels.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setInputLLMModel(m)}
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded-full border transition-all ${
+                      inputLLMModel === m
+                        ? "bg-blue-600/30 border-blue-500 text-blue-300"
+                        : "bg-slate-800/80 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 flex items-center justify-between uppercase">
+                <span className="flex items-center gap-1.5">
+                  <Globe className="h-3.5 w-3.5 text-blue-400" />
+                  API ENDPOINT / BASE URL
+                </span>
+                <span className="font-normal text-slate-500 lowercase">
+                  (Opcional, compatible con proxy corporativo)
+                </span>
               </label>
-              <input
-                type="password"
-                className="input"
-                value={inputLLMKey}
-                onChange={(e) => setInputLLMKey(e.target.value)}
-                placeholder="sk-..."
+              <Input
+                type="text"
+                value={inputLLMBaseURL}
+                onChange={(e) => setInputLLMBaseURL(e.target.value)}
+                placeholder="https://api.openai.com/v1 o http://localhost:11434/v1"
+                className="h-9 font-mono"
               />
             </div>
 
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                API KEY / TOKEN DE LLM
+                <span className="font-normal text-slate-500 lowercase">
+                  {" "}(solo en memoria; no se persiste en disco)
+                </span>
+              </label>
+              <div className="relative">
+                <Input
+                  type={showKey ? "text" : "password"}
+                  value={inputLLMKey}
+                  onChange={(e) =>
+                    setSecretLLMKey((state) => ({ ...state, typed: e.target.value }))
+                  }
+                  placeholder={inputLLMProvider === "ollama" ? "Opcional para Ollama local" : "sk-..."}
+                  className="h-9 font-mono pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(!showKey)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                >
+                  {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
             {llmSavedMessage && (
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--success)", fontSize: "13px" }}>
-                <CheckCircle size={15} />
+              <div className="flex items-center gap-2 text-emerald-400 text-xs py-1">
+                <CheckCircle className="h-4 w-4" />
                 <span>¡Configuración de LLM guardada con éxito!</span>
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "4px" }}>
-              <button type="submit" className="btn btn-primary">
-                <Save size={14} />
+            <div className="flex justify-end pt-2">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20">
+                <Save className="h-3.5 w-3.5" />
                 <span>Guardar Configuración LLM</span>
-              </button>
+              </Button>
             </div>
           </form>
-        </div>
+        </Card>
       </div>
     </div>
   );

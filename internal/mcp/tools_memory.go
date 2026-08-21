@@ -239,10 +239,7 @@ GUIDELINES:
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("The observation ID to retrieve"),
-				),
+				withIntegerID("id", "The observation ID to retrieve"),
 			),
 			handleGetObservation(stores),
 		)
@@ -287,10 +284,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("Observation ID to update"),
-				),
+				withIntegerID("id", "Observation ID to update"),
 				mcp.WithString("title",
 					mcp.Description("New title"),
 				),
@@ -416,10 +410,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("Observation ID to delete"),
-				),
+				withIntegerID("id", "Observation ID to delete"),
 				mcp.WithBoolean("hard_delete",
 					mcp.Description("If true, permanently deletes the observation"),
 				),
@@ -439,10 +430,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("The observation ID to center the timeline on (from cortex_search results)"),
-				),
+				withIntegerID("observation_id", "The observation ID to center the timeline on (from cortex_search results)"),
 				mcp.WithNumber("before",
 					mcp.Description("Number of observations to show before the focus (default: 5)"),
 				),
@@ -464,10 +452,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("The observation ID to inspect"),
-				),
+				withIntegerID("observation_id", "The observation ID to inspect"),
 				mcp.WithNumber("limit",
 					mcp.Description("Maximum number of revision snapshots to return (default: 20)"),
 				),
@@ -757,6 +742,107 @@ func structuredErrorResult(payload memorycontract.ErrorStructured, format string
 	return result, nil
 }
 
+// --- T08: stable, redacted local MCP error classification --------------------
+//
+// Every local MCP tool error (outside the frozen structured save/handoff
+// contract above) is lowered to a bounded, constant public message with a
+// stable classification code. Raw store/driver causes — SQL text, DSNs,
+// filesystem paths, credentials — never surface in tool results.
+
+const (
+	localCodeNotFound     = "not_found"
+	localCodeValidation   = "validation"
+	localCodeConflict     = "conflict"
+	localCodeUnauthorized = "unauthorized"
+	localCodeUnavailable  = "unavailable"
+	localCodeTimeout      = "timeout"
+	localCodeInternal     = "internal"
+
+	maxLocalErrorRunes = 200
+)
+
+// localErrorText lowers err into the stable public message tagged with its
+// classification code. It is the only sanctioned way to render an error in a
+// local tool result.
+func localErrorText(err error) string {
+	code, message := classifyLocalError(err)
+	return fmt.Sprintf("%s [code: %s]", message, code)
+}
+
+// classifyLocalError maps any error onto the bounded public classification.
+// Messages come only from this table plus safe, domain-constructed
+// validation text; the raw error string is never echoed.
+func classifyLocalError(err error) (code, message string) {
+	switch {
+	case err == nil:
+		return localCodeInternal, "internal error"
+	case domain.IsNotFoundError(err):
+		return localCodeNotFound, "resource not found"
+	case localIsFailedClassification(err):
+		// ClassFailed wraps a real persistence failure whose cause carries
+		// driver/SQL text: constant message, no cause.
+		return localCodeInternal, "operation could not be completed"
+	case domain.IsValidationError(err):
+		return localCodeValidation, localValidationMessage(err)
+	case domain.IsConflictError(err),
+		errors.Is(err, domain.ErrAlreadyExists),
+		errors.Is(err, domain.ErrSessionEnded),
+		errors.Is(err, domain.ErrConflict):
+		return localCodeConflict, "conflict with current state"
+	case errors.Is(err, domain.ErrUnauthorized):
+		return localCodeUnauthorized, "authentication required"
+	case localIsBusy(err):
+		return localCodeUnavailable, "database is busy; retry the operation"
+	case errors.Is(err, context.DeadlineExceeded):
+		return localCodeTimeout, "operation timed out"
+	default:
+		return localCodeInternal, "internal error"
+	}
+}
+
+// localIsFailedClassification reports whether err is a domain
+// persistence-failure classification (ClassFailed) whose wrapped cause must
+// never surface.
+func localIsFailedClassification(err error) bool {
+	var validation *domain.ValidationError
+	return errors.As(err, &validation) && validation != nil && validation.Code == domain.ClassFailed
+}
+
+// localValidationMessage surfaces only domain-constructed validation text:
+// field, message, and rejected rule — never a wrapped cause. Bounded.
+func localValidationMessage(err error) string {
+	var validation *domain.ValidationError
+	if !errors.As(err, &validation) || validation == nil {
+		return "invalid input"
+	}
+	message := validation.Message
+	if validation.Code == "" { // legacy field-validation rendering
+		message = fmt.Sprintf("validation error on field %q: %s", validation.Field, validation.Message)
+	} else if validation.Rule != "" {
+		message = fmt.Sprintf("%s (rule: %s)", validation.Message, validation.Rule)
+	}
+	return boundLocalText(message)
+}
+
+// localIsBusy reports whether err is a SQLite write-contention failure. The
+// matched texts are constant driver messages, not attacker-controlled.
+func localIsBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database table is locked")
+}
+
+// boundLocalText truncates text to maxLocalErrorRunes runes.
+func boundLocalText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxLocalErrorRunes {
+		return text
+	}
+	return string(runes[:maxLocalErrorRunes]) + "…[truncated]"
+}
+
 // -- Local cortex_handoff (R6, REM-MCP-001, REM-HANDOFF-001/002) --
 
 // localHandoffAuthorizer grants every local handoff and derives the receipt
@@ -1003,7 +1089,7 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			GraphExpand: graphExpand,
 		})
 		if err != nil {
-			return errorResult("Search error: %s. Try simpler keywords.", err)
+			return errorResult("Search error: %s. Try simpler keywords.", localErrorText(err))
 		}
 
 		if len(results) == 0 {
@@ -1049,7 +1135,7 @@ func handleContext(stores *Stores) server.ToolHandlerFunc {
 		// Gather sessions
 		sessions, err := stores.Sessions.List(ctx, project)
 		if err != nil {
-			return errorResult("Failed to get sessions: %s", err)
+			return errorResult("Failed to get sessions: %s", localErrorText(err))
 		}
 
 		// Gather recent observations
@@ -1059,7 +1145,7 @@ func handleContext(stores *Stores) server.ToolHandlerFunc {
 			Limit:   limit,
 		})
 		if err != nil {
-			return errorResult("Failed to get observations: %s", err)
+			return errorResult("Failed to get observations: %s", localErrorText(err))
 		}
 
 		// Gather recent prompts
@@ -1166,7 +1252,7 @@ func handleSessionSummary(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Observations.Save(ctx, obs); err != nil {
-			return errorResult("Failed to save session summary: %s", err)
+			return errorResult("Failed to save session summary: %s", localErrorText(err))
 		}
 
 		return textResult("Session summary saved for project %q", project)
@@ -1175,9 +1261,9 @@ func handleSessionSummary(stores *Stores) server.ToolHandlerFunc {
 
 func handleGetObservation(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		obs, err := stores.Observations.GetByID(ctx, id)
@@ -1247,7 +1333,7 @@ func handleSavePrompt(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Prompts.Save(ctx, p); err != nil {
-			return errorResult("Failed to save prompt: %s", err)
+			return errorResult("Failed to save prompt: %s", localErrorText(err))
 		}
 
 		return textResult("Prompt saved: %q", truncate(content, 80))
@@ -1256,15 +1342,15 @@ func handleSavePrompt(stores *Stores) server.ToolHandlerFunc {
 
 func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		// Fetch existing observation
 		obs, err := stores.Observations.GetByID(ctx, id)
 		if err != nil {
-			return errorResult("Failed to find memory #%d: %s", id, err)
+			return errorResult("Failed to find memory #%d: %s", id, localErrorText(err))
 		}
 
 		// Apply only the provided fields
@@ -1299,7 +1385,7 @@ func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Observations.Update(ctx, obs); err != nil {
-			return errorResult("Failed to update memory: %s", err)
+			return errorResult("Failed to update memory: %s", localErrorText(err))
 		}
 
 		return textResult("Memory updated: #%d %q (%s, scope=%s)", obs.ID, obs.Title, obs.Type, obs.Scope)
@@ -1340,7 +1426,7 @@ func handleSessionStart(stores *Stores) server.ToolHandlerFunc {
 			Project:   project,
 			Directory: directory,
 		}); err != nil {
-			return errorResult("Failed to start session: %s", err)
+			return errorResult("Failed to start session: %s", localErrorText(err))
 		}
 
 		return textResult("Session %q started for project %q", id, project)
@@ -1353,7 +1439,7 @@ func handleSessionEnd(stores *Stores) server.ToolHandlerFunc {
 		summary := stringArg(req, "summary")
 
 		if err := stores.Sessions.End(ctx, id, summary); err != nil {
-			return errorResult("Failed to end session: %s", err)
+			return errorResult("Failed to end session: %s", localErrorText(err))
 		}
 
 		return textResult("Session %q completed", id)
@@ -1364,12 +1450,12 @@ func handleStats(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		obsStats, err := stores.Observations.Stats(ctx)
 		if err != nil {
-			return errorResult("Failed to get stats: %s", err)
+			return errorResult("Failed to get stats: %s", localErrorText(err))
 		}
 
 		sessStats, err := stores.Sessions.GetStats(ctx)
 		if err != nil {
-			return errorResult("Failed to get session stats: %s", err)
+			return errorResult("Failed to get session stats: %s", localErrorText(err))
 		}
 
 		projects := "none yet"
@@ -1386,9 +1472,12 @@ func handleStats(stores *Stores) server.ToolHandlerFunc {
 
 func handleDelete(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		// Strict validation before any destructive store call: fractional,
+		// non-numeric, overflowing, zero, and negative IDs must never be
+		// truncated into a real row ID (QW-01 regression).
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		hardDelete := boolArg(req, "hard_delete", false)
@@ -1400,7 +1489,7 @@ func handleDelete(stores *Stores) server.ToolHandlerFunc {
 			err = stores.Observations.Delete(ctx, id)
 		}
 		if err != nil {
-			return errorResult("Failed to delete memory: %s", err)
+			return errorResult("Failed to delete memory: %s", localErrorText(err))
 		}
 
 		mode := "soft-deleted"
@@ -1412,9 +1501,9 @@ func handleDelete(stores *Stores) server.ToolHandlerFunc {
 }
 func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		observationID := int64(intArg(req, "observation_id", 0))
-		if observationID == 0 {
-			return errorResult("observation_id is required")
+		observationID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
 		before := intArg(req, "before", 5)
 		after := intArg(req, "after", 5)
@@ -1430,7 +1519,7 @@ func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 		if focus.SessionID != "" {
 			allObs, err := stores.Observations.List(ctx, filter)
 			if err != nil {
-				return errorResult("Timeline error: %s", err)
+				return errorResult("Timeline error: %s", localErrorText(err))
 			}
 
 			var beforeObs, afterObs []*domain.Observation
@@ -1514,9 +1603,9 @@ type revisionHistoryEntry struct {
 
 func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		observationID := int64(intArg(req, "observation_id", 0))
-		if observationID == 0 {
-			return errorResult("observation_id is required")
+		observationID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
 		limit := intArg(req, "limit", 20)
 		if limit <= 0 {
@@ -1525,7 +1614,7 @@ func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 
 		history, err := loadRevisionHistory(ctx, stores, observationID, limit)
 		if err != nil {
-			return errorResult("Revision history error: %s", err)
+			return errorResult("Revision history error: %s", localErrorText(err))
 		}
 		if len(history) == 0 {
 			return textResult("[]")
@@ -1533,7 +1622,7 @@ func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 
 		payload, err := json.Marshal(history)
 		if err != nil {
-			return errorResult("Failed to serialize revision history: %s", err)
+			return errorResult("Failed to serialize revision history: %s", localErrorText(err))
 		}
 		return textResult("%s", payload)
 	}

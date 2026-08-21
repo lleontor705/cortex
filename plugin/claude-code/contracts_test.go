@@ -24,11 +24,14 @@ func TestHooksUseOfficialHTTPPort(t *testing.T) {
 	}
 }
 
-// TestDeliveryHooksAlwaysReturnControl pins the packaging invariant that both
-// delivery hooks end with an unconditional exit 0: a Cortex hook failure is
-// observable through its classification but must never block the host.
+// TestDeliveryHooksAlwaysReturnControl pins the packaging invariant that the
+// delivery and context hooks end with an unconditional exit 0: a Cortex hook
+// failure is observable through its classification but must never block the
+// host.
 func TestDeliveryHooksAlwaysReturnControl(t *testing.T) {
-	for _, name := range []string{"session-stop.sh", "subagent-stop.sh"} {
+	for _, name := range []string{
+		"session-stop.sh", "subagent-stop.sh", "session-start.sh", "user-prompt-submit.sh",
+	} {
 		data, err := os.ReadFile(filepath.Join("scripts", name))
 		if err != nil {
 			t.Fatal(err)
@@ -184,6 +187,125 @@ func TestHooksValidateStrictLoopbackOctets(t *testing.T) {
 			if re.MatchString(host) {
 				t.Errorf("%s must reject numeric host %s", name, host)
 			}
+		}
+	}
+}
+
+// TestSharedHelpersProvideAuthPrimitives pins SEC-04/REM-TRANSPORT-001
+// plumbing: _helpers.sh must publish the strict loopback/https URL policy,
+// the credential precedence, and the shared bounded classification signal
+// used by the SessionStart and UserPromptSubmit context hooks.
+func TestSharedHelpersProvideAuthPrimitives(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("scripts", "_helpers.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"validate_url()", "credential()",
+		"cortex_signal()", "cortex_classify()",
+		"CORTEX_API_KEY", "CORTEX_HTTP_TOKEN", "CORTEX_CONFIG_FILE",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("_helpers.sh missing %q", want)
+		}
+	}
+	extract := regexp.MustCompile(`\^127\\\.\(.*\)\$`)
+	literal := extract.FindString(text)
+	if literal == "" {
+		t.Fatal("_helpers.sh must pin a strict bounded-octet 127/8 regex")
+	}
+	re, err := regexp.Compile(literal)
+	if err != nil {
+		t.Fatalf("_helpers.sh loopback regex does not compile: %v", err)
+	}
+	for _, host := range []string{"127.0.0.1", "127.255.255.255"} {
+		if !re.MatchString(host) {
+			t.Errorf("_helpers.sh must accept loopback %s", host)
+		}
+	}
+	for _, host := range []string{"127.999.999.999", "127.256.0.1", "127.0.0", "127.1", "127.0.0.001"} {
+		if re.MatchString(host) {
+			t.Errorf("_helpers.sh must reject numeric host %s", host)
+		}
+	}
+}
+
+// TestSessionStartAuthenticatesAndConfirmsSession pins SEC-04 for the
+// SessionStart hook: the URL policy and credential are resolved before any
+// network activity, the server spawn happens only with a credential, the
+// session create and every protected read carry the bearer token, the
+// session is confirmed only by an exact persisted-identity echo or a 409
+// proven through the read endpoint, and injected memory context comes only
+// from a validated authenticated search response.
+func TestSessionStartAuthenticatesAndConfirmsSession(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("scripts", "session-start.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	validate := strings.Index(text, "validate_url ||")
+	credential := strings.Index(text, "token=$(credential)")
+	protected := strings.Index(text, `"${CORTEX_URL}/api/sessions"`)
+	spawn := strings.Index(text, "cortex serve")
+	if validate < 0 || credential < 0 || protected < 0 {
+		t.Fatal("session-start.sh must validate the URL, read the credential, then call protected endpoints")
+	}
+	if validate > credential || credential > protected {
+		t.Error("session-start.sh must validate CORTEX_URL, then read the credential, before any protected call")
+	}
+	if spawn >= 0 && credential > spawn {
+		t.Error("session-start.sh may spawn cortex serve only after a credential is configured")
+	}
+
+	if got := strings.Count(text, `-H "Authorization: Bearer $token"`); got < 3 {
+		t.Errorf("session-start.sh must authenticate session create, conflict read-back, and search (found %d bearer headers)", got)
+	}
+
+	for _, want := range []string{
+		`.id == $sid`, `.project == $project`, `.directory == $dir`,
+		`(.started_at | type == "string")`,
+		`conflict)`, `/api/sessions/${encoded_session}`,
+		`all(.[]; type == "object" and (.title | type == "string"))`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("session-start.sh missing %q", want)
+		}
+	}
+}
+
+// TestUserPromptSubmitAuthenticatesProtectedReads pins SEC-04 for the
+// UserPromptSubmit hook: the nudge logic's protected reads carry the bearer
+// credential only after URL validation, and responses are validated before
+// any nudge decision; the static first-message path stays offline.
+func TestUserPromptSubmitAuthenticatesProtectedReads(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("scripts", "user-prompt-submit.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+
+	validate := strings.Index(text, "validate_url ||")
+	credential := strings.Index(text, "token=$(credential)")
+	protected := strings.Index(text, `"${CORTEX_URL}/api/`)
+	if validate < 0 || credential < 0 || protected < 0 {
+		t.Fatal("user-prompt-submit.sh must validate the URL, read the credential, then read protected endpoints")
+	}
+	if validate > credential || credential > protected {
+		t.Error("user-prompt-submit.sh must validate CORTEX_URL, then read the credential, before any protected read")
+	}
+
+	if got := strings.Count(text, `-H "Authorization: Bearer $token"`); got < 2 {
+		t.Errorf("user-prompt-submit.sh must authenticate both protected reads (found %d bearer headers)", got)
+	}
+
+	for _, want := range []string{
+		`.started_at | type == "string"`,
+		`.[0].created_at | type == "string"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("user-prompt-submit.sh missing response validation %q", want)
 		}
 	}
 }

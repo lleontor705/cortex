@@ -5,16 +5,21 @@ package extraction
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/transportpolicy"
 )
 
 // LLMProvider represents the supported LLM provider types.
@@ -35,6 +40,261 @@ type Config struct {
 	Model       string        `json:"model"`
 	Temperature float64       `json:"temperature"`
 	Timeout     time.Duration `json:"timeout"`
+}
+
+// Stable sentinel outbound errors (SEC-02). Messages are static: they never
+// embed URLs, hostnames, addresses, credentials, or upstream bodies.
+var (
+	// ErrUnsafeDestination marks a destination rejected by the outbound
+	// policy at the URL, DNS-resolution/dial, or redirect layer. It aborts
+	// extraction instead of falling back to heuristics.
+	ErrUnsafeDestination = errors.New("extraction: outbound destination rejected by policy")
+	// ErrResponseTooLarge marks a provider response that exceeded the
+	// configured size bound before decoding. It also aborts.
+	ErrResponseTooLarge = errors.New("extraction: provider response exceeded the size limit")
+	// ErrProviderUnavailable marks transport-level provider failures.
+	ErrProviderUnavailable = errors.New("extraction: provider request failed")
+	// ErrProviderRejected marks a non-2xx provider response.
+	ErrProviderRejected = errors.New("extraction: provider returned an error status")
+	// ErrInvalidProviderResponse marks an unparseable provider payload.
+	ErrInvalidProviderResponse = errors.New("extraction: provider response could not be parsed")
+)
+
+// Outbound bounds and defaults for the outbound policy.
+const (
+	defaultMaxRedirects               = 3
+	defaultMaxResponseBodyBytes int64 = 4 << 20 // 4 MiB
+	defaultMaxErrorBodyBytes    int64 = 4 << 10 // 4 KiB
+	defaultMaxConcurrent              = 4
+)
+
+// OutboundPolicy is the reusable destination policy (SEC-02) injected into
+// the extraction Service. It is enforced at three layers:
+//
+//  1. URL layer: ValidateURL runs before any request is built or a credential
+//     is attached. It requires HTTPS (plain HTTP only under an explicit
+//     local-only development switch), rejects userinfo, requires an approved
+//     port, requires the host to be admin-approved, and denies IP literals in
+//     loopback/private/link-local/metadata/multicast/unspecified/broadcast/
+//     shared (CGNAT) ranges for both IPv4 and IPv6 (including IPv4-mapped
+//     spellings).
+//  2. Dial layer: a custom DialContext resolves the host, filters every
+//     resolved address through the same address-class rules, and dials only
+//     an approved resolved address directly — a DNS rebinding between
+//     validation and dial cannot reach a denied address.
+//  3. Redirect layer: CheckRedirect revalidates every redirect target URL
+//     through ValidateURL and caps the hop count.
+//
+// All fields are admin/server configuration. Request data can never widen
+// the policy.
+type OutboundPolicy struct {
+	// AllowedHosts is the admin-approved destination allowlist (exact,
+	// case-insensitive hostnames without port; IP literals additionally pass
+	// the address-class rules). Empty means no outbound destination is
+	// approved.
+	AllowedHosts []string
+	// AllowedPorts lists approved TCP ports. Default: 443 only.
+	AllowedPorts []int
+	// AllowLoopback is an explicit local-only development switch that
+	// permits loopback addresses for approved hosts (still HTTPS-only).
+	AllowLoopback bool
+	// AllowInsecureLoopbackHTTP is an explicit local-only development switch
+	// that permits plain HTTP to strict loopback hosts (see
+	// transportpolicy.IsStrictLoopbackHost).
+	AllowInsecureLoopbackHTTP bool
+	// MaxRedirects caps the redirect chain length. Default: 3.
+	MaxRedirects int
+	// MaxResponseBodyBytes bounds the provider success body. Default: 4 MiB.
+	MaxResponseBodyBytes int64
+	// MaxErrorBodyBytes bounds how much of an error body is drained. Default: 4 KiB.
+	MaxErrorBodyBytes int64
+	// MaxConcurrent bounds concurrent outbound provider requests. Default: 4.
+	MaxConcurrent int
+	// TLSConfig is an optional admin TLS configuration (e.g. private CA
+	// roots). It never relaxes destination validation.
+	TLSConfig *tls.Config
+
+	// hosts/ports are normalized views built by normalize.
+	hosts map[string]struct{}
+	ports map[int]struct{}
+	// resolver/dial are injection points for tests; production uses the
+	// default resolver and dialer.
+	resolver func(ctx context.Context, host string) ([]net.IP, error)
+	dial     func(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// DefaultOutboundPolicy returns the strict server policy: HTTPS on port 443
+// only, no approved hosts (outbound LLM disabled until an administrator
+// approves a destination), loopback denied.
+func DefaultOutboundPolicy() OutboundPolicy {
+	return OutboundPolicy{AllowedPorts: []int{443}}
+}
+
+func (p *OutboundPolicy) normalize() {
+	if len(p.AllowedPorts) == 0 {
+		p.AllowedPorts = []int{443}
+	}
+	p.ports = make(map[int]struct{}, len(p.AllowedPorts))
+	for _, port := range p.AllowedPorts {
+		if port > 0 && port <= 65535 {
+			p.ports[port] = struct{}{}
+		}
+	}
+	if p.MaxRedirects <= 0 {
+		p.MaxRedirects = defaultMaxRedirects
+	}
+	if p.MaxResponseBodyBytes <= 0 {
+		p.MaxResponseBodyBytes = defaultMaxResponseBodyBytes
+	}
+	if p.MaxErrorBodyBytes <= 0 {
+		p.MaxErrorBodyBytes = defaultMaxErrorBodyBytes
+	}
+	if p.MaxConcurrent <= 0 {
+		p.MaxConcurrent = defaultMaxConcurrent
+	}
+	p.hosts = make(map[string]struct{}, len(p.AllowedHosts))
+	for _, host := range p.AllowedHosts {
+		host = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(host, ".")))
+		if host != "" {
+			p.hosts[host] = struct{}{}
+		}
+	}
+}
+
+// ValidateURL enforces the URL layer of the outbound policy. Rejection
+// errors wrap ErrUnsafeDestination with static, redacted messages.
+func (p *OutboundPolicy) ValidateURL(u *url.URL) error {
+	if u == nil || u.Host == "" {
+		return fmt.Errorf("%w: destination is not an absolute HTTP(S) URL", ErrUnsafeDestination)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: destination must not embed userinfo", ErrUnsafeDestination)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "https":
+	case "http":
+		if !p.AllowInsecureLoopbackHTTP || !transportpolicy.IsStrictLoopbackHost(u.Hostname()) {
+			return fmt.Errorf("%w: plain HTTP destinations are not permitted", ErrUnsafeDestination)
+		}
+	default:
+		return fmt.Errorf("%w: destination scheme is not an approved HTTPS transport", ErrUnsafeDestination)
+	}
+	port := u.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	portNo, err := strconv.Atoi(port)
+	if err != nil || portNo <= 0 || portNo > 65535 {
+		return fmt.Errorf("%w: destination port is not approved", ErrUnsafeDestination)
+	}
+	if _, ok := p.ports[portNo]; !ok {
+		return fmt.Errorf("%w: destination port is not approved", ErrUnsafeDestination)
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if ip := net.ParseIP(host); ip != nil {
+		if !p.ipApproved(ip) {
+			return fmt.Errorf("%w: destination address class is denied", ErrUnsafeDestination)
+		}
+		return nil
+	}
+	if _, ok := p.hosts[host]; !ok {
+		return fmt.Errorf("%w: destination host is not approved", ErrUnsafeDestination)
+	}
+	return nil
+}
+
+// ipApproved reports whether an address passes the policy's address-class
+// rules. Loopback is only allowed under the explicit AllowLoopback
+// development switch; private, link-local (metadata), multicast, unspecified,
+// broadcast, shared/CGNAT, and IPv4-mapped spellings of denied classes are
+// always rejected.
+func (p *OutboundPolicy) ipApproved(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	if ip.Equal(net.IPv4bcast) {
+		return false
+	}
+	if ip.IsLoopback() {
+		return p.AllowLoopback
+	}
+	if ip.IsPrivate() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false // 100.64.0.0/10 shared/CGNAT space
+	}
+	return ip.IsGlobalUnicast()
+}
+
+// checkRedirect implements http.Client.CheckRedirect: every redirect target
+// is revalidated through ValidateURL and the chain length is capped.
+func (p *OutboundPolicy) checkRedirect(req *http.Request, via []*http.Request) error {
+	if p.MaxRedirects > 0 && len(via) >= p.MaxRedirects {
+		return fmt.Errorf("%w: redirect chain exceeds the configured hop limit", ErrUnsafeDestination)
+	}
+	return p.ValidateURL(req.URL)
+}
+
+// dialContext implements the dial layer: resolve, filter every address
+// through ipApproved, and dial only an approved resolved address directly.
+// The connection is made to the validated IP itself, so a DNS rebinding
+// between validation and dial cannot redirect traffic to a denied address.
+func (p *OutboundPolicy) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("%w: malformed dial address", ErrUnsafeDestination)
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		ips, err = p.lookup(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("%w: provider host could not be resolved", ErrProviderUnavailable)
+		}
+	}
+	for _, ip := range ips {
+		if !p.ipApproved(ip) {
+			continue
+		}
+		dialAddr := net.JoinHostPort(ip.String(), port)
+		if p.dial != nil {
+			return p.dial(ctx, network, dialAddr)
+		}
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, network, dialAddr)
+	}
+	return nil, fmt.Errorf("%w: destination resolved only to addresses denied by policy", ErrUnsafeDestination)
+}
+
+func (p *OutboundPolicy) lookup(ctx context.Context, host string) ([]net.IP, error) {
+	if p.resolver != nil {
+		return p.resolver(ctx, host)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		ips = append(ips, addr.IP)
+	}
+	return ips, nil
+}
+
+// isPolicyAbort reports whether an LLM error must abort the operation rather
+// than fall back to the heuristic extractor.
+func isPolicyAbort(err error) bool {
+	return errors.Is(err, ErrUnsafeDestination) || errors.Is(err, ErrResponseTooLarge)
 }
 
 // ObservationDraft represents an observation extracted from raw input.
@@ -97,17 +357,93 @@ type SynthesisResult struct {
 type Service struct {
 	httpClient *http.Client
 	defaultCfg Config
+	policy     *OutboundPolicy
+	sem        chan struct{}
 }
 
-// NewService creates a new extraction service.
+// NewService creates a new extraction service. The outbound policy is derived
+// from the (trusted, admin-provided) configuration: its destination host (and
+// explicit port) is approved into the default policy. The URL-layer policy
+// still validates scheme, port, and address class at request time, so plain
+// HTTP or loopback/private destinations remain rejected unless the policy
+// carries explicit development switches — use NewServiceWithPolicy for those.
 func NewService(cfg Config) *Service {
-	if cfg.Timeout == 0 {
+	policy := DefaultOutboundPolicy()
+	if base := providerBaseURL(cfg); base != "" {
+		// Approval only widens the host/port allowlist; the request-time
+		// URL/dial/redirect layers still enforce scheme and address class.
+		_ = policy.ApproveDestination(base)
+	}
+	return NewServiceWithPolicy(cfg, policy)
+}
+
+// NewServiceWithPolicy creates a new extraction service with an explicit
+// outbound destination policy. This is the server-mode constructor: the
+// policy is composed by the server, never from request data. It performs NO
+// implicit approval — the composition must approve the trusted configured
+// destination itself via ApproveDestination so an explicit policy approves
+// exactly what its author intended.
+func NewServiceWithPolicy(cfg Config, policy OutboundPolicy) *Service {
+	if cfg.Timeout <= 0 {
 		cfg.Timeout = 45 * time.Second
 	}
-	return &Service{
-		httpClient: &http.Client{Timeout: cfg.Timeout},
-		defaultCfg: cfg,
+	policy.normalize()
+	transport := &http.Transport{DialContext: policy.dialContext}
+	if policy.TLSConfig != nil {
+		transport.TLSClientConfig = policy.TLSConfig.Clone()
 	}
+	return &Service{
+		httpClient: &http.Client{
+			Transport:     transport,
+			CheckRedirect: policy.checkRedirect,
+			Timeout:       cfg.Timeout,
+		},
+		defaultCfg: cfg,
+		policy:     &policy,
+		sem:        make(chan struct{}, policy.MaxConcurrent),
+	}
+}
+
+// ApproveDestination adds the host and explicit port of a trusted
+// (administrator-configured) HTTP(S) destination URL to the allowlists. It
+// rejects userinfo and non-HTTP(S) schemes, and must be called before
+// NewServiceWithPolicy normalizes the policy. Approval only widens the
+// host/port allowlist: every request is still validated against the full
+// policy (scheme, port, address class, redirects, dial targets).
+func (p *OutboundPolicy) ApproveDestination(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return fmt.Errorf("%w: trusted destination is not an absolute HTTP(S) URL", ErrUnsafeDestination)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: trusted destination must not embed userinfo", ErrUnsafeDestination)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "http":
+	default:
+		return fmt.Errorf("%w: trusted destination scheme is not an HTTP(S) transport", ErrUnsafeDestination)
+	}
+	if host := strings.ToLower(strings.TrimSuffix(u.Hostname(), ".")); host != "" {
+		p.AllowedHosts = append(p.AllowedHosts, host)
+	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err == nil && n > 0 && n <= 65535 {
+			p.AllowedPorts = append(p.AllowedPorts, n)
+		}
+	}
+	return nil
+}
+
+// ProviderDefaultBaseURL returns the canonical HTTPS endpoint for a provider
+// preset (empty string for empty or unknown providers).
+func ProviderDefaultBaseURL(provider LLMProvider) string {
+	switch provider {
+	case ProviderAnthropic:
+		return "https://api.anthropic.com/v1"
+	case ProviderOpenAI, ProviderGeneric:
+		return "https://api.openai.com/v1"
+	}
+	return ""
 }
 
 // Extract processes raw text and extracts structured observations and graph edges.
@@ -116,17 +452,20 @@ func (s *Service) Extract(ctx context.Context, req ExtractionRequest) (*Extracti
 		return nil, errors.New("extraction: empty text payload")
 	}
 
+	// SEC-02: the effective LLM configuration is exclusively the trusted
+	// configuration the Service was constructed with. The request-level
+	// LLMConfig field exists for JSON decoding compatibility only and is
+	// never used to select a destination or credential.
 	cfg := s.defaultCfg
-	if req.LLMConfig != nil && req.LLMConfig.APIKey != "" {
-		cfg = *req.LLMConfig
-	}
-
 	if cfg.APIKey != "" || cfg.BaseURL != "" {
 		res, err := s.extractWithLLM(ctx, req, cfg)
 		if err == nil && len(res.Observations) > 0 {
 			res.SourceMethod = "llm"
 			res.ExtractedAt = time.Now().UTC()
 			return res, nil
+		}
+		if isPolicyAbort(err) {
+			return nil, err
 		}
 	}
 
@@ -143,16 +482,16 @@ func (s *Service) Synthesize(ctx context.Context, req SynthesisRequest) (*Synthe
 		return nil, errors.New("synthesis: no observations provided")
 	}
 
+	// SEC-02: same server-managed configuration rule as Extract.
 	cfg := s.defaultCfg
-	if req.LLMConfig != nil && req.LLMConfig.APIKey != "" {
-		cfg = *req.LLMConfig
-	}
-
 	if cfg.APIKey != "" || cfg.BaseURL != "" {
 		res, err := s.synthesizeWithLLM(ctx, req, cfg)
 		if err == nil {
 			res.SynthesizedAt = time.Now().UTC()
 			return res, nil
+		}
+		if isPolicyAbort(err) {
+			return nil, err
 		}
 	}
 
@@ -182,15 +521,6 @@ func (s *Service) Synthesize(ctx context.Context, req SynthesisRequest) (*Synthe
 }
 
 func (s *Service) extractWithLLM(ctx context.Context, req ExtractionRequest, cfg Config) (*ExtractionResult, error) {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		if cfg.Provider == ProviderAnthropic {
-			baseURL = "https://api.anthropic.com/v1"
-		} else {
-			baseURL = "https://api.openai.com/v1"
-		}
-	}
-
 	model := cfg.Model
 	if model == "" {
 		model = "gpt-4o-mini"
@@ -238,7 +568,7 @@ Text to analyze:
 		Temperature float64         `json:"temperature"`
 	}
 
-	bodyJSON, err := json.Marshal(openAIReq{
+	data, err := s.callProvider(ctx, cfg, openAIReq{
 		Model: model,
 		Messages: []openAIMessage{
 			{Role: "system", Content: "You extract structured knowledge items for software agents. Respond strictly in JSON format."},
@@ -250,29 +580,6 @@ Text to analyze:
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/chat/completions", strings.TrimSuffix(baseURL, "/")), bytes.NewReader(bodyJSON))
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.APIKey))
-	}
-
-	resp, err := s.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	// The body is fully consumed below (ReadAll on error, Decode on success),
-	// so a Close failure carries no additional signal for the caller.
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("llm request failed with status %d: %s", resp.StatusCode, string(respBytes))
-	}
-
 	var chatResp struct {
 		Choices []struct {
 			Message struct {
@@ -280,12 +587,12 @@ Text to analyze:
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &chatResp); err != nil {
+		return nil, ErrInvalidProviderResponse
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, errors.New("no choices returned by LLM")
+		return nil, ErrInvalidProviderResponse
 	}
 
 	rawContent := strings.TrimSpace(chatResp.Choices[0].Message.Content)
@@ -296,17 +603,86 @@ Text to analyze:
 
 	var result ExtractionResult
 	if err := json.Unmarshal([]byte(rawContent), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse LLM JSON: %w", err)
+		return nil, ErrInvalidProviderResponse
 	}
 
 	return &result, nil
 }
 
-func (s *Service) synthesizeWithLLM(ctx context.Context, req SynthesisRequest, cfg Config) (*SynthesisResult, error) {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
+// callProvider performs the single outbound provider round-trip under the
+// outbound policy: the endpoint URL is validated before any credential is
+// attached, concurrency is bounded by the policy semaphore, redirects are
+// revalidated by the client's CheckRedirect hook, every dial target is
+// filtered by the policy dialer, and response/error bodies are bounded before
+// decoding. All returned errors are the stable sentinel errors and never
+// carry URLs, addresses, credentials, or upstream body content.
+func (s *Service) callProvider(ctx context.Context, cfg Config, payload any) ([]byte, error) {
+	bodyJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: provider request could not be encoded", ErrProviderUnavailable)
 	}
+
+	endpoint := fmt.Sprintf("%s/chat/completions", strings.TrimSuffix(providerBaseURL(cfg), "/"))
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%w: provider endpoint is not a valid URL", ErrUnsafeDestination)
+	}
+	if err := s.policy.ValidateURL(endpointURL); err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, fmt.Errorf("%w: provider request could not be built", ErrProviderUnavailable)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if cfg.APIKey != "" {
+		// The credential is attached only after the destination passed
+		// validation (SEC-02: no secret transmission to denied targets).
+		httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: cancelled while waiting for an outbound slot", ErrProviderUnavailable)
+	}
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		if errors.Is(err, ErrUnsafeDestination) {
+			// Re-wrap to strip the url.Error, which embeds the full URL.
+			return nil, fmt.Errorf("%w: outbound destination rejected by policy", ErrUnsafeDestination)
+		}
+		return nil, fmt.Errorf("%w: provider request failed", ErrProviderUnavailable)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Bounded drain (never surfaced) so the connection can be reused.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, s.policy.MaxErrorBodyBytes+1))
+		return nil, fmt.Errorf("%w: status %d", ErrProviderRejected, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, s.policy.MaxResponseBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: provider response stream failed", ErrProviderUnavailable)
+	}
+	if int64(len(data)) > s.policy.MaxResponseBodyBytes {
+		return nil, ErrResponseTooLarge
+	}
+	return data, nil
+}
+
+func providerBaseURL(cfg Config) string {
+	if cfg.BaseURL != "" {
+		return cfg.BaseURL
+	}
+	return ProviderDefaultBaseURL(cfg.Provider)
+}
+
+func (s *Service) synthesizeWithLLM(ctx context.Context, req SynthesisRequest, cfg Config) (*SynthesisResult, error) {
 	model := cfg.Model
 	if model == "" {
 		model = "gpt-4o-mini"
@@ -340,7 +716,7 @@ Observations:
 		Temperature float64         `json:"temperature"`
 	}
 
-	bodyJSON, _ := json.Marshal(openAIReq{
+	data, err := s.callProvider(ctx, cfg, openAIReq{
 		Model: model,
 		Messages: []openAIMessage{
 			{Role: "system", Content: "You synthesize architecture notes. Return strictly JSON."},
@@ -348,26 +724,8 @@ Observations:
 		},
 		Temperature: 0.2,
 	})
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/chat/completions", strings.TrimSuffix(baseURL, "/")), bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.APIKey))
-	}
-
-	resp, err := s.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	// The body is fully consumed below via Decode, so a Close failure carries
-	// no additional signal for the caller.
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("synthesis LLM request failed with status %d", resp.StatusCode)
 	}
 
 	var chatResp struct {
@@ -377,11 +735,11 @@ Observations:
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &chatResp); err != nil {
+		return nil, ErrInvalidProviderResponse
 	}
 	if len(chatResp.Choices) == 0 {
-		return nil, errors.New("empty LLM response")
+		return nil, ErrInvalidProviderResponse
 	}
 
 	rawContent := strings.TrimSpace(chatResp.Choices[0].Message.Content)
@@ -392,7 +750,7 @@ Observations:
 
 	var result SynthesisResult
 	if err := json.Unmarshal([]byte(rawContent), &result); err != nil {
-		return nil, err
+		return nil, ErrInvalidProviderResponse
 	}
 	return &result, nil
 }

@@ -77,6 +77,13 @@ var (
 	// Apply and verification instead of silently forking the migration line
 	// (REM-ROLLOUT-001).
 	ErrFutureMigration = errors.New("migration: ledger records a future migration version")
+
+	// ErrPreflightStop is returned by the read-only rollout preflight when
+	// the ledger is NOT in the expected unledgered state for the target
+	// migration (SQLite follow-up 2003, PostgreSQL 106). It tells operators
+	// to STOP the rollout and escalate instead of applying; it is never
+	// returned by Apply/VerifyIntegrity paths (IDP-T05).
+	ErrPreflightStop = errors.New("migration: rollout preflight stop")
 )
 
 // SchemaIdentity is the version+checksum tuple recorded in cortex_meta.
@@ -113,9 +120,10 @@ const v2FollowUpLedgerDDL = `CREATE TABLE IF NOT EXISTS cortex_v2_migrations (
 )`
 
 // NewV2Baseline constructs the v2 baseline from the embedded SQL bundle,
-// including the follow-up migration line (2002 handoff receipts). The
-// baseline identity (family/version/checksum) still refers ONLY to the
-// immutable 001 SQL: follow-ups carry their own ledger checksums.
+// including the follow-up migration line (2002 handoff receipts, 2003 project
+// context artifacts). The baseline identity (family/version/checksum) still
+// refers ONLY to the immutable 001 SQL: follow-ups carry their own ledger
+// checksums.
 func NewV2Baseline() (*V2Baseline, error) {
 	raw := v2migrations.BaselineSQL
 	if raw == "" {
@@ -125,16 +133,29 @@ func NewV2Baseline() (*V2Baseline, error) {
 	if followUpSQL == "" {
 		return nil, fmt.Errorf("migration: embedded v2 follow-up SQL (002) is empty")
 	}
+	projectArtifactsSQL := v2migrations.ProjectArtifactsSQL
+	if projectArtifactsSQL == "" {
+		return nil, fmt.Errorf("migration: embedded v2 follow-up SQL (003) is empty")
+	}
 	sum := sha256.Sum256([]byte(raw))
 	followUpSum := sha256.Sum256([]byte(followUpSQL))
+	projectArtifactsSum := sha256.Sum256([]byte(projectArtifactsSQL))
 	return &V2Baseline{
 		sql: raw,
-		followUps: []v2FollowUp{{
-			version:  V2HandoffReceiptsMigrationVersion,
-			name:     "v2_002_handoff_receipts",
-			sql:      followUpSQL,
-			checksum: hex.EncodeToString(followUpSum[:]),
-		}},
+		followUps: []v2FollowUp{
+			{
+				version:  V2HandoffReceiptsMigrationVersion,
+				name:     "v2_002_handoff_receipts",
+				sql:      followUpSQL,
+				checksum: hex.EncodeToString(followUpSum[:]),
+			},
+			{
+				version:  V2ProjectArtifactsMigrationVersion,
+				name:     "v2_003_project_artifacts",
+				sql:      projectArtifactsSQL,
+				checksum: hex.EncodeToString(projectArtifactsSum[:]),
+			},
+		},
 		identity: SchemaIdentity{
 			Family:   SchemaFamilyCortexV2,
 			Version:  V2BaselineVersion,
@@ -264,6 +285,163 @@ func (b *V2Baseline) VerifyIntegrity(ctx context.Context, db *sql.DB) error {
 }
 
 // --- v2 follow-up migration line --------------------------------------------
+
+// LedgerPreflight is the read-only ledger preflight result for ONE target
+// migration version (the SQLite follow-up 2003 or the PostgreSQL server
+// migration 106). It is filled exclusively by SELECT probes: running a
+// preflight never creates the ledger table, never writes rows, and never
+// takes advisory locks. The expected state for a rollout is UNLEDGERED; see
+// docs/project-context-protocol-identity-privilege.md for the runbook.
+type LedgerPreflight struct {
+	// Version is the preflight target version (e.g. 2003 or 106).
+	Version int
+
+	// LedgerTable reports whether the migration ledger table exists at all.
+	LedgerTable bool
+
+	// Ledgered reports whether the ledger records a row for Version.
+	Ledgered bool
+
+	// RecordedChecksum is the checksum ledgered for Version ("" when
+	// unledgered). ANY recorded value — a prior pre-release checksum or the
+	// current one — stops a rollout that expects the unledgered state.
+	RecordedChecksum string
+
+	// ExpectedChecksum is this runtime's embedded checksum for Version.
+	ExpectedChecksum string
+
+	// Head is the newest migration version this runtime knows.
+	Head int
+
+	// FutureLedgerVersion is a ledgered version beyond Head (0 when none):
+	// the database was created by a NEWER runtime.
+	FutureLedgerVersion int
+}
+
+// Verdict returns nil ONLY for the expected unledgered state (no ledger row
+// for the target version and no newer-runtime ledger row). Every other
+// state is a rollout stop: the returned error always wraps ErrPreflightStop
+// and carries the precise escalation reason — already applied with the
+// current checksum, a prior checksum (tamper-class), or a future version
+// (newer runtime). It is a pure function over the reported state.
+func (p LedgerPreflight) Verdict() error {
+	switch {
+	case p.FutureLedgerVersion > 0:
+		return fmt.Errorf("%w: %w: ledger records version %d beyond runtime head %d",
+			ErrPreflightStop, ErrFutureMigration, p.FutureLedgerVersion, p.Head)
+	case !p.Ledgered:
+		return nil
+	case p.RecordedChecksum == p.ExpectedChecksum:
+		return fmt.Errorf("%w: version %d is already applied with the current checksum; run the post-apply check instead of applying",
+			ErrPreflightStop, p.Version)
+	default:
+		return fmt.Errorf("%w: %w: version %d records prior checksum %s; expected unledgered (embedded checksum %s)",
+			ErrPreflightStop, ErrSchemaTampered, p.Version, p.RecordedChecksum, p.ExpectedChecksum)
+	}
+}
+
+// followUp returns the embedded follow-up for version, or an error for a
+// version this runtime does not carry (the preflight and post-apply checks
+// are precise: they only judge versions whose SQL they embed).
+func (b *V2Baseline) followUp(version int) (v2FollowUp, error) {
+	for _, followUp := range b.followUps {
+		if followUp.version == version {
+			return followUp, nil
+		}
+	}
+	return v2FollowUp{}, fmt.Errorf("migration: unknown v2 follow-up version %d", version)
+}
+
+// PreflightFollowUp runs the READ-ONLY rollout preflight for one embedded
+// v2 follow-up version (e.g. 2003, the project artifacts migration) against
+// the follow-up ledger (cortex_v2_migrations). It issues SELECTs only: the
+// ledger table is probed via sqlite_master and never created, and no row is
+// written. The expected rollout state is unledgered; any recorded checksum
+// or any newer-runtime ledger row yields an ErrPreflightStop verdict for
+// operator escalation (IDP-T05). Operational failures (unreadable ledger)
+// return a plain error, never a verdict.
+func (b *V2Baseline) PreflightFollowUp(ctx context.Context, db *sql.DB, version int) (LedgerPreflight, error) {
+	if db == nil {
+		return LedgerPreflight{}, fmt.Errorf("migration: database connection is nil")
+	}
+	target, err := b.followUp(version)
+	if err != nil {
+		return LedgerPreflight{}, err
+	}
+	preflight := LedgerPreflight{
+		Version:          version,
+		ExpectedChecksum: target.checksum,
+		Head:             b.maxKnownFollowUpVersion(),
+	}
+
+	// Ledger presence via sqlite_master: a missing table is the baseline-only
+	// database shape and stays untouched (read-only, unlike Apply).
+	var ledger string
+	err = db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cortex_v2_migrations'`,
+	).Scan(&ledger)
+	if errors.Is(err, sql.ErrNoRows) {
+		return preflight, preflight.Verdict()
+	}
+	if err != nil {
+		return preflight, fmt.Errorf("migration: probe v2 follow-up ledger presence: %w", err)
+	}
+	preflight.LedgerTable = true
+
+	var recorded sql.NullString
+	err = db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, version,
+	).Scan(&recorded)
+	switch {
+	case errors.Is(err, sql.ErrNoRows): // no ledger row for the target: unledgered
+	case err != nil:
+		return preflight, fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	default:
+		preflight.Ledgered = true
+		preflight.RecordedChecksum = recorded.String
+	}
+
+	var future sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT max(version) FROM cortex_v2_migrations WHERE version > ?`, preflight.Head,
+	).Scan(&future); err != nil {
+		return preflight, fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	}
+	if future.Valid {
+		preflight.FutureLedgerVersion = int(future.Int64)
+	}
+	return preflight, preflight.Verdict()
+}
+
+// VerifyFollowUpApplied is the POST-APPLY check for one embedded v2
+// follow-up version: the ledger must record a row whose checksum equals the
+// EXACT embedded checksum. A missing row means the follow-up was not
+// applied; a drifted checksum fails closed with ErrSchemaTampered. It is
+// read-only (a single SELECT).
+func (b *V2Baseline) VerifyFollowUpApplied(ctx context.Context, db *sql.DB, version int) error {
+	if db == nil {
+		return fmt.Errorf("migration: database connection is nil")
+	}
+	target, err := b.followUp(version)
+	if err != nil {
+		return err
+	}
+	var recorded string
+	err = db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, version,
+	).Scan(&recorded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("migration: v2 follow-up %d is not recorded in the ledger; the apply did not complete", version)
+	}
+	if err != nil {
+		return fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	}
+	if recorded != target.checksum {
+		return fmt.Errorf("%w: v2 follow-up %d recorded checksum %s, expected the embedded checksum %s",
+			ErrSchemaTampered, version, recorded, target.checksum)
+	}
+	return nil
+}
 
 // applyPendingFollowUpsTx applies pending v2 follow-ups in one transaction.
 func (b *V2Baseline) applyPendingFollowUpsTx(ctx context.Context, db *sql.DB) error {
@@ -585,6 +763,10 @@ const V2BaselineMigrationVersion = 2001
 // SQLite follow-up migration 002 (handoff receipts) in the v2 line.
 const V2HandoffReceiptsMigrationVersion = 2002
 
+// V2ProjectArtifactsMigrationVersion is the numeric version of the additive
+// SQLite follow-up migration 003 (project context artifacts) in the v2 line.
+const V2ProjectArtifactsMigrationVersion = 2003
+
 // v1MigrationCount is the number of v1 migrations retired from the v2 line.
 const v1MigrationCount = 14
 
@@ -646,6 +828,14 @@ func (r *V2Registry) V2Migrations() []Migration {
 			Description: "Durable handoff receipt ledger for exactly-once handoffs (additive follow-up)",
 			UpSQL:       v2migrations.HandoffReceiptsSQL,
 			// Forward-only: receipts are user data and MUST NOT be dropped.
+			DownSQL: "",
+		},
+		{
+			Version:     V2ProjectArtifactsMigrationVersion,
+			Name:        "v2_003_project_artifacts",
+			Description: "Project Context artifact ledger: soft-delete artifacts, immutable revisions/events, one activation pointer, idempotency receipts, usage counters (additive follow-up)",
+			UpSQL:       v2migrations.ProjectArtifactsSQL,
+			// Forward-only: artifact history is user data and MUST NOT be dropped.
 			DownSQL: "",
 		},
 	}

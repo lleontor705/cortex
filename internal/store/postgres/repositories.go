@@ -109,6 +109,23 @@ func (s *Store) workspaceSessionPredicate(ctx context.Context, args []any) (stri
 // topic isolation, dedup, or the topic advisory lock.
 var errWorkspaceBindingRequired = errors.New("postgres observations: workspace binding is required (migration 105)")
 
+// errWorkspaceScopeRequired fails closed when a workspace-scoped read —
+// list, search, topic lookup, count, or graph/prompt subquery — runs
+// without the transaction-resolved workspace binding (SEC-01): sibling
+// workspaces of one tenant must never become visible through a tenant-wide
+// read fallback, so a missing binding is an error, never a degradation.
+var errWorkspaceScopeRequired = errors.New("postgres observations: workspace scope is required for tenant reads")
+
+// requireWorkspaceScope resolves the transaction workspace binding for read
+// paths. Every observation list/search/topic/count and supporting
+// prompt/graph subquery is bound to the resolved workspace bigint.
+func requireWorkspaceScope(ctx context.Context) (int64, error) {
+	if ws, ok := workspaceFromContext(ctx); ok {
+		return ws, nil
+	}
+	return 0, errWorkspaceScopeRequired
+}
+
 // prepareTopicInTx normalizes the project and topic key exactly once — the
 // lock key, the lookup, and the persisted bytes must all agree — and
 // serializes concurrent first upserts of the same (tenant, workspace,
@@ -132,7 +149,11 @@ func (r *ObservationRepository) prepareTopicInTx(ctx context.Context, tx pgx.Tx,
 	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, boundedLockTimeout); err != nil {
 		return fmt.Errorf("postgres observations: topic lock timeout: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array(public.cortex_current_tenant()::text, $1::bigint, $2, $3)::text, 0))`, ws, o.Project, o.TopicKey); err != nil {
+	// The advisory key parameters are explicitly cast: PostgreSQL cannot
+	// infer a type for bind parameters used only inside jsonb_build_array,
+	// and an untyped $n there fails with SQLSTATE 42P18 before the lock is
+	// ever taken.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array(public.cortex_current_tenant()::text, $1::bigint, $2::text, $3::text)::text, 0))`, ws, o.Project, o.TopicKey); err != nil {
 		return fmt.Errorf("postgres observations: topic lock: %w", err)
 	}
 	return nil
@@ -323,7 +344,12 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 	var created time.Time
 	selectQuery := `SELECT created_at,public_id::text FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`
 	selectArgs := []any{id}
-	updateQuery := `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),classification=COALESCE(NULLIF($2,''),classification),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE tenant_id=public.cortex_current_tenant() AND id=$11 AND deleted_at IS NULL AND (classification <> 'personal' OR owner_subject=$10) RETURNING revision_count`
+	// The workspace predicate must extend the WHERE clause BEFORE RETURNING
+	// is appended: tacking it onto the finished statement produced
+	// `RETURNING revision_count AND workspace_id=$12`, which PostgreSQL
+	// parses as a boolean expression over an integer (SQLSTATE 42804) and
+	// rejected on every workspace-bound topic update.
+	updateQuery := `UPDATE observations SET project_key=$1,scope=COALESCE(NULLIF($2,''),scope),classification=COALESCE(NULLIF($2,''),classification),source=COALESCE(NULLIF($3,''),source),type=$4,title=$5,content=$6,topic_key=NULLIF($7,''),revision_count=revision_count+1,updated_at=$8,updated_by=$9 WHERE tenant_id=public.cortex_current_tenant() AND id=$11 AND deleted_at IS NULL`
 	updateArgs := []any{o.Project, o.Scope, o.Source, o.Type, o.Title, o.Content, o.TopicKey, now, actorFromContext(ctx), r.principal.Subject, id}
 	if ws, ok := workspaceFromContext(ctx); ok {
 		selectQuery += ` AND workspace_id=$2`
@@ -331,6 +357,7 @@ func (r *ObservationRepository) updateInTx(ctx context.Context, tx pgx.Tx, o *do
 		updateQuery += ` AND workspace_id=$12`
 		updateArgs = append(updateArgs, ws)
 	}
+	updateQuery += ` AND (classification <> 'personal' OR owner_subject=$10) RETURNING revision_count`
 	err := tx.QueryRow(ctx, selectQuery, selectArgs...).Scan(&created, &o.PublicID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return notFound("observation", id)
@@ -392,7 +419,11 @@ func (r *ObservationRepository) GetByTopicKey(ctx context.Context, project, key 
 	}
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`, project, key).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL AND workspace_id=$3 ORDER BY updated_at DESC LIMIT 1`, project, key, ws).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", key)
@@ -416,9 +447,19 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 		f.Limit = 20
 	}
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// SEC-01: the transaction-resolved workspace binding scopes the
+		// list before any predicate is built; a missing binding fails
+		// closed rather than degrading to tenant-wide visibility.
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
 		q := observationSelect + ` WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL`
 		args := []any{}
 		n := 1
+		q += fmt.Sprintf(" AND workspace_id=$%d", n)
+		args = append(args, ws)
+		n++
 		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
 			if len(projects) == 0 {
 				q += ` AND FALSE`
@@ -455,9 +496,11 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 			}
 		}
 		if f.SessionID != "" {
-			q += fmt.Sprintf(" AND session_id=(SELECT id FROM sessions WHERE public_id=$%d::uuid)", n)
-			args = append(args, f.SessionID)
-			n++
+			// Session joins must agree on the workspace: the referenced
+			// session resolves inside the bound workspace only.
+			q += fmt.Sprintf(" AND session_id=(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$%d::uuid AND workspace_id=$%d)", n, n+1)
+			args = append(args, f.SessionID, ws)
+			n += 2
 		}
 		if f.CreatedAfter != nil {
 			q += fmt.Sprintf(" AND created_at>$%d", n)
@@ -493,19 +536,34 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 }
 func (r *ObservationRepository) CountAll(ctx context.Context) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL`).Scan(&n)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL AND workspace_id=$1`, ws).Scan(&n)
 	})
 	return
 }
 func (r *ObservationRepository) CountByRoot(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `WITH RECURSIVE reach(id) AS (SELECT $1::bigint UNION SELECT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations a ON a.id=e.from_observation_id AND a.tenant_id=public.cortex_current_tenant() AND a.deleted_at IS NULL JOIN observations b ON b.id=e.to_observation_id AND b.tenant_id=public.cortex_current_tenant() AND b.deleted_at IS NULL WHERE e.tenant_id=public.cortex_current_tenant()) SELECT count(*) FROM reach WHERE id<>$1::bigint`, id).Scan(&n)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		// The recursion may only traverse edges and observations of the
+		// bound workspace (SEC-01 defense in depth: migration 107 already
+		// keeps edges inside one workspace).
+		return tx.QueryRow(ctx, `WITH RECURSIVE reach(id) AS (SELECT $1::bigint UNION SELECT CASE WHEN e.from_observation_id=reach.id THEN e.to_observation_id ELSE e.from_observation_id END FROM edges e JOIN reach ON e.from_observation_id=reach.id OR e.to_observation_id=reach.id JOIN observations a ON a.id=e.from_observation_id AND a.tenant_id=public.cortex_current_tenant() AND a.deleted_at IS NULL AND a.workspace_id=$2 JOIN observations b ON b.id=e.to_observation_id AND b.tenant_id=public.cortex_current_tenant() AND b.deleted_at IS NULL AND b.workspace_id=$2 WHERE e.tenant_id=public.cortex_current_tenant() AND e.workspace_id=$2) SELECT count(*) FROM reach WHERE id<>$1::bigint`, id, ws).Scan(&n)
 	})
 	return
 }
 func (r *ObservationRepository) CountEdgesAsObs(ctx context.Context, id int64) (n int, err error) {
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&n)
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT count(*) FROM observations WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL AND workspace_id=$2`, id, ws).Scan(&n)
 	})
 	return
 }

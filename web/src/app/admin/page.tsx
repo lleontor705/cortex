@@ -8,10 +8,15 @@ import {
   generateCursorMcpConfig,
   generateWindsurfConfig,
   generateCortexYaml,
-  generateEnvFile,
   generateQuickstartScript,
   downloadFile,
 } from "@/lib/config-exporter";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import {
   ShieldCheck,
   Key,
@@ -19,38 +24,36 @@ import {
   Plus,
   Download,
   Copy,
-  RefreshCw,
   Trash2,
   CheckCircle,
   FileCode,
   Terminal,
-  ExternalLink,
   X,
+  Check,
 } from "lucide-react";
 
 export default function AdminPage() {
-  const { client, serverUrl, token: activeToken } = useAuth();
+  const { client, serverUrl } = useAuth();
 
   const [users, setUsers] = useState<User[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // New User Modal
+  // Modals
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [userEmail, setUserEmail] = useState("");
   const [userName, setUserName] = useState("");
   const [userRole, setUserRole] = useState("developer");
 
-  // New Token Modal
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const [tokenSubject, setTokenSubject] = useState("");
   const [tokenName, setTokenName] = useState("");
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
 
-  // Download Config Modal
   const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
   const [selectedTokenForExport, setSelectedTokenForExport] = useState<Token | null>(null);
   const [exportProject, setExportProject] = useState("default");
+  const [copiedSecret, setCopiedSecret] = useState(false);
 
   const fetchData = async () => {
     if (!client) return;
@@ -126,7 +129,6 @@ export default function AdminPage() {
   const getExportContext = () => {
     return {
       serverUrl,
-      token: (selectedTokenForExport?.secret || activeToken || ""),
       userEmail: selectedTokenForExport?.subject,
       tokenName: selectedTokenForExport?.name,
       projectName: exportProject,
@@ -134,466 +136,443 @@ export default function AdminPage() {
   };
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", flexWrap: "wrap", gap: "16px" }}>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 style={{ fontSize: "24px", fontWeight: "700", marginBottom: "4px" }}>
+          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+            <ShieldCheck className="h-6 w-6 text-blue-500" />
             Administración de Usuarios y Agentes
           </h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
+          <p className="text-xs text-slate-400 mt-1">
             Control de identidades, emisión de tokens y descarga de perfiles de configuración para coding agents
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button onClick={() => setIsUserModalOpen(true)} className="btn btn-secondary">
-            <Users size={15} />
+        <div className="flex items-center gap-2.5">
+          <Button onClick={() => setIsUserModalOpen(true)} variant="secondary" size="sm" className="gap-2">
+            <Users className="h-4 w-4" />
             <span>Crear Usuario</span>
-          </button>
-          <button onClick={() => setIsTokenModalOpen(true)} className="btn btn-primary">
-            <Key size={15} />
+          </Button>
+          <Button onClick={() => setIsTokenModalOpen(true)} size="sm" className="gap-2 shadow-lg shadow-blue-600/20">
+            <Key className="h-4 w-4" />
             <span>Emitir Token</span>
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* Global Config Download Card */}
-      <div
-        className="card"
-        style={{
-          marginBottom: "28px",
-          background: "linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%)",
-          border: "1px solid var(--border-default)",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
-          <div>
-            <h2 style={{ fontSize: "16px", fontWeight: "600", marginBottom: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
-              <Download size={18} color="var(--accent-primary)" />
+      <Card className="p-6 bg-gradient-to-r from-slate-900/90 via-slate-800/80 to-slate-900/90 border-slate-700/80 shadow-2xl">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              <Download className="h-5 w-5 text-blue-400" />
               Descargar Configuraciones para tus Agentes de IA
             </h2>
-            <p style={{ color: "var(--text-secondary)", fontSize: "13px" }}>
-              Exporta archivos de configuración preconfigurados con tu servidor y tokens para Claude Desktop, Cursor, Windsurf o Cortex CLI.
+            <p className="text-xs text-slate-300 max-w-2xl">
+              Exporta perfiles para Claude Desktop, Cursor, Windsurf o Cortex CLI. Los archivos nunca incluyen secretos:
+              referencian la variable de entorno CORTEX_REMOTE_TOKEN.
             </p>
           </div>
 
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
               onClick={() => {
                 const content = generateClaudeDesktopConfig(getExportContext());
                 downloadFile("claude_desktop_config.json", content);
               }}
-              className="btn btn-secondary btn-sm"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 text-xs"
             >
-              <FileCode size={13} />
-              <span>Claude Desktop JSON</span>
-            </button>
+              <FileCode className="h-3.5 w-3.5 text-blue-400" />
+              <span>Claude Desktop</span>
+            </Button>
 
-            <button
+            <Button
               onClick={() => {
                 const content = generateCursorMcpConfig(getExportContext());
                 downloadFile("cursor_mcp.json", content);
               }}
-              className="btn btn-secondary btn-sm"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 text-xs"
             >
-              <FileCode size={13} />
-              <span>Cursor MCP JSON</span>
-            </button>
+              <FileCode className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Cursor MCP</span>
+            </Button>
 
-            <button
+            <Button
               onClick={() => {
                 const content = generateCortexYaml(getExportContext());
                 downloadFile("cortex.yaml", content, "text/yaml");
               }}
-              className="btn btn-secondary btn-sm"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 text-xs"
             >
-              <FileCode size={13} />
+              <FileCode className="h-3.5 w-3.5 text-purple-400" />
               <span>cortex.yaml</span>
-            </button>
+            </Button>
 
-            <button
+            <Button
               onClick={() => {
                 const content = generateQuickstartScript(getExportContext(), "ps1");
                 downloadFile("setup-agent.ps1", content, "text/plain");
               }}
-              className="btn btn-primary btn-sm"
+              size="sm"
+              className="gap-1.5 text-xs shadow-lg shadow-blue-600/20"
             >
-              <Terminal size={13} />
-              <span>Script PowerShell</span>
-            </button>
+              <Terminal className="h-3.5 w-3.5" />
+              <span>PowerShell</span>
+            </Button>
           </div>
         </div>
-      </div>
+      </Card>
 
       {/* Two Column Layout for Users and Tokens */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: "24px" }}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Tokens List */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">
-              <Key size={17} />
-              Tokens de Autenticación
-            </h2>
-            <button onClick={() => setIsTokenModalOpen(true)} className="btn btn-secondary btn-sm">
-              <Plus size={13} />
-              <span>Nuevo Token</span>
-            </button>
-          </div>
-
-          {loading ? (
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Cargando tokens...</p>
-          ) : tokens.length === 0 ? (
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No hay tokens emitidos.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {tokens.map((tok) => (
-                <div
-                  key={tok.id}
-                  style={{
-                    padding: "12px",
-                    backgroundColor: "var(--bg-input)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-md)",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "8px",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: "600", fontSize: "13px", color: "var(--text-primary)" }}>
-                      {tok.name}
-                    </span>
-                    <span className={`badge ${tok.revoked_at ? "badge-red" : "badge-green"}`}>
-                      {tok.revoked_at ? "Revocado" : "Activo"}
-                    </span>
-                  </div>
-
-                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    <span>Prefijo: <code className="font-mono">{tok.prefix}...</code></span>
-                    <span style={{ margin: "0 6px" }}>•</span>
-                    <span>Subject: <code className="font-mono">{tok.subject.slice(0, 8)}...</code></span>
-                  </div>
-
-                  <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
-                    <button
-                      onClick={() => openExportModal(tok)}
-                      className="btn btn-secondary btn-sm"
-                      style={{ fontSize: "11px", padding: "4px 8px" }}
-                    >
-                      <Download size={12} />
-                      <span>Descargar Config</span>
-                    </button>
-                    {!tok.revoked_at && (
-                      <button
-                        onClick={() => handleRevokeToken(tok.id)}
-                        className="btn btn-danger btn-sm"
-                        style={{ fontSize: "11px", padding: "4px 8px" }}
-                      >
-                        <Trash2 size={12} />
-                        <span>Revocar</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+        <Card className="p-5 bg-slate-900/70 border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <CardTitle className="text-sm">
+                <Key className="h-4 w-4 text-blue-400" />
+                Tokens de Autenticación
+              </CardTitle>
+              <Button onClick={() => setIsTokenModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1">
+                <Plus className="h-3.5 w-3.5" />
+                <span>Nuevo Token</span>
+              </Button>
             </div>
-          )}
-        </div>
+
+            {loading ? (
+              <p className="text-xs text-slate-500 py-6 text-center">Cargando tokens...</p>
+            ) : tokens.length === 0 ? (
+              <p className="text-xs text-slate-500 py-6 text-center">No hay tokens emitidos.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {tokens.map((tok) => (
+                  <div
+                    key={tok.id}
+                    className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-lg space-y-2 hover:border-slate-700 transition-colors"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-xs text-slate-200">
+                        {tok.name}
+                      </span>
+                      <Badge variant={tok.revoked_at ? "destructive" : "success"}>
+                        {tok.revoked_at ? "Revocado" : "Activo"}
+                      </Badge>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-[11px] text-slate-500">
+                      <span>Prefijo: <code className="text-slate-400 font-mono">{tok.prefix}...</code></span>
+                      <span>•</span>
+                      <span>Subject: <code className="text-slate-400 font-mono">{tok.subject.slice(0, 8)}...</code></span>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        onClick={() => openExportModal(tok)}
+                        variant="secondary"
+                        size="sm"
+                        className="h-7 text-xs gap-1.5"
+                      >
+                        <Download className="h-3 w-3" />
+                        <span>Descargar Config</span>
+                      </Button>
+                      {!tok.revoked_at && (
+                        <Button
+                          onClick={() => handleRevokeToken(tok.id)}
+                          variant="destructive"
+                          size="sm"
+                          className="h-7 text-xs gap-1.5"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          <span>Revocar</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
 
         {/* Users List */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">
-              <Users size={17} />
-              Usuarios & Agentes Registrados
-            </h2>
-            <button onClick={() => setIsUserModalOpen(true)} className="btn btn-secondary btn-sm">
-              <Plus size={13} />
-              <span>Nuevo Usuario</span>
-            </button>
-          </div>
-
-          {loading ? (
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>Cargando usuarios...</p>
-          ) : users.length === 0 ? (
-            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No hay usuarios registrados aún.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {users.map((u) => (
-                <div
-                  key={u.id}
-                  style={{
-                    padding: "12px",
-                    backgroundColor: "var(--bg-input)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-md)",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: "600", fontSize: "13px" }}>{u.display_name}</div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{u.email}</div>
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span className="badge badge-blue">
-                      {u.roles?.join(", ") || "developer"}
-                    </span>
-                  </div>
-                </div>
-              ))}
+        <Card className="p-5 bg-slate-900/70 border-slate-800 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <CardTitle className="text-sm">
+                <Users className="h-4 w-4 text-purple-400" />
+                Usuarios & Agentes Registrados
+              </CardTitle>
+              <Button onClick={() => setIsUserModalOpen(true)} variant="ghost" size="sm" className="h-7 text-xs gap-1">
+                <Plus className="h-3.5 w-3.5" />
+                <span>Nuevo Usuario</span>
+              </Button>
             </div>
-          )}
-        </div>
+
+            {loading ? (
+              <p className="text-xs text-slate-500 py-6 text-center">Cargando usuarios...</p>
+            ) : users.length === 0 ? (
+              <p className="text-xs text-slate-500 py-6 text-center">No hay usuarios registrados aún.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {users.map((u) => (
+                  <div
+                    key={u.id}
+                    className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-lg flex items-center justify-between hover:border-slate-700 transition-colors"
+                  >
+                    <div>
+                      <div className="font-semibold text-xs text-slate-200">{u.display_name}</div>
+                      <div className="text-[11px] text-slate-500">{u.email}</div>
+                    </div>
+
+                    <Badge variant="default">
+                      {u.roles?.join(", ") || "developer"}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
       </div>
 
       {/* Create User Modal */}
-      {isUserModalOpen && (
-        <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "20px" }}>
-          <div className="card" style={{ maxWidth: "480px", width: "100%" }}>
-            <div className="card-header">
-              <h2 className="card-title">
-                <Users size={18} />
-                Crear Nuevo Usuario
-              </h2>
-              <button onClick={() => setIsUserModalOpen(false)} className="btn btn-secondary btn-sm" style={{ padding: "4px" }}>
-                <X size={16} />
-              </button>
-            </div>
+      <Dialog open={isUserModalOpen} onOpenChange={setIsUserModalOpen}>
+        <DialogHeader>
+          <DialogTitle>
+            <Users className="h-4 w-4 text-purple-400" />
+            Crear Nuevo Usuario / Agente
+          </DialogTitle>
+          <DialogClose onClick={() => setIsUserModalOpen(false)} />
+        </DialogHeader>
 
-            <form onSubmit={handleCreateUser} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  NOMBRE COMPLETO / AGENTE
-                </label>
-                <input
-                  type="text"
-                  className="input"
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                  placeholder="Ej: Claude Agent 01"
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  CORREO ELECTRÓNICO
-                </label>
-                <input
-                  type="email"
-                  className="input"
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  placeholder="agent@cortex.local"
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  ROL PRINCIPAL
-                </label>
-                <select className="select" value={userRole} onChange={(e) => setUserRole(e.target.value)}>
-                  <option value="developer">Developer</option>
-                  <option value="agent">Autonomous Agent</option>
-                  <option value="admin">Administrator</option>
-                </select>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "8px" }}>
-                <button type="button" onClick={() => setIsUserModalOpen(false)} className="btn btn-secondary">
-                  Cancelar
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Crear Usuario
-                </button>
-              </div>
-            </form>
+        <form onSubmit={handleCreateUser} className="space-y-3.5 mt-4 text-xs">
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              NOMBRE COMPLETO / AGENTE
+            </label>
+            <Input
+              type="text"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              placeholder="Ej: Claude Agent 01"
+              required
+            />
           </div>
-        </div>
-      )}
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              CORREO ELECTRÓNICO
+            </label>
+            <Input
+              type="email"
+              value={userEmail}
+              onChange={(e) => setUserEmail(e.target.value)}
+              placeholder="agent@cortex.local"
+              required
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              ROL PRINCIPAL
+            </label>
+            <Select value={userRole} onChange={(e) => setUserRole(e.target.value)}>
+              <option value="developer">Developer</option>
+              <option value="agent">Autonomous Agent</option>
+              <option value="admin">Administrator</option>
+            </Select>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsUserModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit" size="sm">
+              Crear Usuario
+            </Button>
+          </div>
+        </form>
+      </Dialog>
 
       {/* Issue Token Modal */}
-      {isTokenModalOpen && (
-        <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "20px" }}>
-          <div className="card" style={{ maxWidth: "480px", width: "100%" }}>
-            <div className="card-header">
-              <h2 className="card-title">
-                <Key size={18} />
-                Emitir Nuevo Token de Acceso
-              </h2>
-              <button onClick={() => { setIsTokenModalOpen(false); setIssuedSecret(null); }} className="btn btn-secondary btn-sm" style={{ padding: "4px" }}>
-                <X size={16} />
-              </button>
+      <Dialog open={isTokenModalOpen} onOpenChange={(open) => { setIsTokenModalOpen(open); if (!open) setIssuedSecret(null); }}>
+        <DialogHeader>
+          <DialogTitle>
+            <Key className="h-4 w-4 text-blue-400" />
+            Emitir Nuevo Token de Acceso
+          </DialogTitle>
+          <DialogClose onClick={() => { setIsTokenModalOpen(false); setIssuedSecret(null); }} />
+        </DialogHeader>
+
+        {issuedSecret ? (
+          <div className="space-y-4 mt-4 text-xs">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-lg space-y-2">
+              <span className="font-semibold block">¡Token emitido con éxito!</span>
+              <p className="text-[11px] text-slate-300">Copia este secreto ahora; no volverá a mostrarse:</p>
+              <div className="p-2.5 bg-slate-950 rounded border border-slate-800 font-mono text-[11px] text-slate-200 break-all select-all">
+                {issuedSecret}
+              </div>
             </div>
 
-            {issuedSecret ? (
-              <div>
-                <div style={{ backgroundColor: "var(--success-bg)", border: "1px solid rgba(16, 185, 129, 0.3)", color: "var(--success)", padding: "14px", borderRadius: "var(--radius-md)", fontSize: "13px", marginBottom: "16px" }}>
-                  <b>¡Token emitido con éxito!</b> Copia este secreto ahora; no volverá a mostrarse:
-                  <div className="font-mono" style={{ marginTop: "8px", padding: "8px", background: "var(--bg-input)", borderRadius: "4px", color: "var(--text-primary)", wordBreak: "break-all" }}>
-                    {issuedSecret}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(issuedSecret);
-                      alert("¡Token copiado al portapapeles!");
-                    }}
-                    className="btn btn-secondary"
-                  >
-                    <Copy size={14} />
-                    <span>Copiar Secreto</span>
-                  </button>
-                  <button onClick={() => { setIsTokenModalOpen(false); setIssuedSecret(null); }} className="btn btn-primary">
-                    Listo
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleIssueToken} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                    USUARIO / SUBJECT ASIGNADO
-                  </label>
-                  <select
-                    className="select"
-                    value={tokenSubject}
-                    onChange={(e) => setTokenSubject(e.target.value)}
-                    required
-                  >
-                    <option value="">Selecciona usuario...</option>
-                    {users.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.display_name} ({u.email})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                    NOMBRE / ETIQUETA DEL TOKEN
-                  </label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={tokenName}
-                    onChange={(e) => setTokenName(e.target.value)}
-                    placeholder="Ej: Claude Code Workstation Token"
-                    required
-                  />
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "8px" }}>
-                  <button type="button" onClick={() => setIsTokenModalOpen(false)} className="btn btn-secondary">
-                    Cancelar
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    Generar Token
-                  </button>
-                </div>
-              </form>
-            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(issuedSecret);
+                  setCopiedSecret(true);
+                  setTimeout(() => setCopiedSecret(false), 1800);
+                }}
+                className="gap-1.5"
+              >
+                {copiedSecret ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                <span>{copiedSecret ? "Copiado" : "Copiar Secreto"}</span>
+              </Button>
+              <Button type="button" size="sm" onClick={() => { setIsTokenModalOpen(false); setIssuedSecret(null); }}>
+                Listo
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <form onSubmit={handleIssueToken} className="space-y-3.5 mt-4 text-xs">
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                USUARIO / SUBJECT ASIGNADO
+              </label>
+              <Select
+                value={tokenSubject}
+                onChange={(e) => setTokenSubject(e.target.value)}
+                required
+              >
+                <option value="">Selecciona usuario...</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.display_name} ({u.email})
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+                NOMBRE / ETIQUETA DEL TOKEN
+              </label>
+              <Input
+                type="text"
+                value={tokenName}
+                onChange={(e) => setTokenName(e.target.value)}
+                placeholder="Ej: Claude Code Workstation Token"
+                required
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsTokenModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button type="submit" size="sm">
+                Generar Token
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
 
       {/* Export Config Modal */}
-      {isDownloadModalOpen && selectedTokenForExport && (
-        <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "20px" }}>
-          <div className="card" style={{ maxWidth: "540px", width: "100%" }}>
-            <div className="card-header">
-              <h2 className="card-title">
-                <Download size={18} />
-                Descargar Configuración para {selectedTokenForExport.name}
-              </h2>
-              <button onClick={() => setIsDownloadModalOpen(false)} className="btn btn-secondary btn-sm" style={{ padding: "4px" }}>
-                <X size={16} />
-              </button>
-            </div>
+      <Dialog open={isDownloadModalOpen && !!selectedTokenForExport} onOpenChange={setIsDownloadModalOpen}>
+        <DialogHeader>
+          <DialogTitle>
+            <Download className="h-4 w-4 text-blue-400" />
+            Descargar Configuración para {selectedTokenForExport?.name}
+          </DialogTitle>
+          <DialogClose onClick={() => setIsDownloadModalOpen(false)} />
+        </DialogHeader>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-                Selecciona el formato de configuración que deseas descargar para este token:
-              </p>
+        <div className="space-y-4 mt-4 text-xs">
+          <p className="text-slate-400">
+            Selecciona el formato de configuración para {selectedTokenForExport?.name}. Ningún archivo contiene el secreto:
+            cada formato indica dónde definir CORTEX_REMOTE_TOKEN.
+          </p>
 
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px" }}>
-                  PROYECTO POR DEFECTO
-                </label>
-                <input
-                  type="text"
-                  className="input"
-                  value={exportProject}
-                  onChange={(e) => setExportProject(e.target.value)}
-                />
-              </div>
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              PROYECTO POR DEFECTO
+            </label>
+            <Input
+              type="text"
+              value={exportProject}
+              onChange={(e) => setExportProject(e.target.value)}
+            />
+          </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "8px" }}>
-                <button
-                  onClick={() => {
-                    const c = generateClaudeDesktopConfig(getExportContext());
-                    downloadFile("claude_desktop_config.json", c);
-                  }}
-                  className="btn btn-secondary"
-                  style={{ justifyContent: "flex-start", padding: "12px" }}
-                >
-                  <FileCode size={15} color="var(--accent-primary)" />
-                  <span>Claude Desktop</span>
-                </button>
+          <div className="grid grid-cols-2 gap-2.5 pt-2">
+            <Button
+              onClick={() => {
+                const c = generateClaudeDesktopConfig(getExportContext());
+                downloadFile("claude_desktop_config.json", c);
+              }}
+              variant="secondary"
+              size="sm"
+              className="justify-start gap-2 h-10"
+            >
+              <FileCode className="h-4 w-4 text-blue-400" />
+              <span>Claude Desktop</span>
+            </Button>
 
-                <button
-                  onClick={() => {
-                    const c = generateCursorMcpConfig(getExportContext());
-                    downloadFile("cursor_mcp.json", c);
-                  }}
-                  className="btn btn-secondary"
-                  style={{ justifyContent: "flex-start", padding: "12px" }}
-                >
-                  <FileCode size={15} color="#10b981" />
-                  <span>Cursor IDE</span>
-                </button>
+            <Button
+              onClick={() => {
+                const c = generateCursorMcpConfig(getExportContext());
+                downloadFile("cursor_mcp.json", c);
+              }}
+              variant="secondary"
+              size="sm"
+              className="justify-start gap-2 h-10"
+            >
+              <FileCode className="h-4 w-4 text-emerald-400" />
+              <span>Cursor IDE</span>
+            </Button>
 
-                <button
-                  onClick={() => {
-                    const c = generateWindsurfConfig(getExportContext());
-                    downloadFile("windsurf_config.json", c);
-                  }}
-                  className="btn btn-secondary"
-                  style={{ justifyContent: "flex-start", padding: "12px" }}
-                >
-                  <FileCode size={15} color="#8b5cf6" />
-                  <span>Windsurf Cascade</span>
-                </button>
+            <Button
+              onClick={() => {
+                const c = generateWindsurfConfig(getExportContext());
+                downloadFile("windsurf_config.json", c);
+              }}
+              variant="secondary"
+              size="sm"
+              className="justify-start gap-2 h-10"
+            >
+              <FileCode className="h-4 w-4 text-purple-400" />
+              <span>Windsurf Cascade</span>
+            </Button>
 
-                <button
-                  onClick={() => {
-                    const c = generateCortexYaml(getExportContext());
-                    downloadFile("cortex.yaml", c, "text/yaml");
-                  }}
-                  className="btn btn-secondary"
-                  style={{ justifyContent: "flex-start", padding: "12px" }}
-                >
-                  <FileCode size={15} color="#f59e0b" />
-                  <span>Cortex CLI YAML</span>
-                </button>
-              </div>
+            <Button
+              onClick={() => {
+                const c = generateCortexYaml(getExportContext());
+                downloadFile("cortex.yaml", c, "text/yaml");
+              }}
+              variant="secondary"
+              size="sm"
+              className="justify-start gap-2 h-10"
+            >
+              <FileCode className="h-4 w-4 text-amber-400" />
+              <span>Cortex CLI YAML</span>
+            </Button>
+          </div>
 
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
-                <button onClick={() => setIsDownloadModalOpen(false)} className="btn btn-primary">
-                  Cerrar
-                </button>
-              </div>
-            </div>
+          <div className="flex justify-end pt-2">
+            <Button onClick={() => setIsDownloadModalOpen(false)} size="sm">
+              Cerrar
+            </Button>
           </div>
         </div>
-      )}
+      </Dialog>
     </div>
   );
 }

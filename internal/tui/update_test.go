@@ -479,3 +479,96 @@ func TestHandleSearchInputKeysEsc(t *testing.T) {
 		t.Fatalf("screen = %v, want %v", result.Screen, ScreenDashboard)
 	}
 }
+
+func TestQuickObservationModalOpenCloseAndSubmit(t *testing.T) {
+	m := New(&Deps{})
+	m.Screen = ScreenDashboard
+
+	// Press 'n' to open quick memory modal
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(Model)
+	if !m.NewObsModalOpen {
+		t.Fatal("expected NewObsModalOpen to be true after pressing 'n'")
+	}
+	if m.NewObsFocusField != 0 {
+		t.Fatalf("expected focus on title (0), got %d", m.NewObsFocusField)
+	}
+
+	// Press 'tab' to cycle focus field
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.NewObsFocusField != 1 {
+		t.Fatalf("expected focus on content (1), got %d", m.NewObsFocusField)
+	}
+
+	// Press 'esc' to cancel modal
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.NewObsModalOpen {
+		t.Fatal("expected NewObsModalOpen to be false after pressing 'esc'")
+	}
+
+	// Reopen and submit observation
+	m.NewObsModalOpen = true
+	m.NewObsTitleInput.SetValue("New Architectural Decision")
+	m.NewObsContentInput.SetValue("Detailed memory content")
+	m.NewObsFocusField = 4 // Save button
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.NewObsModalOpen {
+		t.Fatal("expected modal to close on submit")
+	}
+	if cmd == nil {
+		t.Fatal("expected non-nil command on submit")
+	}
+}
+
+func TestCycleProjectFilter(t *testing.T) {
+	m := New(&Deps{})
+	m.Screen = ScreenDashboard
+	m.Stats = &combinedStats{
+		Projects: []string{"proj-a", "proj-b"},
+	}
+
+	// First 'p' cycles to proj-a
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = updated.(Model)
+	if m.FilterProject != "proj-a" {
+		t.Fatalf("expected filter proj-a, got %q", m.FilterProject)
+	}
+
+	// Second 'p' cycles to proj-b
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = updated.(Model)
+	if m.FilterProject != "proj-b" {
+		t.Fatalf("expected filter proj-b, got %q", m.FilterProject)
+	}
+
+	// Third 'p' cycles back to all (empty)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = updated.(Model)
+	if m.FilterProject != "" {
+		t.Fatalf("expected empty filter, got %q", m.FilterProject)
+	}
+}
+
+func TestSplitPreviewToggle(t *testing.T) {
+	m := New(&Deps{})
+	m.Screen = ScreenRecent
+
+	// Press 'v' to toggle split preview on
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = updated.(Model)
+	if !m.PreviewVisible {
+		t.Fatal("expected PreviewVisible to be true after pressing 'v'")
+	}
+
+	// Press 'v' again to toggle split preview off
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = updated.(Model)
+	if m.PreviewVisible {
+		t.Fatal("expected PreviewVisible to be false after second 'v'")
+	}
+}
+

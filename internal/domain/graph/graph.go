@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/lleontor705/cortex/internal/domain"
 )
@@ -31,6 +32,17 @@ const (
 	MaxWeight         = 10.0
 	DefaultMaxDepth   = 5
 	MaxTraversalDepth = 10 // Prevent infinite loops
+
+	// DefaultMaxVisited is the default global admission budget for bounded
+	// traversal; it counts the root plus every unique admitted node.
+	DefaultMaxVisited = 1000
+	// MaxVisitedCap bounds the user-supplied max_visited budget.
+	MaxVisitedCap = 10000
+	// DefaultMaxResults is the default emitted-row budget for bounded
+	// traversal; it counts only emitted unique non-root observations.
+	DefaultMaxResults = 100
+	// MaxResultsCap bounds the user-supplied max_results budget.
+	MaxResultsCap = 1000
 )
 
 // Common errors
@@ -40,7 +52,84 @@ var (
 	ErrInvalidDepth  = errors.New("depth must be between 1 and 10")
 	ErrEdgeNotFound  = errors.New("edge not found")
 	ErrDuplicateEdge = errors.New("edge already exists with same from_obs_id, to_obs_id, and relation_type")
+	// ErrTraversalTruncated is the stable resource-limit error returned when
+	// the max_visited budget is exhausted while eligible nodes remain and the
+	// existence of a path has been neither proved nor disproved (GRAPH-01).
+	// It is never returned for a proven no-path result.
+	ErrTraversalTruncated = errors.New("graph: traversal truncated: max_visited budget exhausted")
 )
+
+// LevelNeighborBatcher is the optional repository capability (GRAPH-01) that
+// resolves one-hop adjacency for an entire BFS frontier in a single lookup.
+// Implementations MUST return hydrated neighbor observations for every
+// requested frontier ID (missing IDs may map to an empty or absent entry) and
+// SHOULD deduplicate and order each adjacency list by ascending observation
+// ID; the service normalizes ordering defensively so shuffled rows cannot
+// change traversal outcomes.
+type LevelNeighborBatcher interface {
+	GetLevelNeighborObservations(ctx context.Context, frontier []int64) (map[int64][]*domain.Observation, error)
+}
+
+// normalizeMaxVisited clamps the admission budget to its default and cap.
+func normalizeMaxVisited(v int) int {
+	if v <= 0 {
+		return DefaultMaxVisited
+	}
+	if v > MaxVisitedCap {
+		return MaxVisitedCap
+	}
+	return v
+}
+
+// normalizeMaxResults clamps the emitted-row budget to its default and cap.
+func normalizeMaxResults(v int) int {
+	if v <= 0 {
+		return DefaultMaxResults
+	}
+	if v > MaxResultsCap {
+		return MaxResultsCap
+	}
+	return v
+}
+
+// fetchAdjacency resolves one-hop adjacency for the frontier, using the batch
+// capability when the repository provides it and a bounded deterministic
+// per-node fallback otherwise.
+func (s *Service) fetchAdjacency(ctx context.Context, frontier []int64) (map[int64][]*domain.Observation, error) {
+	var adj map[int64][]*domain.Observation
+	if batcher, ok := s.repo.(LevelNeighborBatcher); ok {
+		got, err := batcher.GetLevelNeighborObservations(ctx, frontier)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get related observations: %w", err)
+		}
+		adj = got
+	} else {
+		adj = make(map[int64][]*domain.Observation, len(frontier))
+		for _, id := range frontier {
+			obs, err := s.repo.GetRelated(ctx, id, 1)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get related observations: %w", err)
+			}
+			adj[id] = obs
+		}
+	}
+	// Defensive determinism: deduplicate and sort every adjacency list by
+	// ascending observation ID so shuffled rows cannot change outcomes.
+	for id, list := range adj {
+		seen := make(map[int64]bool, len(list))
+		deduped := list[:0]
+		for _, o := range list {
+			if o == nil || seen[o.ID] {
+				continue
+			}
+			seen[o.ID] = true
+			deduped = append(deduped, o)
+		}
+		sort.Slice(deduped, func(i, j int) bool { return deduped[i].ID < deduped[j].ID })
+		adj[id] = deduped
+	}
+	return adj, nil
+}
 
 // Service provides graph operations for managing relationships between observations.
 type Service struct {
@@ -119,9 +208,26 @@ func (s *Service) GetRelationships(ctx context.Context, obsID int64) ([]*domain.
 // Returns the sequence of observation IDs from fromID to toID, or nil if no path exists.
 //
 // The maxDepth parameter limits how far to search to prevent performance issues.
-// If maxDepth is 0, DefaultMaxDepth (5) is used.
+// If maxDepth is 0, DefaultMaxDepth (5) is used. FindPath uses the default
+// max_visited budget; use FindPathBounded for an explicit budget.
 func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int) ([]int64, error) {
-	// Validate input
+	return s.FindPathBounded(ctx, fromID, toID, maxDepth, 0)
+}
+
+// FindPathBounded finds the lexicographically smallest shortest path between
+// two observations using level-batched BFS (GRAPH-01).
+//
+// Each BFS frontier and every neighbor list is processed in ascending
+// observation ID order, and at most one adjacency lookup is issued per
+// expanded level through the optional LevelNeighborBatcher capability
+// (repositories without it fall back to a bounded deterministic per-node
+// lookup). maxDepth defaults to DefaultMaxDepth and is capped at
+// MaxTraversalDepth. maxVisited defaults to DefaultMaxVisited, is capped at
+// MaxVisitedCap, and counts the root plus every unique admitted node
+// including the destination. When the budget is exhausted while eligible
+// nodes remain and the path has been neither proved nor disproved, the call
+// returns ErrTraversalTruncated instead of a false no-path result.
+func (s *Service) FindPathBounded(ctx context.Context, fromID, toID int64, maxDepth, maxVisited int) ([]int64, error) {
 	if fromID == toID {
 		return []int64{fromID}, nil
 	}
@@ -129,69 +235,208 @@ func (s *Service) FindPath(ctx context.Context, fromID, toID int64, maxDepth int
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxDepth
 	}
-
 	if maxDepth > MaxTraversalDepth {
 		maxDepth = MaxTraversalDepth
 	}
+	maxVisited = normalizeMaxVisited(maxVisited)
 
-	// BFS with parent pointers to avoid O(B^D * D) path copies
-	type node struct {
-		id    int64
-		depth int
-	}
+	// Level-batched BFS with a global admission budget. visited maps each
+	// admitted node to its BFS hop; levels[k] holds the nodes admitted at
+	// hop k; adj caches the (normalized ascending) adjacency of every
+	// expanded node for path reconstruction.
+	visited := map[int64]int{fromID: 0}
+	levels := [][]int64{{fromID}}
+	adj := map[int64][]*domain.Observation{}
+	admitted := 1
+	frontier := []int64{fromID}
+	found := false
 
-	visited := make(map[int64]bool)
-	parents := make(map[int64]int64) // child -> parent
-	queue := []node{{id: fromID, depth: 0}}
-	visited[fromID] = true
-
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-
-		if current.depth >= maxDepth {
-			continue
-		}
-
-		neighbors, err := s.repo.GetRelated(ctx, current.id, 1)
+	for level := 0; level < maxDepth && len(frontier) > 0 && !found; level++ {
+		levelAdj, err := s.fetchAdjacency(ctx, frontier)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get related observations: %w", err)
+			return nil, err
+		}
+		for id, list := range levelAdj {
+			adj[id] = list
 		}
 
-		for _, neighbor := range neighbors {
-			if neighbor.ID == toID {
-				// Reconstruct path from parent pointers
-				path := []int64{toID}
-				for curr := current.id; curr != fromID; {
-					path = append(path, curr)
-					parent, ok := parents[curr]
-					if !ok {
-						return nil, fmt.Errorf("graph: BFS internal error: missing parent for node %d", curr)
+		var next []int64
+		blocked := false
+	scan:
+		for _, u := range sortedIDs(frontier) {
+			for _, o := range adj[u] {
+				v := o.ID
+				if _, seen := visited[v]; seen {
+					continue
+				}
+				if v == toID {
+					// The endpoint completes the proof; it must be admittable
+					// within the budget, otherwise the answer is truncation.
+					if admitted >= maxVisited {
+						return nil, ErrTraversalTruncated
 					}
-					curr = parent
+					visited[v] = level + 1
+					admitted++
+					next = append(next, v)
+					found = true
+					break scan
 				}
-				path = append(path, fromID)
-				// Reverse
-				for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-					path[i], path[j] = path[j], path[i]
+				if admitted >= maxVisited {
+					blocked = true
+					continue
 				}
-				return path, nil
+				visited[v] = level + 1
+				admitted++
+				next = append(next, v)
 			}
-
-			if visited[neighbor.ID] {
-				continue
-			}
-
-			visited[neighbor.ID] = true
-			parents[neighbor.ID] = current.id
-			queue = append(queue, node{
-				id:    neighbor.ID,
-				depth: current.depth + 1,
-			})
+		}
+		next = sortedIDs(next)
+		levels = append(levels, next)
+		frontier = next
+		if !found && blocked && level+1 < maxDepth {
+			// Eligible nodes were omitted by the budget and would still be
+			// expandable: the absence of a path cannot be proved.
+			return nil, ErrTraversalTruncated
 		}
 	}
 
-	return nil, nil
+	if !found {
+		return nil, nil
+	}
+
+	// Reconstruct the lexicographically smallest shortest path. First mark,
+	// backward over the BFS DAG, every node that lies on some shortest path
+	// (visited hop k+1 neighbor already marked). Then walk forward from the
+	// root choosing the smallest-ID continuation, which is the first match in
+	// the ascending adjacency list.
+	L := len(levels) - 1
+	onPath := make(map[int64]bool, L+1)
+	onPath[toID] = true
+	for k := L - 1; k >= 1; k-- {
+		for _, u := range levels[k] {
+			for _, o := range adj[u] {
+				if hop, ok := visited[o.ID]; ok && hop == k+1 && onPath[o.ID] {
+					onPath[u] = true
+					break
+				}
+			}
+		}
+	}
+
+	path := []int64{fromID}
+	cur := fromID
+	for cur != toID {
+		var nextID int64
+		for _, o := range adj[cur] {
+			if hop, ok := visited[o.ID]; ok && hop == visited[cur]+1 && onPath[o.ID] {
+				nextID = o.ID
+				break
+			}
+		}
+		if nextID == 0 {
+			return nil, fmt.Errorf("graph: BFS internal error: no marked continuation from node %d", cur)
+		}
+		path = append(path, nextID)
+		cur = nextID
+	}
+	return path, nil
+}
+
+// sortedIDs returns a copy of ids sorted ascending.
+func sortedIDs(ids []int64) []int64 {
+	out := make([]int64, len(ids))
+	copy(out, ids)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// GetRelatedBounded performs bounded local traversal (GRAPH-02) with
+// independent max_visited and max_results budgets.
+//
+// max_visited (default DefaultMaxVisited, cap MaxVisitedCap) counts the root
+// plus unique admitted nodes; max_results (default DefaultMaxResults, cap
+// MaxResultsCap) counts only emitted unique non-root observations. Rows are
+// ordered by minimum hop ascending, then observation ID ascending, regardless
+// of adjacency row order. The traversal probes one sentinel beyond each
+// effective limit: truncated is reported (with reason max_visited,
+// max_results, or both) ONLY when the sentinel proved eligible data was
+// omitted. A result exactly equal to a limit is complete, not truncated.
+// Legacy (non-v2) repositories obey the same semantics through the per-node
+// fallback.
+func (s *Service) GetRelatedBounded(ctx context.Context, obsID int64, opts domain.GraphTraversalOptions) (*domain.GraphTraversalResult, error) {
+	depth := opts.Depth
+	if depth < 1 || depth > MaxTraversalDepth {
+		return nil, ErrInvalidDepth
+	}
+	maxVisited := normalizeMaxVisited(opts.MaxVisited)
+	maxResults := normalizeMaxResults(opts.MaxResults)
+	// One-past-the-limit sentinel probes: admitting/emitting the sentinel
+	// proves eligible data exists beyond the limit; the sentinel is dropped.
+	probeVisited := maxVisited + 1
+	probeResults := maxResults + 1
+
+	visited := map[int64]bool{obsID: true}
+	admitted := 1
+	frontier := []int64{obsID}
+	emitted := make([]*domain.Observation, 0, maxResults)
+	truncatedVisited := false
+	truncatedResults := false
+
+	for level := 0; level < depth && len(frontier) > 0 && !truncatedVisited && !truncatedResults; level++ {
+		levelAdj, err := s.fetchAdjacency(ctx, frontier)
+		if err != nil {
+			return nil, err
+		}
+
+		var next []int64
+		var levelObs []*domain.Observation
+	scan:
+		for _, u := range sortedIDs(frontier) {
+			for _, o := range levelAdj[u] {
+				v := o.ID
+				if visited[v] {
+					continue
+				}
+				visited[v] = true
+				admitted++
+				if admitted == probeVisited {
+					// Sentinel node: evidence of omission, dropped from output.
+					truncatedVisited = true
+					break scan
+				}
+				next = append(next, v)
+				levelObs = append(levelObs, o)
+			}
+		}
+
+		// Emit the level's admitted nodes in ascending ID order (levels are
+		// processed in hop order, so the global order is hop then ID).
+		sort.Slice(levelObs, func(i, j int) bool { return levelObs[i].ID < levelObs[j].ID })
+		for _, o := range levelObs {
+			emitted = append(emitted, o)
+			if len(emitted) == probeResults {
+				// Sentinel row: evidence of omission, dropped from output.
+				truncatedResults = true
+				emitted = emitted[:len(emitted)-1]
+				break
+			}
+		}
+
+		frontier = next
+	}
+
+	var reasons []string
+	if truncatedVisited {
+		reasons = append(reasons, domain.TruncationReasonMaxVisited)
+	}
+	if truncatedResults {
+		reasons = append(reasons, domain.TruncationReasonMaxResults)
+	}
+	return &domain.GraphTraversalResult{
+		Observations:      emitted,
+		Truncated:         len(reasons) > 0,
+		TruncationReasons: reasons,
+	}, nil
 }
 
 // DetectConflicts finds edges where the observation is involved in a contradiction

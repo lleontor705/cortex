@@ -2,8 +2,6 @@ package postgres
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"sort"
 	"strings"
@@ -15,6 +13,12 @@ import (
 
 var ErrInvalidUser = errors.New("postgres users: invalid user")
 
+// UserRepository persists application users. Identity provisioning, grant
+// reads, and activation state changes execute exclusively through the
+// migration-owned SECURITY DEFINER routines installed by the unshipped 106
+// server migration; the application role holds no direct DML on
+// actor_subjects or principal_grants and cannot read grant digests or
+// versions.
 type UserRepository struct{ *Store }
 
 func (s *Store) users() *UserRepository { return &UserRepository{s} }
@@ -27,20 +31,26 @@ func (r *UserRepository) Create(ctx context.Context, in identity.UserCreate) (id
 	}
 	id := uuid.New()
 	grants := userGrants(in)
-	digest := grantDigest(grants)
+	payload, err := provisionGrantPayload(grants)
+	if err != nil {
+		return identity.UserRecord{}, err
+	}
 	result := identity.UserRecord{ID: id.String(), Email: in.Email, DisplayName: in.DisplayName, Active: true, Roles: cloneGrant(in.Roles), Workspaces: cloneGrant(in.Workspaces), Projects: cloneGrant(in.Projects), Scopes: cloneGrant(in.Scopes), ClassificationClearance: cloneGrant(in.ClassificationClearance), GrantVersion: 1}
-	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO app_users(public_id,tenant_id,email,display_name,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$5)`, id, r.tenant.TenantID, in.Email, in.DisplayName, actorFromContext(ctx)); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO actor_subjects(public_id,tenant_id,subject,actor_type,grant_version,grant_digest) VALUES($1,$2,$3,'user',1,$4)`, id, r.tenant.TenantID, id.String(), digest); err != nil {
+		// cortex_provision_actor validates the grants against the 101
+		// allowlist, computes the digest inside SQL, inserts the actor and
+		// grant rows exactly once, and audits — atomically with the user
+		// insert above. The returned digest is integrity metadata only and
+		// is never used as an authenticator by this process.
+		var grantVersion int64
+		var grantDigest string
+		if err := tx.QueryRow(ctx, `SELECT grant_version,grant_digest FROM public.cortex_provision_actor($1::uuid,$2::text,'user',$3::jsonb,$4::text)`, id, id.String(), payload, "").Scan(&grantVersion, &grantDigest); err != nil {
 			return err
 		}
-		for _, grant := range grants {
-			if _, err := tx.Exec(ctx, `INSERT INTO principal_grants(tenant_id,actor_public_id,grant_type,grant_value,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$5)`, r.tenant.TenantID, id, grant.kind, grant.value, actorFromContext(ctx)); err != nil {
-				return err
-			}
-		}
+		result.GrantVersion = grantVersion
 		return tx.QueryRow(ctx, `SELECT created_at FROM app_users WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1`, id).Scan(&result.CreatedAt)
 	})
 	return result, err
@@ -49,14 +59,14 @@ func (r *UserRepository) Create(ctx context.Context, in identity.UserCreate) (id
 func (r *UserRepository) List(ctx context.Context) ([]identity.UserRecord, error) {
 	users := make([]identity.UserRecord, 0)
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT u.public_id::text,u.email,COALESCE(u.display_name,''),u.active,a.grant_version,u.created_at FROM app_users u JOIN actor_subjects a ON a.tenant_id=u.tenant_id AND a.public_id=u.public_id WHERE u.tenant_id=public.cortex_current_tenant() ORDER BY u.created_at`)
+		rows, err := tx.Query(ctx, `SELECT u.public_id::text,u.email,COALESCE(u.display_name,''),u.active,u.created_at FROM app_users u WHERE u.tenant_id=public.cortex_current_tenant() ORDER BY u.created_at`)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var user identity.UserRecord
-			if err := rows.Scan(&user.ID, &user.Email, &user.DisplayName, &user.Active, &user.GrantVersion, &user.CreatedAt); err != nil {
+			if err := rows.Scan(&user.ID, &user.Email, &user.DisplayName, &user.Active, &user.CreatedAt); err != nil {
 				return err
 			}
 			users = append(users, user)
@@ -64,8 +74,21 @@ func (r *UserRepository) List(ctx context.Context) ([]identity.UserRecord, error
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		for i := range users {
-			grantRows, err := tx.Query(ctx, `SELECT grant_type,grant_value FROM principal_grants WHERE tenant_id=public.cortex_current_tenant() AND actor_public_id=$1::uuid ORDER BY grant_type,grant_value`, users[i].ID)
+		for i := 0; i < len(users); i++ {
+			// Grant versions and grant rows are read back through the
+			// owner/admin-authorized definer helpers; the application role
+			// selects neither actor state nor principal_grants directly.
+			// A user with no provisioned actor is skipped, preserving the
+			// historical INNER JOIN actor_subjects listing semantics.
+			if err := tx.QueryRow(ctx, `SELECT public.cortex_actor_grant_version($1::uuid)`, users[i].ID).Scan(&users[i].GrantVersion); err != nil {
+				if isMediatedNotFound(err) {
+					users = append(users[:i], users[i+1:]...)
+					i--
+					continue
+				}
+				return err
+			}
+			grantRows, err := tx.Query(ctx, `SELECT grant_type,grant_value FROM public.cortex_read_actor_grants($1::uuid)`, users[i].ID)
 			if err != nil {
 				return err
 			}
@@ -85,30 +108,33 @@ func (r *UserRepository) List(ctx context.Context) ([]identity.UserRecord, error
 		}
 		return nil
 	})
-	return users, err
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
 }
 
 func (r *UserRepository) SetActive(ctx context.Context, id string, active bool) error {
 	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE app_users SET active=$1,disabled_at=CASE WHEN $1 THEN NULL ELSE now() END,updated_at=now(),updated_by=$2 WHERE tenant_id=public.cortex_current_tenant() AND public_id=$3::uuid`, active, actorFromContext(ctx), id)
-		if err != nil {
+		// cortex_set_actor_active authorizes the bound owner/admin caller,
+		// synchronizes actor_subjects, app_users and live tokens atomically,
+		// bumps the grant version only on a real transition, and audits.
+		var grantVersion int64
+		if err := tx.QueryRow(ctx, `SELECT public.cortex_set_actor_active($1::uuid,$2,$3::text)`, id, active, "").Scan(&grantVersion); err != nil {
+			if isMediatedNotFound(err) {
+				return notFound("user", id)
+			}
 			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return notFound("user", id)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE actor_subjects SET active=$1,revoked_at=CASE WHEN $1 THEN NULL ELSE now() END,grant_version=grant_version+1 WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid`, active, id); err != nil {
-			return err
-		}
-		if !active {
-			_, err = tx.Exec(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,now()),updated_at=now() WHERE tenant_id=public.cortex_current_tenant() AND subject_user_id=(SELECT id FROM app_users WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)`, id)
-		}
-		return err
+		return nil
 	})
 }
 
 type persistedGrant struct{ kind, value string }
 
+// userGrants canonicalizes the administrator-supplied grants. Duplicates are
+// collapsed so the mediated provisioning routine's uniqueness validation
+// accepts every input the historical direct inserts accepted.
 func userGrants(in identity.UserCreate) []persistedGrant {
 	var out []persistedGrant
 	for kind, values := range map[string][]string{"role": in.Roles, "workspace": in.Workspaces, "project": in.Projects, "scope": in.Scopes, "classification": in.ClassificationClearance} {
@@ -119,19 +145,13 @@ func userGrants(in identity.UserCreate) []persistedGrant {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].kind+":"+out[i].value < out[j].kind+":"+out[j].value })
-	return out
-}
-
-func grantDigest(grants []persistedGrant) string {
-	var b strings.Builder
-	for _, grant := range grants {
-		b.WriteString(grant.kind)
-		b.WriteByte(':')
-		b.WriteString(grant.value)
-		b.WriteByte('\n')
+	var deduped []persistedGrant
+	for _, grant := range out {
+		if len(deduped) == 0 || grant != deduped[len(deduped)-1] {
+			deduped = append(deduped, grant)
+		}
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:])
+	return deduped
 }
 
 func appendUserGrant(user *identity.UserRecord, kind, value string) {

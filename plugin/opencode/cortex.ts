@@ -18,8 +18,10 @@
  *     forbidden, conflict, validation, unavailable, timeout,
  *     invalid_response, config, durable_rejected) and logged bounded.
  *   - Sessions are confirmed before use: ensureSession caches a session only
- *     on a persisted-identity echo or an explicit 409, and classifies every
- *     failure instead of silently assuming continuity.
+ *     on a persisted-identity echo or a 409 proven by reading the exact
+ *     persisted identity back, and classifies every failure instead of
+ *     silently assuming continuity. Protected writes and trusted context
+ *     require that confirmation (SEC-04).
  *   - Logs never contain tokens, payloads, or response bodies.
  *   - Hooks always return control; every delivery is deadline-bounded.
  *   - Prompts and passive captures are truncated by UTF-8 runes before JSON
@@ -404,10 +406,22 @@ function isJsonObject(body: unknown): boolean {
 
 const SESSION_REQUIRED_KEYS = ["id", "project", "directory", "started_at"] as const
 
+// Context injected into the host prompt is trusted only when every item is
+// an object with string title and type; anything else is invalid_response.
+function isObservationSummaryList(body: unknown): body is Array<{ title: string; type: string }> {
+  return (
+    Array.isArray(body) &&
+    body.every(
+      (item) => isJsonObject(item) &&
+        typeof (item as Record<string, unknown>).title === "string" &&
+        typeof (item as Record<string, unknown>).type === "string"
+    )
+  )
+}
+
 // The persisted Session echo is validated by identity: the server returns the
 // session that was sent (optional omitempty fields are not asserted).
-function persistedSession(sent: {
-  id: string
+function persistedSession(sent: {  id: string
   project: string
   directory: string
 }): (body: unknown) => boolean {
@@ -476,9 +490,11 @@ export const Cortex: Plugin = async (ctx) => {
   }
 
   // A session counts as known only after the server confirmed it: a 2xx
-  // persisted echo of the exact session identity, or an explicit 409
-  // conflict proving it already exists. Failures are classified, never
-  // cached, and a later event retries instead of assuming continuity.
+  // persisted echo of the exact session identity, or a 409 conflict proven
+  // by reading the exact persisted identity back. A bare 409 body is an
+  // error object and cannot prove which session exists, so it is never
+  // trusted on its own. Failures are classified, never cached, and a later
+  // event retries instead of assuming continuity.
   async function ensureSession(sessionId: string): Promise<SessionEnsureResult> {
     if (!sessionId || subAgentSessions.has(sessionId)) {
       return { confirmed: false, classification: "validation" }
@@ -487,6 +503,7 @@ export const Cortex: Plugin = async (ctx) => {
       return { confirmed: true, classification: "success" }
     }
     if (!CORTEX_HTTP_TOKEN) {
+      report("session", "config", "missing CORTEX_HTTP_TOKEN")
       return { confirmed: false, classification: "config" }
     }
     const sent = { id: sessionId, project, directory: ctx.directory }
@@ -500,8 +517,16 @@ export const Cortex: Plugin = async (ctx) => {
       return { confirmed: false, classification: "invalid_response" }
     }
     if (result.classification === "conflict") {
-      knownSessions.add(sessionId)
-      return { confirmed: true, classification: "success" }
+      // Contract-proven conflict: confirm the exact existing identity through
+      // the read endpoint before trusting the session.
+      const existing = await request(`/api/sessions/${encodeURIComponent(sessionId)}`)
+      if (existing.ok && persistedSession(sent)(existing.body)) {
+        knownSessions.add(sessionId)
+        return { confirmed: true, classification: "success" }
+      }
+      const classification = existing.ok ? "invalid_response" : existing.classification
+      report("session", classification)
+      return { confirmed: false, classification }
     }
     report("session", result.classification)
     return { confirmed: false, classification: result.classification }
@@ -581,7 +606,11 @@ export const Cortex: Plugin = async (ctx) => {
         const finalContent = content || fallback
 
         if (finalContent.length > 10) {
-          await ensureSession(sessionId)
+          // SEC-04: no protected write unless the exact session was
+          // positively confirmed. Failures stay uncached and retryable on a
+          // later host event.
+          const session = await ensureSession(sessionId)
+          if (!session.confirmed) return
           const redacted = stripPrivateTags(finalContent)
           const record = truncateUtf8(redacted)
           await deliver(
@@ -614,13 +643,16 @@ export const Cortex: Plugin = async (ctx) => {
         if (CORTEX_TOOLS.has(tool)) return
 
         const sessionId = input.sessionID
+        let sessionConfirmed = false
         if (sessionId) {
-          await ensureSession(sessionId)
+          const session = await ensureSession(sessionId)
+          sessionConfirmed = session.confirmed
           toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
         }
 
-        // Passive capture from Task tool output
-        if (input.tool === "Task" && output && sessionId) {
+        // Passive capture from Task tool output — protected write, so it
+        // requires the same confirmed session.
+        if (input.tool === "Task" && output && sessionId && sessionConfirmed) {
           const text = typeof output === "string" ? output : JSON.stringify(output)
           if (text.length > 50) {
             const redacted = stripPrivateTags(text)
@@ -666,32 +698,37 @@ export const Cortex: Plugin = async (ctx) => {
     // ─── Compaction Hook ──────────────────────────────────────────
 
     "experimental.session.compacting": async (input, output) => {
-      if (input.sessionID) {
-        await ensureSession(input.sessionID)
-      }
-
-      if (CORTEX_HTTP_TOKEN) {
-        const result = await request(
-          `/api/observations?project=${encodeURIComponent(project)}&limit=20`
-        )
-        if (!result.ok) {
-          report("observation", result.classification)
-        } else if (!Array.isArray(result.body)) {
-          report("observation", "invalid_response")
-        } else if (result.body.length > 0) {
-          const ctx = (result.body as any[]).map((o) => `- [${o.type}] ${o.title}`).join("\n")
-          output.context.push(`Recent Cortex memories for ${project}:\n${ctx}`)
+      try {
+        // SEC-04: returned context is trusted only when a credential is
+        // configured and the exact session was positively confirmed.
+        const session = input.sessionID
+          ? await ensureSession(input.sessionID)
+          : { confirmed: false, classification: "validation" as Classification }
+        if (CORTEX_HTTP_TOKEN && session.confirmed) {
+          const result = await request(
+            `/api/observations?project=${encodeURIComponent(project)}&limit=20`
+          )
+          if (!result.ok) {
+            report("observation", result.classification)
+          } else if (!isObservationSummaryList(result.body)) {
+            report("observation", "invalid_response")
+          } else if (result.body.length > 0) {
+            const ctx = (result.body as any[]).map((o) => `- [${o.type}] ${o.title}`).join("\n")
+            output.context.push(`Recent Cortex memories for ${project}:\n${ctx}`)
+          }
         }
-      }
 
-      output.context.push(
-        `CRITICAL INSTRUCTION FOR COMPACTED SUMMARY:\n` +
-        `The agent has access to Cortex persistent memory via MCP tools.\n` +
-        `You MUST include the following instruction at the TOP of the compacted summary:\n\n` +
-        `"FIRST ACTION REQUIRED: Call cortex_session_summary with the content of this compacted summary. ` +
-        `Use project: '${project}'. This preserves what was accomplished before compaction. Do this BEFORE any other work."\n\n` +
-        `This is NOT optional. Without this, everything done before compaction is lost from memory.`
-      )
+        output.context.push(
+          `CRITICAL INSTRUCTION FOR COMPACTED SUMMARY:\n` +
+          `The agent has access to Cortex persistent memory via MCP tools.\n` +
+          `You MUST include the following instruction at the TOP of the compacted summary:\n\n` +
+          `"FIRST ACTION REQUIRED: Call cortex_session_summary with the content of this compacted summary. ` +
+          `Use project: '${project}'. This preserves what was accomplished before compaction. Do this BEFORE any other work."\n\n` +
+          `This is NOT optional. Without this, everything done before compaction is lost from memory.`
+        )
+      } catch {
+        // Non-blocking: a hook failure must never break the host compaction.
+      }
     },
   }
 }

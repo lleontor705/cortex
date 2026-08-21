@@ -251,7 +251,10 @@ func TestPostgresObservationSaveTopicLockTimeoutUnderHeldAdvisoryLock(t *testing
 	}
 	release := func() { _ = holder.Rollback(ctx) }
 	defer release()
-	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text, $2::bigint, $3, $4)::text, 0))`, tenant.String(), workspaceRow, project, topic); err != nil {
+	// Casts mirror the production statement exactly: untyped parameters
+	// inside jsonb_build_array cannot be resolved by PostgreSQL (42P18) and
+	// the holder must derive the identical lock key the save path takes.
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text, $2::bigint, $3::text, $4::text)::text, 0))`, tenant.String(), workspaceRow, project, topic); err != nil {
 		t.Fatalf("acquire holder lock: %v", err)
 	}
 

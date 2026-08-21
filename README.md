@@ -56,10 +56,12 @@ cortex serve                Start the local SQLite HTTP server
 cortex mcp                  Start local MCP stdio
 cortex doctor               Check database and indexes
 cortex reindex              Rebuild local embeddings/indexes
+cortex config [cmd]         Manage multi-format configuration (get, set, init, wizard)
+cortex auth [cmd]           Manage authentication session (login, status, logout)
 cortex gc                   Garbage collect archived observations
 cortex export               Export observations
 cortex import               Import observations
-cortex sync                Synchronize configured chunks
+cortex sync                 Synchronize configured chunks
 cortex merge-projects       Merge project names
 cortex migrate status       Inspect migration state
 ```

@@ -249,7 +249,12 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	if err != nil {
 		return fmt.Errorf("postgres store: begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// The bind helpers below return a nil context together with their
+	// error, so the deferred rollback must close over the original
+	// non-nil context: rolling back with the reassigned ctx would panic
+	// inside pgconn and wedge the connection pool whenever a bind fails.
+	rollbackCtx := ctx
+	defer func() { _ = tx.Rollback(rollbackCtx) }()
 	if err := s.bind(ctx, tx); err != nil {
 		return err
 	}
@@ -265,6 +270,31 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	// the context: receipt primitives (claim/read/finalize) resolve it via
 	// txFromContext, exactly like the WithinTx path does.
 	ctx = context.WithValue(ctx, txKey{}, tx)
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres store: commit: %w", err)
+	}
+	return nil
+}
+
+// unboundTransaction runs fn in a transaction WITHOUT a principal binding.
+// It exists for authentication only: credential verification happens before
+// any principal exists, and the mediated verify routine derives the tenant
+// from the presented credential itself and requires no bound caller. Every
+// other store path must keep using transaction, which binds the verified
+// principal and fails closed without one.
+func (s *Store) unboundTransaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
+	ctx = s.context(ctx)
+	if tx, ok := txFromContext(ctx); ok {
+		return fn(ctx, tx)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("postgres store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}
@@ -307,14 +337,16 @@ var _ domain.TxParticipant = (*Store)(nil)
 
 func notFound(kind string, id any) error { return &domain.NotFoundError{Type: kind, ID: id} }
 
-func (s *Store) bindActor(ctx context.Context, tx pgx.Tx) (context.Context, error) {
-	if id, err := uuid.Parse(s.principal.Subject); err == nil {
-		return context.WithValue(ctx, actorKey{}, id), nil
-	}
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type) VALUES(public.cortex_current_tenant(),$1,$2) ON CONFLICT(tenant_id,subject) DO UPDATE SET subject=EXCLUDED.subject RETURNING public_id`, s.principal.Subject, s.principal.Type).Scan(&id)
+// bindActor resolves the transaction's actor public id for audit columns.
+// Only a principal whose subject is an actor public id (UUID) can resolve:
+// the historical non-UUID upsert into actor_subjects is removed because the
+// application role no longer holds any direct DML on the identity tables —
+// provisioning is mediated by migration-owned definer routines — so an
+// opaque subject now fails closed instead of silently minting identity.
+func (s *Store) bindActor(ctx context.Context, _ pgx.Tx) (context.Context, error) {
+	id, err := uuid.Parse(s.principal.Subject)
 	if err != nil {
-		return nil, fmt.Errorf("postgres store: resolve actor: %w", err)
+		return nil, fmt.Errorf("%w: principal public id: %v", ErrPrincipalRequired, err)
 	}
 	return context.WithValue(ctx, actorKey{}, id), nil
 }

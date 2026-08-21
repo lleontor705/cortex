@@ -2,14 +2,17 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -37,207 +40,190 @@ func DefaultDBPath() string {
 
 // Config represents the main configuration structure
 type Config struct {
-	Server    ServerConfig    `yaml:"server" mapstructure:"server"`
-	Database  DatabaseConfig  `yaml:"database" mapstructure:"database"`
-	MCP       MCPConfig       `yaml:"mcp" mapstructure:"mcp"`
-	HTTP      HTTPConfig      `yaml:"http" mapstructure:"http"`
-	Logging   LoggingConfig   `yaml:"logging" mapstructure:"logging"`
-	Search    SearchConfig    `yaml:"search" mapstructure:"search"`
-	Memory    MemoryConfig    `yaml:"memory" mapstructure:"memory"`
-	Lifecycle LifecycleConfig `yaml:"lifecycle" mapstructure:"lifecycle"`
-	Vector    VectorConfig    `yaml:"vector" mapstructure:"vector"`
-	Sync      SyncConfig      `yaml:"sync" mapstructure:"sync"`
+	AI        AIConfig        `yaml:"ai,omitempty" json:"ai,omitempty" toml:"ai,omitempty" mapstructure:"ai"`
+	Database  DatabaseConfig  `yaml:"database,omitempty" json:"database,omitempty" toml:"database,omitempty" mapstructure:"database"`
+	HTTP      HTTPConfig      `yaml:"http,omitempty" json:"http,omitempty" toml:"http,omitempty" mapstructure:"http"`
+	Server    ServerConfig    `yaml:"server,omitempty" json:"server,omitempty" toml:"server,omitempty" mapstructure:"server"`
+	MCP       MCPConfig       `yaml:"mcp,omitempty" json:"mcp,omitempty" toml:"mcp,omitempty" mapstructure:"mcp"`
+	Logging   LoggingConfig   `yaml:"logging,omitempty" json:"logging,omitempty" toml:"logging,omitempty" mapstructure:"logging"`
+	Search    SearchConfig    `yaml:"search,omitempty" json:"search,omitempty" toml:"search,omitempty" mapstructure:"search"`
+	Memory    MemoryConfig    `yaml:"memory,omitempty" json:"memory,omitempty" toml:"memory,omitempty" mapstructure:"memory"`
+	Lifecycle LifecycleConfig `yaml:"lifecycle,omitempty" json:"lifecycle,omitempty" toml:"lifecycle,omitempty" mapstructure:"lifecycle"`
+	Vector    VectorConfig    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
+	Sync      SyncConfig      `yaml:"sync,omitempty" json:"sync,omitempty" toml:"sync,omitempty" mapstructure:"sync"`
 
 	// LoadedFrom is the path of the config file that was loaded.
 	// Used by Save() and ReloadConfig() to always use the same file.
-	// Not serialized to YAML.
-	LoadedFrom string `yaml:"-" mapstructure:"-"`
+	// Not serialized to YAML, JSON, or TOML.
+	LoadedFrom string `yaml:"-" json:"-" toml:"-" mapstructure:"-"`
+}
+
+// AIConfig holds unified AI and embedding model settings
+type AIConfig struct {
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
+	Model    string `yaml:"model,omitempty" json:"model,omitempty" toml:"model,omitempty" mapstructure:"model"`
+	BaseURL  string `yaml:"base_url,omitempty" json:"base_url,omitempty" toml:"base_url,omitempty" mapstructure:"base_url"`
 }
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Name                    string               `yaml:"name" mapstructure:"name"`
-	Version                 string               `yaml:"version" mapstructure:"version"`
-	Storage                 ServerStorageConfig  `yaml:"storage" mapstructure:"storage"`
-	Provider                ServerProviderConfig `yaml:"provider" mapstructure:"provider"`
-	Secrets                 ServerSecretsConfig  `yaml:"secrets" mapstructure:"secrets"`
-	TenantID                string               `yaml:"tenant_id" mapstructure:"tenant_id"`
-	WorkspaceID             string               `yaml:"workspace_id" mapstructure:"workspace_id"`
-	PrincipalSubject        string               `yaml:"principal_subject" mapstructure:"principal_subject"`
-	GrantDigest             string               `yaml:"grant_digest" mapstructure:"grant_digest"`
-	GrantVersion            int64                `yaml:"grant_version" mapstructure:"grant_version"`
-	Roles                   []string             `yaml:"roles" mapstructure:"roles"`
-	Scopes                  []string             `yaml:"scopes" mapstructure:"scopes"`
-	ProjectIDs              []string             `yaml:"project_ids" mapstructure:"project_ids"`
-	ClassificationClearance []string             `yaml:"classification_clearance" mapstructure:"classification_clearance"`
-	BootstrapDevelopment    bool                 `yaml:"bootstrap_development" mapstructure:"bootstrap_development"`
+	Name                    string               `yaml:"name,omitempty" json:"name,omitempty" toml:"name,omitempty" mapstructure:"name"`
+	Version                 string               `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
+	Storage                 ServerStorageConfig  `yaml:"storage,omitempty" json:"storage,omitempty" toml:"storage,omitempty" mapstructure:"storage"`
+	Provider                ServerProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
+	Secrets                 ServerSecretsConfig  `yaml:"secrets,omitempty" json:"secrets,omitempty" toml:"secrets,omitempty" mapstructure:"secrets"`
+	TenantID                string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
+	WorkspaceID             string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
+	PrincipalSubject        string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
+	GrantDigest             string               `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
+	GrantVersion            int64                `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
+	Roles                   []string             `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
+	Scopes                  []string             `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
+	ProjectIDs              []string             `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
+	ClassificationClearance []string             `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
+	BootstrapDevelopment    bool                 `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
 }
 
 // ServerStorageConfig contains server-only PostgreSQL connection settings.
 // It is intentionally separate from the local SQLite database config.
 type ServerStorageConfig struct {
-	Driver       string `yaml:"driver" mapstructure:"driver"`
-	DSN          string `yaml:"dsn" mapstructure:"dsn"`
-	MigrationDSN string `yaml:"migration_dsn" mapstructure:"migration_dsn"`
-	MaxConns     int32  `yaml:"max_conns" mapstructure:"max_conns"`
+	Driver       string `yaml:"driver,omitempty" json:"driver,omitempty" toml:"driver,omitempty" mapstructure:"driver"`
+	DSN          string `yaml:"dsn,omitempty" json:"dsn,omitempty" toml:"dsn,omitempty" mapstructure:"dsn"`
+	MigrationDSN string `yaml:"migration_dsn,omitempty" json:"migration_dsn,omitempty" toml:"migration_dsn,omitempty" mapstructure:"migration_dsn"`
+	MaxConns     int32  `yaml:"max_conns,omitempty" json:"max_conns,omitempty" toml:"max_conns,omitempty" mapstructure:"max_conns"`
 }
 
 // ServerProviderConfig selects server-side providers without constructing them.
 type ServerProviderConfig struct {
-	Embedding string `yaml:"embedding" mapstructure:"embedding"`
-	Vector    string `yaml:"vector" mapstructure:"vector"`
+	Embedding string `yaml:"embedding,omitempty" json:"embedding,omitempty" toml:"embedding,omitempty" mapstructure:"embedding"`
+	Vector    string `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
 }
 
 // ServerSecretsConfig contains credentials consumed by later identity waves.
 // Secrets are never rendered by Config.String.
 type ServerSecretsConfig struct {
-	SigningKey       string `yaml:"signing_key" mapstructure:"signing_key"`
-	OIDCClientSecret string `yaml:"oidc_client_secret" mapstructure:"oidc_client_secret"`
+	SigningKey       string `yaml:"signing_key,omitempty" json:"signing_key,omitempty" toml:"signing_key,omitempty" mapstructure:"signing_key"`
+	OIDCClientSecret string `yaml:"oidc_client_secret,omitempty" json:"oidc_client_secret,omitempty" toml:"oidc_client_secret,omitempty" mapstructure:"oidc_client_secret"`
 }
 
 // DatabaseConfig holds database configuration
 type DatabaseConfig struct {
-	Path     string       `yaml:"path" mapstructure:"path"`
-	InMemory bool         `yaml:"in_memory" mapstructure:"in_memory"`
-	Pragma   PragmaConfig `yaml:"pragma" mapstructure:"pragma"`
+	Path     string       `yaml:"path,omitempty" json:"path,omitempty" toml:"path,omitempty" mapstructure:"path"`
+	InMemory bool         `yaml:"in_memory,omitempty" json:"in_memory,omitempty" toml:"in_memory,omitempty" mapstructure:"in_memory"`
+	Pragma   PragmaConfig `yaml:"pragma,omitempty" json:"pragma,omitempty" toml:"pragma,omitempty" mapstructure:"pragma"`
 }
 
 // PragmaConfig holds SQLite pragma settings
 type PragmaConfig struct {
-	JournalMode string `yaml:"journal_mode" mapstructure:"journal_mode"`
-	Synchronous string `yaml:"synchronous" mapstructure:"synchronous"`
-	CacheSize   int    `yaml:"cache_size" mapstructure:"cache_size"`
-	ForeignKeys bool   `yaml:"foreign_keys" mapstructure:"foreign_keys"`
-	TempStore   string `yaml:"temp_store" mapstructure:"temp_store"`
-	MmapSize    int    `yaml:"mmap_size" mapstructure:"mmap_size"`
+	JournalMode string `yaml:"journal_mode,omitempty" json:"journal_mode,omitempty" toml:"journal_mode,omitempty" mapstructure:"journal_mode"`
+	Synchronous string `yaml:"synchronous,omitempty" json:"synchronous,omitempty" toml:"synchronous,omitempty" mapstructure:"synchronous"`
+	CacheSize   int    `yaml:"cache_size,omitempty" json:"cache_size,omitempty" toml:"cache_size,omitempty" mapstructure:"cache_size"`
+	ForeignKeys bool   `yaml:"foreign_keys,omitempty" json:"foreign_keys,omitempty" toml:"foreign_keys,omitempty" mapstructure:"foreign_keys"`
+	TempStore   string `yaml:"temp_store,omitempty" json:"temp_store,omitempty" toml:"temp_store,omitempty" mapstructure:"temp_store"`
+	MmapSize    int    `yaml:"mmap_size,omitempty" json:"mmap_size,omitempty" toml:"mmap_size,omitempty" mapstructure:"mmap_size"`
 }
 
 // MCPConfig holds MCP (Model Context Protocol) configuration
 type MCPConfig struct {
-	Enabled bool            `yaml:"enabled" mapstructure:"enabled"`
-	Remote  MCPRemoteConfig `yaml:"remote" mapstructure:"remote"`
+	Enabled bool            `yaml:"enabled,omitempty" json:"enabled,omitempty" toml:"enabled,omitempty" mapstructure:"enabled"`
+	Remote  MCPRemoteConfig `yaml:"remote,omitempty" json:"remote,omitempty" toml:"remote,omitempty" mapstructure:"remote"`
 }
 
 // MCPRemoteConfig makes the local stdio MCP process proxy an authenticated
 // Streamable HTTP MCP server instead of opening the local SQLite composition.
 type MCPRemoteConfig struct {
-	Enabled  bool          `yaml:"enabled" mapstructure:"enabled"`
-	URL      string        `yaml:"url" mapstructure:"url"`
-	TokenEnv string        `yaml:"token_env" mapstructure:"token_env"`
-	Timeout  time.Duration `yaml:"timeout" mapstructure:"timeout"`
+	Enabled  bool          `yaml:"enabled,omitempty" json:"enabled,omitempty" toml:"enabled,omitempty" mapstructure:"enabled"`
+	URL      string        `yaml:"url,omitempty" json:"url,omitempty" toml:"url,omitempty" mapstructure:"url"`
+	TokenEnv string        `yaml:"token_env,omitempty" json:"token_env,omitempty" toml:"token_env,omitempty" mapstructure:"token_env"`
+	Timeout  time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty" toml:"timeout,omitempty" mapstructure:"timeout"`
 }
 
 // SyncConfig controls optional bidirectional SQLite/server replication.
 type SyncConfig struct {
-	Enabled  bool          `yaml:"enabled" mapstructure:"enabled"`
-	URL      string        `yaml:"url" mapstructure:"url"`
-	TokenEnv string        `yaml:"token_env" mapstructure:"token_env"`
-	Interval time.Duration `yaml:"interval" mapstructure:"interval"`
-	Timeout  time.Duration `yaml:"timeout" mapstructure:"timeout"`
+	Enabled  bool          `yaml:"enabled,omitempty" json:"enabled,omitempty" toml:"enabled,omitempty" mapstructure:"enabled"`
+	URL      string        `yaml:"url,omitempty" json:"url,omitempty" toml:"url,omitempty" mapstructure:"url"`
+	TokenEnv string        `yaml:"token_env,omitempty" json:"token_env,omitempty" toml:"token_env,omitempty" mapstructure:"token_env"`
+	Interval time.Duration `yaml:"interval,omitempty" json:"interval,omitempty" toml:"interval,omitempty" mapstructure:"interval"`
+	Timeout  time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty" toml:"timeout,omitempty" mapstructure:"timeout"`
 }
 
 // HTTPConfig holds HTTP server configuration
 type HTTPConfig struct {
-	Enabled        bool     `yaml:"enabled" mapstructure:"enabled"`
-	Port           int      `yaml:"port" mapstructure:"port"`
-	Host           string   `yaml:"host" mapstructure:"host"`
-	Token          string   `yaml:"token" mapstructure:"token"`
-	AllowedOrigins []string `yaml:"allowed_origins" mapstructure:"allowed_origins"`
+	Enabled        bool     `yaml:"enabled,omitempty" json:"enabled,omitempty" toml:"enabled,omitempty" mapstructure:"enabled"`
+	Port           int      `yaml:"port,omitempty" json:"port,omitempty" toml:"port,omitempty" mapstructure:"port"`
+	Host           string   `yaml:"host,omitempty" json:"host,omitempty" toml:"host,omitempty" mapstructure:"host"`
+	Token          string   `yaml:"token,omitempty" json:"token,omitempty" toml:"token,omitempty" mapstructure:"token"`
+	AllowedOrigins []string `yaml:"allowed_origins,omitempty" json:"allowed_origins,omitempty" toml:"allowed_origins,omitempty" mapstructure:"allowed_origins"`
 }
 
 // LoggingConfig holds logging configuration
 type LoggingConfig struct {
-	Level  string `yaml:"level" mapstructure:"level"`
-	Format string `yaml:"format" mapstructure:"format"`
+	Level  string `yaml:"level,omitempty" json:"level,omitempty" toml:"level,omitempty" mapstructure:"level"`
+	Format string `yaml:"format,omitempty" json:"format,omitempty" toml:"format,omitempty" mapstructure:"format"`
 }
 
 // SearchConfig holds search-related configuration
 type SearchConfig struct {
-	DefaultLimit      int     `yaml:"default_limit" mapstructure:"default_limit"`
-	MaxLimit          int     `yaml:"max_limit" mapstructure:"max_limit"`
-	FTS5              bool    `yaml:"fts5" mapstructure:"fts5"`
-	Vector            bool    `yaml:"vector" mapstructure:"vector"`
-	FusionK           float64 `yaml:"fusion_k" mapstructure:"fusion_k"`
-	EmbeddingProvider string  `yaml:"embedding_provider" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
-	EmbeddingModel    string  `yaml:"embedding_model" mapstructure:"embedding_model"`       // Model name override (e.g. "qwen3-embedding:8b")
-	EmbeddingBaseURL  string  `yaml:"embedding_base_url" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
-	OllamaAutoStart   bool    `yaml:"ollama_auto_start" mapstructure:"ollama_auto_start"`   // Auto-start Ollama when configured as provider
+	DefaultLimit      int     `yaml:"default_limit,omitempty" json:"default_limit,omitempty" toml:"default_limit,omitempty" mapstructure:"default_limit"`
+	MaxLimit          int     `yaml:"max_limit,omitempty" json:"max_limit,omitempty" toml:"max_limit,omitempty" mapstructure:"max_limit"`
+	FTS5              bool    `yaml:"fts5,omitempty" json:"fts5,omitempty" toml:"fts5,omitempty" mapstructure:"fts5"`
+	Vector            bool    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
+	FusionK           float64 `yaml:"fusion_k,omitempty" json:"fusion_k,omitempty" toml:"fusion_k,omitempty" mapstructure:"fusion_k"`
+	EmbeddingProvider string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
+	EmbeddingModel    string  `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty" toml:"embedding_model,omitempty" mapstructure:"embedding_model"`             // Model name override (e.g. "qwen3-embedding:8b")
+	EmbeddingBaseURL  string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"`   // Ollama base URL override (default: http://localhost:11434)
+	OllamaAutoStart   bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`         // Auto-start Ollama when configured as provider
 }
 
 // MemoryConfig holds memory management configuration
 type MemoryConfig struct {
-	MaxObservationLength int     `yaml:"max_observation_length" mapstructure:"max_observation_length"`
-	DedupeWindow         string  `yaml:"dedupe_window" mapstructure:"dedupe_window"`
-	AutoArchiveDays      int     `yaml:"auto_archive_days" mapstructure:"auto_archive_days"`
-	DecayHalfLifeDays    float64 `yaml:"importance_decay_half_life" mapstructure:"importance_decay_half_life"`
-	MinArchiveScore      float64 `yaml:"min_archive_score" mapstructure:"min_archive_score"`
+	MaxObservationLength int     `yaml:"max_observation_length,omitempty" json:"max_observation_length,omitempty" toml:"max_observation_length,omitempty" mapstructure:"max_observation_length"`
+	DedupeWindow         string  `yaml:"dedupe_window,omitempty" json:"dedupe_window,omitempty" toml:"dedupe_window,omitempty" mapstructure:"dedupe_window"`
+	AutoArchiveDays      int     `yaml:"auto_archive_days,omitempty" json:"auto_archive_days,omitempty" toml:"auto_archive_days,omitempty" mapstructure:"auto_archive_days"`
+	DecayHalfLifeDays    float64 `yaml:"importance_decay_half_life,omitempty" json:"importance_decay_half_life,omitempty" toml:"importance_decay_half_life,omitempty" mapstructure:"importance_decay_half_life"`
+	MinArchiveScore      float64 `yaml:"min_archive_score,omitempty" json:"min_archive_score,omitempty" toml:"min_archive_score,omitempty" mapstructure:"min_archive_score"`
 }
 
 // LifecycleConfig holds lifecycle management configuration
 type LifecycleConfig struct {
-	EnableAutoArchive    bool   `yaml:"enable_auto_archive" mapstructure:"enable_auto_archive"`
-	ArchiveCheckInterval string `yaml:"archive_check_interval" mapstructure:"archive_check_interval"`
+	EnableAutoArchive    bool   `yaml:"enable_auto_archive,omitempty" json:"enable_auto_archive,omitempty" toml:"enable_auto_archive,omitempty" mapstructure:"enable_auto_archive"`
+	ArchiveCheckInterval string `yaml:"archive_check_interval,omitempty" json:"archive_check_interval,omitempty" toml:"archive_check_interval,omitempty" mapstructure:"archive_check_interval"`
 }
 
 // VectorConfig holds external vector index adapter configuration.
-//
-// This is DATA-ONLY: no adapter client is imported here (config.go stays
-// local-track, zero-CGO, no external vector dependency). The local
-// composition path (internal/app) wires the sqlite_blob adapter (the
-// zero-CGO default) regardless of Provider. Provider selection happens
-// ONLY in the server/external composition path, which is permitted to
-// import the external adapter packages (ADR-05, REQ-VEC-001/002). When
-// Provider is empty or "sqlite_blob", no external adapter is constructed
-// and the local zero-CGO default is preserved.
-//
-// Provider is an enum: "" | "sqlite_blob" (default) | "qdrant" | "pgvector"
-// | "none". "pgvector" is a SCOPED provider (recognized by validation) but
-// is NOT yet implemented — selecting it does not silently fall back to
-// another provider; the server composition path is responsible for rejecting
-// an unimplemented-but-scoped provider at wiring time.
 type VectorConfig struct {
-	Provider string         `yaml:"provider" mapstructure:"provider"` // "" | "sqlite_blob" (default) | "qdrant" | "pgvector" | "none"
-	Qdrant   QdrantConfig   `yaml:"qdrant" mapstructure:"qdrant"`
-	Pgvector PGVectorConfig `yaml:"pgvector" mapstructure:"pgvector"`
+	Provider string         `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
+	Qdrant   QdrantConfig   `yaml:"qdrant,omitempty" json:"qdrant,omitempty" toml:"qdrant,omitempty" mapstructure:"qdrant"`
+	Pgvector PGVectorConfig `yaml:"pgvector,omitempty" json:"pgvector,omitempty" toml:"pgvector,omitempty" mapstructure:"pgvector"`
 }
 
-// QdrantConfig holds connection parameters for the Qdrant external vector
-// adapter (internal/vector/qdrant). It is consumed ONLY by the server/
-// external composition path. All fields are plain data types so config.go
-// never imports the qdrant client (ADR-01 dependency direction, REQ-FOUND-001).
-// The APIKey is passed to the gRPC client and MUST NEVER be logged or
-// surfaced in error messages (REQ-CP-002 token storage / no plaintext).
+// QdrantConfig holds connection parameters for the Qdrant external vector adapter.
 type QdrantConfig struct {
-	Host         string        `yaml:"host" mapstructure:"host"`                     // gRPC host (default localhost)
-	Port         int           `yaml:"port" mapstructure:"port"`                     // gRPC port (default 6334)
-	Collection   string        `yaml:"collection" mapstructure:"collection"`         // collection name (default cortex)
-	Dimension    int           `yaml:"dimension" mapstructure:"dimension"`           // expected vector dimension (collection vector size)
-	APIKey       string        `yaml:"api_key" mapstructure:"api_key"`               // optional API key (never logged)
-	UseTLS       bool          `yaml:"use_tls" mapstructure:"use_tls"`               // TLS for gRPC (default false)
-	MaxBatchSize int           `yaml:"max_batch_size" mapstructure:"max_batch_size"` // upsert batch ceiling (default 256)
-	MaxRetries   uint          `yaml:"max_retries" mapstructure:"max_retries"`       // transient gRPC retries (default 3)
-	Timeout      time.Duration `yaml:"timeout" mapstructure:"timeout"`               // per-operation gRPC timeout (default 30s)
+	Host         string        `yaml:"host,omitempty" json:"host,omitempty" toml:"host,omitempty" mapstructure:"host"`
+	Port         int           `yaml:"port,omitempty" json:"port,omitempty" toml:"port,omitempty" mapstructure:"port"`
+	Collection   string        `yaml:"collection,omitempty" json:"collection,omitempty" toml:"collection,omitempty" mapstructure:"collection"`
+	Dimension    int           `yaml:"dimension,omitempty" json:"dimension,omitempty" toml:"dimension,omitempty" mapstructure:"dimension"`
+	APIKey       string        `yaml:"api_key,omitempty" json:"api_key,omitempty" toml:"api_key,omitempty" mapstructure:"api_key"`
+	UseTLS       bool          `yaml:"use_tls,omitempty" json:"use_tls,omitempty" toml:"use_tls,omitempty" mapstructure:"use_tls"`
+	MaxBatchSize int           `yaml:"max_batch_size,omitempty" json:"max_batch_size,omitempty" toml:"max_batch_size,omitempty" mapstructure:"max_batch_size"`
+	MaxRetries   uint          `yaml:"max_retries,omitempty" json:"max_retries,omitempty" toml:"max_retries,omitempty" mapstructure:"max_retries"`
+	Timeout      time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty" toml:"timeout,omitempty" mapstructure:"timeout"`
 }
 
-// PGVectorConfig holds connection parameters for the pgvector external vector
-// adapter (internal/vector/pgvector). It is consumed ONLY by the server/
-// external composition path. All fields are plain data types so config.go
-// never imports the pgx driver (ADR-01 dependency direction, REQ-FOUND-001).
-// The DSN may contain a password; it MUST NEVER be logged or surfaced in
-// error messages (REQ-CP-002 token storage / no plaintext).
+// PGVectorConfig holds connection parameters for the pgvector external vector adapter.
 type PGVectorConfig struct {
-	DSN                string        `yaml:"dsn" mapstructure:"dsn"`                                   // PostgreSQL connection string
-	Schema             string        `yaml:"schema" mapstructure:"schema"`                             // schema name (default cortex_vector)
-	Table              string        `yaml:"table" mapstructure:"table"`                               // table name (default embeddings)
-	Dimension          int           `yaml:"dimension" mapstructure:"dimension"`                       // expected vector dimension
-	IndexType          string        `yaml:"index_type" mapstructure:"index_type"`                     // hnsw or ivfflat (default hnsw)
-	HNSWM              int           `yaml:"hnsw_m" mapstructure:"hnsw_m"`                             // HNSW max connections per node (default 16, range 2-100)
-	HNSWEfConstruction int           `yaml:"hnsw_ef_construction" mapstructure:"hnsw_ef_construction"` // HNSW dynamic candidate list size for build (default 64, range 1-1000)
-	IVFFlatLists       int           `yaml:"ivfflat_lists" mapstructure:"ivfflat_lists"`               // IVFFlat number of inverted lists (default 100, range 1-50000)
-	MaxBatchSize       int           `yaml:"max_batch_size" mapstructure:"max_batch_size"`             // upsert batch ceiling (default 256)
-	Timeout            time.Duration `yaml:"timeout" mapstructure:"timeout"`                           // per-operation timeout (default 30s)
-	MaxConns           int32         `yaml:"max_conns" mapstructure:"max_conns"`                       // pool max connections (default 10)
-	StatementTimeoutMs int           `yaml:"statement_timeout_ms" mapstructure:"statement_timeout_ms"` // PostgreSQL statement_timeout in ms (default 5000)
+	DSN                string        `yaml:"dsn,omitempty" json:"dsn,omitempty" toml:"dsn,omitempty" mapstructure:"dsn"`
+	Schema             string        `yaml:"schema,omitempty" json:"schema,omitempty" toml:"schema,omitempty" mapstructure:"schema"`
+	Table              string        `yaml:"table,omitempty" json:"table,omitempty" toml:"table,omitempty" mapstructure:"table"`
+	Dimension          int           `yaml:"dimension,omitempty" json:"dimension,omitempty" toml:"dimension,omitempty" mapstructure:"dimension"`
+	IndexType          string        `yaml:"index_type,omitempty" json:"index_type,omitempty" toml:"index_type,omitempty" mapstructure:"index_type"`
+	HNSWM              int           `yaml:"hnsw_m,omitempty" json:"hnsw_m,omitempty" toml:"hnsw_m,omitempty" mapstructure:"hnsw_m"`
+	HNSWEfConstruction int           `yaml:"hnsw_ef_construction,omitempty" json:"hnsw_ef_construction,omitempty" toml:"hnsw_ef_construction,omitempty" mapstructure:"hnsw_ef_construction"`
+	IVFFlatLists       int           `yaml:"ivfflat_lists,omitempty" json:"ivfflat_lists,omitempty" toml:"ivfflat_lists,omitempty" mapstructure:"ivfflat_lists"`
+	MaxBatchSize       int           `yaml:"max_batch_size,omitempty" json:"max_batch_size,omitempty" toml:"max_batch_size,omitempty" mapstructure:"max_batch_size"`
+	Timeout            time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty" toml:"timeout,omitempty" mapstructure:"timeout"`
+	MaxConns           int32         `yaml:"max_conns,omitempty" json:"max_conns,omitempty" toml:"max_conns,omitempty" mapstructure:"max_conns"`
+	StatementTimeoutMs int           `yaml:"statement_timeout_ms,omitempty" json:"statement_timeout_ms,omitempty" toml:"statement_timeout_ms,omitempty" mapstructure:"statement_timeout_ms"`
 }
 
 // Default configuration values
@@ -320,21 +306,18 @@ var defaults = Config{
 }
 
 // Load reads configuration from file, environment variables, and applies defaults
-// The configPath parameter is optional - if empty, it searches for cortex.yaml
+// The configPath parameter is optional - if empty, it searches for cortex.yaml, cortex.yml, cortex.json, cortex.toml
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
 	// Set default values
 	setDefaults(v)
 
-	// Configure viper
-	v.SetConfigName("cortex")
-	v.SetConfigType("yaml")
-
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	} else {
-		// Add search paths
+		// Configure viper name and search paths for multi-format lookup
+		v.SetConfigName("cortex")
 		v.AddConfigPath(".")
 		v.AddConfigPath("./config")
 		v.AddConfigPath(CortexDir())
@@ -360,6 +343,37 @@ func Load(configPath string) (*Config, error) {
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	// Synchronize unified AI section with search config
+	if cfg.AI.Provider != "" {
+		if cfg.Search.EmbeddingProvider == "" {
+			cfg.Search.EmbeddingProvider = cfg.AI.Provider
+		}
+	} else if cfg.Search.EmbeddingProvider != "" {
+		cfg.AI.Provider = cfg.Search.EmbeddingProvider
+	}
+	if cfg.AI.Model != "" {
+		if cfg.Search.EmbeddingModel == "" {
+			cfg.Search.EmbeddingModel = cfg.AI.Model
+		}
+	} else if cfg.Search.EmbeddingModel != "" {
+		cfg.AI.Model = cfg.Search.EmbeddingModel
+	}
+	if cfg.AI.BaseURL != "" {
+		if cfg.Search.EmbeddingBaseURL == "" {
+			cfg.Search.EmbeddingBaseURL = cfg.AI.BaseURL
+		}
+	} else if cfg.Search.EmbeddingBaseURL != "" {
+		cfg.AI.BaseURL = cfg.Search.EmbeddingBaseURL
+	}
+
+	// Expand ~ in database path
+	if strings.HasPrefix(cfg.Database.Path, "~/") || strings.HasPrefix(cfg.Database.Path, "~\\") {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			cfg.Database.Path = filepath.Join(home, cfg.Database.Path[2:])
+		}
 	}
 
 	if cfg.Server.Storage.DSN == "" {
@@ -428,6 +442,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.principal_subject", "")
 	v.SetDefault("server.secrets.signing_key", "")
 	v.SetDefault("server.secrets.oidc_client_secret", "")
+
+	v.SetDefault("ai.provider", "")
+	v.SetDefault("ai.model", "")
+	v.SetDefault("ai.base_url", "")
 
 	v.SetDefault("database.path", DefaultDBPath())
 	v.SetDefault("database.in_memory", defaults.Database.InMemory)
@@ -638,6 +656,162 @@ func Validate(cfg *Config) error {
 	return validate(cfg)
 }
 
+// GetProperty retrieves a configuration value by dot-separated path.
+func (cfg *Config) GetProperty(key string) (string, error) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	switch key {
+	case "database.path":
+		return cfg.Database.Path, nil
+	case "database.in_memory":
+		return fmt.Sprintf("%t", cfg.Database.InMemory), nil
+	case "http.enabled":
+		return fmt.Sprintf("%t", cfg.HTTP.Enabled), nil
+	case "http.port":
+		return fmt.Sprintf("%d", cfg.HTTP.Port), nil
+	case "http.host":
+		return cfg.HTTP.Host, nil
+	case "http.token":
+		return cfg.HTTP.Token, nil
+	case "logging.level":
+		return cfg.Logging.Level, nil
+	case "logging.format":
+		return cfg.Logging.Format, nil
+	case "search.embedding_provider":
+		return cfg.Search.EmbeddingProvider, nil
+	case "search.embedding_model":
+		return cfg.Search.EmbeddingModel, nil
+	case "search.embedding_base_url":
+		return cfg.Search.EmbeddingBaseURL, nil
+	case "search.vector":
+		return fmt.Sprintf("%t", cfg.Search.Vector), nil
+	case "search.fts5":
+		return fmt.Sprintf("%t", cfg.Search.FTS5), nil
+	case "search.ollama_auto_start":
+		return fmt.Sprintf("%t", cfg.Search.OllamaAutoStart), nil
+	case "mcp.enabled":
+		return fmt.Sprintf("%t", cfg.MCP.Enabled), nil
+	case "mcp.remote.enabled":
+		return fmt.Sprintf("%t", cfg.MCP.Remote.Enabled), nil
+	case "mcp.remote.url":
+		return cfg.MCP.Remote.URL, nil
+	case "mcp.remote.token_env":
+		return cfg.MCP.Remote.TokenEnv, nil
+	case "sync.enabled":
+		return fmt.Sprintf("%t", cfg.Sync.Enabled), nil
+	case "sync.url":
+		return cfg.Sync.URL, nil
+	case "sync.token_env":
+		return cfg.Sync.TokenEnv, nil
+	case "sync.interval":
+		return cfg.Sync.Interval.String(), nil
+	case "memory.auto_archive_days":
+		return fmt.Sprintf("%d", cfg.Memory.AutoArchiveDays), nil
+	case "memory.importance_decay_half_life":
+		return fmt.Sprintf("%.1f", cfg.Memory.DecayHalfLifeDays), nil
+	case "memory.min_archive_score":
+		return fmt.Sprintf("%.2f", cfg.Memory.MinArchiveScore), nil
+	case "vector.provider":
+		return cfg.Vector.Provider, nil
+	case "ai.provider":
+		return cfg.AI.Provider, nil
+	case "ai.model":
+		return cfg.AI.Model, nil
+	case "ai.base_url":
+		return cfg.AI.BaseURL, nil
+	default:
+		return "", fmt.Errorf("unknown configuration key: %q", key)
+	}
+}
+
+// SetProperty updates a configuration value by dot-separated path.
+func (cfg *Config) SetProperty(key, value string) error {
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	switch key {
+	case "ai.provider":
+		cfg.AI.Provider = strings.ToLower(value)
+		cfg.Search.EmbeddingProvider = strings.ToLower(value)
+	case "ai.model":
+		cfg.AI.Model = value
+		cfg.Search.EmbeddingModel = value
+	case "ai.base_url":
+		cfg.AI.BaseURL = value
+		cfg.Search.EmbeddingBaseURL = value
+	case "database.path":
+		cfg.Database.Path = value
+	case "database.in_memory":
+		cfg.Database.InMemory = parseBool(value)
+	case "http.enabled":
+		cfg.HTTP.Enabled = parseBool(value)
+	case "http.port":
+		p, err := strconv.Atoi(value)
+		if err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("invalid port %q: must be integer 1-65535", value)
+		}
+		cfg.HTTP.Port = p
+	case "http.host":
+		cfg.HTTP.Host = value
+	case "http.token":
+		cfg.HTTP.Token = value
+	case "logging.level":
+		cfg.Logging.Level = strings.ToLower(value)
+	case "logging.format":
+		cfg.Logging.Format = strings.ToLower(value)
+	case "search.embedding_provider":
+		cfg.Search.EmbeddingProvider = strings.ToLower(value)
+		cfg.AI.Provider = strings.ToLower(value)
+	case "search.embedding_model":
+		cfg.Search.EmbeddingModel = value
+		cfg.AI.Model = value
+	case "search.embedding_base_url":
+		cfg.Search.EmbeddingBaseURL = value
+		cfg.AI.BaseURL = value
+	case "search.vector":
+		cfg.Search.Vector = parseBool(value)
+	case "search.fts5":
+		cfg.Search.FTS5 = parseBool(value)
+	case "search.ollama_auto_start":
+		cfg.Search.OllamaAutoStart = parseBool(value)
+	case "mcp.enabled":
+		cfg.MCP.Enabled = parseBool(value)
+	case "mcp.remote.enabled":
+		cfg.MCP.Remote.Enabled = parseBool(value)
+	case "mcp.remote.url":
+		cfg.MCP.Remote.URL = value
+	case "mcp.remote.token_env":
+		cfg.MCP.Remote.TokenEnv = value
+	case "sync.enabled":
+		cfg.Sync.Enabled = parseBool(value)
+	case "sync.url":
+		cfg.Sync.URL = value
+	case "sync.token_env":
+		cfg.Sync.TokenEnv = value
+	case "sync.interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q (e.g. '30s', '1m'): %w", value, err)
+		}
+		cfg.Sync.Interval = d
+	case "memory.auto_archive_days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 {
+			return fmt.Errorf("invalid auto_archive_days %q: must be positive integer", value)
+		}
+		cfg.Memory.AutoArchiveDays = days
+	case "vector.provider":
+		cfg.Vector.Provider = strings.ToLower(value)
+	default:
+		return fmt.Errorf("unknown or unsupported configuration key: %q", key)
+	}
+	return Validate(cfg)
+}
+
+func parseBool(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "true" || v == "1" || v == "yes" || v == "on"
+}
+
+
 // validVectorProviders is the scoped enum of recognized vector providers. An
 // empty string means "use the local sqlite_blob zero-CGO default" (no external
 // adapter). "pgvector" is scoped (recognized) but NOT yet implemented — it
@@ -820,6 +994,86 @@ func (c *Config) String() string {
 	)
 }
 
+// Minimal templates for initial setup
+const MinimalDefaultYAML = `# Cortex Configuration (~/.cortex/cortex.yaml)
+# Minimal configuration for local memory and agent tools.
+
+database:
+  path: ~/.cortex/cortex.db
+
+http:
+  port: 7438
+
+ai:
+  provider: "" # "ollama", "openai", "anthropic", or "" for keyword search
+`
+
+const MinimalDefaultJSON = `{
+  "$schema": "https://cortex.dev/schemas/v2/config.json",
+  "database": {
+    "path": "~/.cortex/cortex.db"
+  },
+  "http": {
+    "port": 7438
+  },
+  "ai": {
+    "provider": ""
+  }
+}
+`
+
+const MinimalDefaultTOML = `# Cortex Configuration (~/.cortex/cortex.toml)
+# Minimal configuration for local memory and agent tools.
+
+[database]
+path = "~/.cortex/cortex.db"
+
+[http]
+port = 7438
+
+[ai]
+provider = ""
+`
+
+// InitConfig creates a clean minimal config file of the requested format.
+func InitConfig(targetPath string, format string, force bool) (string, error) {
+	if format == "" {
+		format = "yaml"
+	}
+	format = strings.ToLower(strings.TrimPrefix(format, "."))
+	if targetPath == "" {
+		ext := format
+		if ext == "yml" {
+			ext = "yaml"
+		}
+		targetPath = filepath.Join(CortexDir(), "cortex."+ext)
+	}
+
+	if _, err := os.Stat(targetPath); err == nil && !force {
+		return targetPath, fmt.Errorf("config file already exists at %s (use --force to overwrite)", targetPath)
+	}
+
+	var content string
+	switch format {
+	case "json", "jsonc":
+		content = MinimalDefaultJSON
+	case "toml":
+		content = MinimalDefaultTOML
+	default:
+		content = MinimalDefaultYAML
+	}
+
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create directory: %w", err)
+	}
+
+	if err := os.WriteFile(targetPath, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("write config: %w", err)
+	}
+	return targetPath, nil
+}
+
 // ensureDefaultConfig creates ~/.cortex/cortex.yaml with default values
 // if it does not already exist. Errors are intentionally ignored (best-effort).
 func ensureDefaultConfig(cfg *Config) error {
@@ -827,7 +1081,8 @@ func ensureDefaultConfig(cfg *Config) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil // file already exists
 	}
-	return Save(cfg, path)
+	_, err := InitConfig(path, "yaml", false)
+	return err
 }
 
 // redactDSNPassword replaces the password component of a PostgreSQL DSN with
@@ -864,12 +1119,27 @@ func redactDSNPassword(dsn string) string {
 }
 
 // Save writes the configuration to the specified path.
-// If path is empty, writes to ~/.cortex/cortex.yaml.
+// If path is empty, writes to the loaded path or default ~/.cortex/cortex.yaml.
 // The write is atomic: data goes to a .tmp file first, then renamed.
 func Save(cfg *Config, path string) error {
 	if cfg == nil {
 		return fmt.Errorf("save config: configuration is nil")
 	}
+
+	// Synchronize AI section before saving
+	if cfg.Search.EmbeddingProvider != "" && cfg.AI.Provider == "" {
+		cfg.AI.Provider = cfg.Search.EmbeddingProvider
+	}
+	if cfg.Search.EmbeddingModel != "" && cfg.AI.Model == "" {
+		cfg.AI.Model = cfg.Search.EmbeddingModel
+	}
+	if cfg.Search.EmbeddingBaseURL != "" && cfg.AI.BaseURL == "" {
+		cfg.AI.BaseURL = cfg.Search.EmbeddingBaseURL
+	}
+	if cfg.AI.Provider != "" && cfg.Search.EmbeddingProvider == "" {
+		cfg.Search.EmbeddingProvider = cfg.AI.Provider
+	}
+
 	if path == "" {
 		// Use the same file that was loaded, or default to ~/.cortex/cortex.yaml
 		if cfg.LoadedFrom != "" {
@@ -884,9 +1154,25 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	data, err := marshalConfigPreservingExisting(cfg, path)
-	if err != nil {
-		return err
+	var data []byte
+	var err error
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".json") || strings.HasSuffix(lower, ".jsonc") {
+		data, err = json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal json config: %w", err)
+		}
+		data = append(data, '\n')
+	} else if strings.HasSuffix(lower, ".toml") {
+		data, err = toml.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal toml config: %w", err)
+		}
+	} else {
+		data, err = marshalConfigPreservingExisting(cfg, path)
+		if err != nil {
+			return err
+		}
 	}
 
 	tmpPath := path + ".tmp"
@@ -951,7 +1237,9 @@ func mergeYAMLNode(existing, desired *yaml.Node) {
 				}
 			}
 			if !found {
-				existing.Content = append(existing.Content, key, value)
+				if !isDefaultOrEmptySection(key.Value, value) {
+					existing.Content = append(existing.Content, key, value)
+				}
 			}
 		}
 		return
@@ -967,4 +1255,45 @@ func mergeYAMLNode(existing, desired *yaml.Node) {
 	if foot != "" {
 		existing.FootComment = foot
 	}
+}
+
+func isDefaultOrEmptySection(key string, node *yaml.Node) bool {
+	switch key {
+	case "server":
+		return !nodeContainsValue(node, "dsn", "tenant_id", "workspace_id")
+	case "vector":
+		return !nodeContainsValue(node, "provider")
+	case "sync":
+		return !nodeContainsValue(node, "url", "interval")
+	case "pragma":
+		return true // Never inject SQLite pragma block by default if not present
+	case "lifecycle":
+		return true // Never inject lifecycle block by default if not present
+	case "memory":
+		return true // Never inject memory tuning block by default if not present
+	case "search":
+		// Only inject if embedding_provider is customized and not using ai section
+		return !nodeContainsValue(node, "embedding_provider", "embedding_model")
+	default:
+		return false
+	}
+}
+
+func nodeContainsValue(node *yaml.Node, keys ...string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i].Value
+		v := node.Content[i+1]
+		for _, target := range keys {
+			if k == target && v.Value != "" && v.Value != "false" && v.Value != "0" {
+				return true
+			}
+		}
+		if v.Kind == yaml.MappingNode && nodeContainsValue(v, keys...) {
+			return true
+		}
+	}
+	return false
 }

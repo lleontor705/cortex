@@ -1,3 +1,5 @@
+import { validateBearerDestination } from "./transport-policy";
+
 export type Observation = {
   id: string;
   title: string;
@@ -145,6 +147,68 @@ export type SynthesisResult = {
   synthesized_at: string;
 };
 
+export type ProjectRule = {
+  key: string;
+  title: string;
+  content: string;
+  scope: string;
+};
+
+export type ProjectSkillSummary = {
+  key: string;
+  title: string;
+  description: string;
+  scope: string;
+  project?: string;
+};
+
+export type ProjectContext = {
+  project: string;
+  system_prompt: string;
+  rules: ProjectRule[];
+  skills: ProjectSkillSummary[];
+};
+
+export type ProjectSkill = {
+  id: string;
+  key: string;
+  title: string;
+  description: string;
+  content: string;
+  scope: string;
+  project?: string;
+  parameters?: Record<string, unknown>;
+  revision: number;
+  updated_at: string;
+};
+
+export type ProjectArtifactItem = {
+  id: string;
+  kind: "rule" | "skill";
+  key: string;
+  title: string;
+  description?: string;
+  content: string;
+  scope: "project" | "workspace_default";
+  project?: string;
+  parameters?: Record<string, unknown>;
+  revision: number;
+  status: "active" | "deleted";
+  updated_at: string;
+};
+
+export type SaveProjectArtifactInput = {
+  kind: "rule" | "skill";
+  key: string;
+  title: string;
+  description?: string;
+  content: string;
+  scope: "project" | "workspace_default";
+  project?: string;
+  parameters?: Record<string, unknown>;
+};
+
+
 export class APIError extends Error {
   constructor(
     message: string,
@@ -156,14 +220,39 @@ export class APIError extends Error {
 }
 
 export class CortexClient {
+  private token: string;
+  private readonly inflight = new Set<AbortController>();
+
   constructor(
     private readonly baseURL: string,
-    private readonly token: string,
+    token: string,
     private readonly onUnauthorized?: () => void,
-  ) {}
+  ) {
+    this.token = token;
+  }
+
+  /**
+   * Clears the live token reference and aborts every in-flight request.
+   * Called on logout and automatically on any 401 response, so stale
+   * credentials are never reused and pending requests do not outlive the
+   * session.
+   */
+  invalidate(): void {
+    this.token = "";
+    for (const controller of this.inflight) {
+      controller.abort();
+    }
+    this.inflight.clear();
+  }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const cleanBase = this.baseURL.replace(/\/$/, "");
+    if (this.token) {
+      // Bearer credentials may only travel over HTTPS or plain HTTP to a
+      // strict loopback destination. Enforced before any request is issued
+      // so the Authorization header can never leak onto the wire.
+      validateBearerDestination(cleanBase);
+    }
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(init?.headers as Record<string, string>),
@@ -172,26 +261,36 @@ export class CortexClient {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
 
-    const response = await fetch(`${cleanBase}${path}`, {
-      ...init,
-      headers,
-    });
+    const controller = new AbortController();
+    this.inflight.add(controller);
+    try {
+      const response = await fetch(`${cleanBase}${path}`, {
+        ...init,
+        headers,
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as {
-        error?: { message?: string; code?: string };
-      } | null;
-      if (response.status === 401) {
-        this.onUnauthorized?.();
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: { message?: string; code?: string };
+        } | null;
+        if (response.status === 401) {
+          // Abort sibling requests and drop the token reference before
+          // notifying, so nothing reuses the rejected credentials.
+          this.invalidate();
+          this.onUnauthorized?.();
+        }
+        throw new APIError(
+          body?.error?.message || `Error ${response.status}: Request failed`,
+          response.status,
+        );
       }
-      throw new APIError(
-        body?.error?.message || `Error ${response.status}: Request failed`,
-        response.status,
-      );
-    }
 
-    if (response.status === 204) return undefined as T;
-    return response.json() as Promise<T>;
+      if (response.status === 204) return undefined as T;
+      return response.json() as Promise<T>;
+    } finally {
+      this.inflight.delete(controller);
+    }
   }
 
   health() {
@@ -383,4 +482,37 @@ export class CortexClient {
   audit(limit = 50) {
     return this.request<AuditEntry[]>(`/api/audit?limit=${limit}`);
   }
+
+  getProjectContext(project = "") {
+    return this.request<ProjectContext>(
+      `/api/projects/context${project ? `?project=${encodeURIComponent(project)}` : ""}`,
+    );
+  }
+
+  listProjectArtifacts(project = "", kind = "") {
+    const params = new URLSearchParams();
+    if (project) params.set("project", project);
+    if (kind) params.set("kind", kind);
+    const qs = params.toString();
+    return this.request<ProjectArtifactItem[]>(
+      `/api/projects/artifacts${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  saveProjectArtifact(data: SaveProjectArtifactInput) {
+    return this.request<ProjectArtifactItem>("/api/projects/artifacts", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  deleteProjectArtifact(id: string, reason = "Deleted by admin") {
+    return this.request<{ status: string }>(
+      `/api/projects/artifacts/${id}?reason=${encodeURIComponent(reason)}`,
+      {
+        method: "DELETE",
+      },
+    );
+  }
 }
+

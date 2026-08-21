@@ -55,13 +55,32 @@ func applyReceiptMigration(t *testing.T) {
 	}
 }
 
+// saveReceiptObservation materializes the fixture effect observation for the
+// 'receipt' project. Migration 105 requires every observation to resolve a
+// session inside the bound workspace (the BEFORE trigger rejects a session
+// that does not exist there), so the fixture first provisions — idempotently,
+// through the partial client-id unique index — one 'receipt' session per
+// (tenant, workspace) and then resolves the session inside that same bound
+// workspace. This keeps the effect usable from any harness store, including
+// sibling workspaces of one tenant, without weakening the trigger contract.
 func saveReceiptObservation(ctx context.Context, title string) (domain.SaveEffect, error) {
 	tx, ok := txFromContext(ctx)
 	if !ok {
 		return domain.SaveEffect{}, errors.New("receipt test effect requires transaction")
 	}
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return domain.SaveEffect{}, errors.New("receipt test effect requires a bound workspace")
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sessions (tenant_id, workspace_id, client_id, project_key, started_at, created_by, updated_by)
+		VALUES (public.cortex_current_tenant(), $1::bigint, 'receipt-fixture', 'receipt', now(), $2, $2)
+		ON CONFLICT (tenant_id, workspace_id, client_id) WHERE client_id IS NOT NULL DO NOTHING`,
+		ws, actorFromContext(ctx)); err != nil {
+		return domain.SaveEffect{}, err
+	}
 	observation := &domain.Observation{Project: "receipt", Scope: domain.ScopeProject, Source: domain.SourceManual, Type: domain.TypeDecision, Title: title, Content: "receipt effect"}
-	if err := tx.QueryRow(ctx, `INSERT INTO observations(tenant_id,session_id,project_key,scope,source,type,title,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 ORDER BY id LIMIT 1),$1,$2,$3,$4,$5,$6,$7,$7) RETURNING id,public_id::text`, observation.Project, observation.Scope, observation.Source, observation.Type, observation.Title, observation.Content, actorFromContext(ctx)).Scan(&observation.ID, &observation.PublicID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO observations(tenant_id,session_id,project_key,scope,source,type,title,content,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1::bigint AND project_key=$2 ORDER BY id DESC LIMIT 1),$2,$3,$4,$5,$6,$7,$8,$8) RETURNING id,public_id::text`, ws, observation.Project, observation.Scope, observation.Source, observation.Type, observation.Title, observation.Content, actorFromContext(ctx)).Scan(&observation.ID, &observation.PublicID); err != nil {
 		return domain.SaveEffect{}, err
 	}
 	return domain.SaveEffect{Observation: observation, Status: domain.WriteStatusCreated}, nil
