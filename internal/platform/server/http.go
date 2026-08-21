@@ -185,6 +185,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
 	mux.HandleFunc("GET /api/search", a.search)
 	mux.HandleFunc("POST /api/graph/edges", a.createEdge)
+	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
 	mux.HandleFunc("GET /api/graph/analytics", a.graphAnalytics)
 	mux.HandleFunc("GET /api/graph/blast-radius", a.graphBlastRadius)
 	mux.HandleFunc("POST /api/graph/ingest-code", a.ingestCode)

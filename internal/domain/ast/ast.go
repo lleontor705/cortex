@@ -301,7 +301,7 @@ func extractTSJSFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship
 	if err != nil {
 		return entities, rels
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
 	entities = append(entities, CodeEntity{
@@ -389,7 +389,7 @@ func extractPythonFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationsh
 	if err != nil {
 		return entities, rels
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
 	entities = append(entities, CodeEntity{
@@ -468,7 +468,7 @@ func extractSQLFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship)
 	if err != nil {
 		return entities, rels
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
 	entities = append(entities, CodeEntity{
