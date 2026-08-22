@@ -51,11 +51,8 @@ jobs:
         run: |
           set -o pipefail
           if ! go test -v -count=1 ./... > unit_test.log 2>&1; then
-            echo "::error::Unit tests failed!"
-            echo "### Unit Test Failure Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 unit_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 unit_test.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" unit_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
+            echo "::error title=Failed Unit Tests::$FAILED_TESTS"
             cat unit_test.log
             exit 1
           fi
@@ -77,11 +74,8 @@ jobs:
         run: |
           set -o pipefail
           if ! go test -v -count=1 -tags cortex_vectors ./... > vector_test.log 2>&1; then
-            echo "::error::Vector tests failed!"
-            echo "### Vector Test Failure Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 vector_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 vector_test.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" vector_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
+            echo "::error title=Failed Vector Tests::$FAILED_TESTS"
             cat vector_test.log
             exit 1
           fi
@@ -245,11 +239,8 @@ jobs:
         run: |
           set -o pipefail
           if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
-            echo "::error::E2E tests failed!"
-            echo "### E2E Test Failure Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 e2e_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 e2e_test.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" e2e_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
+            echo "::error title=Failed E2E Tests::$FAILED_TESTS"
             cat e2e_test.log
             exit 1
           fi
