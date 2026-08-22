@@ -33,6 +33,8 @@ require jq
 require python3
 require timeout
 
+chmod +x "$SCRIPT_DIR"/*.sh 2>/dev/null || true
+
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cortex-hooks-test.XXXXXX") || exit 1
 prompt_sid="prompt-T24-$$"
 prompt_state="/tmp/cortex-claude-${prompt_sid}-tools-loaded"
