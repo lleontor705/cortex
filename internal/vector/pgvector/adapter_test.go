@@ -131,13 +131,13 @@ func (t *fakeTx) Rollback(_ context.Context) error {
 // adapter does not use. Embedding it reduces fake boilerplate.
 type baseRows struct{}
 
-func (baseRows) Close()                                        {}
-func (baseRows) Err() error                                    { return nil }
-func (baseRows) CommandTag() pgconn.CommandTag                 { return pgconn.CommandTag{} }
-func (baseRows) FieldDescriptions() []pgconn.FieldDescription  { return nil }
-func (baseRows) Values() ([]any, error)                        { return nil, nil }
-func (baseRows) RawValues() [][]byte                           { return nil }
-func (baseRows) Conn() *pgx.Conn                               { return nil }
+func (baseRows) Close()                                       {}
+func (baseRows) Err() error                                   { return nil }
+func (baseRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (baseRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (baseRows) Values() ([]any, error)                       { return nil, nil }
+func (baseRows) RawValues() [][]byte                          { return nil }
+func (baseRows) Conn() *pgx.Conn                              { return nil }
 
 // fakeRows implements pgx.Rows with canned data. Each row is a []any slice
 // matching the column order of the search query: [id int64, similarity float64].

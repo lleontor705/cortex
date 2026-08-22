@@ -56,7 +56,7 @@ func TestHasModel_Found(t *testing.T) {
 		found bool
 	}{
 		{"qwen3-embedding:8b", true},
-		{"nomic-embed-text", true},  // matches nomic-embed-text:latest
+		{"nomic-embed-text", true}, // matches nomic-embed-text:latest
 		{"nomic-embed-text:latest", true},
 		{"nonexistent-model", false},
 	}

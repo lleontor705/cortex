@@ -9,6 +9,7 @@ import (
 	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
+	"github.com/lleontor705/cortex/internal/update"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -337,6 +338,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 5
 		}
 		m.ArchiveList.SetSize(w, h)
+	case updateFinishedMsg:
+		if msg.err != nil {
+			m.ToastMessage = fmt.Sprintf("Update failed: %v", msg.err)
+			m.ToastType = "error"
+		} else if msg.result != nil {
+			m.ToastMessage = fmt.Sprintf("✔ Updated Cortex to %s! Please restart.", msg.result.Latest)
+			m.ToastType = "success"
+			m.UpdateResult = nil
+		}
 		return m, nil
 
 	case setupInstallMsg:
@@ -706,10 +716,28 @@ func (m Model) handleDashboardKeys(key string) (tea.Model, tea.Cmd) {
 		m.SearchInput.SetValue("")
 		m.SearchInput.Focus()
 		return m, nil
+	case "u", "U":
+		if m.UpdateResult != nil {
+			m.ToastMessage = fmt.Sprintf("Downloading & installing %s...", m.UpdateResult.Latest)
+			m.ToastType = "warning"
+			return m, m.performSelfUpdateCmd()
+		}
 	case "q":
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+type updateFinishedMsg struct {
+	result *update.Result
+	err    error
+}
+
+func (m Model) performSelfUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		res, err := update.SelfUpdate(m.Version, nil)
+		return updateFinishedMsg{result: res, err: err}
+	}
 }
 
 func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
@@ -2143,6 +2171,7 @@ func (m Model) submitNewObservation() (tea.Model, tea.Cmd) {
 func (m *Model) openAuthModal() {
 	m.AuthModalOpen = true
 	m.AuthFocusField = 0
+	m.AuthModeHybrid = true
 	if m.deps != nil && m.deps.Config != nil {
 		if m.deps.Config.Sync.URL != "" {
 			m.AuthServerURLInput.SetValue(m.deps.Config.Sync.URL)
@@ -2152,6 +2181,9 @@ func (m *Model) openAuthModal() {
 		if m.deps.Config.HTTP.Token != "" {
 			m.AuthTokenInput.SetValue(m.deps.Config.HTTP.Token)
 		}
+		if m.deps.Config.MCP.Remote.Enabled {
+			m.AuthModeHybrid = false
+		}
 	}
 	m.focusAuthField()
 }
@@ -2159,9 +2191,10 @@ func (m *Model) openAuthModal() {
 func (m *Model) focusAuthField() {
 	m.AuthServerURLInput.Blur()
 	m.AuthTokenInput.Blur()
-	if m.AuthFocusField == 0 {
+	switch m.AuthFocusField {
+	case 0:
 		m.AuthServerURLInput.Focus()
-	} else {
+	case 1:
 		m.AuthTokenInput.Focus()
 	}
 }
@@ -2176,20 +2209,32 @@ func (m Model) submitAuthModal() (tea.Model, tea.Cmd) {
 	if m.deps != nil && m.deps.Config != nil {
 		m.deps.Config.HTTP.Token = token
 		if serverURL != "" {
-			m.deps.Config.Sync.URL = serverURL
-			m.deps.Config.Sync.Enabled = true
-			if m.deps.Config.Sync.TokenEnv == "" {
-				m.deps.Config.Sync.TokenEnv = "CORTEX_HTTP_TOKEN"
+			if m.AuthModeHybrid {
+				m.deps.Config.Sync.URL = serverURL
+				m.deps.Config.Sync.Enabled = true
+				if m.deps.Config.Sync.TokenEnv == "" {
+					m.deps.Config.Sync.TokenEnv = "CORTEX_HTTP_TOKEN"
+				}
+				if m.deps.Config.MCP.Remote.URL == "" {
+					m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
+				}
+				m.deps.Config.MCP.Remote.Enabled = false
+				m.UploadToCortex = true
+			} else {
+				m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
+				m.deps.Config.MCP.Remote.Enabled = true
+				if m.deps.Config.MCP.Remote.TokenEnv == "" {
+					m.deps.Config.MCP.Remote.TokenEnv = "CORTEX_HTTP_TOKEN"
+				}
+				m.deps.Config.Sync.Enabled = false
+				m.UploadToCortex = false
 			}
 			if token != "" {
 				_ = os.Setenv("CORTEX_HTTP_TOKEN", token)
 			}
-			if m.deps.Config.MCP.Remote.URL == "" {
-				m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
-			}
-			m.UploadToCortex = true
 		} else if token == "" {
 			m.deps.Config.Sync.Enabled = false
+			m.deps.Config.MCP.Remote.Enabled = false
 			m.UploadToCortex = false
 		}
 		targetPath := m.deps.Config.LoadedFrom
@@ -2221,7 +2266,11 @@ func (m Model) submitAuthModal() (tea.Model, tea.Cmd) {
 		} else {
 			m.UserRole = "admin"
 		}
-		m.ToastMessage = "✔ Connected to Cortex Server and saved configuration"
+		if m.AuthModeHybrid {
+			m.ToastMessage = "✔ Connected in Hybrid Mode (Local-First + Sync)"
+		} else {
+			m.ToastMessage = "✔ Configured Remote MCP Proxy Mode"
+		}
 		m.ToastType = "success"
 	} else {
 		u := os.Getenv("USER")
@@ -2246,13 +2295,18 @@ func (m Model) handleAuthModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.AuthModalOpen = false
 		return m, nil
 	case "tab", "down":
-		m.AuthFocusField = (m.AuthFocusField + 1) % 2
+		m.AuthFocusField = (m.AuthFocusField + 1) % 3
 		m.focusAuthField()
 		return m, textinput.Blink
 	case "shift+tab", "up":
-		m.AuthFocusField = (m.AuthFocusField + 1) % 2
+		m.AuthFocusField = (m.AuthFocusField + 2) % 3
 		m.focusAuthField()
 		return m, textinput.Blink
+	case " ", "left", "right":
+		if m.AuthFocusField == 2 {
+			m.AuthModeHybrid = !m.AuthModeHybrid
+			return m, nil
+		}
 	case "enter":
 		if m.AuthFocusField == 0 {
 			m.AuthFocusField = 1
@@ -2265,11 +2319,11 @@ func (m Model) handleAuthModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if m.AuthFocusField == 0 {
+	switch m.AuthFocusField {
+	case 0:
 		m.AuthServerURLInput, cmd = m.AuthServerURLInput.Update(msg)
-	} else {
+	case 1:
 		m.AuthTokenInput, cmd = m.AuthTokenInput.Update(msg)
 	}
 	return m, cmd
 }
-

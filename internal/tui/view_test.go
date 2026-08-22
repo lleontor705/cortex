@@ -502,5 +502,3 @@ func TestRenderNewObsModal(t *testing.T) {
 		t.Errorf("expected save button in output, got %q", output)
 	}
 }
-
-

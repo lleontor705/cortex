@@ -25,10 +25,10 @@ type Dataset struct {
 
 // Question represents a single evaluation question.
 type Question struct {
-	ID         string   `json:"id"`
-	Question   string   `json:"question"`
-	Answer     string   `json:"answer"`
-	Category   string   `json:"category"` // IE, MR, TR, KU, ABS
+	ID          string     `json:"id"`
+	Question    string     `json:"question"`
+	Answer      string     `json:"answer"`
+	Category    string     `json:"category"` // IE, MR, TR, KU, ABS
 	ChatHistory []ChatTurn `json:"chat_history"`
 }
 

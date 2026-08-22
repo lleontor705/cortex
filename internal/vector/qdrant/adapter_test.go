@@ -51,13 +51,13 @@ type fakeClient struct {
 	queryResult      []*qdrant.ScoredPoint
 
 	// recorded calls
-	createCalls  []*qdrant.CreateCollection
-	deleteColl   int
-	existsCalls  []string
-	upsertCalls  []*qdrant.UpsertPoints
-	queryCalls   []*qdrant.QueryPoints
-	deleteCalls  []*qdrant.DeletePoints
-	closeCalls   int
+	createCalls []*qdrant.CreateCollection
+	deleteColl  int
+	existsCalls []string
+	upsertCalls []*qdrant.UpsertPoints
+	queryCalls  []*qdrant.QueryPoints
+	deleteCalls []*qdrant.DeletePoints
+	closeCalls  int
 }
 
 func (f *fakeClient) CreateCollection(_ context.Context, req *qdrant.CreateCollection) error {
@@ -124,7 +124,7 @@ func newTestAdapter(t *testing.T, fc *fakeClient) *Adapter {
 		dimension:    4,
 		modelName:    "test-model",
 		maxBatchSize: 256,
-		caps: defaultCapabilities(4, 256),
+		caps:         defaultCapabilities(4, 256),
 	}
 }
 
@@ -312,8 +312,8 @@ func TestAdapter_Upsert_TranslatesPointsToBatch(t *testing.T) {
 
 	points := []domain.VectorPoint{
 		{
-			ID:     1,
-			Vector: []float32{0.1, 0.2, 0.3, 0.4},
+			ID:        1,
+			Vector:    []float32{0.1, 0.2, 0.3, 0.4},
 			ModelInfo: domain.ModelInfo{Name: "test-model", Dimension: 4, Version: "v1"},
 			Metadata: map[string]any{
 				"project":   "myproj",
@@ -324,8 +324,8 @@ func TestAdapter_Upsert_TranslatesPointsToBatch(t *testing.T) {
 			},
 		},
 		{
-			ID:     2,
-			Vector: []float32{0.5, 0.6, 0.7, 0.8},
+			ID:        2,
+			Vector:    []float32{0.5, 0.6, 0.7, 0.8},
 			ModelInfo: domain.ModelInfo{Name: "test-model", Dimension: 4, Version: "v1"},
 			Metadata:  map[string]any{"project": "other"},
 		},

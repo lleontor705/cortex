@@ -161,7 +161,7 @@ func refAdapterSearch(ctx context.Context, db *sql.DB, q domain.VectorQuery) ([]
 	defer func() { _ = rows.Close() }()
 
 	type scored struct {
-		id int64
+		id  int64
 		sim float64
 	}
 	var results []scored
@@ -340,9 +340,9 @@ func TestAdapter_Search_DifferentialBaseline(t *testing.T) {
 		nil,
 		{"project": "p1"},
 		{"scope": "personal"},
-		{"scope": "PERSONAL "},                        // normalizeScope folds to personal
+		{"scope": "PERSONAL "}, // normalizeScope folds to personal
 		{"project": "p1", "scope": "personal"},
-		{"project": "p2", "bogus": 123, "scope": 42},  // unknown/non-string filters ignored
+		{"project": "p2", "bogus": 123, "scope": 42}, // unknown/non-string filters ignored
 		{"project": "nope"},
 	}
 

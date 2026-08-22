@@ -1192,7 +1192,7 @@ func observationResponse(observation *domain.Observation) map[string]any {
 		"content": observation.Content, "type": observation.Type,
 		"project": observation.Project, "scope": observation.Scope,
 		"owner_subject": observation.OwnerSubject,
-		"topic_key": observation.TopicKey, "confidence": observation.Confidence,
+		"topic_key":     observation.TopicKey, "confidence": observation.Confidence,
 		"source": observation.Source, "created_at": observation.CreatedAt,
 		"updated_at": observation.UpdatedAt,
 	}
@@ -2418,5 +2418,3 @@ func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
 		"sample_vector": sample,
 	})
 }
-
-

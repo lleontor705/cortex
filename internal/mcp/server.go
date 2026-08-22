@@ -50,11 +50,18 @@ var ProfileAgent = map[string]bool{
 	"cortex_search_hybrid":       true,
 	"cortex_revision_history":    true,
 	"cortex_handoff":             true,
+	// Directives, Rules & Codebase Intelligence
+	"cortex_get_rules":            true,
+	"cortex_save_rule":            true,
+	"cortex_ingest_code":          true,
+	"cortex_get_blast_radius":     true,
+	"cortex_detect_cycles":        true,
+	"cortex_analyze_architecture": true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate":     true,
-	"cortex_project_dna":     true,
-	"cortex_resolve_query":   true,
-	"cortex_get_status":      true,
+	"cortex_consolidate":   true,
+	"cortex_project_dna":   true,
+	"cortex_resolve_query": true,
+	"cortex_get_status":    true,
 }
 
 // ProfileAdmin contains admin/diagnostic tools for manual curation
@@ -133,6 +140,16 @@ CORE MEMORY:
   cortex_session_summary - MANDATORY before ending session
   cortex_get_observation - full content by ID
   cortex_save_prompt - save user prompt
+
+RULES & DIRECTIVES:
+  cortex_get_rules - retrieve active project and global rules/directives
+  cortex_save_rule - save/update persistent project or global rules
+
+CODEBASE AST & INTELLIGENCE:
+  cortex_ingest_code - scan local files with Zero-CGO Static AST Extractor
+  cortex_get_blast_radius - calculate downstream impact of modifying symbols
+  cortex_detect_cycles - detect circular dependencies and import cycles
+  cortex_analyze_architecture - analyze code communities and god nodes
 
 KNOWLEDGE GRAPH & SCORING:
   cortex_relate - create relationship between observations

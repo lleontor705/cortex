@@ -521,9 +521,9 @@ func TestHandleGraphPathMaxVisitedBounds(t *testing.T) {
 
 	t.Run("exact budget returns the []int64 path unchanged", func(t *testing.T) {
 		result := callTool(t, handler, map[string]interface{}{
-			"from_id":    float64(obs[0].ID),
-			"to_id":      float64(obs[3].ID),
-			"max_depth":  float64(5),
+			"from_id":     float64(obs[0].ID),
+			"to_id":       float64(obs[3].ID),
+			"max_depth":   float64(5),
 			"max_visited": float64(4),
 		})
 		text := resultText(result)
@@ -539,9 +539,9 @@ func TestHandleGraphPathMaxVisitedBounds(t *testing.T) {
 
 	t.Run("one less returns the stable truncation error", func(t *testing.T) {
 		result := callTool(t, handler, map[string]interface{}{
-			"from_id":    float64(obs[0].ID),
-			"to_id":      float64(obs[3].ID),
-			"max_depth":  float64(5),
+			"from_id":     float64(obs[0].ID),
+			"to_id":       float64(obs[3].ID),
+			"max_depth":   float64(5),
 			"max_visited": float64(3),
 		})
 		text := resultText(result)
@@ -689,11 +689,113 @@ func TestHandleGetStatus(t *testing.T) {
 	if !strings.Contains(text, `"database": "sqlite"`) {
 		t.Errorf("expected database sqlite, got %q", text)
 	}
-	if !strings.Contains(text, "fts5_search") {
-		t.Errorf("expected capabilities in result, got %q", text)
+	if !strings.Contains(text, "rules_directives") {
+		t.Errorf("expected rules_directives capability in result, got %q", text)
+	}
+	if !strings.Contains(text, "ast_extraction") {
+		t.Errorf("expected ast_extraction capability in result, got %q", text)
+	}
+}
+
+func TestHandleRulesWorkflow(t *testing.T) {
+	stores := setupTestStores(t)
+
+	// 1. Save rule
+	saveHandler := handleSaveRule(stores)
+	res := callTool(t, saveHandler, map[string]interface{}{
+		"title":     "No CGO in local core",
+		"content":   "Local Go code must compile with CGO_ENABLED=0.",
+		"project":   "cortex",
+		"topic_key": "rules/zero-cgo",
+		"scope":     "project",
+	})
+	saveTxt := resultText(res)
+	if !strings.Contains(saveTxt, "Rule saved successfully") {
+		t.Fatalf("expected rule saved, got: %s", saveTxt)
+	}
+
+	// 2. Query rules
+	getHandler := handleGetRules(stores)
+	getRes := callTool(t, getHandler, map[string]interface{}{
+		"project": "cortex",
+	})
+	getTxt := resultText(getRes)
+	if !strings.Contains(getTxt, "No CGO in local core") || !strings.Contains(getTxt, "rules/zero-cgo") {
+		t.Fatalf("expected saved rule in get_rules output, got: %s", getTxt)
+	}
+}
+
+func TestHandleCodebaseIntelligenceTools(t *testing.T) {
+	stores := setupTestStores(t)
+	ctx := context.Background()
+
+	_ = stores.Sessions.Create(ctx, &domain.Session{
+		ID:        "test-session",
+		Project:   "cortex",
+		Directory: ".",
+	})
+
+	// Create test observations representing code entities and links
+	obs1 := &domain.Observation{
+		Title:     "[func] HandleLogin",
+		Content:   "Source file: auth.go",
+		Type:      "pattern",
+		SessionID: "test-session",
+		Project:   "cortex",
+	}
+	if err := stores.Observations.Save(ctx, obs1); err != nil {
+		t.Fatal(err)
+	}
+	obs2 := &domain.Observation{
+		Title:     "[struct] UserSession",
+		Content:   "Source file: session.go",
+		Type:      "pattern",
+		SessionID: "test-session",
+		Project:   "cortex",
+	}
+	if err := stores.Observations.Save(ctx, obs2); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = stores.Graph.CreateEdge(ctx, &domain.Edge{
+		FromObsID:    obs1.ID,
+		ToObsID:      obs2.ID,
+		RelationType: "uses",
+		Weight:       1.0,
+		Confidence:   1.0,
+	})
+
+	// Test Blast Radius
+	blastHandler := handleGetBlastRadius(stores)
+	blastRes := callTool(t, blastHandler, map[string]interface{}{
+		"observation_id": float64(obs1.ID),
+		"depth":          float64(2),
+	})
+	blastTxt := resultText(blastRes)
+	if !strings.Contains(blastTxt, "root_node") {
+		t.Errorf("blast radius output unexpected: %s", blastTxt)
+	}
+
+	// Test Architecture Analysis
+	archHandler := handleAnalyzeArchitecture(stores)
+	archRes := callTool(t, archHandler, map[string]interface{}{
+		"project": "cortex",
+	})
+	archTxt := resultText(archRes)
+	if !strings.Contains(archTxt, "communities") && !strings.Contains(archTxt, "metrics") {
+		t.Errorf("architecture analysis output unexpected: %s", archTxt)
+	}
+
+	// Test Cycle Detection
+	cycleHandler := handleDetectCycles(stores)
+	cycleRes := callTool(t, cycleHandler, map[string]interface{}{
+		"project": "cortex",
+	})
+	cycleTxt := resultText(cycleRes)
+	if !strings.Contains(cycleTxt, "total_cycles_detected") {
+		t.Errorf("cycle detection output unexpected: %s", cycleTxt)
 	}
 }
 
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)
-

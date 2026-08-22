@@ -600,4 +600,3 @@ func createObservationCmd(d *Deps, obs *domain.Observation) tea.Cmd {
 		return observationCreatedMsg{observation: obs, err: err}
 	}
 }
-

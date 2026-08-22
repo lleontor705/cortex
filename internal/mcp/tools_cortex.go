@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/domain/ast"
 	"github.com/lleontor705/cortex/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
@@ -255,6 +257,120 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleResolveQuery(stores),
+		)
+	}
+
+	// --- cortex_get_rules -----------------------------------------------
+	if shouldRegister("cortex_get_rules", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_get_rules",
+				mcp.WithTitleAnnotation("Get Active Rules & Directives"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Retrieve active project and global directives, coding guidelines, and behavioral rules."),
+				mcp.WithString("project",
+					mcp.Description("Filter rules for a specific project. If omitted, retrieves all active project and global rules."),
+				),
+				mcp.WithString("topic",
+					mcp.Description("Filter by topic or subcategory (e.g. 'code-style', 'architecture', 'security')."),
+				),
+			),
+			handleGetRules(stores),
+		)
+	}
+
+	// --- cortex_save_rule ----------------------------------------------
+	if shouldRegister("cortex_save_rule", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_save_rule",
+				mcp.WithTitleAnnotation("Save Rule or Directive"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDescription("Create or update a persistent project or global directive/rule in Cortex."),
+				mcp.WithString("title",
+					mcp.Required(),
+					mcp.Description("Short summary of the rule (e.g. 'Always use Go 1.26 without CGO')"),
+				),
+				mcp.WithString("content",
+					mcp.Required(),
+					mcp.Description("Detailed description or markdown specification of the rule/directive"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Project name (defaults to 'default')"),
+				),
+				mcp.WithString("scope",
+					mcp.Description("Scope: 'project' or 'personal' (global) (default: 'project')"),
+				),
+				mcp.WithString("topic_key",
+					mcp.Description("Hierarchical topic key (e.g. 'rules/go-version', 'rules/auth')"),
+				),
+			),
+			handleSaveRule(stores),
+		)
+	}
+
+	// --- cortex_ingest_code ---------------------------------------------
+	if shouldRegister("cortex_ingest_code", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_ingest_code",
+				mcp.WithTitleAnnotation("Ingest Codebase AST Symbols"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDescription("Scan local project files (.go, .ts, .js, .py, .sql) using the Zero-CGO Static AST Extractor to index code symbols (functions, structs, classes) and dependencies into the knowledge graph."),
+				mcp.WithString("path",
+					mcp.Description("Relative or absolute root path to scan (defaults to '.' or project root)"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Project name (defaults to 'default')"),
+				),
+				mcp.WithNumber("max_files",
+					mcp.Description("Maximum files to scan (default: 500, max: 2000)"),
+				),
+			),
+			handleIngestCode(stores),
+		)
+	}
+
+	// --- cortex_get_blast_radius ----------------------------------------
+	if shouldRegister("cortex_get_blast_radius", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_get_blast_radius",
+				mcp.WithTitleAnnotation("Get Blast Radius"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol or observation."),
+				withIntegerID("observation_id", "Observation ID to analyze"),
+				mcp.WithNumber("depth",
+					mcp.Description("Traversal depth (default: 3)"),
+				),
+			),
+			handleGetBlastRadius(stores),
+		)
+	}
+
+	// --- cortex_detect_cycles -------------------------------------------
+	if shouldRegister("cortex_detect_cycles", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_detect_cycles",
+				mcp.WithTitleAnnotation("Detect Import & Dependency Cycles"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Detect circular dependencies and import/call cycles across code entities in the knowledge graph."),
+				mcp.WithString("project",
+					mcp.Description("Project name to inspect"),
+				),
+			),
+			handleDetectCycles(stores),
+		)
+	}
+
+	// --- cortex_analyze_architecture ------------------------------------
+	if shouldRegister("cortex_analyze_architecture", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_analyze_architecture",
+				mcp.WithTitleAnnotation("Analyze Architecture"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."),
+				mcp.WithString("project",
+					mcp.Description("Project name to analyze"),
+				),
+			),
+			handleAnalyzeArchitecture(stores),
 		)
 	}
 
@@ -754,14 +870,400 @@ func handleResolveQuery(stores *Stores) server.ToolHandlerFunc {
 	}
 }
 
+func cleanProjectName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "/") || strings.Contains(raw, "\\") || strings.HasSuffix(raw, ".git") {
+		raw = strings.TrimSuffix(raw, ".git")
+		parts := strings.FieldsFunc(raw, func(r rune) bool {
+			return r == '/' || r == '\\' || r == ':'
+		})
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	return filepath.Base(raw)
+}
+
+func handleGetRules(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		topic := strings.TrimSpace(stringArg(req, "topic"))
+
+		filter := domain.ObservationFilter{
+			Project: project,
+			Limit:   100,
+		}
+		obsList, err := stores.Observations.List(ctx, filter)
+		if err != nil {
+			return errorResult("list rules: %v", err)
+		}
+
+		type ruleItem struct {
+			ID       int64  `json:"id"`
+			Title    string `json:"title"`
+			TopicKey string `json:"topic_key"`
+			Content  string `json:"content"`
+			Scope    string `json:"scope"`
+			Project  string `json:"project"`
+		}
+
+		var rules []ruleItem
+		for _, o := range obsList {
+			isRule := o.Type == "pattern" || o.Type == "config" || strings.HasPrefix(o.TopicKey, "rules/") || strings.HasPrefix(o.TopicKey, "directive/")
+			for _, tag := range o.Tags {
+				if tag == "rule" || tag == "directive" {
+					isRule = true
+					break
+				}
+			}
+			if !isRule {
+				continue
+			}
+			if topic != "" && !strings.Contains(strings.ToLower(o.TopicKey), strings.ToLower(topic)) && !strings.Contains(strings.ToLower(o.Title), strings.ToLower(topic)) {
+				continue
+			}
+			rules = append(rules, ruleItem{
+				ID:       o.ID,
+				Title:    o.Title,
+				TopicKey: o.TopicKey,
+				Content:  o.Content,
+				Scope:    o.Scope,
+				Project:  o.Project,
+			})
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "# 📋 Active Rules & Directives (Total: %d)\n\n", len(rules))
+		if len(rules) == 0 {
+			b.WriteString("No specific rules found. You may register project rules using `cortex_save_rule`.\n")
+		} else {
+			for _, r := range rules {
+				fmt.Fprintf(&b, "### [%d] %s\n", r.ID, r.Title)
+				if r.TopicKey != "" {
+					fmt.Fprintf(&b, "- **Key**: `%s` | **Scope**: `%s`\n", r.TopicKey, r.Scope)
+				}
+				fmt.Fprintf(&b, "%s\n\n", r.Content)
+			}
+		}
+
+		return mcp.NewToolResultText(b.String()), nil
+	}
+}
+
+func handleSaveRule(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		title := strings.TrimSpace(stringArg(req, "title"))
+		if title == "" {
+			return errorResult("title is required")
+		}
+		content := strings.TrimSpace(stringArg(req, "content"))
+		if content == "" {
+			return errorResult("content is required")
+		}
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+		scope := strings.TrimSpace(stringArg(req, "scope"))
+		if scope == "" {
+			scope = "project"
+		}
+		topicKey := strings.TrimSpace(stringArg(req, "topic_key"))
+		if topicKey == "" {
+			topicKey = "rules/" + strings.ToLower(strings.ReplaceAll(title, " ", "-"))
+		} else if !strings.HasPrefix(topicKey, "rules/") && !strings.HasPrefix(topicKey, "directive/") {
+			topicKey = "rules/" + topicKey
+		}
+
+		sessionID := defaultSessionID(project)
+		_ = stores.Sessions.Create(ctx, &domain.Session{
+			ID:        sessionID,
+			Project:   project,
+			Directory: ".",
+		})
+
+		obs := &domain.Observation{
+			Title:      title,
+			Content:    content,
+			Type:       "pattern",
+			SessionID:  sessionID,
+			Project:    project,
+			Scope:      scope,
+			TopicKey:   topicKey,
+			Confidence: 1.0,
+			Source:     "manual",
+			Tags:       []string{"rule", "directive"},
+		}
+
+		err := stores.Observations.Save(ctx, obs)
+		if err != nil {
+			return errorResult("save rule: %v", err)
+		}
+
+		return mcp.NewToolResultText(fmt.Sprintf("✔ Rule saved successfully (ID: #%d, Topic: %s, Scope: %s)", obs.ID, topicKey, scope)), nil
+	}
+}
+
+func handleIngestCode(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		targetPath := strings.TrimSpace(stringArg(req, "path"))
+		if targetPath == "" {
+			targetPath = "."
+		}
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+		maxFiles := intArg(req, "max_files", 500)
+		if maxFiles <= 0 || maxFiles > 2000 {
+			maxFiles = 500
+		}
+
+		extractor := ast.NewExtractor(targetPath)
+		res, err := extractor.ExtractPath(targetPath, maxFiles)
+		if err != nil {
+			return errorResult("ast extraction failed: %v", err)
+		}
+
+		sessionID := defaultSessionID(project)
+		_ = stores.Sessions.Create(ctx, &domain.Session{
+			ID:        sessionID,
+			Project:   project,
+			Directory: ".",
+		})
+
+		indexedCount := 0
+		relsCreated := 0
+
+		// Save discovered entities as observations and index in knowledge graph
+		entityIDMap := make(map[string]int64)
+		for _, ent := range res.Entities {
+			title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
+			content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s. Signature: %s", ent.File, ent.Line, ent.Kind, ent.Package, ent.Signature)
+			topicKey := fmt.Sprintf("ast/%s/%s", ent.Kind, ent.Name)
+
+			obs := &domain.Observation{
+				Title:      title,
+				Content:    content,
+				Type:       "pattern",
+				SessionID:  sessionID,
+				Project:    project,
+				Scope:      "project",
+				TopicKey:   topicKey,
+				Confidence: 1.0,
+				Source:     ent.File,
+				Tags:       []string{"ast", ent.Kind, ent.Package},
+			}
+			err := stores.Observations.Save(ctx, obs)
+			if err == nil {
+				indexedCount++
+				entityIDMap[ent.Name] = obs.ID
+				entityIDMap[ent.ID] = obs.ID
+			}
+		}
+
+		// Relate entities in the knowledge graph
+		for _, rel := range res.Relationships {
+			srcID, ok1 := entityIDMap[rel.Source]
+			tgtID, ok2 := entityIDMap[rel.Target]
+			if ok1 && ok2 && srcID != tgtID {
+				err := stores.Graph.CreateEdge(ctx, &domain.Edge{
+					FromObsID:    srcID,
+					ToObsID:      tgtID,
+					RelationType: rel.Relation,
+					Weight:       1.0,
+					Confidence:   rel.Confidence,
+					Source:       "ast_extractor",
+					Reasoning:    rel.Reasoning,
+				})
+				if err == nil {
+					relsCreated++
+				}
+			}
+		}
+
+		summary := map[string]any{
+			"files_scanned":        res.FilesScanned,
+			"entities_extracted":   len(res.Entities),
+			"entities_indexed":     indexedCount,
+			"relationships_linked": relsCreated,
+			"project":              project,
+			"root_path":            targetPath,
+		}
+
+		b, err := json.MarshalIndent(summary, "", "  ")
+		if err != nil {
+			return errorResult("serialize summary: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		obsID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
+		}
+		depth := intArg(req, "depth", 3)
+		if depth <= 0 || depth > 10 {
+			depth = 3
+		}
+
+		obs, err := stores.Observations.GetByID(ctx, obsID)
+		if err != nil {
+			return errorResult("observation not found: %v", err)
+		}
+
+		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: obs.Project, Limit: 500})
+		if err != nil {
+			return errorResult("list observations: %v", err)
+		}
+
+		var nodes []graphdomain.GraphAnalyticsNode
+		var edges []graphdomain.GraphAnalyticsEdge
+
+		for _, o := range allObs {
+			nid := fmt.Sprintf("%d", o.ID)
+			nodes = append(nodes, graphdomain.GraphAnalyticsNode{
+				ID:         nid,
+				Label:      o.Title,
+				Kind:       "observation",
+				Subtype:    o.Type,
+				SourceFile: o.Source,
+			})
+
+			subEdges, err := stores.Graph.GetEdgesForObservation(ctx, o.ID)
+			if err == nil {
+				for _, e := range subEdges {
+					edges = append(edges, graphdomain.GraphAnalyticsEdge{
+						ID:         fmt.Sprintf("%d->%d", e.FromObsID, e.ToObsID),
+						Source:     fmt.Sprintf("%d", e.FromObsID),
+						Target:     fmt.Sprintf("%d", e.ToObsID),
+						Type:       e.RelationType,
+						Weight:     e.Weight,
+						Confidence: e.Confidence,
+					})
+				}
+			}
+		}
+
+		targetNodeID := fmt.Sprintf("%d", obsID)
+		blast := graphdomain.CalculateBlastRadius(targetNodeID, nodes, edges, depth)
+		b, err := json.MarshalIndent(blast, "", "  ")
+		if err != nil {
+			return errorResult("serialize blast radius: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleDetectCycles(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Limit: 500})
+		if err != nil {
+			return errorResult("list observations: %v", err)
+		}
+
+		var nodes []graphdomain.GraphAnalyticsNode
+		var edges []graphdomain.GraphAnalyticsEdge
+
+		for _, o := range allObs {
+			nodes = append(nodes, graphdomain.GraphAnalyticsNode{
+				ID:    fmt.Sprintf("%d", o.ID),
+				Label: o.Title,
+			})
+			subEdges, err := stores.Graph.GetEdgesForObservation(ctx, o.ID)
+			if err == nil {
+				for _, e := range subEdges {
+					edges = append(edges, graphdomain.GraphAnalyticsEdge{
+						ID:     fmt.Sprintf("%d->%d", e.FromObsID, e.ToObsID),
+						Source: fmt.Sprintf("%d", e.FromObsID),
+						Target: fmt.Sprintf("%d", e.ToObsID),
+						Type:   e.RelationType,
+					})
+				}
+			}
+		}
+
+		cycles := graphdomain.FindCycles(nodes, edges)
+		b, err := json.MarshalIndent(map[string]any{
+			"total_cycles_detected": len(cycles),
+			"cycles":                cycles,
+			"project":               project,
+		}, "", "  ")
+		if err != nil {
+			return errorResult("serialize cycles: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleAnalyzeArchitecture(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Limit: 500})
+		if err != nil {
+			return errorResult("list observations: %v", err)
+		}
+
+		var nodes []graphdomain.GraphAnalyticsNode
+		var edges []graphdomain.GraphAnalyticsEdge
+
+		for _, o := range allObs {
+			nodes = append(nodes, graphdomain.GraphAnalyticsNode{
+				ID:         fmt.Sprintf("%d", o.ID),
+				Label:      o.Title,
+				Kind:       "observation",
+				Subtype:    o.Type,
+				SourceFile: o.Source,
+			})
+			subEdges, err := stores.Graph.GetEdgesForObservation(ctx, o.ID)
+			if err == nil {
+				for _, e := range subEdges {
+					edges = append(edges, graphdomain.GraphAnalyticsEdge{
+						ID:     fmt.Sprintf("%d->%d", e.FromObsID, e.ToObsID),
+						Source: fmt.Sprintf("%d", e.FromObsID),
+						Target: fmt.Sprintf("%d", e.ToObsID),
+						Type:   e.RelationType,
+					})
+				}
+			}
+		}
+
+		report := graphdomain.AnalyzeGraph(nodes, edges)
+		b, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return errorResult("serialize report: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
 func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		status := map[string]any{
-			"mode":         "local",
-			"database":     "sqlite",
-			"version":      serverVersion,
-			"capabilities": []string{"fts5_search", "knowledge_graph", "scoring", "temporal", "dna", "handoff", "hybrid_search"},
-			"profiles":     []string{"agent", "admin", "temporal"},
+			"mode":     "local",
+			"database": "sqlite",
+			"version":  serverVersion,
+			"capabilities": []string{
+				"fts5_search",
+				"knowledge_graph",
+				"scoring",
+				"temporal",
+				"dna",
+				"handoff",
+				"hybrid_search",
+				"ast_extraction",
+				"rules_directives",
+				"blast_radius",
+				"architecture_analysis",
+			},
+			"profiles": []string{"agent", "admin", "temporal"},
 		}
 		b, err := json.MarshalIndent(status, "", "  ")
 		if err != nil {
@@ -770,4 +1272,3 @@ func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }
-

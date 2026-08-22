@@ -363,7 +363,8 @@ type Model struct {
 	AuthModalOpen      bool
 	AuthTokenInput     textinput.Model
 	AuthServerURLInput textinput.Model
-	AuthFocusField     int // 0 = Server URL, 1 = Bearer Token
+	AuthFocusField     int  // 0 = Server URL, 1 = Bearer Token, 2 = Mode Selector
+	AuthModeHybrid     bool // true = Hybrid (Local-First + Sync), false = Remote MCP Proxy
 
 	// Project & Upload Policy
 	UploadToCortex bool // whether current project uploads to Cortex server
@@ -544,6 +545,7 @@ func New(deps *Deps) Model {
 		AuthTokenInput:       authInput,
 		AuthServerURLInput:   authServerURLInput,
 		AuthFocusField:       0,
+		AuthModeHybrid:       deps.Config == nil || !deps.Config.MCP.Remote.Enabled,
 		UploadToCortex:       uploadToCortex,
 		StatsMode:            0,
 		SearchInput:          ti,

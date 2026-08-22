@@ -171,8 +171,8 @@ type SearchConfig struct {
 	FusionK           float64 `yaml:"fusion_k,omitempty" json:"fusion_k,omitempty" toml:"fusion_k,omitempty" mapstructure:"fusion_k"`
 	EmbeddingProvider string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
 	EmbeddingModel    string  `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty" toml:"embedding_model,omitempty" mapstructure:"embedding_model"`             // Model name override (e.g. "qwen3-embedding:8b")
-	EmbeddingBaseURL  string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"`   // Ollama base URL override (default: http://localhost:11434)
-	OllamaAutoStart   bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`         // Auto-start Ollama when configured as provider
+	EmbeddingBaseURL  string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
+	OllamaAutoStart   bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`     // Auto-start Ollama when configured as provider
 }
 
 // MemoryConfig holds memory management configuration
@@ -801,7 +801,6 @@ func parseBool(v string) bool {
 	v = strings.ToLower(strings.TrimSpace(v))
 	return v == "true" || v == "1" || v == "yes" || v == "on"
 }
-
 
 // validVectorProviders is the scoped enum of recognized vector providers. An
 // empty string means "use the local sqlite_blob zero-CGO default" (no external

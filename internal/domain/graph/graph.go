@@ -492,4 +492,3 @@ func GetValidRelationTypes() []string {
 	}
 	return types
 }
-

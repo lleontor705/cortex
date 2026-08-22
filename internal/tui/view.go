@@ -200,7 +200,7 @@ func (m Model) viewDashboard() string {
 
 	// Update notification
 	if m.UpdateResult != nil {
-		msg := fmt.Sprintf("Update available: %s — %s", m.UpdateResult.Latest, m.UpdateResult.UpdateURL)
+		msg := fmt.Sprintf("🚀 Update available: %s (current: %s) • Press [U] to install • %s", m.UpdateResult.Latest, m.Version, m.UpdateResult.UpdateURL)
 		b.WriteString(updateBannerStyle.Render(msg))
 		b.WriteString("\n\n")
 	}
@@ -1127,17 +1127,34 @@ func (m Model) renderAuthModal() string {
 
 	marker0 := "  "
 	marker1 := "  "
-	if m.AuthFocusField == 0 {
+	marker2 := "  "
+	switch m.AuthFocusField {
+	case 0:
 		marker0 = listSelectedStyle.Render("▸ ")
-	} else {
+	case 1:
 		marker1 = listSelectedStyle.Render("▸ ")
+	default:
+		marker2 = listSelectedStyle.Render("▸ ")
 	}
 
 	b.WriteString(marker0 + detailLabelStyle.Render("Server URL:   ") + m.AuthServerURLInput.View())
 	b.WriteString("\n")
 	b.WriteString(marker1 + detailLabelStyle.Render("Bearer Token: ") + m.AuthTokenInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Tab: Next Field • Enter: Connect & Save to YAML • Esc: Cancel"))
+
+	modeStr := "[●] Hybrid: Local-First + Sync [Recommended]   [ ] Remote MCP Proxy"
+	if !m.AuthModeHybrid {
+		modeStr = "[ ] Hybrid: Local-First + Sync                 [●] Remote MCP Proxy"
+	}
+	b.WriteString(marker2 + detailLabelStyle.Render("Mode:         ") + lipgloss.NewStyle().Foreground(colorCyan).Render(modeStr))
+	b.WriteString("\n")
+	if m.AuthModeHybrid {
+		b.WriteString("              " + helpStyle.Render("Fast local SQLite + Zero-CGO AST + background cloud sync."))
+	} else {
+		b.WriteString("              " + helpStyle.Render("Direct proxy to server (AST tools run in cloud container)."))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("Tab/↑↓: Navigate • Space: Toggle Mode • Enter: Save to YAML • Esc: Cancel"))
 
 	modal := lipgloss.NewStyle().
 		BorderStyle(lipgloss.DoubleBorder()).
@@ -1145,7 +1162,7 @@ func (m Model) renderAuthModal() string {
 		Background(activePalette.PanelBg).
 		Foreground(colorText).
 		Padding(1, 3).
-		Width(70).
+		Width(78).
 		Render(b.String())
 
 	return lipgloss.Place(m.Width-4, m.Height-2, lipgloss.Center, lipgloss.Center, modal)
@@ -1738,4 +1755,3 @@ func (m Model) renderNewObsModal() string {
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 }
-

@@ -480,5 +480,15 @@ func TestRunAuthCommands(t *testing.T) {
 	}
 }
 
+func TestRunUpdateCheck(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
 
-
+	// In test/dev mode, check should report up-to-date or check status without crashing
+	if code := Run([]string{"cortex", "update", "--check"}, stdout, stderr); code != 0 {
+		t.Fatalf("update --check code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Checking for latest release") {
+		t.Fatalf("expected checking message, got: %s", stdout.String())
+	}
+}

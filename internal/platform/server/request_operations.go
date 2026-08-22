@@ -298,4 +298,3 @@ func (requestOperations) MergeProject(ctx context.Context, source, target string
 	}
 	return ops.MergeProject(ctx, source, target)
 }
-

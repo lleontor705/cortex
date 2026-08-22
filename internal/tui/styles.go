@@ -323,5 +323,3 @@ func typeColor(obsType string) lipgloss.Color {
 		return colorSubtext
 	}
 }
-
-

@@ -571,4 +571,3 @@ func TestSplitPreviewToggle(t *testing.T) {
 		t.Fatal("expected PreviewVisible to be false after second 'v'")
 	}
 }
-

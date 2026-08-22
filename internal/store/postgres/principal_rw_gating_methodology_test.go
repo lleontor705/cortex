@@ -270,7 +270,7 @@ func TestRWC32ParentAggregationNeverPassesZeroOrPartialBlocks(t *testing.T) {
 		DistinctEvidence: make([]rwC32FlowEvidence, rwC32Workers*rwC32Iters)}
 	for name, blocks := range map[string][]rwC32MachineBlock{
 		"zero blocks":    nil,
-		"partial blocks": []rwC32MachineBlock{good},
+		"partial blocks": {good},
 	} {
 		t.Run(name, func(t *testing.T) {
 			counts, err := rwR1R24EvidenceCounts(blocks, 2, rwC32Reps)

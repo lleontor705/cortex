@@ -121,16 +121,16 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 	}
 
 	client, err := qdrant.NewClient(&qdrant.Config{
-		Host:                  host,
-		Port:                  port,
-		APIKey:                cfg.APIKey,
-		UseTLS:                cfg.UseTLS,
+		Host:                   host,
+		Port:                   port,
+		APIKey:                 cfg.APIKey,
+		UseTLS:                 cfg.UseTLS,
 		SkipCompatibilityCheck: false,
-		VersionCheckTimeout:   timeout,
+		VersionCheckTimeout:    timeout,
 		RetryConfig: &qdrant.RetryConfig{
-			MaxRetries:   retries,
-			BaseBackoff:  100 * time.Millisecond,
-			MaxBackoff:   5 * time.Second,
+			MaxRetries:  retries,
+			BaseBackoff: 100 * time.Millisecond,
+			MaxBackoff:  5 * time.Second,
 		},
 	})
 	if err != nil {

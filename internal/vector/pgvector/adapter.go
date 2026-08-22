@@ -120,23 +120,23 @@ type AdapterConfig struct {
 // Adapter implements domain.VectorIndex over a PostgreSQL database with the
 // pgvector extension via the pgx pure-Go driver.
 type Adapter struct {
-	db                  pgvectorDB
-	schema              string
-	table               string
-	qualifiedTable      string // schema.table
-	dimension           int
-	modelName           string
-	indexType           string
-	hnswM               int
-	hnswEfConstruction  int
-	ivfflatLists        int
-	maxBatchSize        int
-	timeout             time.Duration
-	statementTimeout    int
-	password            string // extracted from DSN for redaction (never logged)
-	ownDB               bool   // Close should close the underlying pool (factory-built)
-	created             bool   // schema/table/index have been verified this session
-	caps                domain.Capabilities
+	db                 pgvectorDB
+	schema             string
+	table              string
+	qualifiedTable     string // schema.table
+	dimension          int
+	modelName          string
+	indexType          string
+	hnswM              int
+	hnswEfConstruction int
+	ivfflatLists       int
+	maxBatchSize       int
+	timeout            time.Duration
+	statementTimeout   int
+	password           string // extracted from DSN for redaction (never logged)
+	ownDB              bool   // Close should close the underlying pool (factory-built)
+	created            bool   // schema/table/index have been verified this session
+	caps               domain.Capabilities
 }
 
 // New constructs a pgvector Adapter with a real pgxpool connection pool. The

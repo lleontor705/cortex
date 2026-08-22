@@ -266,7 +266,6 @@ func (f *fakeOperations) MergeProject(_ context.Context, source, target string) 
 	}, nil
 }
 
-
 func testHandler(health healthCheck) http.Handler {
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}, newFakeOperations(), health)
 	return h

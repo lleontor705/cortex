@@ -412,13 +412,13 @@ func TestPropertyArtifactETagDerivation(t *testing.T) {
 	rng := rand.New(rand.NewSource(10))
 	randomArtifact := func() Artifact {
 		a := Artifact{
-			ID: "id-" + fmtID(rng.Intn(1000)),
+			ID:      "id-" + fmtID(rng.Intn(1000)),
 			Project: []string{"", "proj-" + fmtID(rng.Intn(50))}[rng.Intn(2)],
-			Kind: []Kind{KindSkill, KindRule}[rng.Intn(2)],
-			Key:  "k/" + fmtID(rng.Intn(100)),
-			Title: "T" + fmtID(rng.Intn(100)),
-			Scope: ScopeProject, Status: StatusActive,
-			Precedence:      int32(rng.Intn(10)),
+			Kind:    []Kind{KindSkill, KindRule}[rng.Intn(2)],
+			Key:     "k/" + fmtID(rng.Intn(100)),
+			Title:   "T" + fmtID(rng.Intn(100)),
+			Scope:   ScopeProject, Status: StatusActive,
+			Precedence:     int32(rng.Intn(10)),
 			LatestRevision: int64(1 + rng.Intn(9)),
 		}
 		if a.Project == "" {

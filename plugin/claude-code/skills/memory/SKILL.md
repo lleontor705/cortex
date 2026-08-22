@@ -24,6 +24,16 @@ They are available immediately — no manual ToolSearch needed.
 - `cortex_session_start`, `cortex_session_end`, `cortex_save_prompt`
 - `cortex_stats`, `cortex_delete`, `cortex_timeline`, `cortex_capture_passive`
 
+**Rules & Directives:**
+- `cortex_get_rules` — retrieve active project and global directives, guidelines, and behavioral rules
+- `cortex_save_rule` — create or update a persistent project or global directive/rule in Cortex
+
+**Codebase AST & Intelligence:**
+- `cortex_ingest_code` — scan local files using Zero-CGO Static AST Extractor into knowledge graph
+- `cortex_get_blast_radius` — calculate downstream impact of modifying symbols/files before refactoring
+- `cortex_detect_cycles` — detect circular dependencies and import cycles
+- `cortex_analyze_architecture` — analyze code communities, god nodes, and architecture
+
 **Transport IDs:** Follow the active MCP tool schema. Local observations and graph records use numeric IDs; Cortex Server uses public UUID strings. Never convert or reuse IDs across transports.
 
 **Knowledge graph (Cortex-exclusive):**

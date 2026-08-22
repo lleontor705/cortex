@@ -105,7 +105,9 @@ const CORTEX_TOOLS = new Set([
   "cortex_analyze_architecture",
   "cortex_detect_cycles",
   "cortex_ingest_code",
-  // Governance, Skills & System Context
+  // Governance, Skills, Directives & Rules
+  "cortex_get_rules",
+  "cortex_save_rule",
   "cortex_get_project_context",
   "cortex_list_skills",
   "cortex_get_skill",
@@ -185,15 +187,25 @@ This is NOT optional. Without this, the next session or agent starts blind.
 2. Then call \`cortex_context\` to recover context from previous sessions before continuing.`
   }
 
-  return `## Cortex Persistent Memory — Protocol (Mode: LOCAL / SQLite Zero-CGO)
+  return `## Cortex Persistent Memory — Protocol (Mode: LOCAL / HYBRID Zero-CGO)
 
-You have access to Cortex Local, a high-performance local memory system (zero-CGO SQLite, FTS5 full-text search, knowledge graph, and temporal tracking).
+You have access to Cortex Local, a high-performance local memory system (zero-CGO SQLite, FTS5 full-text search, knowledge graph, static AST extraction, and temporal tracking).
 
 TRANSPORT IDENTIFIERS:
 - In Local Mode, observation and graph IDs are numeric integers (e.g. 1, 42).
 - Follow active MCP tool schema.
 
-### 1. WHEN TO SAVE (Mandatory after completing work)
+### 1. RULES & DIRECTIVES (Mandatory at session start)
+- Call \`cortex_get_rules(project)\` to retrieve active project and global rules, coding standards, and architectural directives.
+- Call \`cortex_save_rule(title, content, topic_key, scope)\` whenever the user or team establishes a persistent project convention or rule.
+
+### 2. CODEBASE AST & INTELLIGENCE
+- Call \`cortex_ingest_code(path, project)\` to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
+- Before refactoring, call \`cortex_get_blast_radius(observation_id, depth)\` to calculate impacted callers, dependents, and downstream files.
+- Call \`cortex_detect_cycles(project)\` to find circular dependencies across modules.
+- Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
+
+### 3. WHEN TO SAVE (Mandatory after completing work)
 Call \`cortex_save\` IMMEDIATELY after any of these:
 - Bug fix completed (type: "bugfix")
 - Architecture decision made (type: "decision")
@@ -209,28 +221,28 @@ Format for \`cortex_save\`:
 - **topic_key** (optional, recommended): stable key like \`architecture/auth-model\`
 - **content**: What was done, Why, Where (files affected), and Gotchas.
 
-### 2. KNOWLEDGE GRAPH & RELATIONS
+### 4. KNOWLEDGE GRAPH & RELATIONS
 - After saving related observations, call \`cortex_relate\` (references, relates_to, follows, supersedes, contradicts).
 - Call \`cortex_graph\` to traverse connections from any observation.
 - Call \`cortex_score\` to recalculate observation importance.
 
-### 3. SEARCH & RETRIEVAL
+### 5. SEARCH & RETRIEVAL
 1. First call \`cortex_context\` to check recent session history.
 2. If not found, call \`cortex_search\` with keywords (FTS5).
 3. If needed, call \`cortex_search_hybrid\` for combined vector + FTS search.
 4. Call \`cortex_get_observation(id)\` to fetch the complete full-text observation.
 
-### 4. REVISION HISTORY & HYGIENE
+### 6. REVISION HISTORY & HYGIENE
 - \`cortex_revision_history(id)\`: View evolution across upserts.
 - \`cortex_timeline(id)\`: Chronological context.
 - \`cortex_archive(id)\`: Archive obsolete observations.
 - \`cortex_delete(id, hard_delete: true)\`: Permanently delete.
 
-### 5. SESSION CLOSE PROTOCOL (Mandatory before ending)
+### 7. SESSION CLOSE PROTOCOL (Mandatory before ending)
 Before saying "done" or finishing a session:
 1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 
-### 6. AFTER COMPACTION
+### 8. AFTER COMPACTION
 1. Call \`cortex_session_summary\` with the compacted summary content.
 2. Call \`cortex_context\` to recover context before resuming work.`
 }

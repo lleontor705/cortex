@@ -33,12 +33,12 @@ var errInjected = errors.New("injected participant failure")
 // entity link, outbox intent, audit record. Each gets its own table so we can
 // assert per-table rollback.
 var participantTables = []string{
-	"obs_part",   // observation participant
-	"rev_part",   // revision participant
-	"graph_part", // graph-edge participant
-	"ent_part",   // entity-link participant
+	"obs_part",    // observation participant
+	"rev_part",    // revision participant
+	"graph_part",  // graph-edge participant
+	"ent_part",    // entity-link participant
 	"outbox_part", // outbox-intent participant (headline defect pin target)
-	"audit_part", // audit-record participant
+	"audit_part",  // audit-record participant
 }
 
 // setupFileDB creates a FILE-BASED SQLite database (needed for real BUSY

@@ -102,6 +102,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runConfig(args[2:], stdout, stderr)
 	case "auth":
 		exitCode = runAuth(args[2:], stdout, stderr)
+	case "update":
+		exitCode = runUpdate(args[2:], stdout, stderr)
 	default:
 		writef(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
@@ -139,6 +141,7 @@ Commands:
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
+  update [--check]       Update Cortex to the latest release
   version                Print version
   help                   Show this help
 `)
@@ -1676,4 +1679,49 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "unknown auth subcommand: %s (valid: login, status, logout)\n", args[0])
 		return 1
 	}
+}
+
+func runUpdate(args []string, stdout, stderr io.Writer) int {
+	checkOnly := false
+	for _, arg := range args {
+		if arg == "--check" || arg == "-c" {
+			checkOnly = true
+		}
+	}
+
+	writef(stdout, "Checking for latest release of Cortex (current: %s)...\n", Version)
+	if checkOnly {
+		res := update.Check(Version)
+		if res == nil {
+			writef(stdout, "Cortex is up-to-date (version %s).\n", Version)
+			return 0
+		}
+		writef(stdout, "\n🚀 A new version is available: %s (current: %s)\n", res.Latest, Version)
+		if res.ReleaseNotes != "" {
+			writef(stdout, "Release notes:\n%s\n\n", res.ReleaseNotes)
+		}
+		writef(stdout, "Release page: %s\n", res.UpdateURL)
+		writef(stdout, "To upgrade now, run: cortex update\n")
+		return 0
+	}
+
+	res, err := update.SelfUpdate(Version, func(msg string) {
+		writef(stdout, "  %s\n", msg)
+	})
+	if err != nil {
+		writef(stderr, "\n❌ Update failed: %v\n", err)
+		writef(stderr, "You can update manually with:\n")
+		writef(stderr, "  curl -sSL https://raw.githubusercontent.com/%s/%s/main/scripts/install.sh | bash\n", update.RepoOwner, update.RepoName)
+		writef(stderr, "  # or via Go toolchain:\n")
+		writef(stderr, "  go install github.com/%s/%s/cmd/cortex@latest\n\n", update.RepoOwner, update.RepoName)
+		return 1
+	}
+
+	if res != nil && !res.IsNewer && Version != "dev" {
+		writef(stdout, "✔ Cortex is already up-to-date (%s).\n", Version)
+		return 0
+	}
+
+	writef(stdout, "\n🎉 Cortex successfully updated to %s!\n\n", res.Latest)
+	return 0
 }

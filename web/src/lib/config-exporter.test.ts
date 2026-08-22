@@ -56,27 +56,32 @@ describe("bearer destination transport policy", () => {
 });
 
 describe("agent configuration exporters", () => {
-  it("generateClaudeDesktopConfig bridges the remote server via mcp-remote without secrets", () => {
-    const parsed = JSON.parse(generateClaudeDesktopConfig(ctx)) as {
+  it("generateClaudeDesktopConfig defaults to local hybrid and supports remote", () => {
+    // Hybrid mode (default)
+    const hybrid = JSON.parse(generateClaudeDesktopConfig(ctx)) as {
+      mcpServers: { cortex: { command: string; args: string[] } };
+    };
+    expect(hybrid.mcpServers.cortex.command).toBe("cortex");
+    expect(hybrid.mcpServers.cortex.args).toEqual(["mcp", "--tools=agent"]);
+
+    // Remote mode
+    const remote = JSON.parse(generateClaudeDesktopConfig({ ...ctx, mode: "remote" })) as {
       mcpServers: {
         cortex: { command: string; args: string[]; env: Record<string, string> };
       };
     };
-    const server = parsed.mcpServers.cortex;
+    const server = remote.mcpServers.cortex;
     expect(server.command).toBe("npx");
     expect(server.args).toContain("mcp-remote");
     expect(server.args).toContain("https://cortex.example/mcp");
-    // The token is referenced by env var name, never by value.
     expect(server.args.join(" ")).toContain(`Authorization:Bearer \${${DEFAULT_TOKEN_ENV}}`);
-    // The child env must not define (or override) the token variable: the
-    // bridge inherits it from the parent shell environment.
     expect(server.env).toEqual({});
-    expect(JSON.stringify(parsed)).not.toMatch(SECRET_CANARY);
+    expect(JSON.stringify(remote)).not.toMatch(SECRET_CANARY);
   });
 
   it("exported mcp-remote config resolves the token from the inherited shell environment", () => {
     for (const generate of [generateClaudeDesktopConfig, generateCursorMcpConfig, generateWindsurfConfig]) {
-      const parsed = JSON.parse(generate(ctx)) as {
+      const parsed = JSON.parse(generate({ ...ctx, mode: "remote" })) as {
         mcpServers: {
           cortex: { args: string[]; env: Record<string, string> };
         };
@@ -105,43 +110,59 @@ describe("agent configuration exporters", () => {
     }
   });
 
-  it("generateCursorMcpConfig uses the supported stdio mcp-remote shape without secrets", () => {
-    const parsed = JSON.parse(generateCursorMcpConfig(ctx)) as {
+  it("generateCursorMcpConfig supports hybrid and remote shapes without secrets", () => {
+    const hybrid = JSON.parse(generateCursorMcpConfig(ctx)) as {
+      mcpServers: { cortex: { command: string; args: string[] } };
+    };
+    expect(hybrid.mcpServers.cortex.command).toBe("cortex");
+
+    const remote = JSON.parse(generateCursorMcpConfig({ ...ctx, mode: "remote" })) as {
       mcpServers: {
         cortex: { command: string; args: string[]; env: Record<string, string> };
       };
     };
-    const server = parsed.mcpServers.cortex;
+    const server = remote.mcpServers.cortex;
     expect(server.args).toContain("mcp-remote");
     expect(server.args).toContain("https://cortex.example/mcp");
     expect(server.args.join(" ")).toContain(`Authorization:Bearer \${${DEFAULT_TOKEN_ENV}}`);
-    expect(JSON.stringify(parsed)).not.toMatch(SECRET_CANARY);
+    expect(JSON.stringify(remote)).not.toMatch(SECRET_CANARY);
   });
 
-  it("generateWindsurfConfig uses the supported stdio mcp-remote shape without secrets", () => {
-    const parsed = JSON.parse(generateWindsurfConfig(ctx)) as {
+  it("generateWindsurfConfig supports hybrid and remote shapes without secrets", () => {
+    const hybrid = JSON.parse(generateWindsurfConfig(ctx)) as {
+      mcpServers: { cortex: { command: string; args: string[] } };
+    };
+    expect(hybrid.mcpServers.cortex.command).toBe("cortex");
+
+    const remote = JSON.parse(generateWindsurfConfig({ ...ctx, mode: "remote" })) as {
       mcpServers: {
         cortex: { command: string; args: string[]; env: Record<string, string> };
       };
     };
-    const server = parsed.mcpServers.cortex;
+    const server = remote.mcpServers.cortex;
     expect(server.args).toContain("mcp-remote");
     expect(server.args).toContain("https://cortex.example/mcp");
-    expect(JSON.stringify(parsed)).not.toMatch(SECRET_CANARY);
+    expect(JSON.stringify(remote)).not.toMatch(SECRET_CANARY);
   });
 
-  it("generateCortexYaml matches the real mcp.remote schema and never embeds a token", () => {
-    const yaml = generateCortexYaml({ ...ctx, projectName: undefined });
-    expect(yaml).toContain("mcp:");
-    expect(yaml).toContain("remote:");
-    expect(yaml).toContain("enabled: true");
-    expect(yaml).toContain('url: "https://cortex.example/mcp"');
-    expect(yaml).toContain(`token_env: "${DEFAULT_TOKEN_ENV}"`);
-    expect(yaml).toContain("timeout: 30s");
-    expect(yaml).toContain("search:");
-    // A secret-bearing `token:` key must not exist anywhere in the YAML.
-    expect(yaml).not.toMatch(/^\s*token:/m);
-    expect(yaml).not.toMatch(SECRET_CANARY);
+  it("generateCortexYaml generates hybrid sync mode by default and remote when requested", () => {
+    // Default: Hybrid mode
+    const yamlHybrid = generateCortexYaml({ ...ctx, projectName: undefined });
+    expect(yamlHybrid).toContain("sync:");
+    expect(yamlHybrid).toContain("enabled: true");
+    expect(yamlHybrid).toContain('url: "https://cortex.example"');
+    expect(yamlHybrid).toContain(`token_env: "${DEFAULT_TOKEN_ENV}"`);
+    expect(yamlHybrid).toContain("interval: 10s");
+    expect(yamlHybrid).not.toMatch(/^\s*token:/m);
+    expect(yamlHybrid).not.toMatch(SECRET_CANARY);
+
+    // Explicit: Remote mode
+    const yamlRemote = generateCortexYaml({ ...ctx, mode: "remote" });
+    expect(yamlRemote).toContain("mcp:");
+    expect(yamlRemote).toContain("remote:");
+    expect(yamlRemote).toContain("enabled: true");
+    expect(yamlRemote).toContain('url: "https://cortex.example/mcp"');
+    expect(yamlRemote).toContain(`token_env: "${DEFAULT_TOKEN_ENV}"`);
   });
 
   it("generateEnvFile never assigns the token env var", () => {

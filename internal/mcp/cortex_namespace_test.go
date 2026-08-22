@@ -114,7 +114,9 @@ var requiredOrdinaryAgentTools = []string{
 	"cortex_save_prompt", "cortex_update", "cortex_relate",
 	"cortex_graph", "cortex_score", "cortex_search_hybrid",
 	"cortex_revision_history", "cortex_graph_relationships", "cortex_graph_path",
-	"cortex_handoff",
+	"cortex_handoff", "cortex_get_rules", "cortex_save_rule",
+	"cortex_ingest_code", "cortex_get_blast_radius", "cortex_detect_cycles",
+	"cortex_analyze_architecture",
 }
 
 // The 5 tools required in the admin profile (design Part 2 §9).

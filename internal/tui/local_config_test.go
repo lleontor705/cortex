@@ -199,3 +199,40 @@ func TestConnectToCortexServerModalSave(t *testing.T) {
 	}
 }
 
+func TestConnectToCortexServerModalToggleRemoteMode(t *testing.T) {
+	cfg := testLocalConfig(t)
+	m := New(&Deps{Config: cfg, Version: "2.0.0"})
+
+	m.openAuthModal()
+	m.AuthServerURLInput.SetValue("http://localhost:7438")
+
+	// Tab to Token
+	updated, _ := m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	m.AuthTokenInput.SetValue("ctx_secret_token")
+
+	// Tab to Mode selector (field 2)
+	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.AuthFocusField != 2 {
+		t.Fatalf("expected focus on Mode Selector (field 2), got %d", m.AuthFocusField)
+	}
+
+	// Toggle mode with Space to Remote MCP Proxy
+	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.AuthModeHybrid {
+		t.Fatal("expected AuthModeHybrid to be false after toggle")
+	}
+
+	// Submit
+	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.UploadToCortex {
+		t.Fatal("expected UploadToCortex to be false in Remote MCP mode")
+	}
+	if !m.deps.Config.MCP.Remote.Enabled {
+		t.Fatal("expected MCP.Remote.Enabled to be true in Remote MCP mode")
+	}
+}

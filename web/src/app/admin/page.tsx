@@ -148,6 +148,7 @@ export default function AdminPage() {
 
   // Integration Hub Interactive State
   const [selectedAgentProfileId, setSelectedAgentProfileId] = useState<string>("claude-desktop");
+  const [exportMode, setExportMode] = useState<"hybrid" | "remote">("hybrid");
   const [scriptOs, setScriptOs] = useState<"sh" | "ps1">("ps1");
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
@@ -305,6 +306,7 @@ export default function AdminPage() {
       userEmail: customToken?.subject || selectedTokenForExport?.subject,
       tokenName: customToken?.name || selectedTokenForExport?.name,
       projectName: exportProject,
+      mode: exportMode,
     };
   };
 
@@ -324,7 +326,7 @@ export default function AdminPage() {
     } catch (e: any) {
       return `// Error generando configuración: ${e.message}`;
     }
-  }, [selectedProfile, serverUrl, exportProject]);
+  }, [selectedProfile, serverUrl, exportProject, exportMode]);
 
   const currentQuickstartScript = useMemo(() => {
     try {
@@ -332,7 +334,7 @@ export default function AdminPage() {
     } catch (e: any) {
       return `# Error generando script: ${e.message}`;
     }
-  }, [scriptOs, serverUrl, exportProject]);
+  }, [scriptOs, serverUrl, exportProject, exportMode]);
 
   if (!isAdmin) {
     return (
@@ -1036,6 +1038,47 @@ export default function AdminPage() {
 
           {/* Right Column: Code Preview and Setup Scripts */}
           <div className="lg:col-span-2 space-y-4">
+            {/* Architecture Tip Banner */}
+            <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-start gap-3 text-xs">
+              <Sparkles className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-semibold text-blue-300">
+                  Recomendación: Modo Híbrido (Local-First + Sync)
+                </div>
+                <div className="text-slate-300 text-[11px] leading-relaxed">
+                  El modo <strong>Híbrido</strong> ejecuta Cortex de forma local en tu máquina con SQLite zero-CGO. Esto permite que el <strong>Zero-CGO Static AST Extractor</strong> analice tu código fuente en disco, calcule el <em>Blast Radius</em> y detecte dependencias circulares con latencia cero, mientras sincroniza memorias y grafos en segundo plano con este servidor.
+                </div>
+              </div>
+            </div>
+
+            {/* Mode Switcher */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setExportMode("hybrid")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                  exportMode === "hybrid"
+                    ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-sm"
+                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span>⚡</span>
+                <span>Modo Híbrido (Local-First + Sync) [Recomendado]</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportMode("remote")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                  exportMode === "remote"
+                    ? "bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm"
+                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span>🌐</span>
+                <span>Modo Remoto MCP Directo</span>
+              </button>
+            </div>
+
             {/* Configuration File Box */}
             <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[var(--border-subtle)]">
@@ -1388,6 +1431,42 @@ export default function AdminPage() {
               onChange={(e) => setExportProject(e.target.value)}
               className="h-8 text-xs font-mono"
             />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+              MODO DE INTEGRACIÓN
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setExportMode("hybrid")}
+                className={`p-2 rounded-lg text-left border transition-all ${
+                  exportMode === "hybrid"
+                    ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-sm"
+                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <div className="font-semibold text-[11px] flex items-center gap-1">
+                  <span>⚡</span> Hybrid (Local-First)
+                </div>
+                <div className="text-[9px] text-slate-400">AST local + Cloud Sync (Recomendado)</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportMode("remote")}
+                className={`p-2 rounded-lg text-left border transition-all ${
+                  exportMode === "remote"
+                    ? "bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm"
+                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <div className="font-semibold text-[11px] flex items-center gap-1">
+                  <span>🌐</span> Remote MCP
+                </div>
+                <div className="text-[9px] text-slate-400">Proxy directo a servidor</div>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2.5 pt-2">

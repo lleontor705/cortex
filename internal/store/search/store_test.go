@@ -578,7 +578,7 @@ func TestSearchEnhanced_RecencyBoost(t *testing.T) {
 
 	// Identical content so BM25 scores are equal -- only recency differs.
 	insertTestObservationUpdatedAt(t, db, 1, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project", time.Now().Add(-30*24*time.Hour)) // 30 days old
-	insertTestObservationUpdatedAt(t, db, 2, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project", time.Now().Add(-1*time.Hour)) // 1 hour old
+	insertTestObservationUpdatedAt(t, db, 2, "Auth design pattern", "Authentication design for the application", "decision", "test-project", "project", time.Now().Add(-1*time.Hour))     // 1 hour old
 
 	store := NewStore(db)
 	results, err := store.Search(context.Background(), "auth design", domain.SearchOptions{

@@ -26,6 +26,8 @@ export interface AgentExportContext {
   userEmail?: string;
   tokenName?: string;
   projectName?: string;
+  /** Integration mode: "hybrid" (Local-First + Sync, default) or "remote" (Remote MCP proxy) */
+  mode?: "hybrid" | "remote";
 }
 
 function assertDestination(ctx: AgentExportContext): void {
@@ -41,16 +43,23 @@ export function remoteMcpUrl(serverUrl: string): string {
   return `${serverUrl.replace(/\/$/, "")}/mcp`;
 }
 
-interface McpRemoteServer {
+interface McpServerConfig {
   command: string;
   args: string[];
-  env: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+function mcpLocalServer(): McpServerConfig {
+  return {
+    command: "cortex",
+    args: ["mcp", "--tools=agent"],
+  };
 }
 
 // `mcp-remote` is the supported stdio bridge for remote HTTP MCP servers in
 // Claude Desktop, Cursor and Windsurf. The header value is resolved from the
 // environment at runtime; the exported file only carries the variable NAME.
-function mcpRemoteServer(ctx: AgentExportContext): McpRemoteServer {
+function mcpRemoteServer(ctx: AgentExportContext): McpServerConfig {
   const tokenEnv = tokenEnvOf(ctx);
   return {
     command: "npx",
@@ -71,52 +80,57 @@ function mcpRemoteServer(ctx: AgentExportContext): McpRemoteServer {
 
 export function generateClaudeDesktopConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  return JSON.stringify(
-    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
-    null,
-    2,
-  );
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateCursorMcpConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  return JSON.stringify(
-    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
-    null,
-    2,
-  );
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateWindsurfConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  return JSON.stringify(
-    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
-    null,
-    2,
-  );
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateVSCodeClineConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  return JSON.stringify(
-    { mcpServers: { cortex: mcpRemoteServer(ctx) } },
-    null,
-    2,
-  );
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateOpenCodeConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
+  if (ctx.mode === "remote") {
+    return JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          cortex: {
+            type: "remote",
+            url: remoteMcpUrl(ctx.serverUrl),
+            headers: {
+              Authorization: `Bearer {env:${tokenEnvOf(ctx)}}`,
+            },
+          },
+        },
+      },
+      null,
+      2,
+    );
+  }
+
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
       mcp: {
         cortex: {
-          type: "remote",
-          url: remoteMcpUrl(ctx.serverUrl),
-          headers: {
-            Authorization: `Bearer {env:${tokenEnvOf(ctx)}}`,
-          },
+          type: "local",
+          command: ["cortex", "mcp", "--tools=agent"],
+          enabled: true,
         },
       },
     },
@@ -128,17 +142,39 @@ export function generateOpenCodeConfig(ctx: AgentExportContext): string {
 export function generateCortexYaml(ctx: AgentExportContext): string {
   assertDestination(ctx);
   const tokenEnv = tokenEnvOf(ctx);
-  return `# Cortex Client & Agent Configuration
-# Cortex never stores tokens in this file. Export the token into your
-# environment before starting the Cortex CLI:
+  const serverUrl = ctx.serverUrl.replace(/\/$/, "");
+
+  if (ctx.mode === "remote") {
+    return `# Cortex Client & Agent Configuration — Remote MCP Mode
+# Bypasses local SQLite and forwards MCP requests directly to Cortex Server.
+#
+# Export your token into your environment before starting:
 #   export ${tokenEnv}="<paste-your-cortex-token>"     # sh/bash
 #   $env:${tokenEnv} = "<paste-your-cortex-token>"     # PowerShell
 mcp:
   remote:
     enabled: true
-    url: "${remoteMcpUrl(ctx.serverUrl)}"
+    url: "${remoteMcpUrl(serverUrl)}"
     token_env: "${tokenEnv}"
     timeout: 30s
+search:
+  default_limit: 20
+`;
+  }
+
+  return `# Cortex Client Configuration — RECOMMENDED: Hybrid Mode (Local-First + Sync)
+# Runs high-performance local SQLite + Zero-CGO AST symbol extractor,
+# with continuous background cloud synchronization.
+#
+# Export your token into your environment before starting:
+#   export ${tokenEnv}="<paste-your-cortex-token>"     # sh/bash
+#   $env:${tokenEnv} = "<paste-your-cortex-token>"     # PowerShell
+sync:
+  enabled: true
+  url: "${serverUrl}"
+  token_env: "${tokenEnv}"
+  interval: 10s
+
 search:
   default_limit: 20
 `;
