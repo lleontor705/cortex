@@ -40,6 +40,9 @@ import {
   FileCode,
   Sliders,
   Share2,
+  Eye,
+  Info,
+  Lock,
 } from "lucide-react";
 
 export default function ProjectsPage() {
@@ -62,6 +65,8 @@ export default function ProjectsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingArtifact, setEditingArtifact] =
     useState<ProjectArtifactItem | null>(null);
+  const [viewingArtifact, setViewingArtifact] =
+    useState<ProjectArtifactItem | null>(null);
   const [modalKind, setModalKind] = useState<"rule" | "skill">("rule");
   const [modalKey, setModalKey] = useState("");
   const [modalTitle, setModalTitle] = useState("");
@@ -79,7 +84,7 @@ export default function ProjectsPage() {
   const [aiTargetKind, setAiTargetKind] = useState<"rule" | "skill">("rule");
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
 
-  const userRoles = principal?.roles || ["admin"];
+  const userRoles = principal?.roles || ["developer"];
   const isAdmin = userRoles.some(
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
   );
@@ -290,12 +295,21 @@ export default function ProjectsPage() {
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
                 Proyectos, Directivas & Skills MCP
               </h1>
-              <Badge variant="purple" className="text-[10px] px-2 font-mono">
-                MCP Protocol v2
+              <Badge
+                variant="outline"
+                className={`text-[10px] px-2 font-mono uppercase ${
+                  isAdmin
+                    ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                    : "border-blue-500/40 text-blue-400 bg-blue-500/10"
+                }`}
+              >
+                {isAdmin ? "⚡ GOBERNANZA & EDICIÓN" : "👤 MODO CONSULTA MCP"}
               </Badge>
             </div>
             <p className="text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed">
-              Gobierno centralizado de System Prompts, arquitectura limpia y catálogo de herramientas corporativas inyectadas en tiempo de ejecución a Claude, Cursor y Windsurf.
+              {isAdmin
+                ? "Gobierno centralizado de System Prompts, arquitectura limpia y catálogo de herramientas corporativas inyectadas en tiempo de ejecución a Claude, Cursor y Windsurf."
+                : "Catálogo de directivas corporativas y herramientas de procedimiento inyectadas automáticamente en tiempo de ejecución a tus Coding Agents vía MCP."}
             </p>
           </div>
 
@@ -429,21 +443,23 @@ export default function ProjectsPage() {
             <span>Simulador MCP</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTab("ai_assistant")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
-              activeTab === "ai_assistant"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
-                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
-            }`}
-          >
-            <Wand2 className="h-4 w-4 text-purple-300" />
-            <span>Asistente IA</span>
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveTab("ai_assistant")}
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+                activeTab === "ai_assistant"
+                  ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
+                  : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+              }`}
+            >
+              <Wand2 className="h-4 w-4 text-purple-300" />
+              <span>Generador IA (Admin)</span>
+            </button>
+          )}
         </div>
 
-        {activeTab !== "simulator" && activeTab !== "ai_assistant" && (
+        {isAdmin && activeTab !== "simulator" && activeTab !== "ai_assistant" && (
           <Button
             variant="default"
             size="sm"
@@ -482,16 +498,20 @@ export default function ProjectsPage() {
               <BookOpen className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
               <h3 className="text-sm font-medium text-[var(--text-primary)]">Sin directivas registradas</h3>
               <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
-                Crea reglas de Clean Architecture, Zero CGO, o directrices de seguridad para este proyecto.
+                {isAdmin
+                  ? "Crea reglas de Clean Architecture, Zero CGO, o directrices de seguridad para este proyecto."
+                  : "No hay directivas asignadas a este proyecto. Consulta con el Administrador para crear reglas corporativas."}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => openCreateModal("rule")}
-                className="mt-4 text-xs"
-              >
-                <Plus className="h-3.5 w-3.5 mr-1" /> Crear Primera Directiva
-              </Button>
+              {isAdmin && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openCreateModal("rule")}
+                  className="mt-4 text-xs"
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Crear Primera Directiva
+                </Button>
+              )}
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -524,6 +544,14 @@ export default function ProjectsPage() {
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
+                          onClick={() => setViewingArtifact(rule)}
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-blue-400 transition-colors"
+                          title="Ver detalle de directiva"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => copyToClipboard(rule.content, rule.id)}
                           className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-white transition-colors"
                           title="Copiar prompt"
@@ -534,22 +562,26 @@ export default function ProjectsPage() {
                             <Copy className="h-3.5 w-3.5" />
                           )}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(rule)}
-                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-blue-400 transition-colors"
-                          title="Editar"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(rule.id)}
-                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
-                          title="Eliminar"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {isAdmin && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(rule)}
+                              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-blue-400 transition-colors"
+                              title="Editar"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(rule.id)}
+                              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </CardHeader>
@@ -595,16 +627,20 @@ export default function ProjectsPage() {
               <Code2 className="h-10 w-10 text-[var(--text-muted)] mx-auto mb-3" />
               <h3 className="text-sm font-medium text-[var(--text-primary)]">Sin skills registrados</h3>
               <p className="text-xs text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
-                Crea habilidades corporativas (despliegues, linters, migraciones) accesibles por agentes AI.
+                {isAdmin
+                  ? "Crea habilidades corporativas (despliegues, linters, migraciones) accesibles por agentes AI."
+                  : "No hay skills registrados para este proyecto. El Administrador puede añadir herramientas al catálogo MCP."}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => openCreateModal("skill")}
-                className="mt-4 text-xs"
-              >
-                <Plus className="h-3.5 w-3.5 mr-1" /> Registrar Primer Skill
-              </Button>
+              {isAdmin && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openCreateModal("skill")}
+                  className="mt-4 text-xs"
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Registrar Primer Skill
+                </Button>
+              )}
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -634,6 +670,14 @@ export default function ProjectsPage() {
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
+                          onClick={() => setViewingArtifact(skill)}
+                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-amber-400 transition-colors"
+                          title="Ver detalle del skill"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => copyToClipboard(skill.content, skill.id)}
                           className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-white transition-colors"
                           title="Copiar instrucciones"
@@ -644,22 +688,26 @@ export default function ProjectsPage() {
                             <Copy className="h-3.5 w-3.5" />
                           )}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(skill)}
-                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-amber-400 transition-colors"
-                          title="Editar"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(skill.id)}
-                          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
-                          title="Eliminar"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {isAdmin && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(skill)}
+                              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-amber-400 transition-colors"
+                              title="Editar"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(skill.id)}
+                              className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-rose-400 transition-colors"
+                              title="Eliminar"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </CardHeader>
@@ -970,6 +1018,114 @@ export default function ProjectsPage() {
             </Button>
           </div>
         </form>
+      </Dialog>
+
+      {/* Read-Only Artifact Inspector Dialog */}
+      <Dialog
+        open={viewingArtifact !== null}
+        onOpenChange={(open) => {
+          if (!open) setViewingArtifact(null);
+        }}
+      >
+        {viewingArtifact && (
+          <>
+            <DialogHeader>
+              <div className="flex items-center justify-between gap-3 pr-6">
+                <div className="flex items-center gap-2">
+                  {viewingArtifact.kind === "rule" ? (
+                    <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400">
+                      <ShieldCheck className="h-5 w-5" />
+                    </div>
+                  ) : (
+                    <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                      <Sparkles className="h-5 w-5" />
+                    </div>
+                  )}
+                  <div>
+                    <DialogTitle className="text-base font-bold text-[var(--text-primary)]">
+                      {viewingArtifact.title}
+                    </DialogTitle>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge
+                        variant={viewingArtifact.scope === "workspace_default" ? "outline" : "secondary"}
+                        className="text-[9px] px-1.5 py-0 font-mono"
+                      >
+                        {viewingArtifact.scope === "workspace_default" ? "Alcance Global" : `Proyecto: ${viewingArtifact.project || "default"}`}
+                      </Badge>
+                      <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                        key: {viewingArtifact.key}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <DialogClose onClick={() => setViewingArtifact(null)} />
+            </DialogHeader>
+
+            <div className="space-y-4 mt-4">
+              {viewingArtifact.description && (
+                <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs text-[var(--text-secondary)]">
+                  <span className="font-semibold text-[var(--text-primary)] block mb-0.5">
+                    Descripción / Propósito:
+                  </span>
+                  {viewingArtifact.description}
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase">
+                    Contenido / Instrucciones de Procedimiento
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(viewingArtifact.content, `view-${viewingArtifact.id}`)}
+                    className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium"
+                  >
+                    {copiedKey === `view-${viewingArtifact.id}` ? (
+                      <>
+                        <Check className="h-3 w-3 text-emerald-400" />
+                        <span className="text-emerald-400">Copiado</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" />
+                        <span>Copiar al portapapeles</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <pre className="bg-[var(--bg-surface)] rounded-xl p-4 font-mono text-xs text-[var(--text-primary)] whitespace-pre-wrap max-h-72 overflow-y-auto border border-[var(--border-subtle)] leading-relaxed">
+                  {viewingArtifact.content}
+                </pre>
+              </div>
+
+              <div className="p-3 rounded-xl bg-blue-500/5 border border-blue-500/20 text-xs text-[var(--text-secondary)] space-y-1">
+                <div className="font-semibold text-blue-400 flex items-center gap-1.5">
+                  <Info className="h-3.5 w-3.5" />
+                  <span>Invocación desde tu Coding Agent (MCP):</span>
+                </div>
+                <p className="text-[11px] text-[var(--text-muted)] font-mono">
+                  {viewingArtifact.kind === "rule"
+                    ? `cortex_get_project_context(project: "${selectedProject || "default"}")`
+                    : `cortex_get_skill(key: "${viewingArtifact.key}", project: "${selectedProject || "default"}")`}
+                </p>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-[var(--border-subtle)]">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setViewingArtifact(null)}
+                  className="text-xs"
+                >
+                  Cerrar
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
       </Dialog>
     </div>
   );
