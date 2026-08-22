@@ -743,11 +743,6 @@ func openRWProofHarness(t *testing.T, variantSQLPath string) *rwHarness {
 		if _, err := root.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{dbName}.Sanitize()); err != nil {
 			t.Fatalf("create fresh rw-proof database: %v", err)
 		}
-		if err := postgrestest.EnsureMigrationRoles(ctx, adminDSN); err != nil {
-			t.Fatalf("ensure migration roles: %v", err)
-		}
-		// The application login is a real NOSUPERUSER member of cortex_app.
-		// Role creation is cluster-global and idempotent.
 		if _, err := root.Exec(ctx, `DO $rw$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '`+rwAppLogin+`') THEN
@@ -756,6 +751,12 @@ BEGIN
 END
 $rw$`); err != nil {
 			t.Fatalf("ensure rw-proof application login: %v", err)
+		}
+		if _, err := root.Exec(ctx, "GRANT CONNECT ON DATABASE "+pgx.Identifier{dbName}.Sanitize()+" TO "+pgx.Identifier{rwAppLogin}.Sanitize()); err != nil {
+			t.Fatalf("grant connect on fresh database: %v", err)
+		}
+		if err := postgrestest.EnsureMigrationRoles(ctx, adminDSN); err != nil {
+			t.Fatalf("ensure migration roles: %v", err)
 		}
 		// The migration handle targets the fresh database through a parsed
 		// config (never a rebuilt DSN string: pgx ConnString returns the

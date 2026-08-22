@@ -247,6 +247,14 @@ func mustEnv(t *testing.T, name string) string {
 	t.Helper()
 	value := os.Getenv(name)
 	if value == "" {
+		switch name {
+		case "CORTEX_SPIKE_PG_ADMIN_DSN":
+			value = os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
+		case "CORTEX_SPIKE_PGBOUNCER_DSN":
+			value = os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+		}
+	}
+	if value == "" {
 		t.Fatalf("%s is required", name)
 	}
 	return value
