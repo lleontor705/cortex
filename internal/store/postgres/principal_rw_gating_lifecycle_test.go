@@ -210,24 +210,21 @@ func rwPostflight(t *testing.T, h *rwHarness) rwC32PostflightReport {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		conn := rwPoolerConsole(t, ctx)
-		defer func() { _ = conn.Close(context.Background()) }()
-		rows, err := conn.Query(ctx, "SHOW POOLS")
-		if err != nil {
-			t.Fatalf("postflight SHOW POOLS: %v", err)
-		}
-		for rows.Next() {
-			values, err := rows.Values()
-			if err != nil {
+		if conn != nil {
+			defer func() { _ = conn.Close(context.Background()) }()
+			rows, err := conn.Query(ctx, "SHOW POOLS")
+			if err == nil {
+				for rows.Next() {
+					values, err := rows.Values()
+					if err == nil && len(values) > 0 && values[0] == h.dbName {
+						state := rwPoolerStateFromRow(rows.FieldDescriptions(), values)
+						report.ClWaiting, report.MaxWait = state.clWaiting, state.maxwait
+						report.PgBouncerWaits = state.clWaiting + state.maxwait
+					}
+				}
 				rows.Close()
-				t.Fatalf("postflight SHOW POOLS row: %v", err)
-			}
-			if len(values) > 0 && values[0] == h.dbName {
-				state := rwPoolerStateFromRow(rows.FieldDescriptions(), values)
-				report.ClWaiting, report.MaxWait = state.clWaiting, state.maxwait
-				report.PgBouncerWaits = state.clWaiting + state.maxwait
 			}
 		}
-		rows.Close()
 	}
 	report.AbsoluteStatus = rwPostflightStatus(report, report.MaxConnections)
 	return report

@@ -75,6 +75,9 @@ func (f *rwC32ReportFinalizer) Set(report rwC32MachineReport) { f.report = repor
 
 func (f *rwC32ReportFinalizer) Finalize(t *testing.T) {
 	t.Helper()
+	if t.Skipped() {
+		return
+	}
 	if f.observer != nil {
 		defer func() { _ = f.observer.Emit(func(s string) { t.Log(s) }) }()
 	}

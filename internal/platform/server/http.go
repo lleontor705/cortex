@@ -292,8 +292,8 @@ func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	if len(input.Projects) == 0 {
 		input.Projects = []string{"*"}
 	}
-	if len(input.Clearance) == 0 {
-		input.Clearance = []string{"*"}
+	if input.Clearance == nil {
+		input.Clearance = []string{}
 	}
 	if len(input.Scopes) == 0 {
 		if hasString(input.Roles, string(authz.RoleOwner)) || hasString(input.Roles, string(authz.RoleAdmin)) {
