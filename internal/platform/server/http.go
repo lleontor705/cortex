@@ -273,7 +273,11 @@ func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		input.Clearance = []string{"*"}
 	}
 	if len(input.Scopes) == 0 {
-		input.Scopes = []string{"agent", "observations:read", "observations:write", "graph:read", "graph:write"}
+		if hasString(input.Roles, string(authz.RoleOwner)) || hasString(input.Roles, string(authz.RoleAdmin)) {
+			input.Scopes = []string{"admin", "agent", "observations:read", "observations:write", "graph:read", "graph:write"}
+		} else {
+			input.Scopes = []string{"agent", "observations:read", "observations:write", "graph:read", "graph:write"}
+		}
 	}
 	user, err := a.ops.CreateUser(r.Context(), identity.UserCreate{Email: input.Email, DisplayName: input.DisplayName, Roles: input.Roles, Workspaces: input.Workspaces, Projects: input.Projects, Scopes: input.Scopes, ClassificationClearance: input.Clearance})
 	if err != nil {
