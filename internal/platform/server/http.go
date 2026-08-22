@@ -266,13 +266,14 @@ func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	if len(input.Workspaces) == 0 {
 		input.Workspaces = principal.WorkspacesCopy()
 	}
-	if hasString(input.Roles, string(authz.RoleOwner)) || hasString(input.Roles, string(authz.RoleAdmin)) {
-		if len(input.Projects) == 0 {
-			input.Projects = []string{"*"}
-		}
-		if len(input.Clearance) == 0 {
-			input.Clearance = []string{"*"}
-		}
+	if len(input.Projects) == 0 {
+		input.Projects = []string{"*"}
+	}
+	if len(input.Clearance) == 0 {
+		input.Clearance = []string{"*"}
+	}
+	if len(input.Scopes) == 0 {
+		input.Scopes = []string{"agent", "observations:read", "observations:write", "graph:read", "graph:write"}
 	}
 	user, err := a.ops.CreateUser(r.Context(), identity.UserCreate{Email: input.Email, DisplayName: input.DisplayName, Roles: input.Roles, Workspaces: input.Workspaces, Projects: input.Projects, Scopes: input.Scopes, ClassificationClearance: input.Clearance})
 	if err != nil {
