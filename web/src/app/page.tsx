@@ -35,7 +35,10 @@ export default function DashboardPage() {
     ])
       .then(([obs, sess]) => {
         setRecentObs(obs || []);
-        setRecentSessions((sess || []).slice(0, 5));
+        const userFiltered = (sess || []).filter(
+          (s) => !s.summary?.startsWith("Imported 90 sessions"),
+        );
+        setRecentSessions((!isAdmin && userFiltered.length > 0 ? userFiltered : (sess || [])).slice(0, 5));
       })
       .finally(() => {
         setLoading(false);
@@ -112,11 +115,11 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
         <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
-            {viewMode === "global" ? "Total Observaciones (Tenant)" : "Mis Observaciones"}
+            {isAdmin && viewMode === "global" ? "Total Observaciones (Tenant)" : "Mis Observaciones"}
           </span>
           <div className="flex items-center justify-between mt-2">
             <span className="text-2xl font-bold text-[var(--text-primary)]">
-              {stats?.observations ?? recentObs.length}
+              {isAdmin && viewMode === "global" ? (stats?.observations ?? recentObs.length) : recentObs.length}
             </span>
             <BrainCircuit className="h-6 w-6 text-blue-500" />
           </div>
@@ -124,21 +127,23 @@ export default function DashboardPage() {
 
         <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
-            {viewMode === "global" ? "Aristas de Grafo (Tenant)" : "Mis Vínculos de Grafo"}
+            {isAdmin && viewMode === "global" ? "Aristas de Grafo (Tenant)" : "Mis Vínculos de Grafo"}
           </span>
           <div className="flex items-center justify-between mt-2">
-            <span className="text-2xl font-bold text-emerald-500">{stats?.edges ?? "—"}</span>
+            <span className="text-2xl font-bold text-emerald-500">
+              {isAdmin && viewMode === "global" ? (stats?.edges ?? "—") : (stats?.edges ?? 0)}
+            </span>
             <Share2 className="h-6 w-6 text-emerald-500" />
           </div>
         </Card>
 
         <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
-            {viewMode === "global" ? "Sesiones Totales" : "Mis Sesiones de Agente"}
+            {isAdmin && viewMode === "global" ? "Sesiones Totales" : "Mis Sesiones de Agente"}
           </span>
           <div className="flex items-center justify-between mt-2">
             <span className="text-2xl font-bold text-amber-500">
-              {stats?.active_sessions ?? stats?.sessions ?? recentSessions.length}
+              {isAdmin && viewMode === "global" ? (stats?.active_sessions ?? stats?.sessions ?? recentSessions.length) : recentSessions.length}
             </span>
             <Layers className="h-6 w-6 text-amber-500" />
           </div>
@@ -146,11 +151,11 @@ export default function DashboardPage() {
 
         <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
-            {viewMode === "global" ? "Proyectos Activos" : "Mis Proyectos Asignados"}
+            {isAdmin && viewMode === "global" ? "Proyectos Activos" : "Mis Proyectos Asignados"}
           </span>
           <div className="flex items-center justify-between mt-2">
             <span className="text-2xl font-bold text-purple-500">
-              {stats?.projects ?? (principal?.projects?.length || 1)}
+              {isAdmin && viewMode === "global" ? (stats?.projects ?? 1) : (principal?.projects?.length || Array.from(new Set(recentObs.map((o) => o.project).filter(Boolean))).length || 1)}
             </span>
             <FolderGit2 className="h-6 w-6 text-purple-500" />
           </div>

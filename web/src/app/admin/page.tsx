@@ -264,8 +264,8 @@ export default function AdminPage() {
     try {
       const scopes =
         tokenRolePreset === "admin"
-          ? ["admin", "agent", "observations:read", "observations:write", "graph:read", "graph:write"]
-          : ["agent", "observations:read", "observations:write", "graph:read", "graph:write"];
+          ? ["admin", "agent", "observations:read", "observations:write", "graph:read", "graph:write", "project:*"]
+          : ["agent", "observations:read", "observations:write", "graph:read", "graph:write", "project:*"];
 
       const tok = await client.issueToken({
         subject: tokenSubject,

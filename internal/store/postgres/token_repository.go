@@ -231,6 +231,9 @@ func verifyTokenPrincipal(ctx context.Context, tx pgx.Tx, tenantID, secret, requ
 	if len(scopes) == 0 {
 		scopes = recGrantScopes
 	}
+	if len(recProjects) == 0 && rec.PrincipalType == "user" {
+		recProjects = []string{"*"}
+	}
 	return identity.Principal{Subject: rec.Subject, Type: rec.PrincipalType, OrgID: rec.OrgID, WorkspaceIDs: recWorkspaces, Roles: recRoles, Scopes: scopes, AuthMethod: "api_key", GrantDigest: provenance, GrantVersion: grantVersion, ProjectIDs: recProjects, ClassificationClearance: recClearance}, nil
 }
 
