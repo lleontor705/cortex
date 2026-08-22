@@ -50,11 +50,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -v -count=1 ./... 2>&1 | tee unit_test.log || {
-            echo "::error::Unit tests failed! Extracted failure details:"
-            grep -E "FAIL|--- FAIL" -B 2 -A 15 unit_test.log || true
+          if ! go test -v -count=1 ./... > unit_test.log 2>&1; then
+            echo "::error::Unit tests failed!"
+            echo "### Unit Test Failure Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 unit_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 unit_test.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat unit_test.log
             exit 1
-          }
+          fi
 
   vector-tests:
     name: Vector-enabled Tests
@@ -72,11 +76,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -v -count=1 -tags cortex_vectors ./... 2>&1 | tee vector_test.log || {
-            echo "::error::Vector tests failed! Extracted failure details:"
-            grep -E "FAIL|--- FAIL" -B 2 -A 15 vector_test.log || true
+          if ! go test -v -count=1 -tags cortex_vectors ./... > vector_test.log 2>&1; then
+            echo "::error::Vector tests failed!"
+            echo "### Vector Test Failure Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 vector_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 vector_test.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat vector_test.log
             exit 1
-          }
+          fi
 
   web-tests:
     name: Web Tests
@@ -236,11 +244,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -v -count=1 -tags "integration postgres_integration" ./... 2>&1 | tee e2e_test.log || {
-            echo "::error::E2E tests failed! Extracted failure details:"
-            grep -E "FAIL|--- FAIL" -B 2 -A 15 e2e_test.log || true
+          if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
+            echo "::error::E2E tests failed!"
+            echo "### E2E Test Failure Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "FAIL|--- FAIL|panic:" -B 3 -A 20 e2e_test.log >> $GITHUB_STEP_SUMMARY || tail -n 100 e2e_test.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat e2e_test.log
             exit 1
-          }
+          fi
 
   lint:
     name: Lint
