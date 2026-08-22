@@ -1528,12 +1528,12 @@ func TestPrincipalRWFullFlowThroughputC32(t *testing.T) {
 	preflight := rwC32Preflight(t)
 	t.Logf("C32_PREFLIGHT verdict=%s cpus=%d memory=%d cpu_idle=%.1f rtt=%v", map[bool]string{true: "ELIGIBLE", false: "BLOCKED"}[preflight.Eligible], preflight.CPUs, preflight.Memory, preflight.CPUIdle, preflight.RTT)
 	if !preflight.Eligible {
-		if os.Getenv("CORTEX_C32_DEDICATED") != "1" {
-			t.Skipf("C32 host floor not eligible on non-dedicated CI hardware: %s", preflight.Reason)
-		}
 		if os.Getenv("CORTEX_SPIKE_PG_ADMIN_DSN") == "" || os.Getenv("CORTEX_SPIKE_PGBOUNCER_DSN") == "" {
 			finalizer.Set(newRWC32BlockedReport(preflight.Reason))
 			t.Fatal("protocol verdict unavailable: zero samples retained")
+		}
+		if os.Getenv("CORTEX_C32_DEDICATED") != "1" {
+			t.Skipf("C32 host floor not eligible on non-dedicated CI hardware: %s", preflight.Reason)
 		}
 	}
 	var h *rwHarness
