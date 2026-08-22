@@ -123,6 +123,33 @@ function safeObsidianSlug(s: string): string {
   return norm.length > 60 ? norm.slice(0, 60) : norm || "untitled";
 }
 
+function getNodeEffectiveKind(
+  node: GraphNode | { kind?: string; subtype?: string; metadata?: any; id?: string },
+  obsList?: Observation[],
+): string {
+  if (!node) return "observation";
+  if (node.subtype && typeof node.subtype === "string" && node.subtype.trim() !== "") {
+    return node.subtype.toLowerCase().trim();
+  }
+  const rawKind = (node.kind || "").toLowerCase().trim();
+  if (rawKind && rawKind !== "observation") {
+    return rawKind;
+  }
+  if (node.metadata?.type && typeof node.metadata.type === "string") {
+    return node.metadata.type.toLowerCase().trim();
+  }
+  if (obsList && obsList.length > 0 && node.id) {
+    const rawId = node.id.replace(/^observation:/, "").trim();
+    const matched = obsList.find(
+      (o) => o.id === rawId || `observation:${o.id}` === node.id,
+    );
+    if (matched && matched.type) {
+      return matched.type.toLowerCase().trim();
+    }
+  }
+  return rawKind || "observation";
+}
+
 function GraphPageContent() {
   const { client } = useAuth();
   const searchParams = useSearchParams();
@@ -171,6 +198,19 @@ function GraphPageContent() {
     interface: true,
     entity: true,
   });
+
+  // Dynamic Refs to prevent stale closure in Sigma renderers
+  const typeFiltersRef = useRef(typeFilters);
+  typeFiltersRef.current = typeFilters;
+
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+
+  const hoveredNodeIdRef = useRef(hoveredNodeId);
+  hoveredNodeIdRef.current = hoveredNodeId;
+
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  selectedNodeIdRef.current = selectedNodeId;
 
   // Modals & Panels
   const [analyticsReport, setAnalyticsReport] = useState<GraphAnalyticsReport | null>(null);
@@ -305,7 +345,7 @@ function GraphPageContent() {
       const id = normalizeId(n.id) || n.id;
       if (graph.hasNode(id)) return;
 
-      const kind = (n.kind || "observation").toLowerCase();
+      const kind = getNodeEffectiveKind(n, observations);
       const kindInfo = KIND_COLORS[kind] || KIND_COLORS.observation;
       const score = typeof n.metadata?.importance_score === "number" ? n.metadata.importance_score : 0.5;
       const size = Math.max(7, Math.min(24, 9 + score * 13));
@@ -398,13 +438,13 @@ function GraphPageContent() {
       const res = { ...data };
       const rawKind = (data.kind || "observation").toLowerCase();
 
-      if (typeFilters[rawKind] === false) {
+      if (typeFiltersRef.current[rawKind] === false) {
         res.hidden = true;
         return res;
       }
 
-      if (searchQuery.trim().length > 0) {
-        const q = searchQuery.toLowerCase();
+      const q = searchQueryRef.current.trim().toLowerCase();
+      if (q.length > 0) {
         const matches =
           (data.label && data.label.toLowerCase().includes(q)) ||
           node.toLowerCase().includes(q);
@@ -414,7 +454,7 @@ function GraphPageContent() {
         }
       }
 
-      const activeId = hoveredNodeId || selectedNodeId;
+      const activeId = hoveredNodeIdRef.current || selectedNodeIdRef.current;
       if (activeId) {
         if (node === activeId) {
           res.highlighted = true;
@@ -437,9 +477,19 @@ function GraphPageContent() {
     // Custom Edge Reducer
     renderer.setSetting("edgeReducer", (edge, data) => {
       const res = { ...data };
-      const activeId = hoveredNodeId || selectedNodeId;
+      const extremities = graph.extremities(edge);
+      if (extremities.length >= 2) {
+        const [source, target] = extremities;
+        const sourceKind = (graph.getNodeAttribute(source, "kind") || "observation").toLowerCase();
+        const targetKind = (graph.getNodeAttribute(target, "kind") || "observation").toLowerCase();
+        if (typeFiltersRef.current[sourceKind] === false || typeFiltersRef.current[targetKind] === false) {
+          res.hidden = true;
+          return res;
+        }
+      }
+
+      const activeId = hoveredNodeIdRef.current || selectedNodeIdRef.current;
       if (activeId) {
-        const extremities = graph.extremities(edge);
         if (extremities.includes(activeId)) {
           res.size = (data.size || 2) * 2.2;
           res.zIndex = 10;
@@ -473,7 +523,7 @@ function GraphPageContent() {
       renderer.kill();
       sigmaRef.current = null;
     };
-  }, [rawSubgraph, graphLayer, colorMode, isNodeInSelectedLayer, normalizeId]);
+  }, [rawSubgraph, observations, graphLayer, colorMode, isNodeInSelectedLayer, normalizeId]);
 
   // Refresh Sigma on state updates
   useEffect(() => {
@@ -882,8 +932,34 @@ function GraphPageContent() {
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs shrink-0">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mr-1 flex items-center gap-1">
-            <Filter className="h-3 w-3" /> Filtrar Tipos:
+            <Filter className="h-3 w-3 text-blue-400" /> Filtrar Tipos:
           </span>
+
+          <div className="flex items-center gap-1 mr-1.5 border-r border-[var(--border-subtle)] pr-2">
+            <button
+              type="button"
+              onClick={() => {
+                const allTrue: Record<string, boolean> = {};
+                Object.keys(KIND_COLORS).forEach((k) => (allTrue[k] = true));
+                setTypeFilters(allTrue);
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] hover:bg-[var(--bg-surface-hover)] text-[var(--text-secondary)] font-mono transition-colors"
+            >
+              Todos
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const allFalse: Record<string, boolean> = {};
+                Object.keys(KIND_COLORS).forEach((k) => (allFalse[k] = false));
+                setTypeFilters(allFalse);
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] hover:bg-[var(--bg-surface-hover)] text-[var(--text-secondary)] font-mono transition-colors"
+            >
+              Ninguno
+            </button>
+          </div>
+
           {Object.entries(KIND_COLORS)
             .filter(([k]) => isNodeInSelectedLayer(k))
             .map(([kind, info]) => {
@@ -895,10 +971,10 @@ function GraphPageContent() {
                   onClick={() =>
                     setTypeFilters((prev) => ({ ...prev, [kind]: !isActive }))
                   }
-                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border transition-all ${
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border transition-all cursor-pointer select-none ${
                     isActive
                       ? "opacity-100 shadow-sm"
-                      : "opacity-40 grayscale border-transparent bg-transparent"
+                      : "opacity-35 grayscale border-transparent bg-transparent line-through"
                   }`}
                   style={{
                     backgroundColor: isActive ? info.bg : undefined,
@@ -907,7 +983,7 @@ function GraphPageContent() {
                   }}
                 >
                   <span
-                    className="h-2 w-2 rounded-full"
+                    className="h-2 w-2 rounded-full shrink-0"
                     style={{ backgroundColor: info.hex }}
                   />
                   <span>{kind}</span>
@@ -918,7 +994,7 @@ function GraphPageContent() {
 
         <div className="flex items-center gap-3 text-[11px] text-[var(--text-muted)]">
           <span>
-            Nodos en Vista:{" "}
+            Nodos en Grafo:{" "}
             <b className="text-[var(--text-primary)]">
               {sigmaRef.current?.getGraph()?.order || 0}
             </b>
