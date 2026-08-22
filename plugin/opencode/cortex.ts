@@ -69,13 +69,26 @@ const CORTEX_TOOLS = new Set([
   "cortex_session_start",
   "cortex_session_end",
   "cortex_capture_passive",
-  // Knowledge graph
+  // Knowledge graph & Architecture
   "cortex_relate",
   "cortex_graph",
+  "cortex_graph_relationships",
+  "cortex_graph_path",
+  "cortex_graph_subgraph",
   "cortex_score",
   "cortex_archive",
   "cortex_search_hybrid",
-  // Cortex additions
+  "cortex_get_blast_radius",
+  "cortex_analyze_architecture",
+  "cortex_detect_cycles",
+  "cortex_ingest_code",
+  // Governance, Skills & System Context
+  "cortex_get_project_context",
+  "cortex_list_skills",
+  "cortex_get_skill",
+  "cortex_resolve_query",
+  "cortex_get_status",
+  // History & Hygiene
   "cortex_revision_history",
   "cortex_consolidate",
   "cortex_project_dna",
@@ -92,6 +105,7 @@ const CORTEX_TOOLS = new Set([
   "cortex_temporal_health_check",
   "cortex_temporal_evolution_path",
   "cortex_temporal_fact_state",
+  "cortex_search_temporal",
 ])
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
@@ -99,9 +113,14 @@ const CORTEX_TOOLS = new Set([
 const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol
 
 You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
-full-text search, revision history, and temporal tracking that survives across sessions and compactions.
+full-text search, revision history, corporate rules & skills, and temporal tracking that survives across sessions and compactions.
 
 TRANSPORT IDS: Follow the active MCP tool schema. Local observation and graph IDs are numeric; Cortex Server IDs are public UUID strings. Never convert or reuse IDs across transports.
+
+### PROJECT CONTEXT & GOVERNANCE RULES (At Session Startup)
+At the beginning of any session or when starting work on a project:
+1. Call \`cortex_get_project_context\` to load the latest corporate guidelines, architecture constraints, and available skills.
+2. Call \`cortex_list_skills\` or \`cortex_get_skill\` to leverage approved operational playbooks and rules.
 
 ### WHEN TO SAVE (mandatory — not optional)
 
@@ -130,22 +149,23 @@ Topic rules:
 - If unsure about the key, call \`cortex_suggest_topic_key\` first
 - Use \`cortex_update\` when you have an exact observation ID to correct
 
-### KNOWLEDGE GRAPH
-After saving related observations, use \`cortex_relate\` to connect them:
-- references, relates_to, follows, supersedes, contradicts
-Use \`cortex_graph\` to explore connections from any observation.
-Use \`cortex_score\` to check/recalculate observation importance.
+### KNOWLEDGE GRAPH & CODE INTELLIGENCE
+- \`cortex_relate\`: Connect related observations (references, relates_to, follows, supersedes, contradicts).
+- \`cortex_graph\`: Explore graph connections from any observation or entity.
+- \`cortex_get_blast_radius\`: Calculate impacted downstream files and callers before refactoring.
+- \`cortex_detect_cycles\`: Verify there are no circular dependencies or architectural violations.
+- \`cortex_score\`: Check/recalculate observation importance.
 
 ### SEARCH & RETRIEVAL
 
 When the user asks to recall something — "remember", "recall", "what did we do":
 1. First call \`cortex_context\` — checks recent session history (fast)
-2. If not found, call \`cortex_search\` with relevant keywords (FTS5)
-3. If still not found, try \`cortex_search_hybrid\` for FTS5 + vector combined search
+2. If not found, call \`cortex_search\` with relevant keywords (FTS5 / Full-Text)
+3. If still not found, try \`cortex_search_hybrid\` for hybrid vector + keyword combined search
 4. If you find a match, use \`cortex_get_observation\` for full content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
-- Starting work on something that might have done before
+- Starting work on something that might have been done before
 - The user mentions a topic you have no context on
 - The user's FIRST message references the project
 
