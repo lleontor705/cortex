@@ -2569,6 +2569,9 @@ func rwDrainRWProofApplicationBackends(t *testing.T, keep string) {
 // for production (it removes one safety or telemetry mechanism) and must
 // never leave the spike/ablation testdata tree.
 func TestPrincipalRWAblationC32Isolation(t *testing.T) {
+	if os.Getenv("CORTEX_C32_DEDICATED") != "1" {
+		t.Skip("ablation suite runs only on dedicated c32 benchmark hardware")
+	}
 	cases := []rwAblationCase{
 		{name: "baseline"},
 		{name: "baseline_distinct_first", poolerOnly: true, distinctFirst: true},
