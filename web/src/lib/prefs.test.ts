@@ -44,9 +44,13 @@ describe("web preference storage (secret-free by construction)", () => {
     const prefs = loadPreferences(new FakeStorage());
     expect(prefs).toEqual({
       serverUrl: "http://localhost:7438",
-      llmProvider: "openai",
-      llmModel: "gpt-4o-mini",
+      llmProvider: "gemini",
+      llmModel: "gemini-2.5-flash",
       llmBaseURL: "",
+      embeddingProvider: "gemini",
+      embeddingModel: "text-embedding-004",
+      embeddingDimensions: 768,
+      vectorProvider: "pgvector",
     });
   });
 
@@ -57,6 +61,10 @@ describe("web preference storage (secret-free by construction)", () => {
       llmProvider: "anthropic",
       llmModel: "claude-3",
       llmBaseURL: "https://api.anthropic.com/v1",
+      embeddingProvider: "gemini",
+      embeddingModel: "text-embedding-004",
+      embeddingDimensions: 768,
+      vectorProvider: "pgvector",
     });
   });
 
@@ -97,10 +105,14 @@ describe("web preference storage (secret-free by construction)", () => {
   it("the loaded preferences shape has no field for any secret", () => {
     const prefs = loadPreferences(seededStorage());
     expect(Object.keys(prefs).sort()).toEqual([
+      "embeddingDimensions",
+      "embeddingModel",
+      "embeddingProvider",
       "llmBaseURL",
       "llmModel",
       "llmProvider",
       "serverUrl",
+      "vectorProvider",
     ]);
   });
 });
