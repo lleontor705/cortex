@@ -635,7 +635,7 @@ func TestSafeVaultResolvesMacOSVarAlias(t *testing.T) {
 	if !strings.HasPrefix(dir, "/private/") {
 		t.Skipf("temporary directory is not under /private: %s", dir)
 	}
-	alias := "/var/" + strings.TrimPrefix(dir, "/private/")
+	alias := strings.TrimPrefix(dir, "/private")
 	want, err := filepath.EvalSymlinks(alias)
 	if err != nil {
 		t.Fatal(err)

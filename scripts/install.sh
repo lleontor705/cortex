@@ -3,9 +3,9 @@
 # install.sh — Install Cortex
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/lleontor705/cortex/master/scripts/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/lleontor705/cortex/main/scripts/install.sh | bash
 #   # or with a specific version
-#   curl -sSL https://raw.githubusercontent.com/lleontor705/cortex/master/scripts/install.sh | bash -s -- v0.1.0
+#   curl -sSL https://raw.githubusercontent.com/lleontor705/cortex/main/scripts/install.sh | bash -s -- v0.1.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
