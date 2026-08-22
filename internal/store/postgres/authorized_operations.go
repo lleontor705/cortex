@@ -529,13 +529,14 @@ func (s *AuthorizedStore) GetProjectDuplicates(ctx context.Context) ([]domain.Pr
 			return err
 		}
 		rows, err := tx.Query(ctx, `
-			SELECT project_key, count(*) as count
-			FROM observations
-			WHERE tenant_id = public.cortex_current_tenant()
-			  AND workspace_id = $1
-			  AND project_key <> ''
-			  AND deleted_at IS NULL
-			GROUP BY project_key
+			SELECT o.project_key, count(*) as count
+			FROM observations o
+			JOIN sessions s ON s.tenant_id = o.tenant_id AND s.id = o.session_id
+			WHERE o.tenant_id = public.cortex_current_tenant()
+			  AND s.workspace_id = $1
+			  AND o.project_key <> ''
+			  AND o.deleted_at IS NULL
+			GROUP BY o.project_key
 		`, ws)
 		if err != nil {
 			return err
@@ -585,7 +586,7 @@ func (s *AuthorizedStore) GetProjectDuplicates(ctx context.Context) ([]domain.Pr
 	return groups, err
 }
 
-// MergeProject consolidates observations, sessions, prompts, and artifacts from sourceProject into targetProject.
+// MergeProject consolidates observations, sessions, prompts, and importance scores from sourceProject into targetProject.
 func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targetProject string) (*domain.ProjectMergeResult, error) {
 	if err := s.authorize(ctx, authz.ResourceAdmin, authz.ActionManage, "", "", ""); err != nil {
 		return nil, err
@@ -608,16 +609,20 @@ func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targe
 		_, _ = tx.Exec(ctx, `
 			UPDATE observations old_obs
 			SET deleted_at = now(), updated_at = now()
+			FROM sessions s
 			WHERE old_obs.tenant_id = public.cortex_current_tenant()
-			  AND old_obs.workspace_id = $1
+			  AND s.tenant_id = old_obs.tenant_id
+			  AND s.id = old_obs.session_id
+			  AND s.workspace_id = $1
 			  AND old_obs.project_key = $2
 			  AND old_obs.topic_key IS NOT NULL
 			  AND old_obs.topic_key <> ''
 			  AND old_obs.deleted_at IS NULL
 			  AND EXISTS (
 				SELECT 1 FROM observations target_obs
+				JOIN sessions ts ON ts.tenant_id = target_obs.tenant_id AND ts.id = target_obs.session_id
 				WHERE target_obs.tenant_id = old_obs.tenant_id
-				  AND target_obs.workspace_id = old_obs.workspace_id
+				  AND ts.workspace_id = s.workspace_id
 				  AND target_obs.project_key = $3
 				  AND target_obs.topic_key = old_obs.topic_key
 				  AND target_obs.deleted_at IS NULL
@@ -626,12 +631,15 @@ func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targe
 
 		// 2. Merge remaining observations
 		tagObs, err := tx.Exec(ctx, `
-			UPDATE observations
+			UPDATE observations o
 			SET project_key = $3, updated_at = now()
-			WHERE tenant_id = public.cortex_current_tenant()
-			  AND workspace_id = $1
-			  AND project_key = $2
-			  AND deleted_at IS NULL
+			FROM sessions s
+			WHERE o.tenant_id = public.cortex_current_tenant()
+			  AND s.tenant_id = o.tenant_id
+			  AND s.id = o.session_id
+			  AND s.workspace_id = $1
+			  AND o.project_key = $2
+			  AND o.deleted_at IS NULL
 		`, ws, sourceProject, targetProject)
 		if err != nil {
 			return fmt.Errorf("merge observations: %w", err)
@@ -643,33 +651,37 @@ func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targe
 			UPDATE sessions
 			SET project_key = $3, updated_at = now()
 			WHERE tenant_id = public.cortex_current_tenant()
-			  AND workspace_id = (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)
+			  AND workspace_id = $1
 			  AND project_key = $2
-		`, s.store.tenant.WorkspaceID, sourceProject, targetProject)
+		`, ws, sourceProject, targetProject)
 		if err != nil {
 			return fmt.Errorf("merge sessions: %w", err)
 		}
 		res.SessionsMerged = int(tagSess.RowsAffected())
 
-		// 4. Merge prompts
-		tagPrompts, err := tx.Exec(ctx, `
-			UPDATE prompts
-			SET project_key = $3
+		// 4. Merge importance_scores
+		_, _ = tx.Exec(ctx, `
+			UPDATE importance_scores
+			SET project_key = $3, updated_at = now()
 			WHERE tenant_id = public.cortex_current_tenant()
-			  AND workspace_id = (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)
+			  AND workspace_id = $1
 			  AND project_key = $2
-		`, s.store.tenant.WorkspaceID, sourceProject, targetProject)
+		`, ws, sourceProject, targetProject)
+
+		// 5. Merge prompts
+		tagPrompts, err := tx.Exec(ctx, `
+			UPDATE prompts p
+			SET project_key = $3, updated_at = now()
+			FROM sessions s
+			WHERE p.tenant_id = public.cortex_current_tenant()
+			  AND s.tenant_id = p.tenant_id
+			  AND s.id = p.session_id
+			  AND s.workspace_id = $1
+			  AND p.project_key = $2
+		`, ws, sourceProject, targetProject)
 		if err == nil {
 			res.PromptsMerged = int(tagPrompts.RowsAffected())
 		}
-
-		// 5. Merge project_artifacts
-		_, _ = tx.Exec(ctx, `
-			UPDATE project_artifacts
-			SET project_key = $3, updated_at = now()
-			WHERE tenant_id = public.cortex_current_tenant()
-			  AND project_key = $2
-		`, ws, sourceProject, targetProject)
 
 		return nil
 	})
