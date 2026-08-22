@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/lleontor705/cortex/internal/config"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func testLocalConfig(t *testing.T) *config.Config {
@@ -127,14 +129,73 @@ func TestThemeSwitching(t *testing.T) {
 
 func TestAuthAndIdentityModel(t *testing.T) {
 	m := New(&Deps{Version: "2.0.0"})
-	if m.CurrentUser != "usrLuisLeon" {
-		t.Errorf("expected usrLuisLeon, got %s", m.CurrentUser)
+	expectedUser := "local-user"
+	if u := os.Getenv("USER"); u != "" {
+		expectedUser = u
+	} else if u := os.Getenv("USERNAME"); u != "" {
+		expectedUser = u
 	}
-	if m.UserRole != "admin" {
-		t.Errorf("expected admin, got %s", m.UserRole)
+	if m.CurrentUser != expectedUser {
+		t.Errorf("expected %s, got %s", expectedUser, m.CurrentUser)
+	}
+	if m.UserRole != "local" {
+		t.Errorf("expected local role for unauthenticated clean install, got %s", m.UserRole)
+	}
+	if m.UploadToCortex {
+		t.Errorf("expected UploadToCortex to be false on clean local install")
 	}
 	if !m.IsDarkTheme {
 		t.Errorf("expected dark theme by default")
+	}
+}
+
+func TestConnectToCortexServerModalSave(t *testing.T) {
+	cfg := testLocalConfig(t)
+	m := New(&Deps{Config: cfg, Version: "2.0.0"})
+	if m.UploadToCortex {
+		t.Fatal("expected sync to be disabled initially")
+	}
+
+	// Open Connect to Server modal
+	m.openAuthModal()
+	if !m.AuthModalOpen {
+		t.Fatal("expected AuthModalOpen to be true")
+	}
+
+	// Set Server URL and switch focus
+	m.AuthServerURLInput.SetValue("http://localhost:7438")
+	updated, _ := m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.AuthFocusField != 1 {
+		t.Fatalf("expected focus on Bearer Token (field 1), got %d", m.AuthFocusField)
+	}
+
+	// Set Bearer Token and submit
+	m.AuthTokenInput.SetValue("ctx_secret_test_token_123")
+	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.AuthModalOpen {
+		t.Fatal("expected AuthModal to be closed after submit")
+	}
+	if !m.UploadToCortex {
+		t.Fatal("expected UploadToCortex to be true after server connection")
+	}
+	if m.UserRole != "admin" {
+		t.Fatalf("expected role admin, got %s", m.UserRole)
+	}
+
+	// Verify YAML content was written
+	data, err := os.ReadFile(cfg.LoadedFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ctx_secret_test_token_123") {
+		t.Errorf("expected token in saved YAML, got:\n%s", content)
+	}
+	if !strings.Contains(content, "http://localhost:7438") {
+		t.Errorf("expected sync URL in saved YAML, got:\n%s", content)
 	}
 }
 

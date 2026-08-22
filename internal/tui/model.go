@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/lleontor705/cortex/internal/config"
@@ -356,11 +357,13 @@ type Model struct {
 	IsDarkTheme bool
 
 	// Auth & Identity
-	AuthToken      string
-	CurrentUser    string
-	UserRole       string // "admin", "owner", "member", "viewer"
-	AuthModalOpen  bool
-	AuthTokenInput textinput.Model
+	AuthToken          string
+	CurrentUser        string
+	UserRole           string // "admin", "owner", "member", "viewer", "local"
+	AuthModalOpen      bool
+	AuthTokenInput     textinput.Model
+	AuthServerURLInput textinput.Model
+	AuthFocusField     int // 0 = Server URL, 1 = Bearer Token
 
 	// Project & Upload Policy
 	UploadToCortex bool // whether current project uploads to Cortex server
@@ -495,12 +498,31 @@ func New(deps *Deps) Model {
 	authInput.Width = 50
 	authInput.EchoMode = textinput.EchoPassword
 
-	currentUser := "usrLuisLeon"
-	userRole := "admin"
+	authServerURLInput := textinput.New()
+	authServerURLInput.Placeholder = "e.g. http://localhost:7438 or https://cortex.example.com"
+	authServerURLInput.CharLimit = 512
+	authServerURLInput.Width = 50
+	authServerURLInput.Focus()
+
+	currentUser := "local-user"
+	if u := os.Getenv("USER"); u != "" {
+		currentUser = u
+	} else if u := os.Getenv("USERNAME"); u != "" {
+		currentUser = u
+	}
+	userRole := "local"
 	authToken := ""
+	uploadToCortex := false
 	if deps != nil && deps.Config != nil {
 		if deps.Config.HTTP.Token != "" {
 			authToken = deps.Config.HTTP.Token
+			authInput.SetValue(authToken)
+			userRole = "admin"
+		}
+		if deps.Config.Sync.URL != "" {
+			authServerURLInput.SetValue(deps.Config.Sync.URL)
+		} else if deps.Config.MCP.Remote.URL != "" {
+			authServerURLInput.SetValue(deps.Config.MCP.Remote.URL)
 		}
 		if deps.Config.Server.PrincipalSubject != "" {
 			currentUser = deps.Config.Server.PrincipalSubject
@@ -508,6 +530,7 @@ func New(deps *Deps) Model {
 		if len(deps.Config.Server.Roles) > 0 {
 			userRole = deps.Config.Server.Roles[0]
 		}
+		uploadToCortex = deps.Config.Sync.Enabled
 	}
 
 	return Model{
@@ -519,7 +542,9 @@ func New(deps *Deps) Model {
 		CurrentUser:          currentUser,
 		UserRole:             userRole,
 		AuthTokenInput:       authInput,
-		UploadToCortex:       true,
+		AuthServerURLInput:   authServerURLInput,
+		AuthFocusField:       0,
+		UploadToCortex:       uploadToCortex,
 		StatsMode:            0,
 		SearchInput:          ti,
 		SetupSpinner:         sp,

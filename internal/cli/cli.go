@@ -1641,7 +1641,13 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 			writef(stdout, "Token: %s\n", maskSecret(cfg.HTTP.Token))
 			subject := cfg.Server.PrincipalSubject
 			if subject == "" {
-				subject = "usrLuisLeon"
+				subject = os.Getenv("USER")
+				if subject == "" {
+					subject = os.Getenv("USERNAME")
+				}
+				if subject == "" {
+					subject = "local-user"
+				}
 			}
 			writef(stdout, "Principal: %s\n", subject)
 			if len(cfg.Server.Roles) > 0 {

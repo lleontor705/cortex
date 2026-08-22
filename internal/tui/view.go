@@ -1120,14 +1120,24 @@ func (m Model) renderStatusBar() string {
 
 func (m Model) renderAuthModal() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("🔑 Cortex Authentication & User Session"))
+	b.WriteString(titleStyle.Render("🌐 Connect to Cortex Server & Authenticate"))
 	b.WriteString("\n\n")
-	b.WriteString(detailContentStyle.Render("Provide your Cortex bearer token to authenticate your session role and permissions."))
+	b.WriteString(detailContentStyle.Render("Configure your remote Cortex Server endpoint and bearer token to synchronize memories and authenticate."))
 	b.WriteString("\n\n")
-	b.WriteString(detailLabelStyle.Render("Bearer Token: "))
-	b.WriteString(m.AuthTokenInput.View())
+
+	marker0 := "  "
+	marker1 := "  "
+	if m.AuthFocusField == 0 {
+		marker0 = listSelectedStyle.Render("▸ ")
+	} else {
+		marker1 = listSelectedStyle.Render("▸ ")
+	}
+
+	b.WriteString(marker0 + detailLabelStyle.Render("Server URL:   ") + m.AuthServerURLInput.View())
+	b.WriteString("\n")
+	b.WriteString(marker1 + detailLabelStyle.Render("Bearer Token: ") + m.AuthTokenInput.View())
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Enter: Authenticate & Save • Esc: Cancel • Empty: Set as Anonymous"))
+	b.WriteString(helpStyle.Render("Tab: Next Field • Enter: Connect & Save to YAML • Esc: Cancel"))
 
 	modal := lipgloss.NewStyle().
 		BorderStyle(lipgloss.DoubleBorder()).
@@ -1135,7 +1145,7 @@ func (m Model) renderAuthModal() string {
 		Background(activePalette.PanelBg).
 		Foreground(colorText).
 		Padding(1, 3).
-		Width(64).
+		Width(70).
 		Render(b.String())
 
 	return lipgloss.Place(m.Width-4, m.Height-2, lipgloss.Center, lipgloss.Center, modal)

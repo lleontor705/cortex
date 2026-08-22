@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/lleontor705/cortex/internal/config"
 	"github.com/lleontor705/cortex/internal/domain"
 	"github.com/lleontor705/cortex/internal/setup"
 
@@ -588,11 +591,9 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Auth token login modal
+	// Auth token / connect server modal
 	if key == "L" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		m.AuthModalOpen = true
-		m.AuthTokenInput.SetValue(m.AuthToken)
-		m.AuthTokenInput.Focus()
+		m.openAuthModal()
 		return m, textinput.Blink
 	}
 
@@ -681,6 +682,7 @@ var dashboardMenuItems = []string{
 	"Archived observations",
 	"Embedding settings",
 	"Local settings",
+	"Connect to server",
 	"Setup agent plugin",
 	"Quit",
 }
@@ -798,7 +800,10 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		return m, nil
 	case 7: // Local settings
 		return m.openLocalConfig(), nil
-	case 8: // Setup
+	case 8: // Connect to server
+		m.openAuthModal()
+		return m, textinput.Blink
+	case 9: // Setup
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSetup
 		m.Cursor = 0
@@ -812,7 +817,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.SetupAllowlistApplied = false
 		m.SetupAllowlistError = ""
 		return m, nil
-	case 9: // Quit
+	case 10: // Quit
 		return m, tea.Quit
 	}
 	return m, nil
@@ -1844,6 +1849,10 @@ func allCommands() []paletteCommand {
 		{"Local settings", "", func(m Model) (Model, tea.Cmd) {
 			return m.openLocalConfig(), nil
 		}},
+		{"Connect to server", "L", func(m Model) (Model, tea.Cmd) {
+			m.openAuthModal()
+			return m, textinput.Blink
+		}},
 		{"Setup agent plugin", "", func(m Model) (Model, tea.Cmd) {
 			m.Screen = ScreenSetup
 			return m, nil
@@ -2131,31 +2140,136 @@ func (m Model) submitNewObservation() (tea.Model, tea.Cmd) {
 	return m, createObservationCmd(m.deps, obs)
 }
 
+func (m *Model) openAuthModal() {
+	m.AuthModalOpen = true
+	m.AuthFocusField = 0
+	if m.deps != nil && m.deps.Config != nil {
+		if m.deps.Config.Sync.URL != "" {
+			m.AuthServerURLInput.SetValue(m.deps.Config.Sync.URL)
+		} else if m.deps.Config.MCP.Remote.URL != "" {
+			m.AuthServerURLInput.SetValue(m.deps.Config.MCP.Remote.URL)
+		}
+		if m.deps.Config.HTTP.Token != "" {
+			m.AuthTokenInput.SetValue(m.deps.Config.HTTP.Token)
+		}
+	}
+	m.focusAuthField()
+}
+
+func (m *Model) focusAuthField() {
+	m.AuthServerURLInput.Blur()
+	m.AuthTokenInput.Blur()
+	if m.AuthFocusField == 0 {
+		m.AuthServerURLInput.Focus()
+	} else {
+		m.AuthTokenInput.Focus()
+	}
+}
+
+func (m Model) submitAuthModal() (tea.Model, tea.Cmd) {
+	serverURL := strings.TrimSpace(m.AuthServerURLInput.Value())
+	token := strings.TrimSpace(m.AuthTokenInput.Value())
+
+	m.AuthToken = token
+	m.AuthModalOpen = false
+
+	if m.deps != nil && m.deps.Config != nil {
+		m.deps.Config.HTTP.Token = token
+		if serverURL != "" {
+			m.deps.Config.Sync.URL = serverURL
+			m.deps.Config.Sync.Enabled = true
+			if m.deps.Config.Sync.TokenEnv == "" {
+				m.deps.Config.Sync.TokenEnv = "CORTEX_HTTP_TOKEN"
+			}
+			if token != "" {
+				_ = os.Setenv("CORTEX_HTTP_TOKEN", token)
+			}
+			if m.deps.Config.MCP.Remote.URL == "" {
+				m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
+			}
+			m.UploadToCortex = true
+		} else if token == "" {
+			m.deps.Config.Sync.Enabled = false
+			m.UploadToCortex = false
+		}
+		targetPath := m.deps.Config.LoadedFrom
+		if targetPath == "" {
+			targetPath = filepath.Join(config.CortexDir(), "cortex.yaml")
+		}
+		if err := config.Save(m.deps.Config, targetPath); err != nil {
+			m.ToastMessage = fmt.Sprintf("Error saving config: %v", err)
+			m.ToastType = "error"
+			return m, nil
+		}
+		m.deps.Config.LoadedFrom = targetPath
+	}
+
+	if token != "" || serverURL != "" {
+		if m.deps != nil && m.deps.Config != nil && m.deps.Config.Server.PrincipalSubject != "" {
+			m.CurrentUser = m.deps.Config.Server.PrincipalSubject
+		} else {
+			u := os.Getenv("USER")
+			if u == "" {
+				u = os.Getenv("USERNAME")
+			}
+			if u != "" {
+				m.CurrentUser = u
+			}
+		}
+		if m.deps != nil && m.deps.Config != nil && len(m.deps.Config.Server.Roles) > 0 {
+			m.UserRole = m.deps.Config.Server.Roles[0]
+		} else {
+			m.UserRole = "admin"
+		}
+		m.ToastMessage = "✔ Connected to Cortex Server and saved configuration"
+		m.ToastType = "success"
+	} else {
+		u := os.Getenv("USER")
+		if u == "" {
+			u = os.Getenv("USERNAME")
+		}
+		if u == "" {
+			u = "local-user"
+		}
+		m.CurrentUser = u
+		m.UserRole = "local"
+		m.ToastMessage = "Session cleared: unauthenticated local mode"
+		m.ToastType = "warning"
+	}
+
+	return m, nil
+}
+
 func (m Model) handleAuthModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.AuthModalOpen = false
 		return m, nil
+	case "tab", "down":
+		m.AuthFocusField = (m.AuthFocusField + 1) % 2
+		m.focusAuthField()
+		return m, textinput.Blink
+	case "shift+tab", "up":
+		m.AuthFocusField = (m.AuthFocusField + 1) % 2
+		m.focusAuthField()
+		return m, textinput.Blink
 	case "enter":
-		token := strings.TrimSpace(m.AuthTokenInput.Value())
-		m.AuthToken = token
-		m.AuthModalOpen = false
-		if token != "" {
-			m.CurrentUser = "usrLuisLeon"
-			m.UserRole = "admin"
-			m.ToastMessage = fmt.Sprintf("Authenticated: %s (%s)", m.CurrentUser, m.UserRole)
-			m.ToastType = "success"
-		} else {
-			m.CurrentUser = "anonymous"
-			m.UserRole = "viewer"
-			m.ToastMessage = "Session cleared: unauthenticated mode"
-			m.ToastType = "warning"
+		if m.AuthFocusField == 0 {
+			m.AuthFocusField = 1
+			m.focusAuthField()
+			return m, textinput.Blink
 		}
-		return m, nil
-	default:
-		var cmd tea.Cmd
-		m.AuthTokenInput, cmd = m.AuthTokenInput.Update(msg)
-		return m, cmd
+		return m.submitAuthModal()
+	case "ctrl+s":
+		return m.submitAuthModal()
 	}
+
+	var cmd tea.Cmd
+	if m.AuthFocusField == 0 {
+		m.AuthServerURLInput, cmd = m.AuthServerURLInput.Update(msg)
+	} else {
+		m.AuthTokenInput, cmd = m.AuthTokenInput.Update(msg)
+	}
+	return m, cmd
 }
 
