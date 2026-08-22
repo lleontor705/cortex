@@ -6,6 +6,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -513,4 +515,163 @@ func (s *AuthorizedStore) ListTokens(ctx context.Context) ([]identity.TokenRecor
 		return nil, err
 	}
 	return s.store.tokens().List(ctx)
+}
+
+// GetProjectDuplicates scans projects and returns groups with casing or near-duplicate discrepancies.
+func (s *AuthorizedStore) GetProjectDuplicates(ctx context.Context) ([]domain.ProjectDuplicateGroup, error) {
+	if err := s.authorize(ctx, authz.ResourceWorkspaces, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	groups := make([]domain.ProjectDuplicateGroup, 0)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT project_key, count(*) as count
+			FROM observations
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = $1
+			  AND project_key <> ''
+			  AND deleted_at IS NULL
+			GROUP BY project_key
+		`, ws)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		m := make(map[string]map[string]int)
+		for rows.Next() {
+			var p string
+			var c int
+			if err := rows.Scan(&p, &c); err != nil {
+				return err
+			}
+			lower := strings.ToLower(p)
+			if m[lower] == nil {
+				m[lower] = make(map[string]int)
+			}
+			m[lower][p] += c
+		}
+		if rows.Err() != nil {
+			return rows.Err()
+		}
+
+		for _, variants := range m {
+			if len(variants) > 1 {
+				var best string
+				var bestCnt int
+				var total int
+				var list []string
+				for v, cnt := range variants {
+					list = append(list, v)
+					total += cnt
+					if cnt > bestCnt || best == "" {
+						best = v
+						bestCnt = cnt
+					}
+				}
+				groups = append(groups, domain.ProjectDuplicateGroup{
+					CanonicalName: best,
+					Variants:      list,
+					TotalCount:    total,
+				})
+			}
+		}
+		return nil
+	})
+	return groups, err
+}
+
+// MergeProject consolidates observations, sessions, prompts, and artifacts from sourceProject into targetProject.
+func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targetProject string) (*domain.ProjectMergeResult, error) {
+	if err := s.authorize(ctx, authz.ResourceAdmin, authz.ActionManage, "", "", ""); err != nil {
+		return nil, err
+	}
+	sourceProject = strings.TrimSpace(sourceProject)
+	targetProject = strings.TrimSpace(targetProject)
+	if sourceProject == "" || targetProject == "" || sourceProject == targetProject {
+		return nil, domain.ErrInvalidInput
+	}
+	res := &domain.ProjectMergeResult{
+		SourceProject: sourceProject,
+		TargetProject: targetProject,
+	}
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		// 1. Resolve potential topic_key collision for active observations
+		_, _ = tx.Exec(ctx, `
+			UPDATE observations old_obs
+			SET deleted_at = now(), updated_at = now()
+			WHERE old_obs.tenant_id = public.cortex_current_tenant()
+			  AND old_obs.workspace_id = $1
+			  AND old_obs.project_key = $2
+			  AND old_obs.topic_key IS NOT NULL
+			  AND old_obs.topic_key <> ''
+			  AND old_obs.deleted_at IS NULL
+			  AND EXISTS (
+				SELECT 1 FROM observations target_obs
+				WHERE target_obs.tenant_id = old_obs.tenant_id
+				  AND target_obs.workspace_id = old_obs.workspace_id
+				  AND target_obs.project_key = $3
+				  AND target_obs.topic_key = old_obs.topic_key
+				  AND target_obs.deleted_at IS NULL
+			  )
+		`, ws, sourceProject, targetProject)
+
+		// 2. Merge remaining observations
+		tagObs, err := tx.Exec(ctx, `
+			UPDATE observations
+			SET project_key = $3, updated_at = now()
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = $1
+			  AND project_key = $2
+			  AND deleted_at IS NULL
+		`, ws, sourceProject, targetProject)
+		if err != nil {
+			return fmt.Errorf("merge observations: %w", err)
+		}
+		res.ObservationsMerged = int(tagObs.RowsAffected())
+
+		// 3. Merge sessions
+		tagSess, err := tx.Exec(ctx, `
+			UPDATE sessions
+			SET project_key = $3, updated_at = now()
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)
+			  AND project_key = $2
+		`, s.store.tenant.WorkspaceID, sourceProject, targetProject)
+		if err != nil {
+			return fmt.Errorf("merge sessions: %w", err)
+		}
+		res.SessionsMerged = int(tagSess.RowsAffected())
+
+		// 4. Merge prompts
+		tagPrompts, err := tx.Exec(ctx, `
+			UPDATE prompts
+			SET project_key = $3
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid)
+			  AND project_key = $2
+		`, s.store.tenant.WorkspaceID, sourceProject, targetProject)
+		if err == nil {
+			res.PromptsMerged = int(tagPrompts.RowsAffected())
+		}
+
+		// 5. Merge project_artifacts
+		_, _ = tx.Exec(ctx, `
+			UPDATE project_artifacts
+			SET project_key = $3, updated_at = now()
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND project_key = $2
+		`, ws, sourceProject, targetProject)
+
+		return nil
+	})
+	return res, err
 }

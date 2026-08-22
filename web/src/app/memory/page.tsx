@@ -103,10 +103,10 @@ export default function MemoryPage() {
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
   );
   const currentSubject = principal?.id || "";
-
   const canDeleteObservation = (obs: Observation) => {
     if (isAdmin) return true;
-    return true;
+    if (!obs.owner_subject || !currentSubject) return false;
+    return obs.owner_subject === currentSubject || (!!principal?.email && obs.owner_subject === principal.email);
   };
 
   const handleDeleteObservation = async (obs: Observation) => {

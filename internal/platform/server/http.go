@@ -75,6 +75,8 @@ type Operations interface {
 	SaveProjectArtifact(context.Context, domain.SaveProjectArtifactInput) (*domain.ProjectArtifactItem, error)
 	ListProjectArtifacts(context.Context, string, string) ([]*domain.ProjectArtifactItem, error)
 	DeleteProjectArtifact(context.Context, string, string) error
+	GetProjectDuplicates(context.Context) ([]domain.ProjectDuplicateGroup, error)
+	MergeProject(context.Context, string, string) (*domain.ProjectMergeResult, error)
 }
 
 type healthCheck func(context.Context) error
@@ -217,6 +219,8 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("GET /api/projects/artifacts", a.listProjectArtifacts)
 	mux.HandleFunc("POST /api/projects/artifacts", a.saveProjectArtifact)
 	mux.HandleFunc("DELETE /api/projects/artifacts/{id}", a.deleteProjectArtifact)
+	mux.HandleFunc("GET /api/projects/duplicates", a.getProjectDuplicates)
+	mux.HandleFunc("POST /api/projects/merge", a.mergeProject)
 	return mux
 }
 
@@ -2084,6 +2088,31 @@ func (a *apiHandler) deleteProjectArtifact(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (a *apiHandler) getProjectDuplicates(w http.ResponseWriter, r *http.Request) {
+	dups, err := a.ops.GetProjectDuplicates(r.Context())
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dups)
+}
+
+func (a *apiHandler) mergeProject(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		SourceProject string `json:"source_project"`
+		TargetProject string `json:"target_project"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	res, err := a.ops.MergeProject(r.Context(), input.SourceProject, input.TargetProject)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   ProjectArtifactItem,
   ProjectContext,
+  ProjectDuplicateGroup,
   SaveProjectArtifactInput,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,6 +44,8 @@ import {
   Eye,
   Info,
   Lock,
+  GitMerge,
+  AlertTriangle,
 } from "lucide-react";
 
 export default function ProjectsPage() {
@@ -60,6 +63,11 @@ export default function ProjectsPage() {
     null,
   );
   const [contextLoading, setContextLoading] = useState<boolean>(false);
+
+  // Project Deduplication & Merge State
+  const [duplicateGroups, setDuplicateGroups] = useState<ProjectDuplicateGroup[]>([]);
+  const [isMerging, setIsMerging] = useState<boolean>(false);
+  const [mergeMessage, setMergeMessage] = useState<string | null>(null);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -91,11 +99,50 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     loadProjects();
-  }, [client]);
+    if (isAdmin) {
+      loadDuplicates();
+    }
+  }, [client, isAdmin]);
 
   useEffect(() => {
     loadArtifacts();
   }, [client, selectedProject]);
+
+  const loadDuplicates = async () => {
+    if (!client || !isAdmin) return;
+    try {
+      const dups = await client.getProjectDuplicates();
+      setDuplicateGroups(dups || []);
+    } catch (e) {
+      console.error("Failed to load duplicates", e);
+    }
+  };
+
+  const handleMergeProjects = async (source: string, target: string) => {
+    if (!client || !isAdmin) return;
+    if (
+      !confirm(
+        `¿Confirmas la consolidación del proyecto "${source}" en el canónico "${target}"? Todas las observaciones, sesiones y reglas asociadas se reasignarán automáticamente.`,
+      )
+    ) {
+      return;
+    }
+    setIsMerging(true);
+    setMergeMessage(null);
+    try {
+      const res = await client.mergeProject(source, target);
+      setMergeMessage(
+        `¡Fusión exitosa! Se consolidaron ${res.observations_merged} observaciones, ${res.sessions_merged} sesiones y ${res.prompts_merged} prompts bajo "${target}".`,
+      );
+      await loadProjects();
+      await loadDuplicates();
+      setSelectedProject(target);
+    } catch (err: any) {
+      alert("Error al fusionar proyectos: " + (err.message || err));
+    } finally {
+      setIsMerging(false);
+    }
+  };
 
   const loadProjects = async () => {
     if (!client) return;
@@ -396,6 +443,49 @@ export default function ProjectsPage() {
             </Button>
           )}
         </div>
+
+        {/* Duplicate Projects AI Alert Banner */}
+        {isAdmin && duplicateGroups.length > 0 && (
+          <div className="mt-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-amber-300">
+                  🪄 Inconsistencias de Proyectos Detectadas por IA ({duplicateGroups.length})
+                </span>
+                <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                  Existen proyectos con diferentes mayúsculas/minúsculas como{" "}
+                  {duplicateGroups.map((g) => g.variants.join(" / ")).join(", ")}. Puedes fusionarlos y consolidarlos en un único proyecto canónico.
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setActiveTab("ai_assistant")}
+              className="bg-amber-600 hover:bg-amber-500 text-white text-xs gap-1.5 shrink-0 shadow-md"
+            >
+              <GitMerge className="h-3.5 w-3.5" />
+              <span>Revisar y Fusionar</span>
+            </Button>
+          </div>
+        )}
+
+        {/* Merge Success Alert */}
+        {mergeMessage && (
+          <div className="mt-4 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-2 text-xs text-emerald-400">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{mergeMessage}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMergeMessage(null)}
+              className="text-emerald-400 hover:text-emerald-300"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Modern Navigation Tabs */}
@@ -886,6 +976,90 @@ export default function ProjectsPage() {
                 <span>Generar Artefacto con IA</span>
               </Button>
             </div>
+          </div>
+
+          {/* AI Project Deduplication & Merge Engine */}
+          <div className="pt-6 border-t border-[var(--border-subtle)] space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <GitMerge className="h-4 w-4 text-amber-400" />
+                <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                  Unificador & Fusión de Proyectos IA (Deduplicación)
+                </h4>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={loadDuplicates}
+                className="text-xs gap-1.5 h-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Re-escanear</span>
+              </Button>
+            </div>
+
+            <p className="text-xs text-[var(--text-muted)]">
+              Detecta automáticamente proyectos duplicados o con variaciones de mayúsculas/minúsculas (ej: <code className="font-mono bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-300">itc.facturadorwebpos</code> vs <code className="font-mono bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-300">ITC.FacturadorWebPos</code>, <code className="font-mono bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-300">FINAL</code> vs <code className="font-mono bg-[var(--bg-surface)] px-1 py-0.5 rounded text-amber-300">final</code>) y los consolida sin pérdida de observaciones, sesiones ni aristas.
+            </p>
+
+            {duplicateGroups.length === 0 ? (
+              <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-center text-xs text-[var(--text-muted)]">
+                <CheckCircle2 className="h-6 w-6 text-emerald-400 mx-auto mb-1.5 opacity-80" />
+                <span>No se detectaron proyectos duplicados ni discrepancias de casing en este Workspace.</span>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {duplicateGroups.map((group, idx) => (
+                  <div
+                    key={idx}
+                    className="p-4 rounded-xl bg-[var(--bg-surface)] border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-xs text-[var(--text-primary)]">
+                          Canónico Sugerido: <span className="font-mono text-emerald-400">{group.canonical_name}</span>
+                        </span>
+                        <Badge variant="warning" className="text-[10px]">
+                          {group.total_count} observaciones
+                        </Badge>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                        <span>Variaciones detectadas:</span>
+                        {group.variants.map((v) => (
+                          <span
+                            key={v}
+                            className={`font-mono px-2 py-0.5 rounded text-[11px] ${
+                              v === group.canonical_name
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                : "bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                            }`}
+                          >
+                            {v}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {group.variants
+                        .filter((v) => v !== group.canonical_name)
+                        .map((variant) => (
+                          <Button
+                            key={variant}
+                            size="sm"
+                            disabled={isMerging}
+                            onClick={() => handleMergeProjects(variant, group.canonical_name)}
+                            className="bg-amber-600 hover:bg-amber-500 text-white text-xs gap-1.5 shadow-sm"
+                          >
+                            <GitMerge className="h-3.5 w-3.5" />
+                            <span>Fusionar {variant} ➔ {group.canonical_name}</span>
+                          </Button>
+                        ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </Card>
       )}

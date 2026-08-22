@@ -221,6 +221,20 @@ export type ProjectContext = {
   skills: ProjectSkillSummary[];
 };
 
+export type ProjectDuplicateGroup = {
+  canonical_name: string;
+  variants: string[];
+  total_count: number;
+};
+
+export type ProjectMergeResult = {
+  source_project: string;
+  target_project: string;
+  observations_merged: number;
+  sessions_merged: number;
+  prompts_merged: number;
+};
+
 export type ProjectSkill = {
   id: string;
   key: string;
@@ -650,6 +664,20 @@ export class CortexClient {
       message?: string;
     }>("/api/admin/ai/test-embedding", {
       method: "POST",
+    });
+  }
+
+  getProjectDuplicates() {
+    return this.request<ProjectDuplicateGroup[]>("/api/projects/duplicates");
+  }
+
+  mergeProject(sourceProject: string, targetProject: string) {
+    return this.request<ProjectMergeResult>("/api/projects/merge", {
+      method: "POST",
+      body: JSON.stringify({
+        source_project: sourceProject,
+        target_project: targetProject,
+      }),
     });
   }
 }

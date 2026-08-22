@@ -284,4 +284,18 @@ func (requestOperations) DeleteProjectArtifact(ctx context.Context, id string, r
 	}
 	return ops.DeleteProjectArtifact(ctx, id, reason)
 }
+func (requestOperations) GetProjectDuplicates(ctx context.Context) ([]domain.ProjectDuplicateGroup, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectDuplicates(ctx)
+}
+func (requestOperations) MergeProject(ctx context.Context, source, target string) (*domain.ProjectMergeResult, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.MergeProject(ctx, source, target)
+}
 

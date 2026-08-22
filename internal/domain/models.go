@@ -511,6 +511,22 @@ type TemporalSnapshot struct {
 	RootObservationID int64     `json:"root_observation_id,omitempty"` // Root observation for this snapshot
 }
 
+// ProjectMergeResult holds details about consolidated project records.
+type ProjectMergeResult struct {
+	SourceProject      string `json:"source_project"`
+	TargetProject      string `json:"target_project"`
+	ObservationsMerged int    `json:"observations_merged"`
+	SessionsMerged     int    `json:"sessions_merged"`
+	PromptsMerged      int    `json:"prompts_merged"`
+}
+
+// ProjectDuplicateGroup represents a canonical project and its detected casing/similar variants.
+type ProjectDuplicateGroup struct {
+	CanonicalName string   `json:"canonical_name"`
+	Variants      []string `json:"variants"`
+	TotalCount    int      `json:"total_count"`
+}
+
 // Entity types
 const (
 	EntityFile     = "file"

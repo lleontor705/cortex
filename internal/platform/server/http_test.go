@@ -250,6 +250,22 @@ func (f *fakeOperations) GetUserProfile(_ context.Context, id string) (*identity
 	}, nil
 }
 
+func (f *fakeOperations) GetProjectDuplicates(_ context.Context) ([]domain.ProjectDuplicateGroup, error) {
+	return []domain.ProjectDuplicateGroup{
+		{CanonicalName: "cortex", Variants: []string{"cortex", "CORTEX"}, TotalCount: 10},
+	}, nil
+}
+
+func (f *fakeOperations) MergeProject(_ context.Context, source, target string) (*domain.ProjectMergeResult, error) {
+	return &domain.ProjectMergeResult{
+		SourceProject:      source,
+		TargetProject:      target,
+		ObservationsMerged: 5,
+		SessionsMerged:     2,
+		PromptsMerged:      1,
+	}, nil
+}
+
 
 func testHandler(health healthCheck) http.Handler {
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}, newFakeOperations(), health)

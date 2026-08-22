@@ -175,6 +175,9 @@ func (p *Policy) decide(req Request) Decision {
 	if !allowed {
 		return Decision{Reason: DenyRole}
 	}
+	if req.Action == ActionDelete && req.Resource.OwnerSubject != "" && req.Resource.OwnerSubject != req.Principal.Subject && !hasRole(req.Principal, RoleOwner) && !hasRole(req.Principal, RoleAdmin) {
+		return Decision{Reason: DenyOwnership}
+	}
 	if req.Resource.OwnerSubject != "" && req.Resource.OwnerSubject != req.Principal.Subject && !hasRole(req.Principal, RoleOwner) && req.Resource.Classification == "personal" {
 		return Decision{Reason: DenyOwnership}
 	}
