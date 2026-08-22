@@ -2538,6 +2538,8 @@ func rwDrainRWProofApplicationBackends(t *testing.T, keep string) {
 		if n == 0 {
 			return
 		}
+		// Actively terminate lingering idle backends whose client pools were already closed
+		_, _ = conn.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1 AND datname LIKE 'cortex_rwproof_%' AND datname <> $2 AND state = 'idle' AND pid <> pg_backend_pid()`, rwAppLogin, keep)
 		if time.Now().After(deadline) {
 			t.Fatalf("application-backend drain failed: %d %s backends still present after 20s", n, rwAppLogin)
 		}
