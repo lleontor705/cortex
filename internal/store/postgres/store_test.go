@@ -3,11 +3,14 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
@@ -754,6 +757,141 @@ func TestTokenRepositoryValidationAndSecretHelpers(t *testing.T) {
 	}
 	if len(r.digest("secret")) != sha256.Size {
 		t.Fatal("token digest has unexpected length")
+	}
+}
+
+func TestVerifyPrincipalErrorMappingIsStable(t *testing.T) {
+	for _, tc := range []struct {
+		code    string
+		message string
+		want    error
+	}{
+		{"28000", "token is revoked", identity.ErrTokenRevoked},
+		{"28000", "token is expired", identity.ErrTokenExpired},
+		{"42501", "token is missing required scope", identity.ErrInsufficientScope},
+	} {
+		err := mapVerifyPrincipalError(&pgconn.PgError{Code: tc.code, Message: tc.message})
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("code=%s message=%q error=%v, want %v", tc.code, tc.message, err, tc.want)
+		}
+	}
+	// Unrelated SQLSTATE failures must pass through unchanged so transport
+	// error taxonomies keep their causes.
+	foreign := &pgconn.PgError{Code: "28000", Message: "principal grant is revoked or stale"}
+	if err := mapVerifyPrincipalError(foreign); !errors.Is(err, foreign) {
+		t.Fatalf("foreign binder error rewritten: %v", err)
+	}
+	plain := errors.New("boom")
+	if err := mapVerifyPrincipalError(plain); !errors.Is(err, plain) {
+		t.Fatalf("plain error rewritten: %v", err)
+	}
+}
+
+func TestMediatedMutationErrorsMapBySQLState(t *testing.T) {
+	subjectMissing := &pgconn.PgError{Code: "23503", Message: "token subject does not exist in tenant"}
+	err := mapMediatedMutationError(subjectMissing, "token subject", "subject")
+	var notFoundErr *domain.NotFoundError
+	if !errors.As(err, &notFoundErr) || notFoundErr.Type != "token subject" {
+		t.Fatalf("subject error=%v (%T), want token subject NotFoundError", err, err)
+	}
+	tokenMissing := &pgconn.PgError{Code: "23503", Message: "token does not exist in tenant or is revoked"}
+	if err := mapMediatedMutationError(tokenMissing, "token", "id"); !errors.As(err, &notFoundErr) || notFoundErr.Type != "token" {
+		t.Fatalf("token error=%v (%T), want token NotFoundError", err, err)
+	}
+	other := &pgconn.PgError{Code: "23505", Message: "actor is already provisioned in tenant"}
+	if err := mapMediatedMutationError(other, "user", "id"); !errors.Is(err, other) {
+		t.Fatalf("unrelated SQLSTATE rewritten: %v", err)
+	}
+	if err := mapMediatedMutationError(errors.New("boom"), "user", "id"); err.Error() != "boom" {
+		t.Fatalf("plain error rewritten: %v", err)
+	}
+}
+
+func TestProvisionGrantPayloadCanonicalization(t *testing.T) {
+	payload, err := provisionGrantPayload(userGrants(identity.UserCreate{
+		Roles:      []string{"owner", "admin", "owner"},
+		Workspaces: []string{" w1 ", ""},
+		Projects:   []string{"p1"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"type":"project","value":"p1"},{"type":"role","value":"admin"},{"type":"role","value":"owner"},{"type":"workspace","value":"w1"}]`
+	if got := string(payload); got != want {
+		t.Fatalf("payload=%s, want %s", got, want)
+	}
+	if _, err := provisionGrantPayload(nil); err == nil {
+		t.Fatal("empty grant payload accepted")
+	}
+	// Values that need JSON escaping must survive round-trip into the
+	// migration-owned provisioning routine.
+	encoded, err := provisionGrantPayload([]persistedGrant{{kind: "role", value: `a "quoted" \ value`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `a \"quoted\" \\ value`) {
+		t.Fatalf("payload=%s, want escaped value", encoded)
+	}
+}
+
+func TestBindActorFailsClosedForOpaqueSubjects(t *testing.T) {
+	ctx := context.Background()
+	resolved, err := (&Store{principal: domain.Principal{Subject: uuid.NewString()}}).bindActor(ctx, nil)
+	if err != nil {
+		t.Fatalf("uuid subject rejected: %v", err)
+	}
+	if _, ok := resolved.Value(actorKey{}).(uuid.UUID); !ok {
+		t.Fatal("resolved actor missing from transaction context")
+	}
+	opaque := &Store{principal: domain.Principal{Subject: "opaque-subject"}}
+	if got, err := opaque.bindActor(ctx, nil); !errors.Is(err, ErrPrincipalRequired) {
+		t.Fatalf("opaque subject error=%v, want %v", err, ErrPrincipalRequired)
+	} else if got != nil {
+		t.Fatal("opaque subject must not produce a transaction context")
+	}
+}
+
+func TestRotatedRecordCarriesSubjectAndPrincipalType(t *testing.T) {
+	scanned := identity.TokenIssue{Subject: uuid.NewString(), PrincipalType: "service_account", Name: "rotated", Scopes: []string{"read"}, Workspaces: []string{uuid.NewString()}, ExpiresAt: time.Unix(1000, 0)}
+	rec := assembleRotatedRecord(scanned, "token-id", "ctx_prefix12", []byte("digest-bytes"), "org-id")
+	if rec.Subject != scanned.Subject {
+		t.Fatalf("rotated record subject=%q, want %q", rec.Subject, scanned.Subject)
+	}
+	if rec.PrincipalType != "service_account" {
+		t.Fatalf("rotated record principal type=%q, want service_account", rec.PrincipalType)
+	}
+	// REQ-BPR-006: keep every diagnostic field-level; the record and its
+	// digest are never printable failure payloads.
+	wantDigest := base64.RawURLEncoding.EncodeToString([]byte("digest-bytes"))
+	if rec.ID != "token-id" {
+		t.Fatalf("rotated record id=%q, want %q", rec.ID, "token-id")
+	}
+	if rec.Prefix != "ctx_prefix12" {
+		t.Fatalf("rotated record prefix=%q, want %q", rec.Prefix, "ctx_prefix12")
+	}
+	if rec.Name != "rotated" {
+		t.Fatalf("rotated record name=%q, want %q", rec.Name, "rotated")
+	}
+	if rec.OrgID != "org-id" {
+		t.Fatalf("rotated record org=%q, want %q", rec.OrgID, "org-id")
+	}
+	if rec.Digest != wantDigest {
+		t.Fatal("rotated record digest mismatch")
+	}
+	if !rec.ExpiresAt.Equal(time.Unix(1000, 0)) {
+		t.Fatal("rotated record expiry mismatch")
+	}
+	if len(rec.Scopes) != 1 {
+		t.Fatalf("rotated record scopes len=%d, want 1", len(rec.Scopes))
+	}
+	if len(rec.Workspaces) != 1 {
+		t.Fatalf("rotated record workspaces len=%d, want 1", len(rec.Workspaces))
+	}
+	// The returned record must not alias the scanned slices: later mutation
+	// of the scan target can never leak into the issued record.
+	scanned.Scopes[0] = "mutated"
+	if rec.Scopes[0] != "read" {
+		t.Fatal("rotated record aliases scanned scopes")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -19,6 +20,10 @@ import (
 
 // sqliteDatetimeFormat is the format used by SQLite's datetime() function.
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"
+
+// maxBatchScoreIDs bounds the IDs per statement so batch lookups stay within
+// SQLite's conservative variable limit; the DNA N=500 path fits one chunk.
+const maxBatchScoreIDs = 500
 
 // Store implements the SQLite scoring store.
 type Store struct {
@@ -45,6 +50,63 @@ func (s *Store) GetScore(ctx context.Context, obsID int64) (*domain.ImportanceSc
 		return nil, err
 	}
 	return score, nil
+}
+
+// GetScoresByObservationIDs retrieves importance scores for many observations
+// in one statement per maxBatchScoreIDs chunk. IDs without a score row are
+// absent from the result; an empty input returns an empty map without
+// touching the database.
+func (s *Store) GetScoresByObservationIDs(ctx context.Context, obsIDs []int64) (map[int64]*domain.ImportanceScore, error) {
+	out := make(map[int64]*domain.ImportanceScore, len(obsIDs))
+	if len(obsIDs) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(obsIDs); start += maxBatchScoreIDs {
+		end := start + maxBatchScoreIDs
+		if end > len(obsIDs) {
+			end = len(obsIDs)
+		}
+		chunk := obsIDs[start:end]
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT observation_id, score, access_count, last_accessed, updated_at
+			 FROM importance_scores WHERE observation_id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("scoring: get scores by ids: %w", err)
+		}
+
+		for rows.Next() {
+			score := &domain.ImportanceScore{}
+			var lastAccessed sql.NullString
+			var updatedAt string
+			if err := rows.Scan(
+				&score.ObservationID, &score.Score, &score.AccessCount,
+				&lastAccessed, &updatedAt,
+			); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scoring: scan batch scores: %w", err)
+			}
+			if lastAccessed.Valid {
+				score.LastAccessed = parseScoringTime(lastAccessed.String)
+			}
+			score.UpdatedAt = parseScoringTime(updatedAt)
+			out[score.ObservationID] = score
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scoring: batch rows iteration: %w", err)
+		}
+		_ = rows.Close()
+	}
+
+	return out, nil
 }
 
 // UpdateScore adjusts the importance score by the given increment, clamped to [0.0, 5.0].

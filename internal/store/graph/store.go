@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -239,6 +240,117 @@ func parseAnyTime(v string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid time %q", v)
+}
+
+// levelNeighborChunk caps the IN-list size per SQL statement for the batch
+// adjacency lookup. 900 stays below conservative SQLite variable limits, so
+// typical frontiers resolve in a single statement per level (GRAPH-01).
+const levelNeighborChunk = 900
+
+// GetLevelNeighborObservations resolves one-hop adjacency for an entire BFS
+// frontier in one SQL statement per chunk (domain/graph.LevelNeighborBatcher).
+// It returns hydrated neighbor observations for every requested frontier ID,
+// deduplicated and ordered by ascending observation ID, following edges in
+// both directions. Soft-deleted endpoints are excluded; on the v2 temporal
+// schema only current facts (open validity, not deprecated/superseded) are
+// followed.
+func (s *Store) GetLevelNeighborObservations(ctx context.Context, frontier []int64) (map[int64][]*domain.Observation, error) {
+	out := make(map[int64][]*domain.Observation, len(frontier))
+	if len(frontier) == 0 {
+		return out, nil
+	}
+	want := make(map[int64]bool, len(frontier))
+	for _, id := range frontier {
+		want[id] = true
+	}
+
+	fCols := "f.id, f.title, f.content, f.type, f.project, f.scope, f.session_id, COALESCE(f.topic_key,''), COALESCE(f.confidence,1), COALESCE(f.source,'manual'), COALESCE(f.tags,''), f.created_at, f.updated_at"
+	tCols := "t.id, t.title, t.content, t.type, t.project, t.scope, t.session_id, COALESCE(t.topic_key,''), COALESCE(t.confidence,1), COALESCE(t.source,'manual'), COALESCE(t.tags,''), t.created_at, t.updated_at"
+	validity := ""
+	if s.v2TemporalSchema(ctx) {
+		validity = " AND e.valid_until IS NULL AND e.invalid_at IS NULL AND e.fact_state NOT IN ('deprecated','superseded')"
+	}
+
+	for start := 0; start < len(frontier); start += levelNeighborChunk {
+		end := start + levelNeighborChunk
+		if end > len(frontier) {
+			end = len(frontier)
+		}
+		ids := frontier[start:end]
+		placeholders := strings.Repeat("?,", len(ids))
+		placeholders = placeholders[:len(placeholders)-1]
+		query := `SELECT e.from_obs_id, e.to_obs_id, ` + fCols + `, ` + tCols + `
+			FROM edges e
+			JOIN observations f ON f.id = e.from_obs_id
+			JOIN observations t ON t.id = e.to_obs_id
+			WHERE (e.from_obs_id IN (` + placeholders + `) OR e.to_obs_id IN (` + placeholders + `))
+			  AND f.deleted_at IS NULL AND t.deleted_at IS NULL` + validity
+
+		args := make([]any, 0, len(ids)*2)
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		for _, id := range ids {
+			args = append(args, id)
+		}
+
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("graph: level neighbors: %w", err)
+		}
+		for rows.Next() {
+			var fromID, toID int64
+			fobs := &domain.Observation{}
+			tobs := &domain.Observation{}
+			var ftags, ttags, fca, fua, tca, tua string
+			if err := rows.Scan(
+				&fromID, &toID,
+				&fobs.ID, &fobs.Title, &fobs.Content, &fobs.Type, &fobs.Project, &fobs.Scope, &fobs.SessionID, &fobs.TopicKey, &fobs.Confidence, &fobs.Source, &ftags, &fca, &fua,
+				&tobs.ID, &tobs.Title, &tobs.Content, &tobs.Type, &tobs.Project, &tobs.Scope, &tobs.SessionID, &tobs.TopicKey, &tobs.Confidence, &tobs.Source, &ttags, &tca, &tua,
+			); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("graph: scan level neighbor: %w", err)
+			}
+			fobs.CreatedAt, _ = parseAnyTime(fca)
+			fobs.UpdatedAt, _ = parseAnyTime(fua)
+			tobs.CreatedAt, _ = parseAnyTime(tca)
+			tobs.UpdatedAt, _ = parseAnyTime(tua)
+			if ftags != "" {
+				_ = json.Unmarshal([]byte(ftags), &fobs.Tags)
+			}
+			if ttags != "" {
+				_ = json.Unmarshal([]byte(ttags), &tobs.Tags)
+			}
+			if want[fromID] {
+				out[fromID] = append(out[fromID], tobs)
+			}
+			if want[toID] && fromID != toID {
+				out[toID] = append(out[toID], fobs)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("graph: level neighbors: %w", err)
+		}
+		_ = rows.Close()
+	}
+
+	// Deduplicate by neighbor ID (multiple relation types between the same
+	// pair) and order ascending so shuffled rows cannot change traversal.
+	for id, list := range out {
+		seen := make(map[int64]bool, len(list))
+		deduped := list[:0]
+		for _, o := range list {
+			if seen[o.ID] {
+				continue
+			}
+			seen[o.ID] = true
+			deduped = append(deduped, o)
+		}
+		sort.Slice(deduped, func(i, j int) bool { return deduped[i].ID < deduped[j].ID })
+		out[id] = deduped
+	}
+	return out, nil
 }
 
 // GetRelated retrieves observations related to the given observation ID,
@@ -492,6 +604,41 @@ func (s *Store) GetEdge(ctx context.Context, id int64) (*domain.Edge, error) {
 		return nil, fmt.Errorf("graph: get edge %d: %w", id, err)
 	}
 
+	return edge, nil
+}
+
+// CurrentEdgeByPairInTx returns the single current durable edge for the exact
+// (from, to, relationType) triple. It reads through the shared transaction
+// enlisted via WithinTx when one is active in ctx, so the caller observes its
+// own uncommitted state rather than a separate connection snapshot. Returns
+// domain.NotFoundError when no current fact exists for the triple.
+func (s *Store) CurrentEdgeByPairInTx(ctx context.Context, fromObsID, toObsID int64, relationType string) (*domain.Edge, error) {
+	query := `
+		SELECT id, from_obs_id, to_obs_id, relation_type, weight,
+		       COALESCE(confidence, 1.0), COALESCE(source, ''), COALESCE(reasoning, ''),
+		       valid_from, invalid_at, created_at,
+		       evolution_id, COALESCE(evolution_type, 'original'),
+		       COALESCE(fact_state, 'current'), COALESCE(change_reason, '')
+		FROM edges
+		WHERE from_obs_id = ? AND to_obs_id = ? AND relation_type = ?
+		  AND valid_until IS NULL AND invalid_at IS NULL
+		  AND fact_state NOT IN ('deprecated', 'superseded')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	var row *sql.Row
+	if tx := graphTx(ctx); tx != nil {
+		row = tx.QueryRowContext(ctx, query, fromObsID, toObsID, relationType)
+	} else {
+		row = s.db.QueryRowContext(ctx, query, fromObsID, toObsID, relationType)
+	}
+	edge, err := s.scanEdgeRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, &domain.NotFoundError{Type: "edge", ID: fmt.Sprintf("%d->%d %s", fromObsID, toObsID, relationType)}
+		}
+		return nil, fmt.Errorf("graph: current edge by pair: %w", err)
+	}
 	return edge, nil
 }
 

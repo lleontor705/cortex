@@ -1,0 +1,3 @@
+plugin/claude-code/scripts/*.sh text eol=lf
+plugin/claude-code/scripts/*.jq text eol=lf
+migrations/**/*.sql text eol=lf

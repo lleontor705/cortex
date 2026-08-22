@@ -147,8 +147,8 @@ func TestHandleGetObservation_MissingID(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected IsError for missing id, got %q", resultText(result))
 	}
-	if !strings.Contains(resultText(result), "id is required") {
-		t.Errorf("expected 'id is required', got %q", resultText(result))
+	if !strings.Contains(resultText(result), "id must be a positive integer") {
+		t.Errorf("expected 'id must be a positive integer', got %q", resultText(result))
 	}
 }
 
@@ -235,8 +235,8 @@ func TestHandleUpdate_MissingID(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected IsError for missing id, got %q", resultText(result))
 	}
-	if !strings.Contains(resultText(result), "id is required") {
-		t.Errorf("expected 'id is required', got %q", resultText(result))
+	if !strings.Contains(resultText(result), "id must be a positive integer") {
+		t.Errorf("expected 'id must be a positive integer', got %q", resultText(result))
 	}
 }
 
@@ -443,8 +443,8 @@ func TestHandleTimeline_MissingID(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected IsError for missing observation_id, got %q", resultText(result))
 	}
-	if !strings.Contains(resultText(result), "observation_id is required") {
-		t.Errorf("expected 'observation_id is required', got %q", resultText(result))
+	if !strings.Contains(resultText(result), "observation_id must be a positive integer") {
+		t.Errorf("expected 'observation_id must be a positive integer', got %q", resultText(result))
 	}
 }
 
@@ -469,8 +469,8 @@ func TestHandleRevisionHistory_MissingID(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected IsError for missing observation_id, got %q", resultText(result))
 	}
-	if !strings.Contains(resultText(result), "observation_id is required") {
-		t.Errorf("expected 'observation_id is required', got %q", resultText(result))
+	if !strings.Contains(resultText(result), "observation_id must be a positive integer") {
+		t.Errorf("expected 'observation_id must be a positive integer', got %q", resultText(result))
 	}
 }
 

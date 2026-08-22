@@ -622,13 +622,19 @@ func TestGapReindexVectorStoreUnavailable(t *testing.T) {
 	// contacting the network; reindex returns at the vector-store guard before
 	// any Embed() call.
 	setGapEnvWithProvider(t, "ollama")
-	code, _, errB := run(t, "cortex", "reindex")
+	code, out, errB := run(t, "cortex", "reindex")
 	if testVectorsEnabled {
 		// Under cortex_vectors the vector store IS available. With a fresh
 		// DB (no observations) there is nothing to embed, so reindex exits
 		// 0 without contacting the network.
 		if code != 0 {
 			t.Fatalf("reindex code = %d, want 0 (vector store available, empty DB): stderr=%q", code, errB)
+		}
+		if !strings.Contains(out, "Reindexing 0 observations") {
+			t.Fatalf("reindex stdout = %q, want empty reindex summary", out)
+		}
+		if strings.Contains(out, "Starting Ollama") || strings.Contains(out, "Pulling model") {
+			t.Fatalf("empty reindex attempted Ollama management: %q", out)
 		}
 		return
 	}

@@ -6,6 +6,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,6 +56,118 @@ func (s *AuthorizedStore) SaveObservation(ctx context.Context, o *domain.Observa
 	}
 	return s.store.observations().Save(ctx, o)
 }
+
+// SaveObservationWithEffect authorizes the write exactly like SaveObservation
+// and persists through the transactional effect primitive, so the durable
+// created/updated classification is decided inside the transaction (RD2,
+// REM-SAVE-001). No repository escapes the boundary.
+func (s *AuthorizedStore) SaveObservationWithEffect(ctx context.Context, o *domain.Observation) (domain.SaveEffect, error) {
+	if o == nil {
+		return domain.SaveEffect{}, domain.ErrInvalidInput
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
+		return domain.SaveEffect{}, err
+	}
+	return s.store.observations().SaveWithEffect(ctx, o)
+}
+
+// handoffAuthorizationError converts authorization outcomes into the stable
+// handoff taxonomy. Denials of an authenticated principal are forbidden; a
+// missing principal binding is unauthorized; anything else (e.g. a failed
+// audit dependency) fails closed as retryable-unavailable and never mutates.
+func handoffAuthorizationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch err.Error() {
+	case authz.DenyUnauthenticated:
+		return &domain.HandoffError{Code: domain.HandoffErrorUnauthorized, Message: domain.ErrHandoffUnauthorized.Message, Operation: "authorize", Context: "authorization required"}
+	case authz.DenyRole, authz.DenyScope, authz.DenyTenantMismatch, authz.DenyWorkspace, authz.DenyProject, authz.DenyOwnership, authz.DenyClassification, authz.DenyRevoked:
+		return &domain.HandoffError{Code: domain.HandoffErrorForbidden, Message: domain.ErrHandoffForbidden.Message, Operation: "authorize", Context: "principal is not authorized for the complete handoff"}
+	}
+	return &domain.HandoffError{Code: domain.HandoffErrorUnavailable, Message: domain.ErrHandoffUnavailable.Message, Retryable: true, Operation: "authorize", Context: "authorization dependency failed"}
+}
+
+// authorizeHandoffRelationInTx is the in-transaction relation revalidation
+// (REM-AUTH-001, review R7 fix 1). It runs INSIDE the executor transaction,
+// strictly before the receipt claim and any effect:
+//
+//  1. the target is resolved by public UUID scoped to the transaction-resolved
+//     workspace bigint (bindWorkspace) — sibling workspaces of the same tenant
+//     and rows of other tenants are invisible and fail as validation;
+//  2. the resolved row is locked FOR SHARE, so its authorizable attributes
+//     cannot change between this authorization and the relation write in the
+//     same transaction — the resolve-authorize-mutate TOCTOU window of a
+//     pre-transaction preauth is closed;
+//  3. the graph write is authorized against the LOCKED project, owner, and
+//     classification values.
+//
+// The callback receives the pgx.Tx only because the type is unexported: no
+// raw transaction or repository escapes the package boundary.
+func (s *AuthorizedStore) authorizeHandoffRelationInTx(ctx context.Context, tx pgx.Tx, relation *domain.HandoffRelationInput) error {
+	if s == nil || s.store == nil {
+		return domain.ErrHandoffUnauthorized
+	}
+	if relation == nil || relation.Target.PublicID == nil || relation.Target.LocalID != nil {
+		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target must use the public namespace"}
+	}
+	ws, ok := workspaceFromContext(ctx)
+	if !ok {
+		return &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: "relation", Context: "workspace binding is not resolved in this transaction"}
+	}
+	if err := setHandoffLockTimeout(ctx, tx); err != nil {
+		return err
+	}
+	var project, owner, classification string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(o.project_key,''),COALESCE(o.owner_subject,''),COALESCE(o.classification,'')
+		FROM observations o
+		WHERE o.tenant_id=public.cortex_current_tenant() AND o.public_id=$1::uuid AND o.deleted_at IS NULL AND o.workspace_id=$2
+		FOR SHARE OF o`, relation.Target.PublicID.String(), ws).Scan(&project, &owner, &classification)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: "relation", Context: "relation target was not found"}
+	}
+	if err != nil {
+		return handoffPgError(err, "relation")
+	}
+	if err := s.authorize(ctx, authz.ResourceGraph, authz.ActionWrite, project, owner, classification); err != nil {
+		return handoffAuthorizationError(err)
+	}
+	return nil
+}
+
+// derivedHandoffScope builds the receipt idempotency scope EXCLUSIVELY from
+// the verified principal binding (tenant, workspace, subject). No client
+// input participates: idempotency keys are isolated per principal and
+// workspace (REM-HANDOFF-002, RD5).
+func (s *AuthorizedStore) derivedHandoffScope() domain.HandoffScope {
+	workspace := ""
+	if s.store.tenant != nil {
+		workspace = s.store.tenant.WorkspaceID
+	}
+	return domain.HandoffScope("tenant/" + s.store.tenant.TenantID + "/workspace/" + workspace + "/principal/" + s.store.principal.Subject)
+}
+
+// ExecuteHandoff performs the compound preauthorization — observation write
+// ahead of the transaction, plus the optional relation INSIDE it — and then
+// delegates to the RLS-bound executor. tenant/workspace/scope authority
+// comes only from the verified principal; partial permission, an unavailable
+// authorization dependency, or a cross-tenant target fails closed with zero
+// effects (REM-AUTH-001, RD5).
+func (s *AuthorizedStore) ExecuteHandoff(ctx context.Context, req domain.HandoffRequest) (domain.ObservationWriteResult, error) {
+	if s == nil || s.store == nil {
+		return domain.ObservationWriteResult{}, domain.ErrHandoffUnauthorized
+	}
+	canonical, _, hash, err := domain.CanonicalizeHandoff(req)
+	if err != nil {
+		return domain.ObservationWriteResult{}, err
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, req.Observation.Project, s.store.principal.Subject, req.Observation.Scope); err != nil {
+		return domain.ObservationWriteResult{}, handoffAuthorizationError(err)
+	}
+	return s.store.executeHandoff(ctx, s.derivedHandoffScope(), req.IdempotencyKey, canonical, hash, s.authorizeHandoffRelationInTx)
+}
+
 func (s *AuthorizedStore) GetObservationByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	if err := s.authorizeObservation(ctx, authz.ActionRead, id); err != nil {
 		return nil, err
@@ -148,6 +262,20 @@ func (s *AuthorizedStore) GetServerStats(ctx context.Context) (*domain.ServerSta
 		return nil, err
 	}
 	stats := new(domain.ServerStats)
+	if !s.store.isAdmin() {
+		err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `
+				SELECT
+					(SELECT count(*) FROM observations o JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND se.workspace_id=w.id AND o.owner_subject=$2),
+					(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND (created_by::text=$2 OR updated_by::text=$2)),
+					(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND ended_at IS NULL AND (created_by::text=$2 OR updated_by::text=$2)),
+					(SELECT count(*) FROM edges e JOIN observations o ON o.tenant_id=e.tenant_id AND o.id=e.from_observation_id JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE e.tenant_id=public.cortex_current_tenant() AND se.workspace_id=w.id AND o.owner_subject=$2),
+					(SELECT count(DISTINCT project_key) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND project_key <> '' AND (created_by::text=$2 OR updated_by::text=$2))
+				FROM workspaces w WHERE w.tenant_id=public.cortex_current_tenant() AND w.public_id=$1::uuid`, s.store.tenant.WorkspaceID, s.store.principal.Subject).
+				Scan(&stats.Observations, &stats.Sessions, &stats.ActiveSessions, &stats.Edges, &stats.Projects)
+		})
+		return stats, err
+	}
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT
@@ -341,6 +469,17 @@ func (s *AuthorizedStore) ListUsers(ctx context.Context) ([]identity.UserRecord,
 	}
 	return s.store.users().List(ctx)
 }
+func (s *AuthorizedStore) GetUserProfile(ctx context.Context, id string) (*identity.UserRecord, error) {
+	if s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	if id != s.store.principal.Subject {
+		if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionRead, "", "", ""); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.users().GetByPublicID(ctx, id)
+}
 func (s *AuthorizedStore) SetUserActive(ctx context.Context, id string, active bool) error {
 	if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionManage, "", "", ""); err != nil {
 		return err
@@ -376,4 +515,175 @@ func (s *AuthorizedStore) ListTokens(ctx context.Context) ([]identity.TokenRecor
 		return nil, err
 	}
 	return s.store.tokens().List(ctx)
+}
+
+// GetProjectDuplicates scans projects and returns groups with casing or near-duplicate discrepancies.
+func (s *AuthorizedStore) GetProjectDuplicates(ctx context.Context) ([]domain.ProjectDuplicateGroup, error) {
+	if err := s.authorize(ctx, authz.ResourceWorkspaces, authz.ActionRead, "", "", ""); err != nil {
+		return nil, err
+	}
+	groups := make([]domain.ProjectDuplicateGroup, 0)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT o.project_key, count(*) as count
+			FROM observations o
+			JOIN sessions s ON s.tenant_id = o.tenant_id AND s.id = o.session_id
+			WHERE o.tenant_id = public.cortex_current_tenant()
+			  AND s.workspace_id = $1
+			  AND o.project_key <> ''
+			  AND o.deleted_at IS NULL
+			GROUP BY o.project_key
+		`, ws)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		m := make(map[string]map[string]int)
+		for rows.Next() {
+			var p string
+			var c int
+			if err := rows.Scan(&p, &c); err != nil {
+				return err
+			}
+			lower := strings.ToLower(p)
+			if m[lower] == nil {
+				m[lower] = make(map[string]int)
+			}
+			m[lower][p] += c
+		}
+		if rows.Err() != nil {
+			return rows.Err()
+		}
+
+		for _, variants := range m {
+			if len(variants) > 1 {
+				var best string
+				var bestCnt int
+				var total int
+				var list []string
+				for v, cnt := range variants {
+					list = append(list, v)
+					total += cnt
+					if cnt > bestCnt || best == "" {
+						best = v
+						bestCnt = cnt
+					}
+				}
+				groups = append(groups, domain.ProjectDuplicateGroup{
+					CanonicalName: best,
+					Variants:      list,
+					TotalCount:    total,
+				})
+			}
+		}
+		return nil
+	})
+	return groups, err
+}
+
+// MergeProject consolidates observations, sessions, prompts, and importance scores from sourceProject into targetProject.
+func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targetProject string) (*domain.ProjectMergeResult, error) {
+	if err := s.authorize(ctx, authz.ResourceAdmin, authz.ActionManage, "", "", ""); err != nil {
+		return nil, err
+	}
+	sourceProject = strings.TrimSpace(sourceProject)
+	targetProject = strings.TrimSpace(targetProject)
+	if sourceProject == "" || targetProject == "" || sourceProject == targetProject {
+		return nil, domain.ErrInvalidInput
+	}
+	res := &domain.ProjectMergeResult{
+		SourceProject: sourceProject,
+		TargetProject: targetProject,
+	}
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		// 1. Resolve potential topic_key collision for active observations
+		_, _ = tx.Exec(ctx, `
+			UPDATE observations old_obs
+			SET deleted_at = now(), updated_at = now()
+			FROM sessions s
+			WHERE old_obs.tenant_id = public.cortex_current_tenant()
+			  AND s.tenant_id = old_obs.tenant_id
+			  AND s.id = old_obs.session_id
+			  AND s.workspace_id = $1
+			  AND old_obs.project_key = $2
+			  AND old_obs.topic_key IS NOT NULL
+			  AND old_obs.topic_key <> ''
+			  AND old_obs.deleted_at IS NULL
+			  AND EXISTS (
+				SELECT 1 FROM observations target_obs
+				JOIN sessions ts ON ts.tenant_id = target_obs.tenant_id AND ts.id = target_obs.session_id
+				WHERE target_obs.tenant_id = old_obs.tenant_id
+				  AND ts.workspace_id = s.workspace_id
+				  AND target_obs.project_key = $3
+				  AND target_obs.topic_key = old_obs.topic_key
+				  AND target_obs.deleted_at IS NULL
+			  )
+		`, ws, sourceProject, targetProject)
+
+		// 2. Merge remaining observations
+		tagObs, err := tx.Exec(ctx, `
+			UPDATE observations o
+			SET project_key = $3, updated_at = now()
+			FROM sessions s
+			WHERE o.tenant_id = public.cortex_current_tenant()
+			  AND s.tenant_id = o.tenant_id
+			  AND s.id = o.session_id
+			  AND s.workspace_id = $1
+			  AND o.project_key = $2
+			  AND o.deleted_at IS NULL
+		`, ws, sourceProject, targetProject)
+		if err != nil {
+			return fmt.Errorf("merge observations: %w", err)
+		}
+		res.ObservationsMerged = int(tagObs.RowsAffected())
+
+		// 3. Merge sessions
+		tagSess, err := tx.Exec(ctx, `
+			UPDATE sessions
+			SET project_key = $3, updated_at = now()
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = $1
+			  AND project_key = $2
+		`, ws, sourceProject, targetProject)
+		if err != nil {
+			return fmt.Errorf("merge sessions: %w", err)
+		}
+		res.SessionsMerged = int(tagSess.RowsAffected())
+
+		// 4. Merge importance_scores
+		_, _ = tx.Exec(ctx, `
+			UPDATE importance_scores
+			SET project_key = $3, updated_at = now()
+			WHERE tenant_id = public.cortex_current_tenant()
+			  AND workspace_id = $1
+			  AND project_key = $2
+		`, ws, sourceProject, targetProject)
+
+		// 5. Merge prompts
+		tagPrompts, err := tx.Exec(ctx, `
+			UPDATE prompts p
+			SET project_key = $3, updated_at = now()
+			FROM sessions s
+			WHERE p.tenant_id = public.cortex_current_tenant()
+			  AND s.tenant_id = p.tenant_id
+			  AND s.id = p.session_id
+			  AND s.workspace_id = $1
+			  AND p.project_key = $2
+		`, ws, sourceProject, targetProject)
+		if err == nil {
+			res.PromptsMerged = int(tagPrompts.RowsAffected())
+		}
+
+		return nil
+	})
+	return res, err
 }

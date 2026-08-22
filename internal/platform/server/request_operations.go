@@ -33,6 +33,26 @@ func (requestOperations) SaveObservation(ctx context.Context, value *domain.Obse
 	}
 	return ops.SaveObservation(ctx, value)
 }
+
+// SaveObservationWithEffect delegates the durable, status-reporting save to
+// the principal-scoped AuthorizedStore (REM-SAVE-001 server surface).
+func (requestOperations) SaveObservationWithEffect(ctx context.Context, value *domain.Observation) (domain.SaveEffect, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return domain.SaveEffect{}, err
+	}
+	return ops.SaveObservationWithEffect(ctx, value)
+}
+
+// ExecuteHandoff delegates the compound, preauthorized handoff to the
+// principal-scoped AuthorizedStore (REM-AUTH-001).
+func (requestOperations) ExecuteHandoff(ctx context.Context, request domain.HandoffRequest) (domain.ObservationWriteResult, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return domain.ObservationWriteResult{}, err
+	}
+	return ops.ExecuteHandoff(ctx, request)
+}
 func (requestOperations) GetObservationByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {
@@ -180,6 +200,13 @@ func (requestOperations) ListUsers(ctx context.Context) ([]identity.UserRecord, 
 	}
 	return ops.ListUsers(ctx)
 }
+func (requestOperations) GetUserProfile(ctx context.Context, id string) (*identity.UserRecord, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetUserProfile(ctx, id)
+}
 func (requestOperations) SetUserActive(ctx context.Context, id string, active bool) error {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {
@@ -215,3 +242,60 @@ func (requestOperations) RotateToken(ctx context.Context, id string) (identity.I
 	}
 	return ops.RotateToken(ctx, id)
 }
+func (requestOperations) GetProjectContext(ctx context.Context, project string) (*domain.ProjectContext, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectContext(ctx, project)
+}
+func (requestOperations) ListProjectSkills(ctx context.Context, project string) ([]*domain.ProjectSkill, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListProjectSkills(ctx, project)
+}
+func (requestOperations) GetProjectSkill(ctx context.Context, project, key string) (*domain.ProjectSkill, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectSkill(ctx, project, key)
+}
+func (requestOperations) SaveProjectArtifact(ctx context.Context, in domain.SaveProjectArtifactInput) (*domain.ProjectArtifactItem, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.SaveProjectArtifact(ctx, in)
+}
+func (requestOperations) ListProjectArtifacts(ctx context.Context, project string, kind string) ([]*domain.ProjectArtifactItem, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListProjectArtifacts(ctx, project, kind)
+}
+func (requestOperations) DeleteProjectArtifact(ctx context.Context, id string, reason string) error {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	return ops.DeleteProjectArtifact(ctx, id, reason)
+}
+func (requestOperations) GetProjectDuplicates(ctx context.Context) ([]domain.ProjectDuplicateGroup, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetProjectDuplicates(ctx)
+}
+func (requestOperations) MergeProject(ctx context.Context, source, target string) (*domain.ProjectMergeResult, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.MergeProject(ctx, source, target)
+}
+

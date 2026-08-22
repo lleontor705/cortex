@@ -3,9 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"time"
 
@@ -31,14 +31,8 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription("Create a typed relationship between two observations in the knowledge graph."),
-				mcp.WithNumber("from_id",
-					mcp.Required(),
-					mcp.Description("Source observation ID"),
-				),
-				mcp.WithNumber("to_id",
-					mcp.Required(),
-					mcp.Description("Target observation ID"),
-				),
+				withIntegerID("from_id", "Source observation ID"),
+				withIntegerID("to_id", "Target observation ID"),
 				mcp.WithString("relation_type",
 					mcp.Required(),
 					mcp.Description("Relationship type: references, relates_to, follows, supersedes, contradicts"),
@@ -69,13 +63,16 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription("Traverse the knowledge graph starting from an observation. Returns related observations up to the specified depth."),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("Starting observation ID"),
-				),
+				mcp.WithDescription("Traverse the knowledge graph starting from an observation. Returns related observations up to the specified depth, ordered by minimum hop then observation ID. Bounded by max_visited (default 1000, cap 10000, counts the root plus unique visited nodes) and max_results (default 100, cap 1000, counts emitted non-root rows); when eligible data is omitted the output reports truncated=true with the reason(s)."),
+				withIntegerID("observation_id", "Starting observation ID"),
 				mcp.WithNumber("depth",
 					mcp.Description("Traversal depth 1-10 (default: 1)"),
+				),
+				mcp.WithNumber("max_visited",
+					mcp.Description("Global visited budget 1-10000 (default: 1000): the root plus unique visited nodes"),
+				),
+				mcp.WithNumber("max_results",
+					mcp.Description("Maximum emitted related observations 1-1000 (default: 100)"),
 				),
 			),
 			handleGraph(stores),
@@ -91,7 +88,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription("List incoming and outgoing relationships for an observation, including type, weight, confidence, provenance, and temporal metadata."),
-				mcp.WithNumber("observation_id", mcp.Required(), mcp.Description("Observation ID")),
+				withIntegerID("observation_id", "Observation ID"),
 			),
 			handleGraphRelationships(stores),
 		)
@@ -105,10 +102,11 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription("Find the shortest observation path between two nodes using bounded breadth-first traversal."),
-				mcp.WithNumber("from_id", mcp.Required(), mcp.Description("Starting observation ID")),
-				mcp.WithNumber("to_id", mcp.Required(), mcp.Description("Destination observation ID")),
+				mcp.WithDescription("Find the lexicographically smallest shortest observation path between two nodes using bounded breadth-first traversal. On success the payload is the []int64 path (empty array when no path exists within the depth). If the max_visited budget (default 1000, cap 10000, counts the root plus unique visited nodes including the destination) is exhausted before the path can be proved or disproved, a stable traversal-truncated error is returned instead of a false no-path result."),
+				withIntegerID("from_id", "Starting observation ID"),
+				withIntegerID("to_id", "Destination observation ID"),
 				mcp.WithNumber("max_depth", mcp.Description("Maximum traversal depth 1-10 (default: 5)")),
+				mcp.WithNumber("max_visited", mcp.Description("Global visited budget 1-10000 (default: 1000): the root plus unique visited nodes")),
 			),
 			handleGraphPath(stores),
 		)
@@ -124,10 +122,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription("Get or recalculate the importance score for an observation. Score formula: base + accessBonus + recencyBonus + edgeBonus + typeBonus - agePenalty, clamped to [0.0, 5.0]."),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("Observation ID to score"),
-				),
+				withIntegerID("observation_id", "Observation ID to score"),
 				mcp.WithBoolean("recalculate",
 					mcp.Description("Force recalculation (default: false)"),
 				),
@@ -146,10 +141,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription("Archive an observation by soft-deleting it. Archived observations can still be found with include_archived searches."),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("Observation ID to archive"),
-				),
+				withIntegerID("observation_id", "Observation ID to archive"),
 			),
 			handleArchive(stores),
 		)
@@ -244,6 +236,40 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
+	// --- cortex_resolve_query -------------------------------------------
+	if shouldRegister("cortex_resolve_query", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_resolve_query",
+				mcp.WithTitleAnnotation("Resolve Query with Active Mode"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Intelligently resolve a query using Cortex memory and knowledge graph in the active runtime mode (Local SQLite FTS5/Graph or Server PostgreSQL). Returns structured relevant observations, recent context, and operational metadata."),
+				mcp.WithString("query",
+					mcp.Required(),
+					mcp.Description("The question, topic or search query to resolve"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Optional project filter (defaults to all or current workspace)"),
+				),
+				mcp.WithNumber("limit",
+					mcp.Description("Maximum number of observations to retrieve (default: 10)"),
+				),
+			),
+			handleResolveQuery(stores),
+		)
+	}
+
+	// --- cortex_get_status ----------------------------------------------
+	if shouldRegister("cortex_get_status", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_get_status",
+				mcp.WithTitleAnnotation("Get Cortex Status and Runtime Mode"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Get the active operational mode (local SQLite vs server PostgreSQL), version, storage status, and enabled capabilities."),
+			),
+			handleGetStatus(stores),
+		)
+	}
+
 	// --- cortex_merge_projects (admin) ---
 	if shouldRegister("cortex_merge_projects", allowlist) {
 		srv.AddTool(
@@ -268,16 +294,16 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 
 func handleRelate(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		fromID := int64(intArg(req, "from_id", 0))
-		toID := int64(intArg(req, "to_id", 0))
+		fromID, fromOK := positiveIDArg(req, "from_id")
+		toID, toOK := positiveIDArg(req, "to_id")
 		relationType := stringArg(req, "relation_type")
 		weight := floatArg(req, "weight", 1.0)
 		confidence := floatArg(req, "confidence", 1.0)
 		source := stringArg(req, "source")
 		reasoning := stringArg(req, "reasoning")
 
-		if fromID == 0 || toID == 0 {
-			return errorResult("from_id and to_id are required")
+		if !fromOK || !toOK {
+			return errorResult("from_id and to_id must be positive integers")
 		}
 		if relationType == "" {
 			return errorResult("relation_type is required -- use: references, relates_to, follows, supersedes, contradicts")
@@ -301,7 +327,7 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := svc.CreateEdge(ctx, edge); err != nil {
-			return errorResult("Failed to create relationship: %s", err)
+			return errorResult("Failed to create relationship: %s", localErrorText(err))
 		}
 
 		return textResult("Relationship created: observation %d -[%s]-> observation %d (weight: %.1f, edge ID: %d)",
@@ -311,27 +337,38 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 
 func handleGraph(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		obsID := int64(intArg(req, "observation_id", 0))
+		obsID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
+		}
 		depth := intArg(req, "depth", 1)
 
-		if obsID == 0 {
-			return errorResult("observation_id is required")
-		}
-
 		svc := graphdomain.NewService(stores.Graph)
-		related, err := svc.GetRelated(ctx, obsID, depth)
+		related, err := svc.GetRelatedBounded(ctx, obsID, domain.GraphTraversalOptions{
+			Depth:      depth,
+			MaxVisited: intArg(req, "max_visited", 0),
+			MaxResults: intArg(req, "max_results", 0),
+		})
 		if err != nil {
-			return errorResult("Failed to traverse graph: %s", err)
+			return errorResult("Failed to traverse graph: %s", localErrorText(err))
 		}
 
-		if len(related) == 0 {
+		if len(related.Observations) == 0 {
+			if related.Truncated {
+				return textResult("No related observations emitted for ID %d (depth: %d): traversal truncated (%s)",
+					obsID, depth, strings.Join(related.TruncationReasons, ", "))
+			}
 			return textResult("No related observations found for ID %d (depth: %d)", obsID, depth)
 		}
 
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "Related observations for ID %d (depth: %d, found: %d):\n\n", obsID, depth, len(related))
-		for _, obs := range related {
+		fmt.Fprintf(&sb, "Related observations for ID %d (depth: %d, found: %d):\n\n", obsID, depth, len(related.Observations))
+		for _, obs := range related.Observations {
 			fmt.Fprintf(&sb, "- [%d] %s (%s) -- %s\n", obs.ID, obs.Title, obs.Type, truncate(obs.Content, 80))
+		}
+		if related.Truncated {
+			fmt.Fprintf(&sb, "\nTraversal truncated (reason: %s): raise max_visited/max_results to see omitted observations.\n",
+				strings.Join(related.TruncationReasons, ", "))
 		}
 
 		return textResult("%s", sb.String())
@@ -340,14 +377,14 @@ func handleGraph(stores *Stores) server.ToolHandlerFunc {
 
 func handleGraphRelationships(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		obsID, ok := positiveIntegerArg(req, "observation_id")
+		obsID, ok := positiveIDArg(req, "observation_id")
 		if !ok {
 			return errorResult("observation_id must be a positive integer")
 		}
 
 		edges, err := graphdomain.NewService(stores.Graph).GetRelationships(ctx, obsID)
 		if err != nil {
-			return errorResult("Failed to get graph relationships: %s", err)
+			return errorResult("Failed to get graph relationships: %s", localErrorText(err))
 		}
 		if edges == nil {
 			edges = []*domain.Edge{}
@@ -358,26 +395,29 @@ func handleGraphRelationships(stores *Stores) server.ToolHandlerFunc {
 
 func handleGraphPath(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		fromID, fromOK := positiveIntegerArg(req, "from_id")
-		toID, toOK := positiveIntegerArg(req, "to_id")
+		fromID, fromOK := positiveIDArg(req, "from_id")
+		toID, toOK := positiveIDArg(req, "to_id")
 		if !fromOK || !toOK {
 			return errorResult("from_id and to_id must be positive integers")
 		}
 
-		path, err := graphdomain.NewService(stores.Graph).FindPath(ctx, fromID, toID, intArg(req, "max_depth", graphdomain.DefaultMaxDepth))
+		path, err := graphdomain.NewService(stores.Graph).FindPathBounded(ctx, fromID, toID,
+			intArg(req, "max_depth", graphdomain.DefaultMaxDepth),
+			intArg(req, "max_visited", 0))
 		if err != nil {
-			return errorResult("Failed to find graph path: %s", err)
+			// The truncation sentinel is a stable, domain-authored constant:
+			// surface it verbatim so clients can distinguish a bounded sweep
+			// from a true no-path result; all other errors stay classified.
+			if errors.Is(err, graphdomain.ErrTraversalTruncated) {
+				return errorResult("Failed to find graph path: %s", graphdomain.ErrTraversalTruncated.Error())
+			}
+			return errorResult("Failed to find graph path: %s", localErrorText(err))
 		}
 		if path == nil {
 			path = []int64{}
 		}
 		return jsonTextResult(path)
 	}
-}
-
-func positiveIntegerArg(req mcp.CallToolRequest, key string) (int64, bool) {
-	value, ok := req.GetArguments()[key].(float64)
-	return int64(value), ok && value > 0 && value == math.Trunc(value)
 }
 
 func jsonTextResult(value any) (*mcp.CallToolResult, error) {
@@ -390,26 +430,25 @@ func jsonTextResult(value any) (*mcp.CallToolResult, error) {
 
 func handleScore(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		obsID := int64(intArg(req, "observation_id", 0))
-		recalculate := boolArg(req, "recalculate", false)
-
-		if obsID == 0 {
-			return errorResult("observation_id is required")
+		obsID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
+		recalculate := boolArg(req, "recalculate", false)
 
 		svc := scoringdomain.NewService(stores.Scoring)
 
 		if recalculate {
 			score, err := svc.CalculateScore(ctx, obsID)
 			if err != nil {
-				return errorResult("Failed to recalculate score: %s", err)
+				return errorResult("Failed to recalculate score: %s", localErrorText(err))
 			}
 			return textResult("Score recalculated for observation %d: %.2f", obsID, score)
 		}
 
 		score, err := svc.GetScore(ctx, obsID)
 		if err != nil {
-			return errorResult("Failed to get score: %s", err)
+			return errorResult("Failed to get score: %s", localErrorText(err))
 		}
 
 		return textResult("Observation %d -- score: %.2f, access_count: %d, last_accessed: %s",
@@ -419,14 +458,13 @@ func handleScore(stores *Stores) server.ToolHandlerFunc {
 
 func handleArchive(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		obsID := int64(intArg(req, "observation_id", 0))
-
-		if obsID == 0 {
-			return errorResult("observation_id is required")
+		obsID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
 
 		if err := stores.Observations.Delete(ctx, obsID); err != nil {
-			return errorResult("Failed to archive observation: %s", err)
+			return errorResult("Failed to archive observation: %s", localErrorText(err))
 		}
 
 		return textResult("Observation %d archived (soft-deleted)", obsID)
@@ -460,7 +498,7 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 
 		ftsResults, err := stores.Search.Search(ctx, query, opts)
 		if err != nil {
-			return errorResult("FTS5 search failed: %s", err)
+			return errorResult("FTS5 search failed: %s", localErrorText(err))
 		}
 
 		searchMode := "FTS5"
@@ -544,7 +582,7 @@ func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
 
 		result, err := stores.Observations.MergeProjects(ctx, sources, to)
 		if err != nil {
-			return errorResult("merge failed: %s", err)
+			return errorResult("merge failed: %s", localErrorText(err))
 		}
 
 		return textResult("Merged into %q: %d observations, %d sessions updated. Sources merged: %v",
@@ -568,7 +606,7 @@ func handleSearchTemporal(stores *Stores) server.ToolHandlerFunc {
 
 		asOf, err := time.Parse(time.RFC3339, asOfStr)
 		if err != nil {
-			return errorResult("invalid as_of timestamp: %s (use ISO 8601 format)", err)
+			return errorResult("invalid as_of timestamp (use ISO 8601 format, e.g. 2025-06-15T00:00:00Z)")
 		}
 
 		results, err := stores.Search.Search(ctx, query, domain.SearchOptions{
@@ -578,7 +616,7 @@ func handleSearchTemporal(stores *Stores) server.ToolHandlerFunc {
 			AsOf:        &asOf,
 		})
 		if err != nil {
-			return errorResult("temporal search failed: %s", err)
+			return errorResult("temporal search failed: %s", localErrorText(err))
 		}
 
 		if len(results) == 0 {
@@ -608,7 +646,7 @@ func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
 			// Return all observations with this topic key
 			obs, err := stores.Observations.ListByTopicKey(ctx, project, topicKey)
 			if err != nil {
-				return errorResult("failed to list observations: %s", err)
+				return errorResult("failed to list observations: %s", localErrorText(err))
 			}
 			if len(obs) < 2 {
 				return textResult("Topic key %q has %d observation(s) — nothing to consolidate.", topicKey, len(obs))
@@ -628,7 +666,7 @@ func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
 		// Find all consolidation candidate groups
 		groups, err := stores.Observations.FindConsolidationCandidates(ctx, project, 2)
 		if err != nil {
-			return errorResult("failed to find candidates: %s", err)
+			return errorResult("failed to find candidates: %s", localErrorText(err))
 		}
 
 		if len(groups) == 0 {
@@ -656,7 +694,7 @@ func handleProjectDNA(stores *Stores) server.ToolHandlerFunc {
 		svc := dna.NewService(stores.Observations, stores.Scoring, stores.Graph)
 		result, err := svc.Generate(ctx, project)
 		if err != nil {
-			return errorResult("failed to generate DNA: %s", err)
+			return errorResult("failed to generate DNA: %s", localErrorText(err))
 		}
 
 		return textResult("%s", result)
@@ -671,3 +709,65 @@ func floatArg(req mcp.CallToolRequest, key string, defaultVal float64) float64 {
 	}
 	return v
 }
+
+func handleResolveQuery(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query := stringArg(req, "query")
+		if query == "" {
+			return errorResult("query is required")
+		}
+		project := stringArg(req, "project")
+		limit := intArg(req, "limit", 10)
+		if limit <= 0 || limit > 100 {
+			limit = 10
+		}
+
+		results, err := stores.Search.Search(ctx, query, domain.SearchOptions{
+			Project: project,
+			Limit:   limit,
+		})
+		if err != nil {
+			return errorResult("search error: %v", err)
+		}
+
+		// Also fetch recent context for surrounding context
+		recent, _ := stores.Observations.List(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   5,
+		})
+
+		response := map[string]any{
+			"mode":               "local",
+			"database":           "sqlite",
+			"query":              query,
+			"project":            project,
+			"total_matches":      len(results),
+			"observations":       results,
+			"recent_surrounding": recent,
+		}
+
+		b, err := json.MarshalIndent(response, "", "  ")
+		if err != nil {
+			return errorResult("serialize response: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		status := map[string]any{
+			"mode":         "local",
+			"database":     "sqlite",
+			"version":      serverVersion,
+			"capabilities": []string{"fts5_search", "knowledge_graph", "scoring", "temporal", "dna", "handoff", "hybrid_search"},
+			"profiles":     []string{"agent", "admin", "temporal"},
+		}
+		b, err := json.MarshalIndent(status, "", "  ")
+		if err != nil {
+			return errorResult("serialize status: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+

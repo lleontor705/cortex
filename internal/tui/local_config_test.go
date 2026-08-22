@@ -33,13 +33,13 @@ func TestDashboardOpensLocalSettings(t *testing.T) {
 		t.Fatalf("local settings = %+v", result)
 	}
 	view := result.View()
-	for _, want := range []string{"Configuration Center", "LOCAL ONLY", "Local database", "1  Local"} {
+	for _, want := range []string{"Configuration Center", "LOCAL ONLY", "Local Storage", "1 Storage"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q", want)
 		}
 	}
 	result.LocalCfgSaved = true
-	if saved := result.View(); !strings.Contains(saved, "Restart Cortex") {
+	if saved := result.View(); !strings.Contains(saved, "Restart") {
 		t.Fatal("saved view does not explain restart requirement")
 	}
 }
@@ -49,7 +49,7 @@ func TestLocalSettingsSectionNavigationAndReview(t *testing.T) {
 	for _, step := range []struct {
 		key   string
 		field int
-	}{{"l", 1}, {"tab", 4}, {"right", 7}, {"l", 11}} {
+	}{{"tab", 2}, {"tab", 5}, {"right", 8}, {"l", 11}, {"l", 15}} {
 		updated, _ := m.handleLocalConfigKeys(step.key)
 		m = updated.(Model)
 		if m.LocalCfgFocusField != step.field {
@@ -57,7 +57,7 @@ func TestLocalSettingsSectionNavigationAndReview(t *testing.T) {
 		}
 	}
 	view := m.View()
-	for _, want := range []string{"Review and apply", "Storage", "HTTP", "MCP", "Sync", "Validate & save"} {
+	for _, want := range []string{"Review & Apply", "Storage", "HTTP API", "MCP Proxy", "Sync", "Validate & Save"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("review missing %q", want)
 		}
@@ -101,3 +101,40 @@ func TestSaveLocalConfigPreservesFriendlyYAML(t *testing.T) {
 		}
 	}
 }
+
+func TestThemeSwitching(t *testing.T) {
+	ApplyTheme(true)
+	if !IsDark() {
+		t.Errorf("expected Dark theme, got Light")
+	}
+
+	isDark := ToggleTheme()
+	if isDark {
+		t.Errorf("expected Light theme after toggle, got Dark")
+	}
+	if IsDark() {
+		t.Errorf("IsDark() returned true for Light theme")
+	}
+
+	isDark = ToggleTheme()
+	if !isDark {
+		t.Errorf("expected Dark theme after second toggle, got Light")
+	}
+	if !IsDark() {
+		t.Errorf("IsDark() returned false for Dark theme")
+	}
+}
+
+func TestAuthAndIdentityModel(t *testing.T) {
+	m := New(&Deps{Version: "2.0.0"})
+	if m.CurrentUser != "usrLuisLeon" {
+		t.Errorf("expected usrLuisLeon, got %s", m.CurrentUser)
+	}
+	if m.UserRole != "admin" {
+		t.Errorf("expected admin, got %s", m.UserRole)
+	}
+	if !m.IsDarkTheme {
+		t.Errorf("expected dark theme by default")
+	}
+}
+

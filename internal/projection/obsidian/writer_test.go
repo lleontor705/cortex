@@ -658,10 +658,16 @@ func TestExportGoldenBytesAndOutsideVaultProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "cortex", "projects", "demo", "observations", "golden-"+idHash("1")+".md")
-	want, err := os.ReadFile(filepath.Join("testdata", "golden", "observation.md"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "golden", "observation.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Cause: git stores this golden fixture with LF endings, but a Windows
+	// checkout with core.autocrlf=true materializes CRLF in the working tree,
+	// while the exporter deterministically emits LF. Normalizing only the
+	// checkout-introduced terminator keeps the byte comparison portable
+	// across platforms without masking real content drift.
+	want := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

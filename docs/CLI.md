@@ -17,6 +17,8 @@ The production entrypoint is `cmd/cortex`. Run `cortex help` for flags and `cort
 | `doctor` | Check database, FTS, graph, vectors, and orphans |
 | `reindex` | Rebuild local vector/index data |
 | `gc` | Remove archived local observations |
+| `config` | Manage configuration (`get`, `set`, `show`, `validate`, `init`, `wizard`) |
+| `auth` | Manage user authentication session (`login`, `status`, `logout`) |
 | `export` / `import` | Exchange observation data |
 | `sync` | Synchronize configured chunks |
 | `merge-projects` | Merge local project names |

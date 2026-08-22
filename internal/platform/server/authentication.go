@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -17,11 +16,14 @@ type principalOperationsFactory interface {
 	ForPrincipal(context.Context, domain.Principal) (Operations, error)
 }
 
+// requestAuthenticator verifies every presented bearer through the narrow
+// token verifier. There is deliberately no configured-token bypass: the
+// startup bearer and every request bearer take the same single
+// cortex_verify_token_principal path, and only a verified principal reaches
+// the operations factory.
 type requestAuthenticator struct {
-	bootstrapToken     string
-	bootstrapPrincipal domain.Principal
-	verifier           principalVerifier
-	factory            principalOperationsFactory
+	verifier principalVerifier
+	factory  principalOperationsFactory
 }
 
 type principalContextKey struct{}
@@ -31,22 +33,27 @@ func principalFromContext(ctx context.Context) (domain.Principal, bool) {
 	return principal, ok
 }
 
+// middleware extracts the bearer secret byte-exact: the configured bearer is
+// validated canonical at startup (validateBearerToken rejects surrounding and
+// control whitespace), so the presented secret is never trimmed — only the
+// exact stored credential can verify, and padded presentations fail closed.
 func (a requestAuthenticator) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw := strings.TrimSpace(r.Header.Get("Authorization"))
-		if !strings.HasPrefix(raw, "Bearer ") {
+		provided := r.Header.Get("Authorization")
+		const bearerScheme = "Bearer "
+		if !strings.HasPrefix(provided, bearerScheme) {
 			writeUnauthorized(w)
 			return
 		}
-		secret := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))
-		principal, ok := a.bootstrap(secret)
-		if !ok {
-			var err error
-			principal, err = a.verifier.VerifyToken(r.Context(), secret, "")
-			if err != nil {
-				writeUnauthorized(w)
-				return
-			}
+		secret := provided[len(bearerScheme):]
+		if secret == "" || strings.TrimSpace(secret) == "" {
+			writeUnauthorized(w)
+			return
+		}
+		principal, err := a.verifier.VerifyToken(r.Context(), secret, "")
+		if err != nil {
+			writeUnauthorized(w)
+			return
 		}
 		ops, err := a.factory.ForPrincipal(r.Context(), principal)
 		if err != nil {
@@ -56,13 +63,6 @@ func (a requestAuthenticator) middleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), principalContextKey{}, principal)
 		next.ServeHTTP(w, r.WithContext(withOperations(ctx, ops)))
 	})
-}
-
-func (a requestAuthenticator) bootstrap(secret string) (domain.Principal, bool) {
-	if a.bootstrapToken == "" || len(secret) != len(a.bootstrapToken) || subtle.ConstantTimeCompare([]byte(secret), []byte(a.bootstrapToken)) != 1 {
-		return domain.Principal{}, false
-	}
-	return a.bootstrapPrincipal, true
 }
 
 func writeUnauthorized(w http.ResponseWriter) {

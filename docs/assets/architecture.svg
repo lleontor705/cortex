@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 560" width="100%" height="100%" style="background:#090d16;font-family:Inter,system-ui,-apple-system,sans-serif">
+  <defs>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background Grid -->
+  <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1e293b" stroke-width="0.5" opacity="0.6"/>
+  </pattern>
+  <rect width="950" height="560" fill="url(#grid)"/>
+
+  <!-- Title Header -->
+  <text x="475" y="42" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="800" letter-spacing="1">CORTEX 2.0 ENTERPRISE ARCHITECTURE</text>
+  <text x="475" y="65" text-anchor="middle" fill="#94a3b8" font-size="12">Plataforma Unificada de Memoria Autónoma, Gobernanza y Grafo de Código</text>
+
+  <!-- Layer 1: Client & Protocols -->
+  <g transform="translate(40, 95)">
+    <rect width="870" height="95" rx="12" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+    <text x="25" y="26" fill="#38bdf8" font-size="12" font-weight="700" letter-spacing="0.5">CAPA DE CLIENTES &amp; PROTOCOLOS</text>
+
+    <!-- Client Cards -->
+    <g transform="translate(25, 40)">
+      <rect width="180" height="42" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="90" y="25" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">Next.js 15 Web UI (60 FPS)</text>
+    </g>
+    <g transform="translate(235, 40)">
+      <rect width="180" height="42" rx="8" fill="#1e293b" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="90" y="25" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">MCP Streamable HTTP / Stdio</text>
+    </g>
+    <g transform="translate(445, 40)">
+      <rect width="180" height="42" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1"/>
+      <text x="90" y="25" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">Authenticated REST API</text>
+    </g>
+    <g transform="translate(655, 40)">
+      <rect width="180" height="42" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="90" y="25" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">Cortex CLI &amp; TUI Native</text>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <path d="M 475 190 L 475 220" stroke="#60a5fa" stroke-width="2" stroke-dasharray="4,4"/>
+
+  <!-- Layer 2: Core Processing & Engine Layer -->
+  <g transform="translate(40, 220)">
+    <rect width="870" height="175" rx="12" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="25" y="26" fill="#60a5fa" font-size="12" font-weight="700" letter-spacing="0.5">CORTEX CORE ENGINE (ZERO-CGO GO RUNTIME)</text>
+
+    <!-- Core Boxes -->
+    <g transform="translate(25, 42)">
+      <rect width="255" height="115" rx="10" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="127" y="25" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="700">AST Code Extractor</text>
+      <text x="127" y="48" text-anchor="middle" fill="#cbd5e1" font-size="11">• Multi-lenguaje (Go, TS, Py, SQL)</text>
+      <text x="127" y="68" text-anchor="middle" fill="#cbd5e1" font-size="11">• Ingesta y Reconciliación Upsert</text>
+      <text x="127" y="88" text-anchor="middle" fill="#cbd5e1" font-size="11">• Parsing local sin costo de LLM</text>
+    </g>
+
+    <g transform="translate(305, 42)">
+      <rect width="255" height="115" rx="10" fill="#1e293b" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="127" y="25" text-anchor="middle" fill="#c4b5fd" font-size="13" font-weight="700">Graph Analytics &amp; Louvain</text>
+      <text x="127" y="48" text-anchor="middle" fill="#cbd5e1" font-size="11">• Louvain / Leiden Community Clustering</text>
+      <text x="127" y="68" text-anchor="middle" fill="#cbd5e1" font-size="11">• God Nodes (Cuellos de Botella)</text>
+      <text x="127" y="88" text-anchor="middle" fill="#cbd5e1" font-size="11">• Blast Radius &amp; Tarjan Cycles</text>
+    </g>
+
+    <g transform="translate(585, 42)">
+      <rect width="255" height="115" rx="10" fill="#1e293b" stroke="#10b981" stroke-width="1"/>
+      <text x="127" y="25" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="700">Autonomous Workers &amp; LLM</text>
+      <text x="127" y="48" text-anchor="middle" fill="#cbd5e1" font-size="11">• Background Graph Reorganization</text>
+      <text x="127" y="68" text-anchor="middle" fill="#cbd5e1" font-size="11">• Semantic Conflict Resolution</text>
+      <text x="127" y="88" text-anchor="middle" fill="#cbd5e1" font-size="11">• Multi-Model (Gemini, OpenAI, Ollama)</text>
+    </g>
+  </g>
+
+  <!-- Connectors -->
+  <path d="M 475 395 L 475 425" stroke="#a78bfa" stroke-width="2" stroke-dasharray="4,4"/>
+
+  <!-- Layer 3: Persistence & Storage Layer -->
+  <g transform="translate(40, 425)">
+    <rect width="870" height="105" rx="12" fill="#0f172a" stroke="#10b981" stroke-width="1.5"/>
+    <text x="25" y="26" fill="#34d399" font-size="12" font-weight="700" letter-spacing="0.5">CAPA DE PERSISTENCIA &amp; SEGURIDAD RLS</text>
+
+    <!-- Storage Boxes -->
+    <g transform="translate(25, 40)">
+      <rect width="255" height="50" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1"/>
+      <text x="127" y="24" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">PostgreSQL Multi-Tenant (RLS)</text>
+      <text x="127" y="40" text-anchor="middle" fill="#94a3b8" font-size="10">Aislamiento por Tenant, Workspace y Proyecto</text>
+    </g>
+    <g transform="translate(305, 40)">
+      <rect width="255" height="50" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="127" y="24" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">Vector Backends (pgvector / Qdrant)</text>
+      <text x="127" y="40" text-anchor="middle" fill="#94a3b8" font-size="10">Indexación vectorial &amp; Búsqueda Híbrida BM25</text>
+    </g>
+    <g transform="translate(585, 40)">
+      <rect width="255" height="50" rx="8" fill="#1e293b" stroke="#06b6d4" stroke-width="1"/>
+      <text x="127" y="24" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">SQLite Local (Zero-CGO)</text>
+      <text x="127" y="40" text-anchor="middle" fill="#94a3b8" font-size="10">Modo local embebido con BLOB cosine scan</text>
+    </g>
+  </g>
+</svg>

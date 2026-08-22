@@ -63,17 +63,14 @@ func registerTemporalTools(srv *server.MCPServer, stores *Stores, allowlist map[
 
 func temporalTool(name, description string) protocol.Tool {
 	desc := protocol.WithDescription(description)
-	requiredNumber := func(name, description string) protocol.ToolOption {
-		return protocol.WithNumber(name, protocol.Required(), protocol.Description(description))
-	}
 	requiredString := func(name, description string) protocol.ToolOption {
 		return protocol.WithString(name, protocol.Required(), protocol.Description(description))
 	}
 	switch name {
 	case "cortex_temporal_create_edge":
 		return protocol.NewTool(name, desc,
-			requiredNumber("from_obs_id", "Source observation ID"),
-			requiredNumber("to_obs_id", "Target observation ID"),
+			withIntegerID("from_obs_id", "Source observation ID"),
+			withIntegerID("to_obs_id", "Target observation ID"),
 			requiredString("relation_type", "references, relates_to, follows, supersedes, or contradicts"),
 			protocol.WithNumber("weight", protocol.Description("Relationship strength 0-10")),
 			protocol.WithNumber("confidence", protocol.Description("Confidence 0-1")),
@@ -85,11 +82,11 @@ func temporalTool(name, description string) protocol.Tool {
 			protocol.WithString("fact_state", protocol.Description("current, historical, deprecated, or superseded")),
 			protocol.WithString("change_reason", protocol.Description("Reason for the change")))
 	case "cortex_temporal_get_edges":
-		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"))
+		return protocol.NewTool(name, desc, withIntegerID("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"))
 	case "cortex_temporal_get_relevant":
-		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"), protocol.WithNumber("depth", protocol.Description("Traversal depth")))
+		return protocol.NewTool(name, desc, withIntegerID("observation_id", "Observation ID"), requiredString("at", "RFC3339 point in time"), protocol.WithNumber("depth", protocol.Description("Traversal depth")))
 	case "cortex_temporal_create_snapshot":
-		return protocol.NewTool(name, desc, requiredString("snapshot_key", "Stable snapshot key"), requiredNumber("root_observation_id", "Root observation ID"), protocol.WithString("description", protocol.Description("Snapshot description")))
+		return protocol.NewTool(name, desc, requiredString("snapshot_key", "Stable snapshot key"), withIntegerID("root_observation_id", "Root observation ID"), protocol.WithString("description", protocol.Description("Snapshot description")))
 	case "cortex_temporal_record_operation":
 		return protocol.NewTool(name, desc,
 			requiredString("session_id", "Session ID"), requiredString("operation_type", "Operation type"),
@@ -108,12 +105,30 @@ func temporalTool(name, description string) protocol.Tool {
 	case "cortex_temporal_system_metrics":
 		return protocol.NewTool(name, desc, requiredString("session_id", "Session ID"), requiredString("from", "RFC3339 range start"), requiredString("to", "RFC3339 range end"))
 	case "cortex_temporal_evolution_path":
-		return protocol.NewTool(name, desc, requiredNumber("edge_id", "Edge ID"))
+		return protocol.NewTool(name, desc, withIntegerID("edge_id", "Edge ID"))
 	case "cortex_temporal_fact_state":
-		return protocol.NewTool(name, desc, requiredNumber("observation_id", "Observation ID"))
+		return protocol.NewTool(name, desc, withIntegerID("observation_id", "Observation ID"))
 	default:
 		return protocol.NewTool(name, desc)
 	}
+}
+
+// temporalValidationError renders a constant validation failure tagged with
+// the stable validation code. Raw binder/parser internals and caller input
+// are never interpolated (T08R / QW-02).
+func temporalValidationError(message string) (*protocol.CallToolResult, error) {
+	return errorResult("%s [code: validation]", message)
+}
+
+// temporalJSONResult renders a successful payload as a text result; a
+// serialization failure is lowered to a constant redacted error, never the
+// raw marshal cause (T08R / QW-02).
+func temporalJSONResult(payload any, label string) (*protocol.CallToolResult, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return errorResult("Failed to serialize %s: %s", label, localErrorText(err))
+	}
+	return textResult("%s", string(data))
 }
 
 // TemporalToolsHandler handles temporal graph and observability MCP tools.
@@ -151,7 +166,15 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call: BindArguments
+	// rejects non-numeric/fractional/overflowing JSON values itself, but
+	// missing, null, zero, and negative values bind to 0/negative int64s
+	// that must never reach the store layer (T07 / QW-01).
+	if params.FromObsID <= 0 || params.ToObsID <= 0 {
+		return errorResult("from_obs_id and to_obs_id must be positive integers")
 	}
 
 	// Convert time strings to time.Time
@@ -159,7 +182,7 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	if params.ValidFrom != "" {
 		t, err := time.Parse(time.RFC3339, params.ValidFrom)
 		if err != nil {
-			return errorResult("Invalid valid_from format: %v", err)
+			return temporalValidationError("Invalid valid_from format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 		}
 		validFrom = &t
 	}
@@ -167,7 +190,7 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	if params.InvalidAt != "" {
 		t, err := time.Parse(time.RFC3339, params.InvalidAt)
 		if err != nil {
-			return errorResult("Invalid invalid_at format: %v", err)
+			return temporalValidationError("Invalid invalid_at format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 		}
 		invalidAt = &t
 	}
@@ -188,7 +211,7 @@ func (h *TemporalToolsHandler) CreateTemporalEdge(ctx context.Context, req *prot
 	}
 
 	if err := h.temporalService.CreateTemporalEdge(ctx, edge); err != nil {
-		return errorResult("Failed to create temporal edge: %v", err)
+		return errorResult("Failed to create temporal edge: %s", localErrorText(err))
 	}
 
 	return textResult("Temporal edge created successfully with ID %d", edge.ID)
@@ -202,27 +225,26 @@ func (h *TemporalToolsHandler) GetTemporalEdges(ctx context.Context, req *protoc
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call (T07 / QW-01).
+	if params.ObservationID <= 0 {
+		return errorResult("observation_id must be a positive integer")
 	}
 
 	// Convert time string to time.Time
 	atTime, err := time.Parse(time.RFC3339, params.At)
 	if err != nil {
-		return errorResult("Invalid 'at' format: %v", err)
+		return temporalValidationError("Invalid 'at' format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 	}
 
 	edges, err := h.temporalService.GetTemporalEdges(ctx, params.ObservationID, atTime)
 	if err != nil {
-		return errorResult("Failed to get temporal edges: %v", err)
+		return errorResult("Failed to get temporal edges: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	edgesJSON, err := json.Marshal(edges)
-	if err != nil {
-		return errorResult("Failed to serialize edges: %v", err)
-	}
-
-	return textResult("%s", string(edgesJSON))
+	return temporalJSONResult(edges, "edges")
 }
 
 // GetTemporalRelevant retrieves observations relevant at a specific time.
@@ -234,27 +256,26 @@ func (h *TemporalToolsHandler) GetTemporalRelevant(ctx context.Context, req *pro
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call (T07 / QW-01).
+	if params.ObservationID <= 0 {
+		return errorResult("observation_id must be a positive integer")
 	}
 
 	// Convert time string to time.Time
 	atTime, err := time.Parse(time.RFC3339, params.At)
 	if err != nil {
-		return errorResult("Invalid 'at' format: %v", err)
+		return temporalValidationError("Invalid 'at' format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 	}
 
 	observations, err := h.temporalService.GetTemporalRelevant(ctx, params.ObservationID, atTime, params.Depth)
 	if err != nil {
-		return errorResult("Failed to get temporal relevant observations: %v", err)
+		return errorResult("Failed to get temporal relevant observations: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	obsJSON, err := json.Marshal(observations)
-	if err != nil {
-		return errorResult("Failed to serialize observations: %v", err)
-	}
-
-	return textResult("%s", string(obsJSON))
+	return temporalJSONResult(observations, "observations")
 }
 
 // CreateTemporalSnapshot creates a point-in-time snapshot of the knowledge graph.
@@ -266,21 +287,20 @@ func (h *TemporalToolsHandler) CreateTemporalSnapshot(ctx context.Context, req *
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call (T07 / QW-01).
+	if params.RootObservationID <= 0 {
+		return errorResult("root_observation_id must be a positive integer")
 	}
 
 	snapshot, err := h.temporalService.CreateTemporalSnapshot(ctx, params.SnapshotKey, params.RootObservationID, params.Description)
 	if err != nil {
-		return errorResult("Failed to create temporal snapshot: %v", err)
+		return errorResult("Failed to create temporal snapshot: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	snapshotJSON, err := json.Marshal(snapshot)
-	if err != nil {
-		return errorResult("Failed to serialize snapshot: %v", err)
-	}
-
-	return textResult("%s", string(snapshotJSON))
+	return temporalJSONResult(snapshot, "snapshot")
 }
 
 // RecordOperation records an operation with performance metrics.
@@ -301,13 +321,13 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
 	}
 
 	// Convert timestamp
 	timestamp, err := time.Parse(time.RFC3339, params.Timestamp)
 	if err != nil {
-		return errorResult("Invalid timestamp format: %v", err)
+		return temporalValidationError("Invalid timestamp format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 	}
 
 	metric := &domain.Metrics{
@@ -326,7 +346,7 @@ func (h *TemporalToolsHandler) RecordOperation(ctx context.Context, req *protoco
 	}
 
 	if err := h.observabilityService.RecordOperation(ctx, metric); err != nil {
-		return errorResult("Failed to record operation: %v", err)
+		return errorResult("Failed to record operation: %s", localErrorText(err))
 	}
 
 	return textResult("Operation recorded successfully")
@@ -340,21 +360,15 @@ func (h *TemporalToolsHandler) EvaluateMemoryQuality(ctx context.Context, req *p
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
 	}
 
 	quality, err := h.observabilityService.EvaluateMemoryQuality(ctx, params.SessionID, params.EvaluationType)
 	if err != nil {
-		return errorResult("Failed to evaluate memory quality: %v", err)
+		return errorResult("Failed to evaluate memory quality: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	qualityJSON, err := json.Marshal(quality)
-	if err != nil {
-		return errorResult("Failed to serialize quality metrics: %v", err)
-	}
-
-	return textResult("%s", string(qualityJSON))
+	return temporalJSONResult(quality, "quality metrics")
 }
 
 // GetSystemMetrics retrieves system-wide performance metrics.
@@ -366,48 +380,36 @@ func (h *TemporalToolsHandler) GetSystemMetrics(ctx context.Context, req *protoc
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
 	}
 
 	// Convert time strings
 	fromTime, err := time.Parse(time.RFC3339, params.From)
 	if err != nil {
-		return errorResult("Invalid 'from' format: %v", err)
+		return temporalValidationError("Invalid 'from' format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 	}
 
 	toTime, err := time.Parse(time.RFC3339, params.To)
 	if err != nil {
-		return errorResult("Invalid 'to' format: %v", err)
+		return temporalValidationError("Invalid 'to' format: expected RFC3339 (e.g. 2025-06-15T10:00:00Z)")
 	}
 
 	metrics, err := h.observabilityService.GetSystemMetrics(ctx, params.SessionID, fromTime, toTime)
 	if err != nil {
-		return errorResult("Failed to get system metrics: %v", err)
+		return errorResult("Failed to get system metrics: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	metricsJSON, err := json.Marshal(metrics)
-	if err != nil {
-		return errorResult("Failed to serialize metrics: %v", err)
-	}
-
-	return textResult("%s", string(metricsJSON))
+	return temporalJSONResult(metrics, "metrics")
 }
 
 // GetHealthCheck provides system health status.
 func (h *TemporalToolsHandler) GetHealthCheck(ctx context.Context, req *protocol.CallToolRequest) (*protocol.CallToolResult, error) {
 	health, err := h.observabilityService.GetHealthCheck(ctx)
 	if err != nil {
-		return errorResult("Failed to get health check: %v", err)
+		return errorResult("Failed to get health check: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	healthJSON, err := json.Marshal(health)
-	if err != nil {
-		return errorResult("Failed to serialize health check: %v", err)
-	}
-
-	return textResult("%s", string(healthJSON))
+	return temporalJSONResult(health, "health check")
 }
 
 // GetTemporalEvolutionPath retrieves the evolution history of an edge.
@@ -417,21 +419,20 @@ func (h *TemporalToolsHandler) GetTemporalEvolutionPath(ctx context.Context, req
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call (T07 / QW-01).
+	if params.EdgeID <= 0 {
+		return errorResult("edge_id must be a positive integer")
 	}
 
 	evolutionPath, err := h.temporalService.GetEvolutionPath(ctx, params.EdgeID)
 	if err != nil {
-		return errorResult("Failed to get evolution path: %v", err)
+		return errorResult("Failed to get evolution path: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	pathJSON, err := json.Marshal(evolutionPath)
-	if err != nil {
-		return errorResult("Failed to serialize evolution path: %v", err)
-	}
-
-	return textResult("%s", string(pathJSON))
+	return temporalJSONResult(evolutionPath, "evolution path")
 }
 
 // GetCurrentFactState determines the current state of facts related to an observation.
@@ -441,19 +442,18 @@ func (h *TemporalToolsHandler) GetCurrentFactState(ctx context.Context, req *pro
 	}
 
 	if err := req.BindArguments(&params); err != nil {
-		return errorResult("Invalid parameters: %v", err)
+		return temporalValidationError("Invalid parameters: arguments do not match the tool schema")
+	}
+
+	// Strict identifier validation before any store call (T07 / QW-01).
+	if params.ObservationID <= 0 {
+		return errorResult("observation_id must be a positive integer")
 	}
 
 	facts, err := h.temporalService.GetCurrentFactState(ctx, params.ObservationID)
 	if err != nil {
-		return errorResult("Failed to get current fact state: %v", err)
+		return errorResult("Failed to get current fact state: %s", localErrorText(err))
 	}
 
-	// Convert to JSON
-	factsJSON, err := json.Marshal(facts)
-	if err != nil {
-		return errorResult("Failed to serialize facts: %v", err)
-	}
-
-	return textResult("%s", string(factsJSON))
+	return temporalJSONResult(facts, "facts")
 }

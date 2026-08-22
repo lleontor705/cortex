@@ -19,6 +19,8 @@ const (
 	RoleOwner          Role = "owner"
 	RoleAdmin          Role = "admin"
 	RoleMember         Role = "member"
+	RoleDeveloper      Role = "developer"
+	RoleAgent          Role = "agent"
 	RoleViewer         Role = "viewer"
 	RoleServiceAccount Role = "service-account"
 )
@@ -92,10 +94,12 @@ type Policy struct{ Audit AuditSink }
 func NewPolicy() *Policy { return &Policy{} }
 
 var rolePermissions = map[Role]map[Resource]map[Action]bool{
-	RoleOwner:  allPermissions(),
-	RoleAdmin:  allPermissions(),
-	RoleMember: {ResourceMemory: {ActionRead: true, ActionWrite: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true}},
-	RoleViewer: {ResourceMemory: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
+	RoleOwner:     allPermissions(),
+	RoleAdmin:     allPermissions(),
+	RoleMember:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleDeveloper: {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleAgent:     {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}},
+	RoleViewer:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
 }
 
 func allPermissions() map[Resource]map[Action]bool {
@@ -170,6 +174,9 @@ func (p *Policy) decide(req Request) Decision {
 	}
 	if !allowed {
 		return Decision{Reason: DenyRole}
+	}
+	if req.Action == ActionDelete && req.Resource.OwnerSubject != "" && req.Resource.OwnerSubject != req.Principal.Subject && !hasRole(req.Principal, RoleOwner) && !hasRole(req.Principal, RoleAdmin) {
+		return Decision{Reason: DenyOwnership}
 	}
 	if req.Resource.OwnerSubject != "" && req.Resource.OwnerSubject != req.Principal.Subject && !hasRole(req.Principal, RoleOwner) && req.Resource.Classification == "personal" {
 		return Decision{Reason: DenyOwnership}

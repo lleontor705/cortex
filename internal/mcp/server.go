@@ -13,6 +13,7 @@ package mcp
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/lleontor705/cortex/internal/store/bundle"
@@ -48,9 +49,12 @@ var ProfileAgent = map[string]bool{
 	"cortex_score":               true,
 	"cortex_search_hybrid":       true,
 	"cortex_revision_history":    true,
+	"cortex_handoff":             true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate": true,
-	"cortex_project_dna": true,
+	"cortex_consolidate":     true,
+	"cortex_project_dna":     true,
+	"cortex_resolve_query":   true,
+	"cortex_get_status":      true,
 }
 
 // ProfileAdmin contains admin/diagnostic tools for manual curation
@@ -141,7 +145,11 @@ KNOWLEDGE GRAPH & SCORING:
 
 ADDITIONAL TOOLS (use ToolSearch):
   cortex_suggest_topic_key, cortex_capture_passive, cortex_session_start,
-  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna`
+  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna
+
+DURABLE HANDOFF:
+  cortex_handoff - exactly-once handoff with receipts; same key+payload
+  replays the same observation, differing payload conflicts`
 
 // NewServer creates an MCP server with ALL tools registered.
 func NewServer(stores *Stores) *server.MCPServer {
@@ -185,6 +193,61 @@ func intArg(req mcp.CallToolRequest, key string, defaultVal int) int {
 		return defaultVal
 	}
 	return int(v)
+}
+
+// --- Strict Identifier Helpers (T07 / QW-01) ---
+//
+// Persisted Cortex identifiers are int64 row IDs. They must be published as
+// JSON Schema integers and validated strictly BEFORE any store or domain
+// call: float truncation must never redirect a destructive operation
+// (cortex_delete(id:1.9) must NOT delete observation 1).
+
+// maxInt64Float is 2^63 as float64: the smallest float that exceeds the
+// int64 range. An integral float64 identifier must be strictly below it to
+// convert safely (the largest safe value, 9223372036854774784, is exactly
+// representable and <= math.MaxInt64).
+const maxInt64Float = 9223372036854775808.0
+
+// positiveIDArg extracts a strict positive int64 identifier argument. It
+// rejects missing values and non-numeric types (strings, booleans, objects,
+// arrays), NaN and infinities, fractional numbers, zero, negatives, and
+// values outside the int64 range. Handlers MUST call it (and return the
+// "<field> must be a positive integer" MCP error on failure) before any
+// store or domain access.
+func positiveIDArg(req mcp.CallToolRequest, key string) (int64, bool) {
+	value, ok := req.GetArguments()[key].(float64)
+	if !ok {
+		return 0, false
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	if value != math.Trunc(value) {
+		return 0, false
+	}
+	if value < 1 || value >= maxInt64Float {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+// integerIDSchema tightens a WithNumber property to a JSON Schema integer
+// with minimum 1. mcp-go v0.46 has no WithInteger builder, but property
+// options mutate the same map WithNumber seeds, so overriding "type" is the
+// supported composition path.
+func integerIDSchema(schema map[string]any) {
+	schema["type"] = "integer"
+	schema["minimum"] = float64(1)
+}
+
+// withIntegerID publishes a required identifier property as a strict
+// positive integer.
+func withIntegerID(name, description string) mcp.ToolOption {
+	return mcp.WithNumber(name,
+		integerIDSchema,
+		mcp.Required(),
+		mcp.Description(description),
+	)
 }
 
 func boolArg(req mcp.CallToolRequest, key string, defaultVal bool) bool {

@@ -27,5 +27,4 @@ EXPOSE 7438
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:7438/health || exit 1
 
-ENTRYPOINT ["cortex"]
-CMD ["mcp"]
+CMD ["/usr/local/bin/cortex", "--mode", "server"]

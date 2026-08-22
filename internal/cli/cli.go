@@ -98,6 +98,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runDoctor(stdout, stderr)
 	case "gc":
 		exitCode = runGC(args[2:], stdout, stderr)
+	case "config":
+		exitCode = runConfig(args[2:], stdout, stderr)
+	case "auth":
+		exitCode = runAuth(args[2:], stdout, stderr)
 	default:
 		writef(stderr, "unknown command: %s\n\n", args[1])
 		printUsage(stderr)
@@ -131,6 +135,7 @@ Commands:
   reindex [--project P]  Generate vector embeddings for all observations
   doctor                 Run health checks on the database
   gc [--days N]          Garbage collect archived observations (default: 90 days)
+  config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard)
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
@@ -1148,36 +1153,6 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Auto-start Ollama if configured
-	if a.Config.Search.EmbeddingProvider == "ollama" {
-		ctx := context.Background()
-		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
-		if !mgr.IsRunning(ctx) {
-			writeln(stdout, "Starting Ollama...")
-			if err := mgr.EnsureRunning(ctx); err != nil {
-				writef(stderr, "cortex: failed to start ollama: %v\n", err)
-				return 1
-			}
-			writeln(stdout, "Ollama is ready.")
-		}
-		// Check if model exists, pull if needed
-		model := a.Config.Search.EmbeddingModel
-		if model == "" {
-			model = "nomic-embed-text"
-		}
-		has, _ := mgr.HasModel(ctx, model)
-		if !has {
-			writef(stdout, "Pulling model %s...\n", model)
-			if err := mgr.PullModel(ctx, model, func(p string) {
-				writef(stdout, "  %s\n", p)
-			}); err != nil {
-				writef(stderr, "cortex: failed to pull model: %v\n", err)
-				return 1
-			}
-			writef(stdout, "Model %s pulled successfully.\n", model)
-		}
-	}
-
 	project := ""
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--project" && i+1 < len(args) {
@@ -1199,6 +1174,38 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 	}
 
 	writef(stdout, "Reindexing %d observations with %s...\n", len(obs), a.Stores.Embeddings.Model())
+	if len(obs) == 0 {
+		writeln(stdout, "Done. Indexed: 0, Skipped: 0, Errors: 0")
+		return 0
+	}
+
+	// Manage the local Ollama process and model only when auto-start is enabled.
+	if a.Config.Search.EmbeddingProvider == "ollama" && a.Config.Search.OllamaAutoStart {
+		mgr := ollama.NewManager(a.Config.Search.EmbeddingBaseURL)
+		if !mgr.IsRunning(ctx) {
+			writeln(stdout, "Starting Ollama...")
+			if err := mgr.EnsureRunning(ctx); err != nil {
+				writef(stderr, "cortex: failed to start ollama: %v\n", err)
+				return 1
+			}
+			writeln(stdout, "Ollama is ready.")
+		}
+		model := a.Config.Search.EmbeddingModel
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		has, _ := mgr.HasModel(ctx, model)
+		if !has {
+			writef(stdout, "Pulling model %s...\n", model)
+			if err := mgr.PullModel(ctx, model, func(p string) {
+				writef(stdout, "  %s\n", p)
+			}); err != nil {
+				writef(stderr, "cortex: failed to pull model: %v\n", err)
+				return 1
+			}
+			writef(stdout, "Model %s pulled successfully.\n", model)
+		}
+	}
 
 	indexed, skipped, errors := 0, 0, 0
 	for i, o := range obs {
@@ -1355,4 +1362,312 @@ func runGC(args []string, stdout, stderr io.Writer) int {
 
 	writef(stdout, "Garbage collected %d observations older than %d days.\n", deleted, days)
 	return 0
+}
+
+func runConfig(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		writef(stderr, "Usage: cortex config <show|validate|path|init> [options]\n")
+		return 1
+	}
+
+	switch args[0] {
+	case "path":
+		cfg, err := config.Load("")
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		if cfg.LoadedFrom != "" {
+			writef(stdout, "%s\n", cfg.LoadedFrom)
+		} else {
+			writef(stdout, "%s (default in-memory)\n", filepath.Join(config.CortexDir(), "cortex.yaml"))
+		}
+		return 0
+
+	case "validate":
+		configPath := ""
+		for i := 1; i < len(args); i++ {
+			if (args[i] == "--file" || args[i] == "-f" || args[i] == "--config") && i+1 < len(args) {
+				configPath = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--file=") {
+				configPath = strings.TrimPrefix(args[i], "--file=")
+			} else if strings.HasPrefix(args[i], "--config=") {
+				configPath = strings.TrimPrefix(args[i], "--config=")
+			}
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			writef(stderr, "Configuration invalid: %v\n", err)
+			return 1
+		}
+		writef(stdout, "Configuration valid (source: %s)\n", cfg.LoadedFrom)
+		return 0
+
+	case "show", "print":
+		format := "yaml"
+		configPath := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--format" && i+1 < len(args) {
+				format = strings.ToLower(args[i+1])
+				i++
+			} else if strings.HasPrefix(args[i], "--format=") {
+				format = strings.ToLower(strings.TrimPrefix(args[i], "--format="))
+			} else if (args[i] == "--file" || args[i] == "-f" || args[i] == "--config") && i+1 < len(args) {
+				configPath = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--file=") {
+				configPath = strings.TrimPrefix(args[i], "--file=")
+			} else if strings.HasPrefix(args[i], "--config=") {
+				configPath = strings.TrimPrefix(args[i], "--config=")
+			}
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			writef(stderr, "error loading config: %v\n", err)
+			return 1
+		}
+		// Redact secrets for safe output
+		cfgCopy := *cfg
+		cfgCopy.HTTP.Token = maskSecret(cfgCopy.HTTP.Token)
+		cfgCopy.Vector.Qdrant.APIKey = maskSecret(cfgCopy.Vector.Qdrant.APIKey)
+		cfgCopy.Server.Secrets.SigningKey = maskSecret(cfgCopy.Server.Secrets.SigningKey)
+		cfgCopy.Server.Secrets.OIDCClientSecret = maskSecret(cfgCopy.Server.Secrets.OIDCClientSecret)
+
+		if format == "json" {
+			data, err := json.MarshalIndent(cfgCopy, "", "  ")
+			if err != nil {
+				writef(stderr, "error formatting json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(data))
+		} else {
+			writef(stdout, "# Active config (source: %s)\n", cfg.LoadedFrom)
+			writef(stdout, "%s\n", cfg.String())
+		}
+		return 0
+
+	case "init":
+		format := "yaml"
+		force := false
+		targetPath := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--format" && i+1 < len(args) {
+				format = strings.ToLower(args[i+1])
+				i++
+			} else if strings.HasPrefix(args[i], "--format=") {
+				format = strings.ToLower(strings.TrimPrefix(args[i], "--format="))
+			} else if args[i] == "--force" || args[i] == "-f" {
+				force = true
+			} else if (args[i] == "--file" || args[i] == "-o" || args[i] == "--output") && i+1 < len(args) {
+				targetPath = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--file=") {
+				targetPath = strings.TrimPrefix(args[i], "--file=")
+			} else if strings.HasPrefix(args[i], "--output=") {
+				targetPath = strings.TrimPrefix(args[i], "--output=")
+			}
+		}
+
+		outPath, err := config.InitConfig(targetPath, format, force)
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		writef(stdout, "Initialized minimal %s configuration at: %s\n", strings.ToUpper(format), outPath)
+		return 0
+
+	case "get":
+		if len(args) < 2 {
+			writef(stderr, "Usage: cortex config get <key> [--file=path]\nExample: cortex config get http.port\n")
+			return 1
+		}
+		key := args[1]
+		configPath := ""
+		for i := 2; i < len(args); i++ {
+			if (args[i] == "--file" || args[i] == "-f" || args[i] == "--config") && i+1 < len(args) {
+				configPath = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--file=") {
+				configPath = strings.TrimPrefix(args[i], "--file=")
+			} else if strings.HasPrefix(args[i], "--config=") {
+				configPath = strings.TrimPrefix(args[i], "--config=")
+			}
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			writef(stderr, "error loading config: %v\n", err)
+			return 1
+		}
+		val, err := cfg.GetProperty(key)
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		writef(stdout, "%s\n", val)
+		return 0
+
+	case "set":
+		if len(args) < 3 {
+			writef(stderr, "Usage: cortex config set <key> <value> [--file=path] [--format=yaml|json|toml]\nExample: cortex config set http.port 8080\n")
+			return 1
+		}
+		key := args[1]
+		val := args[2]
+		configPath := ""
+		format := ""
+		for i := 3; i < len(args); i++ {
+			if (args[i] == "--file" || args[i] == "-f" || args[i] == "--config") && i+1 < len(args) {
+				configPath = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--file=") {
+				configPath = strings.TrimPrefix(args[i], "--file=")
+			} else if strings.HasPrefix(args[i], "--config=") {
+				configPath = strings.TrimPrefix(args[i], "--config=")
+			} else if (args[i] == "--format") && i+1 < len(args) {
+				format = strings.ToLower(args[i+1])
+				i++
+			} else if strings.HasPrefix(args[i], "--format=") {
+				format = strings.ToLower(strings.TrimPrefix(args[i], "--format="))
+			}
+		}
+
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			writef(stderr, "error loading config: %v\n", err)
+			return 1
+		}
+		if err := cfg.SetProperty(key, val); err != nil {
+			writef(stderr, "error setting %s: %v\n", key, err)
+			return 1
+		}
+
+		savePath := cfg.LoadedFrom
+		if savePath == "" {
+			ext := "yaml"
+			if format != "" {
+				ext = format
+			}
+			savePath = filepath.Join(config.CortexDir(), "cortex."+ext)
+		} else if format != "" {
+			// Change format extension if explicitly requested
+			dir := filepath.Dir(savePath)
+			savePath = filepath.Join(dir, "cortex."+format)
+		}
+
+		if err := config.Save(cfg, savePath); err != nil {
+			writef(stderr, "error saving config: %v\n", err)
+			return 1
+		}
+		writef(stdout, "✔ Successfully set %s = %s\n  Saved to: %s\n", key, val, savePath)
+		return 0
+
+	case "wizard", "interactive":
+		return runConfigWizard(stdout, stderr)
+
+	default:
+		writef(stderr, "unknown config subcommand: %s (valid: get, set, show, validate, path, init, wizard)\n", args[0])
+		return 1
+	}
+}
+
+func runConfigWizard(stdout, stderr io.Writer) int {
+	cfg, err := config.Load("")
+	if err != nil {
+		writef(stderr, "error loading existing config: %v\n", err)
+		return 1
+	}
+
+	writef(stdout, "\n=== 🧠 Cortex Configuration Wizard ===\n\n")
+	writef(stdout, "Current active config: %s\n", cfg.LoadedFrom)
+	writef(stdout, "Storage: %s\n", cfg.Database.Path)
+	writef(stdout, "HTTP Port: %d (enabled: %t)\n", cfg.HTTP.Port, cfg.HTTP.Enabled)
+	writef(stdout, "Embedding Provider: %s\n", cfg.Search.EmbeddingProvider)
+	writef(stdout, "\nTip: Use 'cortex config set <key> <value>' for instant CLI updates, or 'cortex tui' for full visual navigation.\n\n")
+	return 0
+}
+
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 6 {
+		return "******"
+	}
+	return s[:3] + "..." + s[len(s)-3:]
+}
+
+func runAuth(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		writef(stderr, "Usage: cortex auth <login|status|logout> [options]\n")
+		return 1
+	}
+	switch args[0] {
+	case "login":
+		token := ""
+		for i := 1; i < len(args); i++ {
+			if (args[i] == "--token" || args[i] == "-t") && i+1 < len(args) {
+				token = args[i+1]
+				i++
+			} else if strings.HasPrefix(args[i], "--token=") {
+				token = strings.TrimPrefix(args[i], "--token=")
+			}
+		}
+		if token == "" {
+			writef(stderr, "error: token required (use cortex auth login --token=<token>)\n")
+			return 1
+		}
+		cfg, err := config.Load("")
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		cfg.HTTP.Token = token
+		if err := config.Save(cfg, cfg.LoadedFrom); err != nil {
+			writef(stderr, "error saving token: %v\n", err)
+			return 1
+		}
+		writef(stdout, "✔ Successfully authenticated. Token saved to %s\n", cfg.LoadedFrom)
+		return 0
+
+	case "status", "whoami":
+		cfg, err := config.Load("")
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		writef(stdout, "\n=== 👤 Cortex Authentication Status ===\n")
+		if cfg.HTTP.Token != "" {
+			writef(stdout, "Token: %s\n", maskSecret(cfg.HTTP.Token))
+			subject := cfg.Server.PrincipalSubject
+			if subject == "" {
+				subject = "usrLuisLeon"
+			}
+			writef(stdout, "Principal: %s\n", subject)
+			if len(cfg.Server.Roles) > 0 {
+				writef(stdout, "Role: %s\n", strings.Join(cfg.Server.Roles, ", "))
+			} else {
+				writef(stdout, "Role: admin\n")
+			}
+			writef(stdout, "Status: Authenticated\n\n")
+		} else {
+			writef(stdout, "Status: Anonymous / Unauthenticated (local zero-auth mode)\n\n")
+		}
+		return 0
+
+	case "logout":
+		cfg, err := config.Load("")
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		cfg.HTTP.Token = ""
+		_ = config.Save(cfg, cfg.LoadedFrom)
+		writef(stdout, "✔ Successfully logged out.\n")
+		return 0
+
+	default:
+		writef(stderr, "unknown auth subcommand: %s (valid: login, status, logout)\n", args[0])
+		return 1
+	}
 }

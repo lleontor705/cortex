@@ -1,0 +1,321 @@
+"use client";
+
+import React, { useEffect, useState } from "react";
+import Link from "next/link";
+import { useAuth } from "@/lib/auth-context";
+import { Observation, Session } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  BrainCircuit,
+  Share2,
+  Layers,
+  FolderGit2,
+  Sparkles,
+  Search,
+  Plus,
+  Clock,
+  ArrowRight,
+  Shield,
+} from "lucide-react";
+
+export default function DashboardPage() {
+  const { client, stats, principal } = useAuth();
+  const [recentObs, setRecentObs] = useState<Observation[]>([]);
+  const [recentSessions, setRecentSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [viewMode, setViewMode] = useState<"personal" | "global">("personal");
+  const userRoles = principal?.roles || ["developer"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
+
+  useEffect(() => {
+    if (!client) return;
+    setLoading(true);
+    const obsQuery = !isAdmin || viewMode === "personal" ? "?limit=6&owner=me" : "?limit=6";
+    Promise.all([
+      client.listObservations(obsQuery).catch(() => []),
+      client.sessions().catch(() => []),
+    ])
+      .then(([obs, sess]) => {
+        setRecentObs(obs || []);
+        const userFiltered = (sess || []).filter(
+          (s) => !s.summary?.startsWith("Imported 90 sessions"),
+        );
+        setRecentSessions((!isAdmin || viewMode === "personal" ? userFiltered : (sess || [])).slice(0, 5));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [client, isAdmin, viewMode]);
+
+  const userDisplayName =
+    principal?.display_name ||
+    (principal?.email ? principal.email.split("@")[0] : "") ||
+    "Desarrollador";
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+              {isAdmin ? "Control Room de Memoria" : `Bienvenido, ${userDisplayName} 👋`}
+            </h1>
+            <Badge
+              variant="outline"
+              className={`text-[10px] uppercase font-mono px-2 py-0.5 ${
+                isAdmin
+                  ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                  : "border-blue-500/40 text-blue-400 bg-blue-500/10"
+              }`}
+            >
+              {isAdmin ? "Admin Workspace" : "Developer Workspace"}
+            </Badge>
+          </div>
+          <p className="text-xs text-[var(--text-muted)] mt-1">
+            {isAdmin
+              ? "Monitor global de conocimiento semántico, sesiones de codificación y grafo relacional"
+              : "Tu espacio de trabajo cognitivo: notas de desarrollo, sesiones de IA y grafo de dependencias"}
+          </p>
+        </div>
+
+        {/* View Mode Selector (Admin vs User) */}
+        {isAdmin && (
+          <div className="flex items-center p-1 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+            <button
+              type="button"
+              onClick={() => setViewMode("personal")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                viewMode === "personal"
+                  ? "bg-[var(--accent-primary)] text-white shadow-sm"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              }`}
+            >
+              👤 Mi Vista Personal
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("global")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                viewMode === "global"
+                  ? "bg-[var(--accent-primary)] text-white shadow-sm"
+                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              }`}
+            >
+              🏢 Vista Global Tenant (Admin)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Metrics Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            {isAdmin && viewMode === "global" ? "Total Observaciones (Tenant)" : "Mis Observaciones"}
+          </span>
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-2xl font-bold text-[var(--text-primary)]">
+              {isAdmin && viewMode === "global" ? (stats?.observations ?? recentObs.length) : recentObs.length}
+            </span>
+            <BrainCircuit className="h-6 w-6 text-blue-500" />
+          </div>
+        </Card>
+
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            {isAdmin && viewMode === "global" ? "Aristas de Grafo (Tenant)" : "Mis Vínculos de Grafo"}
+          </span>
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-2xl font-bold text-emerald-500">
+              {isAdmin && viewMode === "global" ? (stats?.edges ?? "—") : (stats?.edges ?? 0)}
+            </span>
+            <Share2 className="h-6 w-6 text-emerald-500" />
+          </div>
+        </Card>
+
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            {isAdmin && viewMode === "global" ? "Sesiones Totales" : "Mis Sesiones de Agente"}
+          </span>
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-2xl font-bold text-amber-500">
+              {isAdmin && viewMode === "global" ? (stats?.active_sessions ?? stats?.sessions ?? recentSessions.length) : recentSessions.length}
+            </span>
+            <Layers className="h-6 w-6 text-amber-500" />
+          </div>
+        </Card>
+
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            {isAdmin && viewMode === "global" ? "Proyectos Activos" : "Mis Proyectos Asignados"}
+          </span>
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-2xl font-bold text-purple-500">
+              {isAdmin && viewMode === "global" ? (stats?.projects ?? 1) : (principal?.projects?.length || Array.from(new Set(recentObs.map((o) => o.project).filter(Boolean))).length || 1)}
+            </span>
+            <FolderGit2 className="h-6 w-6 text-purple-500" />
+          </div>
+        </Card>
+      </div>
+
+      {/* Quick Action Banner */}
+      <Card className="p-4 sm:p-6 bg-gradient-to-r from-blue-900/20 via-[var(--bg-surface)] to-purple-900/20 border-[var(--border-subtle)] shadow-md">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-sm sm:text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-blue-400 shrink-0" />
+              <span>Extracción Automática de Conocimiento con LLM</span>
+            </h2>
+            <p className="text-xs text-[var(--text-secondary)]">
+              Pasa transcripciones de sesiones o notas de código para extraer observaciones y relaciones con 1 clic.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+            <Link href="/extract">
+              <Button size="sm" className="gap-2 text-xs">
+                <Sparkles className="h-4 w-4" />
+                <span>Abrir Extractor</span>
+              </Button>
+            </Link>
+            <Link href="/search">
+              <Button variant="secondary" size="sm" className="gap-2 text-xs">
+                <Search className="h-4 w-4" />
+                <span>Retrieval</span>
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </Card>
+
+      {/* Two Column Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        {/* Recent Observations */}
+        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
+                <BrainCircuit className="h-4 w-4 text-blue-400" />
+                Últimas Observaciones
+              </CardTitle>
+              <Link href="/memory">
+                <Button variant="ghost" size="sm" className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] gap-1.5 h-7">
+                  <span>Ver todas</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+              </Link>
+            </div>
+
+            {loading ? (
+              <p className="text-xs text-[var(--text-muted)] py-6 text-center">Cargando observaciones...</p>
+            ) : recentObs.length === 0 ? (
+              <div className="py-8 px-4 text-center border border-dashed border-[var(--border-subtle)] rounded-lg bg-[var(--bg-surface)]/50">
+                <BrainCircuit className="h-8 w-8 text-[var(--text-muted)] mx-auto mb-2 opacity-50" />
+                <p className="text-xs font-medium text-[var(--text-secondary)]">No tienes observaciones registradas aún</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
+                  Al capturar notas desde tu agente MCP (Claude Code, Cursor) o usar el extractor LLM, se indexarán aquí bajo tu perfil.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {recentObs.map((obs) => (
+                  <div
+                    key={obs.id}
+                    className="p-3.5 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg space-y-1.5 hover:border-[var(--border-focus)] transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                        {obs.title}
+                      </span>
+                      <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "warning" : "secondary"}>
+                        {obs.type}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-[var(--text-secondary)] line-clamp-2 leading-relaxed">
+                      {obs.content}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)] pt-1">
+                      <span>Proyecto: <b className="text-[var(--text-secondary)]">{obs.project}</b></span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        {new Date(obs.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* Sessions & Access Authority */}
+        <div className="space-y-4 sm:space-y-6">
+          {/* Active Sessions */}
+          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
+                <Layers className="h-4 w-4 text-amber-400" />
+                Sesiones Recientes
+              </CardTitle>
+            </div>
+            {recentSessions.length === 0 ? (
+              <div className="py-6 px-4 text-center border border-dashed border-[var(--border-subtle)] rounded-lg bg-[var(--bg-surface)]/50">
+                <Layers className="h-7 w-7 text-[var(--text-muted)] mx-auto mb-2 opacity-50" />
+                <p className="text-xs font-medium text-[var(--text-secondary)]">Sin sesiones activas</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                  Inicia una sesión desde tu Coding Agent vía MCP para que se sincronice en vivo.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {recentSessions.map((sess) => (
+                  <div
+                    key={sess.id}
+                    className="p-3 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg flex items-center justify-between hover:border-[var(--border-focus)] transition-colors"
+                  >
+                    <div className="overflow-hidden mr-2">
+                      <div className="font-semibold text-xs text-[var(--text-primary)] truncate">{sess.project}</div>
+                      <div className="text-[11px] text-[var(--text-muted)] truncate">
+                        {sess.summary || `ID: ${sess.id.slice(0, 12)}...`}
+                      </div>
+                    </div>
+                    <Badge variant="success" className="shrink-0">Activa</Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Principal Clearance Card */}
+          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-3">
+              <CardTitle className="text-sm text-[var(--text-primary)]">
+                <Shield className="h-4 w-4 text-emerald-400" />
+                Identidad y Autoridad de Acceso
+              </CardTitle>
+            </div>
+            <div className="space-y-2.5 text-xs text-[var(--text-secondary)]">
+              <div className="flex justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span>Tipo de Principal:</span>
+                <span className="font-mono text-[var(--text-primary)]">{principal?.type || "service_account"}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span>Organización / Tenant:</span>
+                <span className="font-mono text-[var(--text-primary)] truncate ml-2">{principal?.org_id || "default-tenant"}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span>Roles Asignados:</span>
+                <span className="font-semibold text-blue-400">{principal?.roles?.join(", ") || "admin"}</span>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

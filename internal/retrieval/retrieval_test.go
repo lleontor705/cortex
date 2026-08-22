@@ -8,6 +8,7 @@ package retrieval
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/lleontor705/cortex/internal/domain"
@@ -20,9 +21,13 @@ import (
 type stubObsLookup struct {
 	obsByID map[int64]*domain.Observation
 	errByID map[int64]error
+
+	// getByIDCalls counts per-ID lookups (used to prove fallback behavior).
+	getByIDCalls int
 }
 
 func (s *stubObsLookup) GetByID(_ context.Context, id int64) (*domain.Observation, error) {
+	s.getByIDCalls++
 	if s.errByID != nil {
 		if err, ok := s.errByID[id]; ok {
 			return nil, err
@@ -603,4 +608,347 @@ func TestSearchVectors_NilFilters_NoCrash(t *testing.T) {
 // Compile-time: fakeVectorIndex implements domain.VectorIndex.
 func TestFakeVectorIndex_ImplementsVectorIndex(t *testing.T) {
 	var _ domain.VectorIndex = (*fakeVectorIndex)(nil)
+}
+
+// ---------------------------------------------------------------------------
+// Optional batch hydration (VEC-01): BatchObservationLookup detection with
+// byte-equivalent rank/filter/fallback semantics and legacy fallback.
+// ---------------------------------------------------------------------------
+
+// batchCapableLookup is a controllable BatchObservationLookup. Its GetByIDs
+// derives rows from the same per-ID view the legacy path uses (so outputs are
+// comparable), while recording calls and optionally simulating adversarial
+// batch behavior: forced errors, nil map entries, and unrequested extra rows.
+type batchCapableLookup struct {
+	stub     *stubObsLookup
+	batchErr error
+	nilIDs   map[int64]bool
+	extras   map[int64]*domain.Observation
+	calls    int
+	lastIDs  []int64
+}
+
+// Compile-time: batchCapableLookup satisfies BatchObservationLookup.
+var _ BatchObservationLookup = (*batchCapableLookup)(nil)
+
+func (b *batchCapableLookup) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
+	return b.stub.GetByID(ctx, id)
+}
+
+func (b *batchCapableLookup) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Observation, error) {
+	b.calls++
+	b.lastIDs = append([]int64(nil), ids...)
+	if b.batchErr != nil {
+		return nil, b.batchErr
+	}
+	m := make(map[int64]*domain.Observation, len(ids))
+	for _, id := range ids {
+		if b.nilIDs[id] {
+			m[id] = nil
+			continue
+		}
+		if o, err := b.stub.GetByID(ctx, id); err == nil && o != nil {
+			m[id] = o
+		}
+	}
+	for id, o := range b.extras {
+		m[id] = o
+	}
+	return m, nil
+}
+
+// TestRevalidateCandidates_BatchSingleCall_PreservesOrderAndScores pins the
+// happy path: one batch call hydrating UNIQUE IDs, with results rebuilt by
+// iterating the original candidate sequence (rank preserved, similarity
+// carried, no re-sorting by map order).
+func TestRevalidateCandidates_BatchSingleCall_PreservesOrderAndScores(t *testing.T) {
+	stub := &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObs(1, "a"),
+			2: mkObs(2, "b"),
+			3: mkObs(3, "c"),
+		},
+	}
+	batch := &batchCapableLookup{stub: stub}
+	candidates := []domain.VectorCandidate{
+		{ID: 3, Score: 0.95},
+		{ID: 1, Score: 0.80},
+		{ID: 2, Score: 0.50},
+	}
+
+	results := RevalidateCandidates(context.Background(), batch, candidates)
+
+	if batch.calls != 1 {
+		t.Fatalf("expected exactly 1 GetByIDs call, got %d", batch.calls)
+	}
+	if len(batch.lastIDs) != 3 {
+		t.Fatalf("expected 3 unique IDs in the batch request, got %v", batch.lastIDs)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	wantIDs := []int64{3, 1, 2}
+	wantScores := []float64{0.95, 0.80, 0.50}
+	for i := range wantIDs {
+		if results[i].ID != wantIDs[i] || results[i].Similarity != wantScores[i] {
+			t.Errorf("position %d: ID=%d Similarity=%f, want %d/%f (input order preserved)",
+				i, results[i].ID, results[i].Similarity, wantIDs[i], wantScores[i])
+		}
+	}
+	if results[0].Title != "c" || results[1].Title != "a" || results[2].Title != "b" {
+		t.Errorf("hydrated payload mismatch: %q %q %q", results[0].Title, results[1].Title, results[2].Title)
+	}
+}
+
+// TestRevalidateCandidates_BatchDropsMissesAndNil_IgnoresExtras pins the
+// adversarial map contract: missing entries and nil values drop the
+// candidate; unrequested extra rows are ignored.
+func TestRevalidateCandidates_BatchDropsMissesAndNil_IgnoresExtras(t *testing.T) {
+	stub := &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObs(1, "live"),
+			2: nil, // store would never return nil here, but map may carry it
+		},
+		errByID: map[int64]error{3: errors.New("soft-deleted")},
+	}
+	batch := &batchCapableLookup{
+		stub:   stub,
+		nilIDs: map[int64]bool{2: true},
+		extras: map[int64]*domain.Observation{777: mkObs(777, "extra-unrequested")},
+	}
+	candidates := []domain.VectorCandidate{
+		{ID: 1, Score: 0.9},
+		{ID: 2, Score: 0.8}, // nil in map -> drop
+		{ID: 3, Score: 0.7}, // absent from map -> drop
+		{ID: 4, Score: 0.6}, // absent from map -> drop
+	}
+
+	results := RevalidateCandidates(context.Background(), batch, candidates)
+
+	if len(results) != 1 {
+		t.Fatalf("expected only candidate 1 to survive, got %d: %+v", len(results), results)
+	}
+	if results[0].ID != 1 || results[0].Similarity != 0.9 {
+		t.Fatalf("survivor must be ID 1 score 0.9, got %d/%f", results[0].ID, results[0].Similarity)
+	}
+}
+
+// TestRevalidateCandidates_BatchDuplicatesQueriedOnceEmittedPerOccurrence
+// pins duplicate-candidate semantics: unique IDs are requested once, but each
+// candidate occurrence emits its own result (legacy per-ID behavior).
+func TestRevalidateCandidates_BatchDuplicatesQueriedOnceEmittedPerOccurrence(t *testing.T) {
+	stub := &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObs(1, "dup"),
+			2: mkObs(2, "single"),
+		},
+	}
+	batch := &batchCapableLookup{stub: stub}
+	candidates := []domain.VectorCandidate{
+		{ID: 1, Score: 0.9},
+		{ID: 1, Score: 0.8}, // duplicate ID, distinct score slot
+		{ID: 2, Score: 0.7},
+	}
+
+	results := RevalidateCandidates(context.Background(), batch, candidates)
+
+	if batch.calls != 1 {
+		t.Fatalf("expected 1 batch call, got %d", batch.calls)
+	}
+	if len(batch.lastIDs) != 2 || batch.lastIDs[0] != 1 || batch.lastIDs[1] != 2 {
+		t.Fatalf("expected unique ID request [1 2], got %v", batch.lastIDs)
+	}
+	if len(results) != 3 {
+		t.Fatalf("duplicates must be emitted per occurrence: want 3 results, got %d", len(results))
+	}
+	if results[0].ID != 1 || results[0].Similarity != 0.9 ||
+		results[1].ID != 1 || results[1].Similarity != 0.8 ||
+		results[2].ID != 2 || results[2].Similarity != 0.7 {
+		t.Fatalf("duplicate emission order/scores wrong: %+v", results)
+	}
+}
+
+// TestRevalidateCandidates_BatchErrorFallsBackToLegacy pins the fallback
+// rule: a batch error is swallowed and the unchanged per-ID path produces the
+// legacy result (missing rows keep their drop semantics).
+func TestRevalidateCandidates_BatchErrorFallsBackToLegacy(t *testing.T) {
+	stub := &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObs(1, "live"),
+		},
+		errByID: map[int64]error{2: errors.New("soft-deleted")},
+	}
+	batch := &batchCapableLookup{stub: stub, batchErr: errors.New("forced batch failure")}
+	candidates := []domain.VectorCandidate{
+		{ID: 1, Score: 0.9},
+		{ID: 2, Score: 0.8},
+	}
+
+	results := RevalidateCandidates(context.Background(), batch, candidates)
+
+	if batch.calls != 1 {
+		t.Fatalf("batch must be attempted exactly once, got %d calls", batch.calls)
+	}
+	if len(results) != 1 || results[0].ID != 1 {
+		t.Fatalf("fallback must produce legacy result [1], got %+v", results)
+	}
+	if stub.getByIDCalls == 0 {
+		t.Fatal("fallback must have used per-ID GetByID lookups")
+	}
+	// After the failed batch call, every surviving candidate was hydrated via
+	// per-ID calls: 2 candidates -> 2 GetByID calls (id 1 live, id 2 error).
+	if stub.getByIDCalls != 2 {
+		t.Fatalf("expected 2 per-ID fallback calls, got %d", stub.getByIDCalls)
+	}
+}
+
+// TestRevalidateCandidates_EmptyInputSkipsBatch pins the zero-SQL boundary:
+// nil/empty candidate lists never invoke the batch capability.
+func TestRevalidateCandidates_EmptyInputSkipsBatch(t *testing.T) {
+	batch := &batchCapableLookup{stub: &stubObsLookup{}}
+
+	if got := RevalidateCandidates(context.Background(), batch, nil); len(got) != 0 {
+		t.Fatalf("nil candidates: want 0 results, got %d", len(got))
+	}
+	if got := RevalidateCandidates(context.Background(), batch, []domain.VectorCandidate{}); len(got) != 0 {
+		t.Fatalf("empty candidates: want 0 results, got %d", len(got))
+	}
+	if batch.calls != 0 {
+		t.Fatalf("empty input must not call GetByIDs, got %d calls", batch.calls)
+	}
+}
+
+// TestRevalidateCandidates_BatchMatchesLegacyDifferential is the
+// VEC-DIFFERENTIAL oracle: across rank/missing/deleted/duplicate scenarios,
+// the batch path and the legacy per-ID path must produce identical output.
+func TestRevalidateCandidates_BatchMatchesLegacyDifferential(t *testing.T) {
+	scenarios := []struct {
+		name       string
+		candidates []domain.VectorCandidate
+	}{
+		{"all live, score-ordered", []domain.VectorCandidate{
+			{ID: 5, Score: 0.99}, {ID: 3, Score: 0.87}, {ID: 9, Score: 0.71},
+		}},
+		{"interleaved drops", []domain.VectorCandidate{
+			{ID: 1, Score: 0.9}, {ID: 404, Score: 0.85}, {ID: 2, Score: 0.8}, {ID: 500, Score: 0.75},
+		}},
+		{"duplicates with distinct scores", []domain.VectorCandidate{
+			{ID: 7, Score: 0.6}, {ID: 7, Score: 0.5}, {ID: 7, Score: 0.4},
+		}},
+		{"all missing", []domain.VectorCandidate{
+			{ID: 900, Score: 0.3}, {ID: 901, Score: 0.2},
+		}},
+		{"single candidate", []domain.VectorCandidate{{ID: 1, Score: 0.123}}},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			// One shared dataset: 1,2 live; 3 soft-deleted (error); others missing.
+			makeStub := func() *stubObsLookup {
+				return &stubObsLookup{
+					obsByID: map[int64]*domain.Observation{
+						1: mkObs(1, "one"),
+						2: mkObs(2, "two"),
+						5: mkObs(5, "five"),
+						3: mkObs(3, "deleted"),
+						9: mkObs(9, "nine"),
+						7: mkObs(7, "seven"),
+					},
+					errByID: map[int64]error{3: errors.New("soft-deleted")},
+				}
+			}
+			legacyOnly := makeStub()
+			batch := &batchCapableLookup{stub: makeStub()}
+
+			legacyResults := RevalidateCandidates(context.Background(), legacyOnly, sc.candidates)
+			batchResults := RevalidateCandidates(context.Background(), batch, sc.candidates)
+
+			if !reflect.DeepEqual(legacyResults, batchResults) {
+				t.Fatalf("batch output differs from legacy:\nlegacy: %+v\nbatch:  %+v", legacyResults, batchResults)
+			}
+		})
+	}
+}
+
+// TestSearchVectors_BatchLookupPreservesStrategySemantics verifies
+// SearchVectors end-to-end with a batch-capable lookup: PostFilter pool
+// expansion, in-engine filter re-application, and final truncation all keep
+// their meanings while hydration is batched into one call.
+func TestSearchVectors_BatchLookupPreservesStrategySemantics(t *testing.T) {
+	idx := &fakeVectorIndex{
+		caps: domain.Capabilities{IndexType: "sqlite_blob", Filters: "PostFilter"},
+		candidates: []domain.VectorCandidate{
+			{ID: 1, Score: 0.9},
+			{ID: 2, Score: 0.8},
+			{ID: 3, Score: 0.7},
+			{ID: 4, Score: 0.6},
+			{ID: 5, Score: 0.5},
+			{ID: 6, Score: 0.4},
+		},
+	}
+	batch := &batchCapableLookup{stub: &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObsWithProject(1, "myproj", "project"),
+			2: mkObsWithProject(2, "myproj", "project"),
+			3: mkObsWithProject(3, "other", "project"),
+			4: mkObsWithProject(4, "myproj", "project"),
+			5: mkObsWithProject(5, "other", "project"),
+			6: mkObsWithProject(6, "other", "project"),
+		},
+	}}
+	q := domain.VectorQuery{
+		Vector:  []float32{1, 0, 0, 0},
+		Limit:   2,
+		Filters: map[string]any{"project": "myproj"},
+	}
+
+	results, err := SearchVectors(context.Background(), idx, q, batch)
+	if err != nil {
+		t.Fatalf("SearchVectors: %v", err)
+	}
+	if idx.searchLim <= 2 {
+		t.Errorf("PostFilter pool must expand beyond limit 2, got %d", idx.searchLim)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results after in-engine filter + truncation, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Project != "myproj" {
+			t.Errorf("in-engine filter broken under batch hydration: project=%q", r.Project)
+		}
+	}
+	if batch.calls != 1 {
+		t.Fatalf("hydration must batch into exactly 1 GetByIDs call, got %d", batch.calls)
+	}
+}
+
+// TestSearchVectors_BatchLookupPreFilterTrustUnchanged verifies the PreFilter
+// trust rule survives batch hydration: filters are NOT re-applied in-engine.
+func TestSearchVectors_BatchLookupPreFilterTrustUnchanged(t *testing.T) {
+	idx := &fakeVectorIndex{
+		caps: domain.Capabilities{IndexType: "qdrant", Filters: "PreFilter"},
+		candidates: []domain.VectorCandidate{
+			{ID: 1, Score: 0.9},
+		},
+	}
+	batch := &batchCapableLookup{stub: &stubObsLookup{
+		obsByID: map[int64]*domain.Observation{
+			1: mkObsWithProject(1, "DIFFERENT", "project"),
+		},
+	}}
+	q := domain.VectorQuery{
+		Limit:   5,
+		Filters: map[string]any{"project": "myproj"},
+	}
+
+	results, err := SearchVectors(context.Background(), idx, q, batch)
+	if err != nil {
+		t.Fatalf("SearchVectors: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("PreFilter trust broken: expected 1 result, got %d", len(results))
+	}
+	if batch.calls != 1 {
+		t.Fatalf("hydration must batch into exactly 1 GetByIDs call, got %d", batch.calls)
+	}
 }

@@ -154,6 +154,16 @@ func (m Model) View() string {
 		content = m.viewCmdPalette()
 	}
 
+	// Quick memory creation modal overlay
+	if m.NewObsModalOpen {
+		content = m.renderNewObsModal()
+	}
+
+	// Auth token login modal overlay
+	if m.AuthModalOpen {
+		content = m.renderAuthModal()
+	}
+
 	rendered := appStyle.Render(content)
 
 	// Status bar at the bottom
@@ -170,6 +180,24 @@ func (m Model) viewDashboard() string {
 	b.WriteString(m.renderLogo())
 	b.WriteString("\n")
 
+	// Identity and Status Bar
+	themeIcon := "🌙 Dark"
+	if !m.IsDarkTheme {
+		themeIcon = "☀️ Light"
+	}
+	syncStatus := "Cloud Sync: ON"
+	if !m.UploadToCortex {
+		syncStatus = "Local Only"
+	}
+	viewModeLabel := "Personal View"
+	if m.StatsMode == 1 {
+		viewModeLabel = "Global Tenant (Admin)"
+	}
+	headerInfo := fmt.Sprintf("👤 %s [%s]  •  %s  •  %s  •  %s",
+		m.CurrentUser, strings.ToUpper(m.UserRole), viewModeLabel, syncStatus, themeIcon)
+	b.WriteString(lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(headerInfo))
+	b.WriteString("\n\n")
+
 	// Update notification
 	if m.UpdateResult != nil {
 		msg := fmt.Sprintf("Update available: %s — %s", m.UpdateResult.Latest, m.UpdateResult.UpdateURL)
@@ -179,17 +207,35 @@ func (m Model) viewDashboard() string {
 
 	// Stats card
 	if m.Stats != nil {
-		statsContent := fmt.Sprintf(
-			"%s %s\n%s %s\n%s %s\n%s %s",
-			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalSessions)),
-			statLabelStyle.Render("sessions"),
-			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalObservations)),
-			statLabelStyle.Render("observations"),
-			statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalEdges)),
-			statLabelStyle.Render("knowledge links"),
-			statNumberStyle.Render(fmt.Sprintf("%d", len(m.Stats.Projects))),
-			statLabelStyle.Render("projects"),
-		)
+		var statsContent string
+		if m.StatsMode == 1 {
+			// Admin Global View
+			statsContent = fmt.Sprintf(
+				"%s %s\n%s %s\n%s %s\n%s %s",
+				statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalSessions)),
+				statLabelStyle.Render("total sessions (tenant)"),
+				statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalObservations)),
+				statLabelStyle.Render("total observations (all users)"),
+				statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalEdges)),
+				statLabelStyle.Render("knowledge links"),
+				statNumberStyle.Render(fmt.Sprintf("%d", len(m.Stats.Projects))),
+				statLabelStyle.Render("active projects"),
+			)
+		} else {
+			// User Personal View
+			userObs := m.Stats.TotalObservations
+			statsContent = fmt.Sprintf(
+				"%s %s\n%s %s\n%s %s\n%s %s",
+				statNumberStyle.Render(fmt.Sprintf("%d", userObs)),
+				statLabelStyle.Render("my observations"),
+				statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalSessions)),
+				statLabelStyle.Render("my project sessions"),
+				statNumberStyle.Render(fmt.Sprintf("%d", m.Stats.TotalEdges)),
+				statLabelStyle.Render("knowledge links"),
+				statNumberStyle.Render(fmt.Sprintf("%d", len(m.Stats.Projects))),
+				statLabelStyle.Render("assigned projects"),
+			)
+		}
 		b.WriteString(statCardStyle.Render(statsContent))
 		b.WriteString("\n")
 
@@ -238,9 +284,9 @@ func (m Model) viewDashboard() string {
 	}
 
 	if m.isCompact() {
-		b.WriteString(helpStyle.Render("\n  j/k • enter • s search • q quit"))
+		b.WriteString(helpStyle.Render("\n  j/k • enter • s search • t theme • L login • q quit"))
 	} else {
-		b.WriteString(helpStyle.Render("\n  j/k navigate • enter select • s search • ? help • q quit"))
+		b.WriteString(helpStyle.Render("\n  j/k navigate • enter select • s search • t theme • u view • L login • P sync • ? help • q quit"))
 	}
 
 	return b.String()
@@ -987,8 +1033,23 @@ func (m Model) renderStatusBar() string {
 	var parts []string
 
 	// Screen name
-	nameStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Background(lipgloss.Color("#1a1b2e"))
+	nameStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Background(activePalette.PanelBg)
 	parts = append(parts, nameStyle.Render(m.screenName()))
+
+	// User Identity Badge
+	roleLabel := strings.ToUpper(m.UserRole)
+	if roleLabel == "" {
+		roleLabel = "MEMBER"
+	}
+	userBadge := fmt.Sprintf("👤 %s [%s]", m.CurrentUser, roleLabel)
+	parts = append(parts, lipgloss.NewStyle().Foreground(colorCyan).Render(userBadge))
+
+	// Theme Badge
+	themeBadge := "🌙 Dark"
+	if !m.IsDarkTheme {
+		themeBadge = "☀️ Light"
+	}
+	parts = append(parts, lipgloss.NewStyle().Foreground(colorAmber).Render(themeBadge))
 
 	// List position (from bubbles/list components)
 	switch m.Screen {
@@ -1029,11 +1090,25 @@ func (m Model) renderStatusBar() string {
 		parts = append(parts, fmt.Sprintf("%d obs", m.Stats.TotalObservations))
 	}
 
+	if m.FilterProject != "" {
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorPurple).Bold(true).Render("prj: "+m.FilterProject))
+	}
+
+	if m.PreviewVisible {
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorTeal).Render("preview: on"))
+	}
+
+	if m.UploadToCortex {
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorGreen).Render("sync: on"))
+	} else {
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorSubtext).Render("local only"))
+	}
+
 	if m.Version != "" {
 		parts = append(parts, m.Version)
 	}
 
-	parts = append(parts, "? help")
+	parts = append(parts, "n new • t theme • L login • ? help")
 
 	barContent := strings.Join(parts, "  |  ")
 	width := m.Width
@@ -1041,6 +1116,29 @@ func (m Model) renderStatusBar() string {
 		width = 80
 	}
 	return statusBarStyle.Width(width).Render(barContent)
+}
+
+func (m Model) renderAuthModal() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("🔑 Cortex Authentication & User Session"))
+	b.WriteString("\n\n")
+	b.WriteString(detailContentStyle.Render("Provide your Cortex bearer token to authenticate your session role and permissions."))
+	b.WriteString("\n\n")
+	b.WriteString(detailLabelStyle.Render("Bearer Token: "))
+	b.WriteString(m.AuthTokenInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("Enter: Authenticate & Save • Esc: Cancel • Empty: Set as Anonymous"))
+
+	modal := lipgloss.NewStyle().
+		BorderStyle(lipgloss.DoubleBorder()).
+		BorderForeground(colorCyan).
+		Background(activePalette.PanelBg).
+		Foreground(colorText).
+		Padding(1, 3).
+		Width(64).
+		Render(b.String())
+
+	return lipgloss.Place(m.Width-4, m.Height-2, lipgloss.Center, lipgloss.Center, modal)
 }
 
 // ─── Help Screen ────────────────────────────────────────────────────────────
@@ -1256,7 +1354,7 @@ func (m Model) viewLocalConfig() string {
 	b.WriteString("\n\n")
 
 	section := localConfigSection(m.LocalCfgFocusField)
-	tabs := []string{"1  Local", "2  HTTP", "3  MCP", "4  Sync", "5  Review"}
+	tabs := []string{"1 Storage", "2 AI & LLM", "3 HTTP API", "4 MCP Proxy", "5 Sync", "6 Review"}
 	for i, tab := range tabs {
 		style := lipgloss.NewStyle().Foreground(colorSubtext).Padding(0, 1)
 		if i == section {
@@ -1280,62 +1378,110 @@ func (m Model) viewLocalConfig() string {
 	dim := lipgloss.NewStyle().Foreground(colorSubtext)
 	var panel strings.Builder
 	sectionTitle := lipgloss.NewStyle().Foreground(colorPurple).Bold(true)
+
+	formats := []string{"YAML", "JSON", "TOML"}
+	providers := []string{"None", "Ollama", "OpenAI", "Anthropic", "OpenRouter", "Groq", "DeepSeek", "Custom"}
+
 	switch section {
 	case 0:
-		panel.WriteString(sectionTitle.Render("Local database") + "\n")
-		panel.WriteString(dim.Render("Where Cortex stores sessions and memories on this device.") + "\n\n")
+		panel.WriteString(sectionTitle.Render("Local Storage & Format") + "\n")
+		panel.WriteString(dim.Render("Where Cortex stores data on this device and config file format.") + "\n\n")
 		textLineTo(&panel, marker, label, value, dim, 0, "Database path:", m.LocalCfgDatabasePath)
-		panel.WriteString("\n" + dim.Render("Changing this path does not move an existing database."))
+
+		// Format cycler line (field 1)
+		var fmtOpts strings.Builder
+		for i, f := range formats {
+			if i == m.LocalCfgFormat {
+				fmtOpts.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(f) + " ")
+			} else {
+				fmtOpts.WriteString(dim.Render("["+f+"]") + " ")
+			}
+		}
+		panel.WriteString(marker(1) + label.Render("Config format:") + " " + fmtOpts.String() + "\n")
+		panel.WriteString("\n" + dim.Render("Press [Space] or [Enter] on Config format to cycle YAML, JSON, TOML."))
+
 	case 1:
-		panel.WriteString(sectionTitle.Render("Local HTTP API") + "\n")
-		panel.WriteString(dim.Render("Used by local plugins and REST clients.") + "\n\n")
-		toggleLineTo(&panel, marker, label, dim, 1, "HTTP API:", m.LocalCfgHTTPEnabled)
-		textLineTo(&panel, marker, label, value, dim, 2, "Bind host:", m.LocalCfgHTTPHost)
-		textLineTo(&panel, marker, label, value, dim, 3, "Port:", m.LocalCfgHTTPPort)
-		panel.WriteString("\n" + dim.Render("Endpoint preview: http://"+m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value()))
+		panel.WriteString(sectionTitle.Render("AI & Embeddings Provider") + "\n")
+		panel.WriteString(dim.Render("Configure model provider for vector embeddings and memory retrieval.") + "\n\n")
+
+		// Provider cycler line (field 2)
+		var provOpts strings.Builder
+		for i, p := range providers {
+			if i == m.LocalCfgLLMProvider {
+				provOpts.WriteString(lipgloss.NewStyle().Background(colorPurple).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(p) + " ")
+			} else {
+				provOpts.WriteString(dim.Render("["+p+"]") + " ")
+			}
+		}
+		panel.WriteString(marker(2) + label.Render("LLM Provider:") + " " + provOpts.String() + "\n")
+		textLineTo(&panel, marker, label, value, dim, 3, "Model name:", m.LocalCfgLLMModel)
+		textLineTo(&panel, marker, label, value, dim, 4, "Base URL:", m.LocalCfgLLMBaseURL)
+		panel.WriteString("\n" + dim.Render("Press [Space], [h], [l] on LLM Provider to cycle presets."))
+
 	case 2:
-		panel.WriteString(sectionTitle.Render("MCP transport") + "\n")
-		panel.WriteString(dim.Render("Choose where agent tool calls execute.") + "\n\n")
-		toggleLineTo(&panel, marker, label, dim, 4, "Remote proxy:", m.LocalCfgMCPRemote)
-		textLineTo(&panel, marker, label, value, dim, 5, "MCP endpoint:", m.LocalCfgMCPURL)
-		textLineTo(&panel, marker, label, value, dim, 6, "Token env name:", m.LocalCfgMCPTokenEnv)
-		panel.WriteString("\n" + dim.Render("When enabled, MCP bypasses local SQLite."))
+		panel.WriteString(sectionTitle.Render("Local HTTP REST API") + "\n")
+		panel.WriteString(dim.Render("Used by IDE extensions, plugins, and local HTTP clients.") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 5, "HTTP API:", m.LocalCfgHTTPEnabled)
+		textLineTo(&panel, marker, label, value, dim, 6, "Bind host:", m.LocalCfgHTTPHost)
+		textLineTo(&panel, marker, label, value, dim, 7, "Port:", m.LocalCfgHTTPPort)
+		panel.WriteString("\n" + dim.Render("Endpoint preview: http://"+m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value()))
+
 	case 3:
-		panel.WriteString(sectionTitle.Render("Bidirectional sync") + "\n")
-		panel.WriteString(dim.Render("Keep working locally while sharing changes with Cortex Server.") + "\n\n")
-		toggleLineTo(&panel, marker, label, dim, 7, "Background sync:", m.LocalCfgSyncEnabled)
-		textLineTo(&panel, marker, label, value, dim, 8, "Server URL:", m.LocalCfgSyncURL)
-		textLineTo(&panel, marker, label, value, dim, 9, "Token env name:", m.LocalCfgSyncTokenEnv)
-		textLineTo(&panel, marker, label, value, dim, 10, "Sync interval:", m.LocalCfgSyncInterval)
-		panel.WriteString("\n" + dim.Render("Only the environment variable name is saved, never its secret."))
+		panel.WriteString(sectionTitle.Render("MCP Transport (Model Context Protocol)") + "\n")
+		panel.WriteString(dim.Render("Choose where agent tool calls execute (local SQLite vs remote server).") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 8, "Remote proxy:", m.LocalCfgMCPRemote)
+		textLineTo(&panel, marker, label, value, dim, 9, "MCP endpoint:", m.LocalCfgMCPURL)
+		textLineTo(&panel, marker, label, value, dim, 10, "Token env name:", m.LocalCfgMCPTokenEnv)
+		panel.WriteString("\n" + dim.Render("When enabled, MCP tool calls bypass local SQLite."))
+
 	case 4:
-		panel.WriteString(sectionTitle.Render("Review and apply") + "\n")
-		panel.WriteString(dim.Render("Confirm the resulting runtime mode before saving.") + "\n\n")
-		panel.WriteString(configSummaryLine("Storage", m.LocalCfgDatabasePath.Value()))
-		panel.WriteString(configSummaryLine("HTTP", enabledSummary(m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value())))
-		panel.WriteString(configSummaryLine("MCP", enabledSummary(m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value())))
-		panel.WriteString(configSummaryLine("Sync", enabledSummary(m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value()+" every "+m.LocalCfgSyncInterval.Value())))
+		panel.WriteString(sectionTitle.Render("Bidirectional Synchronization") + "\n")
+		panel.WriteString(dim.Render("Work locally while sharing memories in real-time with Cortex Server.") + "\n\n")
+		toggleLineTo(&panel, marker, label, dim, 11, "Background sync:", m.LocalCfgSyncEnabled)
+		textLineTo(&panel, marker, label, value, dim, 12, "Server URL:", m.LocalCfgSyncURL)
+		textLineTo(&panel, marker, label, value, dim, 13, "Token env name:", m.LocalCfgSyncTokenEnv)
+		textLineTo(&panel, marker, label, value, dim, 14, "Sync interval:", m.LocalCfgSyncInterval)
+		panel.WriteString("\n" + dim.Render("Only the environment variable name is saved, never the secret token."))
+
+	case 5:
+		panel.WriteString(sectionTitle.Render("Review & Apply Settings") + "\n")
+		panel.WriteString(dim.Render("Review configured parameters before writing to disk.") + "\n\n")
+
+		curFmt := "YAML"
+		if m.LocalCfgFormat >= 0 && m.LocalCfgFormat < len(formats) {
+			curFmt = formats[m.LocalCfgFormat]
+		}
+		curProv := "None"
+		if m.LocalCfgLLMProvider >= 0 && m.LocalCfgLLMProvider < len(providers) {
+			curProv = providers[m.LocalCfgLLMProvider]
+		}
+
+		panel.WriteString(configSummaryLine("Storage", m.LocalCfgDatabasePath.Value()+" ("+curFmt+")"))
+		panel.WriteString(configSummaryLine("AI / LLM", curProv+" · "+m.LocalCfgLLMModel.Value()))
+		panel.WriteString(configSummaryLine("HTTP API", enabledSummary(m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value())))
+		panel.WriteString(configSummaryLine("MCP Proxy", enabledSummary(m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value())))
+		panel.WriteString(configSummaryLine("Sync", enabledSummary(m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value()+" ("+m.LocalCfgSyncInterval.Value()+")")))
 		panel.WriteString("\n")
-		if m.LocalCfgFocusField == 11 {
-			panel.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("Validate & save"))
+		if m.LocalCfgFocusField == 15 {
+			panel.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("Validate & Save Configuration"))
 		} else {
-			panel.WriteString(lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay).Padding(0, 2).Render("Validate & save"))
+			panel.WriteString(lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay).Padding(0, 2).Render("Validate & Save Configuration"))
 		}
 	}
-	panelWidth := 72
+	panelWidth := 74
 	if m.Width > 0 && m.Width < 82 {
 		panelWidth = max(44, m.Width-8)
 	}
 	b.WriteString("\n" + lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorOverlay).Padding(1, 2).Width(panelWidth).Render(panel.String()))
 	if m.LocalCfgSaving {
-		b.WriteString("\n\n  " + m.LocalCfgSpinner.View() + " Validating and saving...")
+		b.WriteString("\n\n  " + m.LocalCfgSpinner.View() + " Validating and saving configuration...")
 	}
 	if m.LocalCfgError != "" {
 		b.WriteString("\n\n  " + errorStyle.Render("Error: "+m.LocalCfgError))
 	}
 	if m.LocalCfgSaved {
-		b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("Configuration saved."))
-		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Restart Cortex and running agents to apply these settings."))
+		b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("✔ Configuration saved successfully."))
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Tip: Restart cortex or agents to immediately apply runtime changes."))
 	}
 	if m.localConfigInputFocused() {
 		b.WriteString(helpStyle.Render("\n\n  type value • enter confirm • esc stop editing"))
@@ -1531,3 +1677,55 @@ func (m Model) viewEmbeddingConfig() string {
 
 	return b.String()
 }
+
+func (m Model) renderNewObsModal() string {
+	var panel strings.Builder
+	titleStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(colorPurple).Width(12)
+	dim := lipgloss.NewStyle().Foreground(colorSubtext)
+
+	panel.WriteString(titleStyle.Render("✦ Quick Create Memory") + "\n")
+	panel.WriteString(dim.Render("Create and persist a new observation directly into Cortex memory.") + "\n\n")
+
+	f := func(field int, name string, input textinput.Model) {
+		cursor := "  "
+		if m.NewObsFocusField == field {
+			cursor = listSelectedStyle.Render("▸ ")
+		}
+		panel.WriteString(cursor + labelStyle.Render(name) + input.View() + "\n")
+	}
+
+	f(0, "Title:", m.NewObsTitleInput)
+	f(1, "Content:", m.NewObsContentInput)
+	f(2, "Type:", m.NewObsTypeInput)
+	f(3, "Project:", m.NewObsProjectInput)
+
+	panel.WriteString("\n  ")
+	btnStyle := lipgloss.NewStyle().Padding(0, 2)
+	if m.NewObsFocusField == 4 {
+		btnStyle = btnStyle.Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true)
+	} else {
+		btnStyle = btnStyle.Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay)
+	}
+	panel.WriteString(btnStyle.Render("Save Observation [Enter]"))
+	panel.WriteString("   " + dim.Render("[Tab] Next Field  •  [Esc] Cancel  •  [Ctrl+S] Save"))
+
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorCyan).
+		Padding(1, 2).
+		Width(68).
+		Render(panel.String())
+
+	width := m.Width - 4
+	if width < 20 {
+		width = 72
+	}
+	height := m.Height - 2
+	if height < 10 {
+		height = 20
+	}
+
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+}
+

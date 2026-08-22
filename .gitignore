@@ -28,6 +28,10 @@ web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
 
+# Plugin npm subpackages (plugin/opencode, future plugin/* packages);
+# shared in-repo so contributors do not need local .git/info/exclude rules.
+plugin/*/node_modules/
+
 # Coverage profiles (go test -coverprofile / go tool cover).
 # The broad /coverage* pattern catches ad-hoc names like coverage-w8,
 # coverage.html, etc. without listing each typo individually.
@@ -41,6 +45,7 @@ web/vite.config.d.ts
 
 # Ignore dotfiles except specific ones
 .*
+!.gitattributes
 !.github/
 !.claude-plugin/
 !.gitignore

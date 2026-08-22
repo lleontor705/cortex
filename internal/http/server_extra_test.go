@@ -943,6 +943,134 @@ func TestMapDomainError(t *testing.T) {
 	}
 }
 
+// --- T08: standardized, redacted public errors ------------------------------
+//
+// Local HTTP must publish bounded, stable public error codes/statuses and must
+// never surface raw store/driver causes. Known classes map consistently;
+// unknown causes collapse to a constant internal error.
+
+// publicErrorCanaries is the shared canary corpus: SQL/driver fragments, a
+// DSN, a credential, a filesystem path, a URL with userinfo, an IP, and an
+// upstream response body. None of these may ever appear in a public response
+// body or ordinary log line.
+var publicErrorCanaries = []string{
+	"sql: database is closed",
+	"pq: duplicate key value violates unique constraint",
+	"SQLSTATE 23505",
+	"file:cortex.db?_pragma=busy_timeout",
+	"Bearer sk-live-canary-123",
+	`C:\Users\leak\cortex.db`,
+	"postgres://user:pass@10.0.0.5:5432/cortex",
+	"10.0.0.5:5432",
+	`{"error":"upstream secret body"}`,
+}
+
+func assertNoCanaries(t *testing.T, text string) {
+	t.Helper()
+	for _, canary := range publicErrorCanaries {
+		if strings.Contains(text, canary) {
+			t.Fatalf("canary %q leaked into public output: %q", canary, text)
+		}
+	}
+}
+
+func TestPublicErrorClassificationCodesAndStatuses(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"not found", &domain.NotFoundError{Type: "observation", ID: int64(7)}, http.StatusNotFound, "not_found"},
+		{"legacy field validation", &domain.ValidationError{Field: "title", Message: "required"}, http.StatusBadRequest, "validation"},
+		{"policy rejection", domain.NewRejected("rule-x", "content policy"), http.StatusBadRequest, "validation"},
+		{"failed classification hides cause", domain.NewFailed(errors.New("pq: SQLSTATE 23505 duplicate key"), "persist failed"), http.StatusInternalServerError, "internal"},
+		{"typed conflict", &domain.ConflictError{Entity: "edge", Reason: "dup"}, http.StatusConflict, "conflict"},
+		{"already exists sentinel", domain.ErrAlreadyExists, http.StatusConflict, "conflict"},
+		{"session ended", domain.ErrSessionEnded, http.StatusConflict, "conflict"},
+		{"unauthorized", domain.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
+		{"sqlite contention", errors.New("database is locked"), http.StatusServiceUnavailable, "unavailable"},
+		{"sqlite table contention", errors.New("database table is locked"), http.StatusServiceUnavailable, "unavailable"},
+		{"deadline exceeded", context.DeadlineExceeded, http.StatusGatewayTimeout, "timeout"},
+		{"unknown raw cause", errors.New("pq: SQLSTATE 42501 permission denied for table users"), http.StatusInternalServerError, "internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			classified := classifyPublicError(tc.err)
+			if classified.status != tc.wantStatus {
+				t.Fatalf("status: want %d got %d (code=%q message=%q)", tc.wantStatus, classified.status, classified.code, classified.message)
+			}
+			if classified.code != tc.wantCode {
+				t.Fatalf("code: want %q got %q", tc.wantCode, classified.code)
+			}
+			assertNoCanaries(t, classified.message)
+			if rc := utf8RuneCount(classified.message); rc > 200 {
+				t.Fatalf("message must be bounded to 200 runes, got %d: %q", rc, classified.message)
+			}
+		})
+	}
+}
+
+// TestHTTPErrorResponsesAreRedactedCanary poisons the shared database handle
+// so every store call fails with raw driver text, then asserts that public
+// responses carry only bounded, stable, classified errors.
+func TestHTTPErrorResponsesAreRedactedCanary(t *testing.T) {
+	srv := setupTestServer(t)
+	createSession(t, srv, "s1", "demo")
+	id := createObservation(t, srv, "Canary", "body", "manual", "demo", "project")
+	if err := srv.deps.Observations.DB().Close(); err != nil {
+		t.Fatalf("poison db: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantCode   string
+	}{
+		{"list observations", http.MethodGet, "/api/observations", http.StatusInternalServerError, "internal"},
+		{"search", http.MethodGet, "/api/search?q=canary", http.StatusInternalServerError, "internal"},
+		{"export", http.MethodGet, "/api/export", http.StatusInternalServerError, "internal"},
+		{"get observation", http.MethodGet, "/api/observations/" + itoa(id), http.StatusInternalServerError, "internal"},
+		{"delete observation", http.MethodDelete, "/api/observations/" + itoa(id), http.StatusInternalServerError, "internal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doRaw(t, srv.httpServer.Handler, tc.method, tc.target, nil, nil)
+			assertStatus(t, rec, tc.wantStatus)
+			var body struct {
+				Error string `json:"error"`
+				Code  string `json:"code"`
+			}
+			decodeJSON(t, rec, &body)
+			if body.Code != tc.wantCode {
+				t.Fatalf("code: want %q got %q (body=%q)", tc.wantCode, body.Code, rec.Body.String())
+			}
+			assertNoCanaries(t, rec.Body.String())
+			if body.Error == "" || strings.Contains(body.Error, "database is closed") {
+				t.Fatalf("raw cause surfaced: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestHTTPAuthErrorCodeIsStable pins the stable unauthorized code for the
+// local bearer gate alongside the existing status/challenge assertions.
+func TestHTTPAuthErrorCodeIsStable(t *testing.T) {
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret-token"})
+	rec := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/observations", nil, nil)
+	assertStatus(t, rec, http.StatusUnauthorized)
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	decodeJSON(t, rec, &body)
+	if body.Code != "unauthorized" {
+		t.Fatalf("code: want unauthorized got %q", body.Code)
+	}
+	assertNoCanaries(t, rec.Body.String())
+}
+
 // --- small local utilities --------------------------------------------------
 
 // itoa formats an int64 path id for URL construction.

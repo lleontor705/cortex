@@ -60,6 +60,10 @@ mcp:
   # it forwards the published MCP tools over local stdio instead.
   remote:
     enabled: false
+    # Bearer destination: HTTPS is required for non-loopback hosts. Plain
+    # HTTP is only allowed on strict loopback (127.0.0.0/8, [::1], or the
+    # exact "localhost" name). Redirects that downgrade the scheme or change
+    # the origin are blocked before the token is forwarded.
     url: ""
     token_env: CORTEX_REMOTE_TOKEN
     timeout: 30s
@@ -68,6 +72,9 @@ mcp:
 # background worker pushes local changes and pulls server changes.
 sync:
   enabled: false
+  # Bearer destination under the same transport policy as mcp.remote.url:
+  # HTTPS off-loopback, plain HTTP only on strict loopback, and redirects
+  # must not downgrade the scheme or change the origin.
   url: "https://cortex.example.com"
   token_env: CORTEX_REMOTE_TOKEN
   interval: 30s

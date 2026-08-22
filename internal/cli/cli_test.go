@@ -316,3 +316,169 @@ func TestRunMergeProjectsMissingArgs(t *testing.T) {
 		t.Fatalf("merge-projects stderr = %q", stderr.String())
 	}
 }
+
+func TestRunConfigCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	t.Run("config no args prints usage", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		if code := Run([]string{"cortex", "config"}, stdout, stderr); code != 1 {
+			t.Fatalf("expected code 1, got %d", code)
+		}
+	})
+
+	t.Run("config init formats", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+
+		yamlPath := filepath.Join(home, "custom.yaml")
+		if code := Run([]string{"cortex", "config", "init", "--format=yaml", "-o", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config init yaml failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Initialized minimal YAML") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+
+		jsonPath := filepath.Join(home, "custom.json")
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"cortex", "config", "init", "--format=json", "-o", jsonPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config init json failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Initialized minimal JSON") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+
+		tomlPath := filepath.Join(home, "custom.toml")
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"cortex", "config", "init", "--format=toml", "-o", tomlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config init toml failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Initialized minimal TOML") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+	})
+
+	t.Run("config validate", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+
+		yamlPath := filepath.Join(home, "custom.yaml")
+		if code := Run([]string{"cortex", "config", "validate", "-f", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config validate failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Configuration valid") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+	})
+
+	t.Run("config show yaml and json", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+
+		yamlPath := filepath.Join(home, "custom.yaml")
+		if code := Run([]string{"cortex", "config", "show", "-f", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config show yaml failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Config{") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"cortex", "config", "show", "--format=json", "-f", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config show json failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"http"`) {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+	})
+
+	t.Run("config_set_and_get", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+
+		yamlPath := filepath.Join(home, "custom.yaml")
+		// Set http.port to 8099
+		if code := Run([]string{"cortex", "config", "set", "http.port", "8099", "-f", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config set failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "8099") {
+			t.Errorf("stdout = %q", stdout.String())
+		}
+
+		// Get http.port
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"cortex", "config", "get", "http.port", "-f", yamlPath}, stdout, stderr); code != 0 {
+			t.Fatalf("config get failed: %s", stderr.String())
+		}
+		if strings.TrimSpace(stdout.String()) != "8099" {
+			t.Errorf("expected 8099, got %q", stdout.String())
+		}
+
+		// Wizard
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run([]string{"cortex", "config", "wizard"}, stdout, stderr); code != 0 {
+			t.Fatalf("config wizard failed: %s", stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Configuration Wizard") {
+			t.Errorf("expected wizard title, got %q", stdout.String())
+		}
+	})
+}
+
+func TestRunAuthCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	// Initial status: anonymous
+	if code := Run([]string{"cortex", "auth", "status"}, stdout, stderr); code != 0 {
+		t.Fatalf("auth status failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Authentication Status") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	// Login with token
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "auth", "login", "--token=ctx_secret_token_123456"}, stdout, stderr); code != 0 {
+		t.Fatalf("auth login failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Successfully authenticated") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	// Status: authenticated
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "auth", "status"}, stdout, stderr); code != 0 {
+		t.Fatalf("auth status failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Authenticated") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	// Logout
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "auth", "logout"}, stdout, stderr); code != 0 {
+		t.Fatalf("auth logout failed: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Successfully logged out") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+
+

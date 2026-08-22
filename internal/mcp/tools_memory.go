@@ -3,12 +3,16 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
+	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
 	projectpkg "github.com/lleontor705/cortex/internal/project"
 	"github.com/lleontor705/cortex/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -81,8 +85,34 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 				mcp.WithString("tags",
 					mcp.Description("Comma-separated tags (e.g. 'auth,jwt,security')"),
 				),
+				// REM-SAVE-001: additive structured output contract shared with the
+				// server runtime. The legacy input surface and text remain frozen.
+				mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON),
 			),
 			handleSave(stores),
+		)
+	}
+
+	// --- cortex_handoff (eager, R6/REM-MCP-001) ---
+	if shouldRegister(memorycontract.ToolHandoff, allowlist) {
+		srv.AddTool(
+			mcp.NewTool(memorycontract.ToolHandoff,
+				mcp.WithTitleAnnotation(memorycontract.HandoffHints.Title),
+				mcp.WithReadOnlyHintAnnotation(memorycontract.HandoffHints.ReadOnly),
+				mcp.WithDestructiveHintAnnotation(memorycontract.HandoffHints.Destructive),
+				mcp.WithIdempotentHintAnnotation(memorycontract.HandoffHints.Idempotent),
+				mcp.WithOpenWorldHintAnnotation(memorycontract.HandoffHints.OpenWorld),
+				mcp.WithDescription(`Record a durable, idempotent handoff: persist an observation (and an optional relation) exactly once per idempotency key.
+
+Replaying the identical payload under the same key returns the SAME observation with status "replayed"; the same key with a DIFFERENT payload is a conflict and mutates nothing. Any failure rolls back every effect — observation, relation, and receipt — atomically.
+
+observation.session_id is required and must reference an existing local session; it is validated before any mutation.
+
+The local namespace returns observation_ref.local_id only.`),
+				mcp.WithRawInputSchema(memorycontract.HandoffInputSchemaJSON),
+				mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON),
+			),
+			handleHandoff(stores),
 		)
 	}
 
@@ -209,10 +239,7 @@ GUIDELINES:
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("The observation ID to retrieve"),
-				),
+				withIntegerID("id", "The observation ID to retrieve"),
 			),
 			handleGetObservation(stores),
 		)
@@ -257,10 +284,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("Observation ID to update"),
-				),
+				withIntegerID("id", "Observation ID to update"),
 				mcp.WithString("title",
 					mcp.Description("New title"),
 				),
@@ -386,10 +410,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(true),
 				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("Observation ID to delete"),
-				),
+				withIntegerID("id", "Observation ID to delete"),
 				mcp.WithBoolean("hard_delete",
 					mcp.Description("If true, permanently deletes the observation"),
 				),
@@ -409,10 +430,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("The observation ID to center the timeline on (from cortex_search results)"),
-				),
+				withIntegerID("observation_id", "The observation ID to center the timeline on (from cortex_search results)"),
 				mcp.WithNumber("before",
 					mcp.Description("Number of observations to show before the focus (default: 5)"),
 				),
@@ -434,10 +452,7 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("observation_id",
-					mcp.Required(),
-					mcp.Description("The observation ID to inspect"),
-				),
+				withIntegerID("observation_id", "The observation ID to inspect"),
 				mcp.WithNumber("limit",
 					mcp.Description("Maximum number of revision snapshots to return (default: 20)"),
 				),
@@ -547,11 +562,21 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		// NOT an error — the observation was recognized as a duplicate and its
 		// duplicate_count was incremented. The response reports success so
 		// the agent doesn't see a failure for an intentional re-save.
-		if err := bundle.SaveWithEmbedIntent(ctx, stores, obs); err != nil {
+		//
+		// REM-SAVE-001: the legacy text below is frozen byte-for-byte; the
+		// structured payload {observation_ref, status} is purely additive.
+		effect, err := saveObservationWithEffect(ctx, stores, obs)
+		if err != nil {
 			if domain.IsClass(err, domain.ClassDedupSkipped) {
-				return textResult("Memory saved: %q (%s) [duplicate skipped]", title, typ)
+				return structuredTextResult(saveStructuredFromEffect(effect),
+					"Memory saved: %q (%s) [duplicate skipped]", title, typ)
 			}
-			return errorResult("Failed to save: %s", err)
+			// The textual fallback uses the SAME constant, redacted message as
+			// the structuredContent payload — the raw error (which may carry
+			// SQL text, filesystem paths, or credential fragments) is never
+			// echoed on any channel (REM-SAVE-001, REM-MCP-001).
+			payload := memorycontract.FromError(err)
+			return structuredErrorResult(payload, "Failed to save: %s", payload.Error.Message)
 		}
 
 		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
@@ -578,8 +603,473 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			}
 		}
 
-		return textResult("%s", msg)
+		return structuredTextResult(saveStructuredFromEffect(effect), "%s", msg)
 	}
+}
+
+// saveObservationWithEffect preserves the exact legacy save semantics and
+// error surface of bundle.SaveWithEmbedIntent while surfacing the durable
+// write classification (REM-SAVE-001).
+//
+// In the zero-embedding configuration (the default local build: no outbox and
+// no entity wiring) it calls the transactional SaveWithEffect primitive
+// directly — the very primitive bundle.SaveWithEmbedIntent delegates to on
+// that branch — so created/replayed/updated classification is exact and is
+// decided inside the transaction, never read back afterwards.
+//
+// In the production configuration (entities and/or outbox wired alongside the
+// UnitOfWork) it runs the SAME transactional sequence as
+// bundle.SaveWithEmbedIntent — worker saturation gate, shared *sql.Tx,
+// observation save, outbox enqueue, entity links — but through the
+// effect-returning SaveWithEffect primitive, so the durable status
+// (created/replayed/updated) propagates from inside the very transaction that
+// commits the write. The dedup classification keeps its legacy error surface:
+// the shared tx commits the duplicate_count increment and the caller receives
+// domain.ClassDedupSkipped alongside the populated replayed effect.
+//
+// This function must stay in lockstep with bundle.SaveWithEmbedIntent; it
+// exists only because the bundle API does not (yet) return a SaveEffect. When
+// bundle grows an effect-returning variant, this should delegate to it.
+func saveObservationWithEffect(ctx context.Context, stores *Stores, obs *domain.Observation) (domain.SaveEffect, error) {
+	if stores.Outbox == nil && (stores.Entities == nil || stores.UnitOfWork == nil) {
+		return stores.Observations.SaveWithEffect(ctx, obs)
+	}
+	if stores.UnitOfWork == nil {
+		return domain.SaveEffect{}, fmt.Errorf("bundle: entities require UnitOfWork for atomic save")
+	}
+
+	// Fail-closed saturation gate (REQ-EMB-001), identical to the bundle path:
+	// the worker is the single authoritative source of the threshold.
+	if stores.Worker != nil {
+		saturated, err := stores.Worker.IsSaturated(ctx)
+		if err != nil {
+			return domain.SaveEffect{}, fmt.Errorf("bundle: check embed backlog: %w", err)
+		}
+		if saturated {
+			return domain.SaveEffect{}, fmt.Errorf("bundle: embedding backlog saturated (worker reports overload)")
+		}
+	}
+	modelInfo := ""
+	if stores.Embeddings != nil {
+		modelInfo = stores.Embeddings.Model()
+	}
+
+	var effect domain.SaveEffect
+	var wasDedup bool
+	participants := []domain.TxParticipant{stores.Observations}
+	if stores.Outbox != nil {
+		participants = append(participants, stores.Outbox)
+	}
+	if stores.Entities != nil {
+		participants = append(participants, stores.Entities)
+	}
+	err := stores.UnitOfWork.Do(ctx, nil, participants, func(txCtx context.Context) error {
+		// Participant 1: save the observation within the shared tx, capturing
+		// the durable effect decided inside this transaction.
+		if err := stores.Observations.WithinTx(txCtx, bundle.TxHandle(txCtx), func(c context.Context) error {
+			var serr error
+			effect, serr = stores.Observations.SaveWithEffect(c, obs)
+			return serr
+		}); err != nil {
+			if domain.IsClass(err, domain.ClassDedupSkipped) {
+				// Dedup: the duplicate_count increment already happened in
+				// the shared tx and the effect carries the replayed status.
+				// Return nil so the tx COMMITS the increment.
+				wasDedup = true
+				return nil
+			}
+			return err
+		}
+		if stores.Outbox != nil {
+			if err := stores.Outbox.WithinTx(txCtx, bundle.TxHandle(txCtx), func(c context.Context) error {
+				return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
+			}); err != nil {
+				return err
+			}
+		}
+		if stores.Entities != nil {
+			links := domainentity.Extract(obs)
+			if err := stores.Entities.WithinTx(txCtx, bundle.TxHandle(txCtx), func(c context.Context) error {
+				return stores.Entities.SaveLinksInTx(c, links)
+			}); err != nil {
+				return fmt.Errorf("bundle: save entity links: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.SaveEffect{}, err
+	}
+	if wasDedup {
+		return effect, domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+	}
+	return effect, nil
+}
+
+// saveStructuredFromEffect lowers a durable save effect into the shared
+// structured payload. It returns nil when a valid exclusive reference cannot
+// be built — structured content is additive and must never fabricate a
+// reference the store did not durably assign (REM-SAVE-001).
+func saveStructuredFromEffect(effect domain.SaveEffect) any {
+	if effect.Observation == nil || effect.Observation.ID <= 0 {
+		return nil
+	}
+	id := effect.Observation.ID
+	structured, err := memorycontract.FromWriteResult(domain.ObservationWriteResult{
+		Ref:    domain.ObservationRef{LocalID: &id},
+		Status: effect.Status,
+	})
+	if err != nil {
+		return nil
+	}
+	return structured
+}
+
+// structuredTextResult returns the legacy text content plus the additive
+// structuredContent payload. A nil structured value yields a plain text
+// result, byte-compatible with the legacy response.
+func structuredTextResult(structured any, format string, args ...any) (*mcp.CallToolResult, error) {
+	result := mcp.NewToolResultStructured(structured, fmt.Sprintf(format, args...))
+	return result, nil
+}
+
+// structuredErrorResult returns an isError result whose text stays the frozen
+// legacy message and whose structuredContent carries the stable, redacted,
+// bounded error classification — never a reference or status (REM-MCP-001).
+func structuredErrorResult(payload memorycontract.ErrorStructured, format string, args ...any) (*mcp.CallToolResult, error) {
+	result := mcp.NewToolResultStructured(payload, fmt.Sprintf(format, args...))
+	result.IsError = true
+	return result, nil
+}
+
+// --- T08: stable, redacted local MCP error classification --------------------
+//
+// Every local MCP tool error (outside the frozen structured save/handoff
+// contract above) is lowered to a bounded, constant public message with a
+// stable classification code. Raw store/driver causes — SQL text, DSNs,
+// filesystem paths, credentials — never surface in tool results.
+
+const (
+	localCodeNotFound     = "not_found"
+	localCodeValidation   = "validation"
+	localCodeConflict     = "conflict"
+	localCodeUnauthorized = "unauthorized"
+	localCodeUnavailable  = "unavailable"
+	localCodeTimeout      = "timeout"
+	localCodeInternal     = "internal"
+
+	maxLocalErrorRunes = 200
+)
+
+// localErrorText lowers err into the stable public message tagged with its
+// classification code. It is the only sanctioned way to render an error in a
+// local tool result.
+func localErrorText(err error) string {
+	code, message := classifyLocalError(err)
+	return fmt.Sprintf("%s [code: %s]", message, code)
+}
+
+// classifyLocalError maps any error onto the bounded public classification.
+// Messages come only from this table plus safe, domain-constructed
+// validation text; the raw error string is never echoed.
+func classifyLocalError(err error) (code, message string) {
+	switch {
+	case err == nil:
+		return localCodeInternal, "internal error"
+	case domain.IsNotFoundError(err):
+		return localCodeNotFound, "resource not found"
+	case localIsFailedClassification(err):
+		// ClassFailed wraps a real persistence failure whose cause carries
+		// driver/SQL text: constant message, no cause.
+		return localCodeInternal, "operation could not be completed"
+	case domain.IsValidationError(err):
+		return localCodeValidation, localValidationMessage(err)
+	case domain.IsConflictError(err),
+		errors.Is(err, domain.ErrAlreadyExists),
+		errors.Is(err, domain.ErrSessionEnded),
+		errors.Is(err, domain.ErrConflict):
+		return localCodeConflict, "conflict with current state"
+	case errors.Is(err, domain.ErrUnauthorized):
+		return localCodeUnauthorized, "authentication required"
+	case localIsBusy(err):
+		return localCodeUnavailable, "database is busy; retry the operation"
+	case errors.Is(err, context.DeadlineExceeded):
+		return localCodeTimeout, "operation timed out"
+	default:
+		return localCodeInternal, "internal error"
+	}
+}
+
+// localIsFailedClassification reports whether err is a domain
+// persistence-failure classification (ClassFailed) whose wrapped cause must
+// never surface.
+func localIsFailedClassification(err error) bool {
+	var validation *domain.ValidationError
+	return errors.As(err, &validation) && validation != nil && validation.Code == domain.ClassFailed
+}
+
+// localValidationMessage surfaces only domain-constructed validation text:
+// field, message, and rejected rule — never a wrapped cause. Bounded.
+func localValidationMessage(err error) string {
+	var validation *domain.ValidationError
+	if !errors.As(err, &validation) || validation == nil {
+		return "invalid input"
+	}
+	message := validation.Message
+	if validation.Code == "" { // legacy field-validation rendering
+		message = fmt.Sprintf("validation error on field %q: %s", validation.Field, validation.Message)
+	} else if validation.Rule != "" {
+		message = fmt.Sprintf("%s (rule: %s)", validation.Message, validation.Rule)
+	}
+	return boundLocalText(message)
+}
+
+// localIsBusy reports whether err is a SQLite write-contention failure. The
+// matched texts are constant driver messages, not attacker-controlled.
+func localIsBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database table is locked")
+}
+
+// boundLocalText truncates text to maxLocalErrorRunes runes.
+func boundLocalText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxLocalErrorRunes {
+		return text
+	}
+	return string(runes[:maxLocalErrorRunes]) + "…[truncated]"
+}
+
+// -- Local cortex_handoff (R6, REM-MCP-001, REM-HANDOFF-001/002) --
+
+// localHandoffAuthorizer grants every local handoff and derives the receipt
+// scope from the observation's project. The local runtime is single
+// principal (no authenticated tenancy), so authorization cannot fail; the
+// derived scope keeps idempotency keys isolated per project on the local
+// backend.
+type localHandoffAuthorizer struct{}
+
+// AuthorizeAll implements domain.HandoffAuthorizer for the local namespace.
+func (localHandoffAuthorizer) AuthorizeAll(_ context.Context, _ domain.Principal, req domain.HandoffRequest) (domain.HandoffScope, error) {
+	project := strings.TrimSpace(req.Observation.Project)
+	if project == "" {
+		project = "_"
+	}
+	return domain.HandoffScope("local/project:" + project), nil
+}
+
+// handleHandoff executes a durable, exactly-once handoff against the local
+// SQLite backend through the domain coordinator: canonicalization,
+// authorization, and the single-transaction executor (observation + optional
+// relation + receipt) all-or-nothing. The local namespace returns
+// observation_ref.local_id exclusively.
+func handleHandoff(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		request, invalid := handoffRequestFromArguments(req)
+		if invalid != nil {
+			return structuredErrorResult(*invalid, "Invalid handoff request: %s", invalid.Error.Message)
+		}
+		if stores == nil || stores.UnitOfWork == nil || stores.Observations == nil || stores.Graph == nil || stores.Sessions == nil {
+			payload := memorycontract.Unavailablef("handoff requires a local bundle with UnitOfWork, Observations, Graph, and Sessions wired")
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+
+		// The handoff executor's observation write enforces the sessions
+		// foreign key, so the handler REQUIRES a preexisting session and
+		// validates it BEFORE any mutation. Session creation neither happens
+		// nor can silently fail outside the atomic handoff unit: no orphan
+		// session rows, no ignored creation errors (REM-HANDOFF-001). Creating
+		// the session inside the executor's transaction is not achievable from
+		// the MCP layer (the executor owns the participant list), so the
+		// fail-closed precondition check is the correct local contract.
+		if strings.TrimSpace(request.Observation.SessionID) == "" {
+			payload := memorycontract.Validationf("observation.session_id is required and must reference an existing session")
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+		if _, err := stores.Sessions.GetByID(ctx, request.Observation.SessionID); err != nil {
+			var notFound *domain.NotFoundError
+			if errors.As(err, &notFound) {
+				payload := memorycontract.Validationf("observation.session_id must reference an existing session")
+				return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+			}
+			payload := memorycontract.FromError(err)
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+
+		coordinator := domain.NewHandoffCoordinator(localHandoffAuthorizer{}, bundle.NewSQLiteHandoffExecutor(stores))
+		result, err := coordinator.Execute(ctx, domain.Principal{}, request)
+		if err != nil {
+			payload := memorycontract.FromError(err)
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+		structured, lowerErr := memorycontract.FromWriteResult(result)
+		if lowerErr != nil {
+			// The executor returned an unusable result: fail closed with a
+			// persistence classification instead of fabricating a reference.
+			payload := memorycontract.FromError(domain.ErrHandoffPersistence)
+			return structuredErrorResult(payload, "Handoff failed: %s", payload.Error.Message)
+		}
+		localID := int64(0)
+		if result.Ref.LocalID != nil {
+			localID = *result.Ref.LocalID
+		}
+		return structuredTextResult(structured,
+			"Handoff recorded: %q #%d (%s)", request.Observation.Title, localID, result.Status)
+	}
+}
+
+// handoffRequestFromArguments lowers MCP tool arguments into a domain
+// HandoffRequest. Every rejection is a bounded validation classification that
+// echoes no payload, key, or reference material.
+func handoffRequestFromArguments(req mcp.CallToolRequest) (domain.HandoffRequest, *memorycontract.ErrorStructured) {
+	args := req.GetArguments()
+
+	key, _ := args["idempotency_key"].(string)
+	if strings.TrimSpace(key) == "" {
+		payload := memorycontract.Validationf("idempotency_key is required")
+		return domain.HandoffRequest{}, &payload
+	}
+
+	obsRaw, ok := args["observation"].(map[string]any)
+	if !ok {
+		payload := memorycontract.Validationf("observation object is required")
+		return domain.HandoffRequest{}, &payload
+	}
+	observation := domain.SaveObservationInput{
+		Title:     stringField(obsRaw, "title"),
+		Content:   stringField(obsRaw, "content"),
+		Type:      stringField(obsRaw, "type"),
+		Project:   stringField(obsRaw, "project"),
+		Scope:     stringField(obsRaw, "scope"),
+		SessionID: stringField(obsRaw, "session_id"),
+		TopicKey:  stringField(obsRaw, "topic_key"),
+		Source:    stringField(obsRaw, "source"),
+	}
+	if strings.TrimSpace(observation.Title) == "" || strings.TrimSpace(observation.Content) == "" {
+		payload := memorycontract.Validationf("observation.title and observation.content are required")
+		return domain.HandoffRequest{}, &payload
+	}
+	if confidence, ok := obsRaw["confidence"].(float64); ok {
+		observation.Confidence = confidence
+	}
+	if tagsRaw, ok := obsRaw["tags"].([]any); ok {
+		for _, tag := range tagsRaw {
+			if s, ok := tag.(string); ok && strings.TrimSpace(s) != "" {
+				observation.Tags = append(observation.Tags, strings.TrimSpace(s))
+			}
+		}
+	}
+
+	request := domain.HandoffRequest{IdempotencyKey: key, Observation: observation}
+	if raw, present := args["relation"]; present && raw != nil {
+		relRaw, ok := raw.(map[string]any)
+		if !ok {
+			// A present relation must be an object: silently omitting it
+			// would persist a handoff the caller did not request.
+			payload := memorycontract.Validationf("relation must be an object")
+			return domain.HandoffRequest{}, &payload
+		}
+		relation, invalid := handoffRelationFromArguments(relRaw)
+		if invalid != nil {
+			return domain.HandoffRequest{}, invalid
+		}
+		request.Relation = relation
+	}
+	if tuple, ok := args["capability_tuple"]; ok && tuple != nil {
+		encoded, err := json.Marshal(tuple)
+		if err != nil {
+			payload := memorycontract.Validationf("capability_tuple must be JSON data")
+			return domain.HandoffRequest{}, &payload
+		}
+		request.CapabilityTuple = encoded
+	}
+	return request, nil
+}
+
+// handoffRelationFromArguments lowers the optional relation argument. The
+// local namespace accepts local_id targets only (REM-MCP-001).
+func handoffRelationFromArguments(raw map[string]any) (*domain.HandoffRelationInput, *memorycontract.ErrorStructured) {
+	targetRaw, ok := raw["target"].(map[string]any)
+	if !ok {
+		payload := memorycontract.Validationf("relation.target object is required")
+		return nil, &payload
+	}
+	ref, invalid := handoffRefFromArguments(targetRaw)
+	if invalid != nil {
+		return nil, invalid
+	}
+	relationType := stringField(raw, "type")
+	if relationType == "" {
+		payload := memorycontract.Validationf("relation.type is required")
+		return nil, &payload
+	}
+	relation := &domain.HandoffRelationInput{Target: ref, Type: relationType}
+	if weight, ok := raw["weight"].(float64); ok {
+		relation.Weight = weight
+	}
+	if confidence, ok := raw["confidence"].(float64); ok {
+		relation.Confidence = confidence
+	}
+	relation.Reasoning = stringField(raw, "reasoning")
+	return relation, nil
+}
+
+// handoffRefFromArguments builds the exclusive relation target reference. The
+// namespace XOR is enforced exactly — both or neither fail — BEFORE the
+// runtime namespace preference is applied (review R7 fix 2).
+func handoffRefFromArguments(raw map[string]any) (domain.ObservationRef, *memorycontract.ErrorStructured) {
+	_, hasPublic := raw["public_id"]
+	localRaw, hasLocal := raw["local_id"]
+	if hasPublic == hasLocal {
+		payload := memorycontract.Validationf("relation.target must set exactly one of local_id or public_id")
+		return domain.ObservationRef{}, &payload
+	}
+	if hasPublic {
+		payload := memorycontract.Validationf("the local namespace accepts local_id targets only")
+		return domain.ObservationRef{}, &payload
+	}
+	localID, ok := localRaw.(float64)
+	if !ok {
+		payload := memorycontract.Validationf("relation.target.local_id must be a positive integer")
+		return domain.ObservationRef{}, &payload
+	}
+	// JSON numbers arrive as float64. Validate finiteness, integrality,
+	// and range BEFORE any conversion: NaN/Inf conversions are
+	// implementation-defined and fractional values would silently
+	// truncate to a different observation.
+	if !validLocalIDFloat(localID) {
+		payload := memorycontract.Validationf("relation.target.local_id must be a positive integer")
+		return domain.ObservationRef{}, &payload
+	}
+	ref, err := domain.NewLocalObservationRef(int64(localID))
+	if err != nil {
+		payload := memorycontract.Validationf("relation.target.local_id must be a positive integer")
+		return domain.ObservationRef{}, &payload
+	}
+	return ref, nil
+}
+
+// validLocalIDFloat reports whether v is a finite integral float64 inside the
+// positive int64 range, so int64(v) is exact and safe.
+func validLocalIDFloat(v float64) bool {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return false
+	}
+	if v != math.Trunc(v) {
+		return false
+	}
+	// float64(math.MaxInt64) rounds to 2^63; every float64 strictly below it
+	// converts exactly into the int64 range.
+	return v >= 1 && v < float64(math.MaxInt64)
+}
+
+// stringField reads a string value from a raw argument object.
+func stringField(raw map[string]any, key string) string {
+	v, _ := raw[key].(string)
+	return v
 }
 
 func handleSearch(stores *Stores) server.ToolHandlerFunc {
@@ -599,7 +1089,7 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			GraphExpand: graphExpand,
 		})
 		if err != nil {
-			return errorResult("Search error: %s. Try simpler keywords.", err)
+			return errorResult("Search error: %s. Try simpler keywords.", localErrorText(err))
 		}
 
 		if len(results) == 0 {
@@ -645,7 +1135,7 @@ func handleContext(stores *Stores) server.ToolHandlerFunc {
 		// Gather sessions
 		sessions, err := stores.Sessions.List(ctx, project)
 		if err != nil {
-			return errorResult("Failed to get sessions: %s", err)
+			return errorResult("Failed to get sessions: %s", localErrorText(err))
 		}
 
 		// Gather recent observations
@@ -655,7 +1145,7 @@ func handleContext(stores *Stores) server.ToolHandlerFunc {
 			Limit:   limit,
 		})
 		if err != nil {
-			return errorResult("Failed to get observations: %s", err)
+			return errorResult("Failed to get observations: %s", localErrorText(err))
 		}
 
 		// Gather recent prompts
@@ -762,7 +1252,7 @@ func handleSessionSummary(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Observations.Save(ctx, obs); err != nil {
-			return errorResult("Failed to save session summary: %s", err)
+			return errorResult("Failed to save session summary: %s", localErrorText(err))
 		}
 
 		return textResult("Session summary saved for project %q", project)
@@ -771,9 +1261,9 @@ func handleSessionSummary(stores *Stores) server.ToolHandlerFunc {
 
 func handleGetObservation(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		obs, err := stores.Observations.GetByID(ctx, id)
@@ -843,7 +1333,7 @@ func handleSavePrompt(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Prompts.Save(ctx, p); err != nil {
-			return errorResult("Failed to save prompt: %s", err)
+			return errorResult("Failed to save prompt: %s", localErrorText(err))
 		}
 
 		return textResult("Prompt saved: %q", truncate(content, 80))
@@ -852,15 +1342,15 @@ func handleSavePrompt(stores *Stores) server.ToolHandlerFunc {
 
 func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		// Fetch existing observation
 		obs, err := stores.Observations.GetByID(ctx, id)
 		if err != nil {
-			return errorResult("Failed to find memory #%d: %s", id, err)
+			return errorResult("Failed to find memory #%d: %s", id, localErrorText(err))
 		}
 
 		// Apply only the provided fields
@@ -895,7 +1385,7 @@ func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if err := stores.Observations.Update(ctx, obs); err != nil {
-			return errorResult("Failed to update memory: %s", err)
+			return errorResult("Failed to update memory: %s", localErrorText(err))
 		}
 
 		return textResult("Memory updated: #%d %q (%s, scope=%s)", obs.ID, obs.Title, obs.Type, obs.Scope)
@@ -936,7 +1426,7 @@ func handleSessionStart(stores *Stores) server.ToolHandlerFunc {
 			Project:   project,
 			Directory: directory,
 		}); err != nil {
-			return errorResult("Failed to start session: %s", err)
+			return errorResult("Failed to start session: %s", localErrorText(err))
 		}
 
 		return textResult("Session %q started for project %q", id, project)
@@ -949,7 +1439,7 @@ func handleSessionEnd(stores *Stores) server.ToolHandlerFunc {
 		summary := stringArg(req, "summary")
 
 		if err := stores.Sessions.End(ctx, id, summary); err != nil {
-			return errorResult("Failed to end session: %s", err)
+			return errorResult("Failed to end session: %s", localErrorText(err))
 		}
 
 		return textResult("Session %q completed", id)
@@ -960,12 +1450,12 @@ func handleStats(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		obsStats, err := stores.Observations.Stats(ctx)
 		if err != nil {
-			return errorResult("Failed to get stats: %s", err)
+			return errorResult("Failed to get stats: %s", localErrorText(err))
 		}
 
 		sessStats, err := stores.Sessions.GetStats(ctx)
 		if err != nil {
-			return errorResult("Failed to get session stats: %s", err)
+			return errorResult("Failed to get session stats: %s", localErrorText(err))
 		}
 
 		projects := "none yet"
@@ -982,9 +1472,12 @@ func handleStats(stores *Stores) server.ToolHandlerFunc {
 
 func handleDelete(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return errorResult("id is required")
+		// Strict validation before any destructive store call: fractional,
+		// non-numeric, overflowing, zero, and negative IDs must never be
+		// truncated into a real row ID (QW-01 regression).
+		id, ok := positiveIDArg(req, "id")
+		if !ok {
+			return errorResult("id must be a positive integer")
 		}
 
 		hardDelete := boolArg(req, "hard_delete", false)
@@ -996,7 +1489,7 @@ func handleDelete(stores *Stores) server.ToolHandlerFunc {
 			err = stores.Observations.Delete(ctx, id)
 		}
 		if err != nil {
-			return errorResult("Failed to delete memory: %s", err)
+			return errorResult("Failed to delete memory: %s", localErrorText(err))
 		}
 
 		mode := "soft-deleted"
@@ -1008,9 +1501,9 @@ func handleDelete(stores *Stores) server.ToolHandlerFunc {
 }
 func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		observationID := int64(intArg(req, "observation_id", 0))
-		if observationID == 0 {
-			return errorResult("observation_id is required")
+		observationID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
 		before := intArg(req, "before", 5)
 		after := intArg(req, "after", 5)
@@ -1026,7 +1519,7 @@ func handleTimeline(stores *Stores) server.ToolHandlerFunc {
 		if focus.SessionID != "" {
 			allObs, err := stores.Observations.List(ctx, filter)
 			if err != nil {
-				return errorResult("Timeline error: %s", err)
+				return errorResult("Timeline error: %s", localErrorText(err))
 			}
 
 			var beforeObs, afterObs []*domain.Observation
@@ -1110,9 +1603,9 @@ type revisionHistoryEntry struct {
 
 func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		observationID := int64(intArg(req, "observation_id", 0))
-		if observationID == 0 {
-			return errorResult("observation_id is required")
+		observationID, ok := positiveIDArg(req, "observation_id")
+		if !ok {
+			return errorResult("observation_id must be a positive integer")
 		}
 		limit := intArg(req, "limit", 20)
 		if limit <= 0 {
@@ -1121,7 +1614,7 @@ func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 
 		history, err := loadRevisionHistory(ctx, stores, observationID, limit)
 		if err != nil {
-			return errorResult("Revision history error: %s", err)
+			return errorResult("Revision history error: %s", localErrorText(err))
 		}
 		if len(history) == 0 {
 			return textResult("[]")
@@ -1129,7 +1622,7 @@ func handleRevisionHistory(stores *Stores) server.ToolHandlerFunc {
 
 		payload, err := json.Marshal(history)
 		if err != nil {
-			return errorResult("Failed to serialize revision history: %s", err)
+			return errorResult("Failed to serialize revision history: %s", localErrorText(err))
 		}
 		return textResult("%s", payload)
 	}

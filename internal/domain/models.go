@@ -9,6 +9,8 @@ package domain
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Observation represents a single piece of knowledge or memory captured
@@ -18,19 +20,20 @@ type Observation struct {
 	ID int64 `json:"id"`
 	// PublicID is the opaque server identifier. ID remains an internal/local
 	// compatibility field and must not be used at a server API boundary.
-	PublicID   string    `json:"-"`
-	Title      string    `json:"title"`
-	Content    string    `json:"content"`
-	Type       string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
-	Project    string    `json:"project"` // Project name or identifier
-	Scope      string    `json:"scope"`   // project, personal
-	SessionID  string    `json:"session_id"`
-	TopicKey   string    `json:"topic_key"`  // Optional topic key for upserts
-	Confidence float64   `json:"confidence"` // Confidence score (0.0 to 1.0), default 1.0
-	Source     string    `json:"source"`     // Origin: manual, ai, auto, import
-	Tags       []string  `json:"tags,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	PublicID     string    `json:"-"`
+	Title        string    `json:"title"`
+	Content      string    `json:"content"`
+	Type         string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
+	Project      string    `json:"project"` // Project name or identifier
+	Scope        string    `json:"scope"`   // project, personal
+	OwnerSubject string    `json:"owner_subject,omitempty"`
+	SessionID    string    `json:"session_id"`
+	TopicKey     string    `json:"topic_key"`  // Optional topic key for upserts
+	Confidence   float64   `json:"confidence"` // Confidence score (0.0 to 1.0), default 1.0
+	Source       string    `json:"source"`     // Origin: manual, ai, auto, import
+	Tags         []string  `json:"tags,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (o Observation) MarshalJSON() ([]byte, error) {
@@ -43,6 +46,63 @@ func (o Observation) MarshalJSON() ([]byte, error) {
 		ID any `json:"id"`
 		alias
 	}{id, alias(o)})
+}
+
+// ObservationRef is the exclusive local/public identifier union for addressing
+// an observation across storage namespaces. Exactly one namespace must be set;
+// Validate enforces the XOR invariant.
+type ObservationRef struct {
+	// LocalID addresses the observation in the local SQLite namespace.
+	LocalID *int64 `json:"local_id,omitempty"`
+	// PublicID addresses the observation in the shared server namespace.
+	PublicID *uuid.UUID `json:"public_id,omitempty"`
+}
+
+// NewLocalObservationRef returns a validated local-namespace reference.
+// The local identifier must be positive.
+func NewLocalObservationRef(id int64) (ObservationRef, error) {
+	if id <= 0 {
+		return ObservationRef{}, ErrHandoffValidation
+	}
+	return ObservationRef{LocalID: &id}, nil
+}
+
+// NewPublicObservationRef returns a validated public-namespace reference.
+// The identifier must not be the nil UUID.
+func NewPublicObservationRef(id uuid.UUID) (ObservationRef, error) {
+	if id == uuid.Nil {
+		return ObservationRef{}, ErrHandoffValidation
+	}
+	return ObservationRef{PublicID: &id}, nil
+}
+
+// WriteStatus classifies the durable effect of an observation write relative
+// to previously persisted state. The set is closed: created, replayed, updated.
+type WriteStatus string
+
+const (
+	// WriteStatusCreated marks the first durable materialization.
+	WriteStatusCreated WriteStatus = "created"
+	// WriteStatusReplayed marks an idempotent replay of an identical write.
+	WriteStatusReplayed WriteStatus = "replayed"
+	// WriteStatusUpdated marks an in-place update of an existing observation.
+	WriteStatusUpdated WriteStatus = "updated"
+)
+
+// ObservationWriteResult is the transport-neutral outcome of executing a
+// handoff: which observation namespace holds the payload and what kind of
+// write materialized it.
+type ObservationWriteResult struct {
+	Ref    ObservationRef `json:"observation_ref"`
+	Status WriteStatus    `json:"status"`
+}
+
+// SaveEffect reports the durable effect of a transactional observation save.
+// Observation is nil only when the save did not commit; a non-nil value is the
+// committed aggregate, never a speculation read back after the fact.
+type SaveEffect struct {
+	Observation *Observation `json:"observation"`
+	Status      WriteStatus  `json:"status"`
 }
 
 // Session represents a coding session that groups related observations.
@@ -205,6 +265,7 @@ type ImportanceScore struct {
 type ObservationFilter struct {
 	Project         string     `json:"project,omitempty"`
 	Scope           string     `json:"scope,omitempty"`
+	OwnerSubject    string     `json:"owner_subject,omitempty"`
 	Type            string     `json:"type,omitempty"`
 	Source          string     `json:"source,omitempty"`
 	SessionID       string     `json:"session_id,omitempty"`
@@ -242,10 +303,30 @@ type SearchOptions struct {
 type GraphTraversalOptions struct {
 	Depth       int
 	MaxVisited  int
+	MaxResults  int
 	TenantID    string
 	WorkspaceID string
 	Project     string
 	AsOf        *time.Time
+}
+
+// Truncation reasons reported by bounded local graph traversal (GRAPH-02).
+const (
+	// TruncationReasonMaxVisited marks eligible nodes omitted because the
+	// max_visited budget (root plus unique admitted nodes) was exhausted.
+	TruncationReasonMaxVisited = "max_visited"
+	// TruncationReasonMaxResults marks eligible rows omitted because the
+	// max_results budget (emitted unique non-root observations) was exhausted.
+	TruncationReasonMaxResults = "max_results"
+)
+
+// GraphTraversalResult is the bounded local traversal envelope. Truncated is
+// true ONLY when a one-past-the-limit sentinel probe admitted/emitted eligible
+// data that was then dropped; a result exactly equal to a limit is complete.
+type GraphTraversalResult struct {
+	Observations      []*Observation `json:"observations"`
+	Truncated         bool           `json:"truncated"`
+	TruncationReasons []string       `json:"truncation_reasons,omitempty"`
 }
 
 // SearchResult represents a search result with relevance ranking.
@@ -428,6 +509,22 @@ type TemporalSnapshot struct {
 	ObservationCount  int       `json:"observation_count"`
 	EdgeCount         int       `json:"edge_count"`
 	RootObservationID int64     `json:"root_observation_id,omitempty"` // Root observation for this snapshot
+}
+
+// ProjectMergeResult holds details about consolidated project records.
+type ProjectMergeResult struct {
+	SourceProject      string `json:"source_project"`
+	TargetProject      string `json:"target_project"`
+	ObservationsMerged int    `json:"observations_merged"`
+	SessionsMerged     int    `json:"sessions_merged"`
+	PromptsMerged      int    `json:"prompts_merged"`
+}
+
+// ProjectDuplicateGroup represents a canonical project and its detected casing/similar variants.
+type ProjectDuplicateGroup struct {
+	CanonicalName string   `json:"canonical_name"`
+	Variants      []string `json:"variants"`
+	TotalCount    int      `json:"total_count"`
 }
 
 // Entity types

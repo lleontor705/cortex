@@ -1,0 +1,16 @@
+{
+  "name": "@cortex/plugin-opencode",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cortex OpenCode plugin adapter with its own reproducible Vitest harness.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
+  }
+}

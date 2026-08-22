@@ -45,6 +45,28 @@ type ObservationLookup interface {
 	GetByID(ctx context.Context, id int64) (*domain.Observation, error)
 }
 
+// BatchObservationLookup is the OPTIONAL batch-capable superset of
+// ObservationLookup (VEC-01). RevalidateCandidates detects it via type
+// assertion and, when hydration succeeds, replaces the per-candidate N+1
+// GetByID loop with a single GetByIDs call over the unique candidate IDs.
+//
+// It is deliberately retrieval-local: it is NOT added to
+// domain.ObservationRepository (which has multiple implementors), so stores
+// opt in simply by exposing the method — *sqlite.Store does. A lookup that
+// does not implement it keeps the exact legacy per-ID behavior.
+//
+// GetByIDs contract:
+//
+//   - Empty/nil ids MUST issue no SQL and return an empty map.
+//   - Live rows MUST be keyed by observation ID.
+//   - Soft-deleted and missing IDs MUST be absent from the map (or mapped to
+//     nil), which the engine treats as a drop — identical legacy semantics.
+//   - Rows for IDs that were not requested MAY be present and are ignored.
+type BatchObservationLookup interface {
+	ObservationLookup
+	GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Observation, error)
+}
+
 // RevalidateCandidates converts lightweight VectorCandidate results (ID +
 // score from a domain.VectorIndex) into full VectorSearchResult entries by
 // looking up the observation data via the provided ObservationLookup.
@@ -54,11 +76,29 @@ type ObservationLookup interface {
 // store-layer pipeline applies to fused candidates. A nil observation from
 // the store is treated the same as an error: the candidate is dropped.
 //
+// Batch fast path (VEC-01): when obs also implements BatchObservationLookup,
+// the unique candidate IDs are hydrated with ONE GetByIDs call and the
+// results are rebuilt by iterating the original candidate sequence. If the
+// batch call fails, the error is swallowed and the unchanged per-ID loop
+// runs instead — outputs are byte-equivalent either way.
+//
 // The output preserves the INPUT ORDER of candidates (NOT re-sorted by
 // score). Callers that need score-sorted output should sort the returned
 // slice or rely on FuseResults, which re-sorts via RRF.
 func RevalidateCandidates(ctx context.Context, obs ObservationLookup, candidates []domain.VectorCandidate) []*domain.VectorSearchResult {
 	results := make([]*domain.VectorSearchResult, 0, len(candidates))
+	if len(candidates) == 0 {
+		return results // zero candidates: zero hydration work, zero SQL
+	}
+
+	// Optional batch fast path. Any failure falls through to the legacy
+	// per-ID loop without surfacing the batch error (VEC-01 fallback rule).
+	if batch, ok := obs.(BatchObservationLookup); ok {
+		if batchResults, ok := revalidateCandidatesBatch(ctx, batch, candidates); ok {
+			return batchResults
+		}
+	}
+
 	for _, c := range candidates {
 		o, err := obs.GetByID(ctx, c.ID)
 		if err != nil || o == nil {
@@ -70,6 +110,41 @@ func RevalidateCandidates(ctx context.Context, obs ObservationLookup, candidates
 		})
 	}
 	return results
+}
+
+// revalidateCandidatesBatch hydrates the unique candidate IDs with a single
+// GetByIDs call and rebuilds results in candidate order. It reports ok=false
+// ONLY when the batch call errored (the caller then uses the legacy loop).
+// Duplicate candidates are hydrated once but emitted per occurrence; map
+// misses, nil values, and unrequested extra rows keep legacy semantics.
+func revalidateCandidatesBatch(ctx context.Context, batch BatchObservationLookup, candidates []domain.VectorCandidate) ([]*domain.VectorSearchResult, bool) {
+	// Deduplicate IDs (first-seen order) so the store hydrates each ID once.
+	ids := make([]int64, 0, len(candidates))
+	seen := make(map[int64]struct{}, len(candidates))
+	for _, c := range candidates {
+		if _, dup := seen[c.ID]; !dup {
+			seen[c.ID] = struct{}{}
+			ids = append(ids, c.ID)
+		}
+	}
+
+	byID, err := batch.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, false // swallow: legacy per-ID fallback owns this case
+	}
+
+	// Rebuild strictly by candidate iteration (never map order) so rank,
+	// similarity slots, and duplicates are byte-equivalent to the legacy path.
+	results := make([]*domain.VectorSearchResult, 0, len(candidates))
+	for _, c := range candidates {
+		if o := byID[c.ID]; o != nil { // map miss or nil -> drop (legacy rule)
+			results = append(results, &domain.VectorSearchResult{
+				Observation: *o,
+				Similarity:  c.Score,
+			})
+		}
+	}
+	return results, true
 }
 
 // FuseResults combines FTS5 full-text search results with vector similarity

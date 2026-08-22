@@ -31,3 +31,65 @@ func TestObservationReadQueriesKeepExplicitTenantPredicate(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkspaceScopedReadQueriesKeepExplicitWorkspacePredicate pins SEC-01
+// statically: every observation list/search/topic/count read and every
+// supporting prompt/graph subquery in the owned repository files must carry
+// an explicit workspace_id predicate bound to the transaction-resolved
+// workspace, and every multi-row read must fail closed through
+// errWorkspaceScopeRequired when that binding is missing.
+func TestWorkspaceScopedReadQueriesKeepExplicitWorkspacePredicate(t *testing.T) {
+	scopes := []struct {
+		file    string
+		markers []string
+	}{
+		{"repositories.go", []string{
+			"func (r *ObservationRepository) List(",
+			"func (r *ObservationRepository) CountAll(",
+			"func (r *ObservationRepository) CountByRoot(",
+			"func (r *ObservationRepository) CountEdgesAsObs(",
+			"func (r *ObservationRepository) GetByTopicKey(",
+		}},
+		{"extras.go", []string{
+			"func (r *PromptRepository) List(",
+			"func (r *SearchRepository) Search(",
+			"func (r *GraphRepository) GetEdgesForObservation(",
+			"func (r *GraphRepository) populateEdgeEndpoints(",
+			"func (r *GraphRepository) GetRelated(",
+			"func (r *GraphRepository) GetEvolutionChain(",
+			"func (r *GraphRepository) CountEdgesByObservation(",
+			"func (r *GraphRepository) CountAllEdges(",
+			"func (r *GraphRepository) GetContradictions(",
+		}},
+	}
+	for _, scope := range scopes {
+		data, err := os.ReadFile(scope.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Splitting at "\nfunc " yields one chunk per top-level function;
+		// the chunk beginning with the marker suffix is that function body.
+		chunks := strings.Split("\n"+string(data), "\nfunc ")
+		for _, marker := range scope.markers {
+			body := ""
+			for _, chunk := range chunks {
+				if strings.HasPrefix(chunk, strings.TrimPrefix(marker, "func ")) {
+					body = chunk
+					break
+				}
+			}
+			if body == "" {
+				t.Fatalf("%s: function %s not found for workspace predicate audit", scope.file, marker)
+			}
+			if !strings.Contains(body, "workspace_id=$") {
+				t.Fatalf("%s %s lacks an explicit workspace_id predicate (SEC-01 requires tenant+workspace on every list/search/topic/count/supporting read)", scope.file, marker)
+			}
+			// The fail-closed guard is either the direct sentinel or the
+			// requireWorkspaceScope resolver that returns it; both prove
+			// the read cannot degrade to tenant-wide visibility.
+			if !strings.Contains(body, "errWorkspaceScopeRequired") && !strings.Contains(body, "requireWorkspaceScope(ctx)") {
+				t.Fatalf("%s %s does not fail closed through errWorkspaceScopeRequired when the workspace binding is missing", scope.file, marker)
+			}
+		}
+	}
+}

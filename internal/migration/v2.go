@@ -70,6 +70,20 @@ var (
 	// ErrIncompatibleDatabase is returned when the DB has a schema identity
 	// from a different family (e.g., a v1 or foreign database).
 	ErrIncompatibleDatabase = errors.New("migration: incompatible database schema family")
+
+	// ErrFutureMigration is returned when a migration ledger records a
+	// version NEWER than any migration this runtime knows. Such a database
+	// was created by a newer runtime; an older runtime must fail closed on
+	// Apply and verification instead of silently forking the migration line
+	// (REM-ROLLOUT-001).
+	ErrFutureMigration = errors.New("migration: ledger records a future migration version")
+
+	// ErrPreflightStop is returned by the read-only rollout preflight when
+	// the ledger is NOT in the expected unledgered state for the target
+	// migration (SQLite follow-up 2003, PostgreSQL 106). It tells operators
+	// to STOP the rollout and escalate instead of applying; it is never
+	// returned by Apply/VerifyIntegrity paths (IDP-T05).
+	ErrPreflightStop = errors.New("migration: rollout preflight stop")
 )
 
 // SchemaIdentity is the version+checksum tuple recorded in cortex_meta.
@@ -81,20 +95,67 @@ type SchemaIdentity struct {
 
 // V2Baseline is the forward-only v2 schema baseline.
 type V2Baseline struct {
-	sql      string
-	identity SchemaIdentity
+	sql       string
+	identity  SchemaIdentity
+	followUps []v2FollowUp
 }
 
-// NewV2Baseline constructs the v2 baseline from the embedded SQL bundle.
-// The checksum is the SHA-256 of the baseline SQL, computed once at construction.
+// v2FollowUp is an additive, checksummed migration applied after the
+// immutable 001 baseline (forward-only v2 line).
+type v2FollowUp struct {
+	version  int
+	name     string
+	sql      string
+	checksum string
+}
+
+// v2FollowUpLedgerDDL is the additive ledger tracking applied v2 follow-ups.
+// It is deliberately separate from cortex_meta and _migrations so older
+// runtimes neither read nor reject it: they simply ignore the extra table.
+const v2FollowUpLedgerDDL = `CREATE TABLE IF NOT EXISTS cortex_v2_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`
+
+// NewV2Baseline constructs the v2 baseline from the embedded SQL bundle,
+// including the follow-up migration line (2002 handoff receipts, 2003 project
+// context artifacts). The baseline identity (family/version/checksum) still
+// refers ONLY to the immutable 001 SQL: follow-ups carry their own ledger
+// checksums.
 func NewV2Baseline() (*V2Baseline, error) {
 	raw := v2migrations.BaselineSQL
 	if raw == "" {
 		return nil, fmt.Errorf("migration: embedded v2 baseline SQL is empty")
 	}
+	followUpSQL := v2migrations.HandoffReceiptsSQL
+	if followUpSQL == "" {
+		return nil, fmt.Errorf("migration: embedded v2 follow-up SQL (002) is empty")
+	}
+	projectArtifactsSQL := v2migrations.ProjectArtifactsSQL
+	if projectArtifactsSQL == "" {
+		return nil, fmt.Errorf("migration: embedded v2 follow-up SQL (003) is empty")
+	}
 	sum := sha256.Sum256([]byte(raw))
+	followUpSum := sha256.Sum256([]byte(followUpSQL))
+	projectArtifactsSum := sha256.Sum256([]byte(projectArtifactsSQL))
 	return &V2Baseline{
 		sql: raw,
+		followUps: []v2FollowUp{
+			{
+				version:  V2HandoffReceiptsMigrationVersion,
+				name:     "v2_002_handoff_receipts",
+				sql:      followUpSQL,
+				checksum: hex.EncodeToString(followUpSum[:]),
+			},
+			{
+				version:  V2ProjectArtifactsMigrationVersion,
+				name:     "v2_003_project_artifacts",
+				sql:      projectArtifactsSQL,
+				checksum: hex.EncodeToString(projectArtifactsSum[:]),
+			},
+		},
 		identity: SchemaIdentity{
 			Family:   SchemaFamilyCortexV2,
 			Version:  V2BaselineVersion,
@@ -134,15 +195,29 @@ func (b *V2Baseline) Apply(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("migration: read existing identity: %w", err)
 	}
 	if err == nil {
-		// cortex_meta already carries an identity.
-		_ = tx.Rollback() // nothing to do; safe to discard the empty tx.
+		// cortex_meta already carries an identity. Discard the empty probe
+		// transaction and validate the identity first.
+		_ = tx.Rollback()
 		committed = true
-		return b.checkExistingIdentity(existing)
+		if err := b.checkExistingIdentity(existing); err != nil {
+			return err
+		}
+		// Compatible database: apply any pending follow-up migrations
+		// (2002 ...) additively. This is the in-place upgrade path for
+		// databases created by older runtimes; the forward-only line never
+		// touches the baseline schema or data.
+		return b.applyPendingFollowUpsTx(ctx, db)
 	}
 
 	// Fresh path: execute the full baseline DDL inside this transaction.
 	if _, err := tx.Exec(b.sql); err != nil {
 		return fmt.Errorf("migration: execute v2 baseline SQL: %w", err)
+	}
+
+	// Follow-up migrations join the SAME transaction so a fresh database is
+	// created atomically with the complete current schema.
+	if err := b.applyPendingFollowUps(tx); err != nil {
+		return err
 	}
 
 	// Integrity gate: PRAGMA integrity_check must report "ok" BEFORE we record
@@ -197,6 +272,306 @@ func (b *V2Baseline) VerifyIntegrity(ctx context.Context, db *sql.DB) error {
 		existing.Checksum != b.identity.Checksum {
 		return fmt.Errorf("%w: expected %s/%s, got %s/%s", ErrSchemaTampered,
 			b.identity.Family, b.identity.Version, existing.Family, existing.Version)
+	}
+
+	// Follow-up ledger verification: a recorded follow-up with a mismatched
+	// checksum means the follow-up SQL was rewritten after being applied —
+	// fail closed (REM-MIG-001). Absent ledger/table is tolerated (older
+	// runtime databases and not-yet-applied follow-ups).
+	if err := b.verifyFollowUpLedger(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// --- v2 follow-up migration line --------------------------------------------
+
+// LedgerPreflight is the read-only ledger preflight result for ONE target
+// migration version (the SQLite follow-up 2003 or the PostgreSQL server
+// migration 106). It is filled exclusively by SELECT probes: running a
+// preflight never creates the ledger table, never writes rows, and never
+// takes advisory locks. The expected state for a rollout is UNLEDGERED; see
+// docs/project-context-protocol-identity-privilege.md for the runbook.
+type LedgerPreflight struct {
+	// Version is the preflight target version (e.g. 2003 or 106).
+	Version int
+
+	// LedgerTable reports whether the migration ledger table exists at all.
+	LedgerTable bool
+
+	// Ledgered reports whether the ledger records a row for Version.
+	Ledgered bool
+
+	// RecordedChecksum is the checksum ledgered for Version ("" when
+	// unledgered). ANY recorded value — a prior pre-release checksum or the
+	// current one — stops a rollout that expects the unledgered state.
+	RecordedChecksum string
+
+	// ExpectedChecksum is this runtime's embedded checksum for Version.
+	ExpectedChecksum string
+
+	// Head is the newest migration version this runtime knows.
+	Head int
+
+	// FutureLedgerVersion is a ledgered version beyond Head (0 when none):
+	// the database was created by a NEWER runtime.
+	FutureLedgerVersion int
+}
+
+// Verdict returns nil ONLY for the expected unledgered state (no ledger row
+// for the target version and no newer-runtime ledger row). Every other
+// state is a rollout stop: the returned error always wraps ErrPreflightStop
+// and carries the precise escalation reason — already applied with the
+// current checksum, a prior checksum (tamper-class), or a future version
+// (newer runtime). It is a pure function over the reported state.
+func (p LedgerPreflight) Verdict() error {
+	switch {
+	case p.FutureLedgerVersion > 0:
+		return fmt.Errorf("%w: %w: ledger records version %d beyond runtime head %d",
+			ErrPreflightStop, ErrFutureMigration, p.FutureLedgerVersion, p.Head)
+	case !p.Ledgered:
+		return nil
+	case p.RecordedChecksum == p.ExpectedChecksum:
+		return fmt.Errorf("%w: version %d is already applied with the current checksum; run the post-apply check instead of applying",
+			ErrPreflightStop, p.Version)
+	default:
+		return fmt.Errorf("%w: %w: version %d records prior checksum %s; expected unledgered (embedded checksum %s)",
+			ErrPreflightStop, ErrSchemaTampered, p.Version, p.RecordedChecksum, p.ExpectedChecksum)
+	}
+}
+
+// followUp returns the embedded follow-up for version, or an error for a
+// version this runtime does not carry (the preflight and post-apply checks
+// are precise: they only judge versions whose SQL they embed).
+func (b *V2Baseline) followUp(version int) (v2FollowUp, error) {
+	for _, followUp := range b.followUps {
+		if followUp.version == version {
+			return followUp, nil
+		}
+	}
+	return v2FollowUp{}, fmt.Errorf("migration: unknown v2 follow-up version %d", version)
+}
+
+// PreflightFollowUp runs the READ-ONLY rollout preflight for one embedded
+// v2 follow-up version (e.g. 2003, the project artifacts migration) against
+// the follow-up ledger (cortex_v2_migrations). It issues SELECTs only: the
+// ledger table is probed via sqlite_master and never created, and no row is
+// written. The expected rollout state is unledgered; any recorded checksum
+// or any newer-runtime ledger row yields an ErrPreflightStop verdict for
+// operator escalation (IDP-T05). Operational failures (unreadable ledger)
+// return a plain error, never a verdict.
+func (b *V2Baseline) PreflightFollowUp(ctx context.Context, db *sql.DB, version int) (LedgerPreflight, error) {
+	if db == nil {
+		return LedgerPreflight{}, fmt.Errorf("migration: database connection is nil")
+	}
+	target, err := b.followUp(version)
+	if err != nil {
+		return LedgerPreflight{}, err
+	}
+	preflight := LedgerPreflight{
+		Version:          version,
+		ExpectedChecksum: target.checksum,
+		Head:             b.maxKnownFollowUpVersion(),
+	}
+
+	// Ledger presence via sqlite_master: a missing table is the baseline-only
+	// database shape and stays untouched (read-only, unlike Apply).
+	var ledger string
+	err = db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cortex_v2_migrations'`,
+	).Scan(&ledger)
+	if errors.Is(err, sql.ErrNoRows) {
+		return preflight, preflight.Verdict()
+	}
+	if err != nil {
+		return preflight, fmt.Errorf("migration: probe v2 follow-up ledger presence: %w", err)
+	}
+	preflight.LedgerTable = true
+
+	var recorded sql.NullString
+	err = db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, version,
+	).Scan(&recorded)
+	switch {
+	case errors.Is(err, sql.ErrNoRows): // no ledger row for the target: unledgered
+	case err != nil:
+		return preflight, fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	default:
+		preflight.Ledgered = true
+		preflight.RecordedChecksum = recorded.String
+	}
+
+	var future sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT max(version) FROM cortex_v2_migrations WHERE version > ?`, preflight.Head,
+	).Scan(&future); err != nil {
+		return preflight, fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	}
+	if future.Valid {
+		preflight.FutureLedgerVersion = int(future.Int64)
+	}
+	return preflight, preflight.Verdict()
+}
+
+// VerifyFollowUpApplied is the POST-APPLY check for one embedded v2
+// follow-up version: the ledger must record a row whose checksum equals the
+// EXACT embedded checksum. A missing row means the follow-up was not
+// applied; a drifted checksum fails closed with ErrSchemaTampered. It is
+// read-only (a single SELECT).
+func (b *V2Baseline) VerifyFollowUpApplied(ctx context.Context, db *sql.DB, version int) error {
+	if db == nil {
+		return fmt.Errorf("migration: database connection is nil")
+	}
+	target, err := b.followUp(version)
+	if err != nil {
+		return err
+	}
+	var recorded string
+	err = db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, version,
+	).Scan(&recorded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("migration: v2 follow-up %d is not recorded in the ledger; the apply did not complete", version)
+	}
+	if err != nil {
+		return fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	}
+	if recorded != target.checksum {
+		return fmt.Errorf("%w: v2 follow-up %d recorded checksum %s, expected the embedded checksum %s",
+			ErrSchemaTampered, version, recorded, target.checksum)
+	}
+	return nil
+}
+
+// applyPendingFollowUpsTx applies pending v2 follow-ups in one transaction.
+func (b *V2Baseline) applyPendingFollowUpsTx(ctx context.Context, db *sql.DB) error {
+	if len(b.followUps) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migration: begin v2 follow-up transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := b.applyPendingFollowUps(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration: commit v2 follow-ups: %w", err)
+	}
+	return nil
+}
+
+// applyPendingFollowUps records and executes every follow-up not present in
+// the ledger. A ledger recording a version beyond this runtime's head fails
+// closed (ErrFutureMigration) BEFORE any follow-up DDL runs. A recorded
+// checksum that differs from the embedded one is ErrSchemaTampered (fail
+// closed); a matching row is an idempotent skip. Any DDL failure leaves no
+// partial state because the caller's transaction wraps DDL and ledger writes
+// together.
+func (b *V2Baseline) applyPendingFollowUps(q querier) error {
+	if len(b.followUps) == 0 {
+		return nil
+	}
+	if _, err := q.Exec(v2FollowUpLedgerDDL); err != nil {
+		return fmt.Errorf("migration: create v2 follow-up ledger: %w", err)
+	}
+	if err := rejectFutureV2LedgerVersions(q, b.maxKnownFollowUpVersion()); err != nil {
+		return err
+	}
+	for _, followUp := range b.followUps {
+		var recorded string
+		err := q.QueryRow(
+			`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, followUp.version,
+		).Scan(&recorded)
+		switch {
+		case err == nil:
+			if recorded != followUp.checksum {
+				return fmt.Errorf("%w: v2 follow-up %d recorded checksum %s, expected %s",
+					ErrSchemaTampered, followUp.version, recorded, followUp.checksum)
+			}
+			// Applied with the exact embedded checksum: idempotent skip.
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := q.Exec(followUp.sql); err != nil {
+				return fmt.Errorf("migration: execute v2 follow-up %d (%s): %w",
+					followUp.version, followUp.name, err)
+			}
+			if _, err := q.Exec(
+				`INSERT INTO cortex_v2_migrations (version, name, checksum) VALUES (?, ?, ?)`,
+				followUp.version, followUp.name, followUp.checksum,
+			); err != nil {
+				return fmt.Errorf("migration: record v2 follow-up %d: %w", followUp.version, err)
+			}
+		default:
+			return fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+		}
+	}
+	return nil
+}
+
+// verifyFollowUpLedger verifies recorded follow-up ledger rows for KNOWN
+// follow-ups carry the exact embedded checksum. A missing ledger table
+// (pre-follow-up database) and not-yet-applied rows are tolerated; a ledger
+// recording a version beyond this runtime's head fails closed
+// (ErrFutureMigration): that database was created by a NEWER runtime and must
+// not be verified as if this runtime owned the line (REM-ROLLOUT-001).
+func (b *V2Baseline) verifyFollowUpLedger(q querier) error {
+	var name string
+	err := q.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cortex_v2_migrations'`,
+	).Scan(&name)
+	if err != nil {
+		// Ledger table absent: database created before the follow-up line.
+		return nil
+	}
+	if err := rejectFutureV2LedgerVersions(q, b.maxKnownFollowUpVersion()); err != nil {
+		return err
+	}
+	for _, followUp := range b.followUps {
+		var recorded string
+		err := q.QueryRow(
+			`SELECT checksum FROM cortex_v2_migrations WHERE version = ?`, followUp.version,
+		).Scan(&recorded)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // not applied yet
+		}
+		if err != nil {
+			return fmt.Errorf("%w: read v2 follow-up ledger: %v", ErrSchemaTampered, err)
+		}
+		if recorded != followUp.checksum {
+			return fmt.Errorf("%w: v2 follow-up %d recorded checksum %s, expected %s",
+				ErrSchemaTampered, followUp.version, recorded, followUp.checksum)
+		}
+	}
+	return nil
+}
+
+// maxKnownFollowUpVersion returns the newest follow-up version embedded in
+// this runtime (the head of the v2 follow-up line).
+func (b *V2Baseline) maxKnownFollowUpVersion() int {
+	head := 0
+	for _, followUp := range b.followUps {
+		if followUp.version > head {
+			head = followUp.version
+		}
+	}
+	return head
+}
+
+// rejectFutureV2LedgerVersions fails closed (ErrFutureMigration) when the
+// follow-up ledger records a version beyond this runtime's head: the database
+// was created by a NEWER runtime, and applying or verifying below that head
+// would silently fork the migration line.
+func rejectFutureV2LedgerVersions(q querier, head int) error {
+	var future sql.NullInt64
+	if err := q.QueryRow(
+		`SELECT max(version) FROM cortex_v2_migrations WHERE version > ?`, head,
+	).Scan(&future); err != nil {
+		return fmt.Errorf("migration: read v2 follow-up ledger: %w", err)
+	}
+	if future.Valid {
+		return fmt.Errorf("%w: v2 follow-up ledger records version %d beyond runtime head %d",
+			ErrFutureMigration, future.Int64, head)
 	}
 	return nil
 }
@@ -384,6 +759,14 @@ func fileExistsOnDisk(path string) bool {
 // with the retired v1 set (1-14). 2001 = "v2 line, migration 001".
 const V2BaselineMigrationVersion = 2001
 
+// V2HandoffReceiptsMigrationVersion is the numeric version of the additive
+// SQLite follow-up migration 002 (handoff receipts) in the v2 line.
+const V2HandoffReceiptsMigrationVersion = 2002
+
+// V2ProjectArtifactsMigrationVersion is the numeric version of the additive
+// SQLite follow-up migration 003 (project context artifacts) in the v2 line.
+const V2ProjectArtifactsMigrationVersion = 2003
+
 // v1MigrationCount is the number of v1 migrations retired from the v2 line.
 const v1MigrationCount = 14
 
@@ -423,8 +806,10 @@ func (r *V2Registry) IsV1Retired(version int) bool {
 	return version >= 1 && version <= v1MigrationCount
 }
 
-// V2Migrations returns the migrations in the v2 line (currently just the
-// baseline). None of these have versions in the retired v1 range.
+// V2Migrations returns the migrations in the v2 line: the immutable baseline
+// (2001) followed by the checksummed follow-up 2002 (handoff receipts). None
+// of these have versions in the retired v1 range, and every entry is
+// forward-only (empty DownSQL; rollback returns ErrForwardOnly).
 func (r *V2Registry) V2Migrations() []Migration {
 	return []Migration{
 		{
@@ -435,6 +820,22 @@ func (r *V2Registry) V2Migrations() []Migration {
 			// Forward-only: DownSQL is intentionally empty. The runner's Down()
 			// returns ErrForwardOnly. This field is kept empty to signal that
 			// rollback is unsupported, consistent with the v2 major-release policy.
+			DownSQL: "",
+		},
+		{
+			Version:     V2HandoffReceiptsMigrationVersion,
+			Name:        "v2_002_handoff_receipts",
+			Description: "Durable handoff receipt ledger for exactly-once handoffs (additive follow-up)",
+			UpSQL:       v2migrations.HandoffReceiptsSQL,
+			// Forward-only: receipts are user data and MUST NOT be dropped.
+			DownSQL: "",
+		},
+		{
+			Version:     V2ProjectArtifactsMigrationVersion,
+			Name:        "v2_003_project_artifacts",
+			Description: "Project Context artifact ledger: soft-delete artifacts, immutable revisions/events, one activation pointer, idempotency receipts, usage counters (additive follow-up)",
+			UpSQL:       v2migrations.ProjectArtifactsSQL,
+			// Forward-only: artifact history is user data and MUST NOT be dropped.
 			DownSQL: "",
 		},
 	}

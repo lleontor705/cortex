@@ -105,3 +105,12 @@ Content wrapped in `<private>...</private>` tags is stripped by the OpenCode plu
 ```
 <private>API_KEY=sk-1234</private>  →  [REDACTED]
 ```
+
+## Testing
+
+Both plugins ship reproducible gates that CI enforces on every pull request and again before release.
+
+- **OpenCode (`plugin/opencode`)**: an isolated npm subpackage (`@cortex/plugin-opencode`, Node >= 24) with its own committed lockfile. Run `npm ci && npm test` inside the directory; the Vitest harness (`vitest run`) exercises the `cortex.ts` contract tests without a live Cortex server or network access.
+- **Claude Code (`plugin/claude-code`)**: `scripts/hooks_test.sh` is a deterministic, network-free contract harness that stubs `curl` and the `cortex` binary with fixtures. It requires bash, jq, python3, and coreutils `timeout`; if any of them is missing it exits with 127 so the gate is reported BLOCKED instead of silently passing.
+
+Local vs CI: on Windows workstations without jq (or without a full bash toolchain) the Claude harness is BLOCKED locally — that is expected, not a failure of the plugin. The `ubuntu-latest` runners in `.github/workflows/ci.yml` install the dependencies explicitly and are the authoritative executor. The OpenCode tests run anywhere Node >= 24 is available, including Windows.

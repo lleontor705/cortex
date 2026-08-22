@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,19 @@ var (
 type tenantKey struct{}
 type principalKey struct{}
 type actorKey struct{}
+
+// boundedLockTimeout bounds every explicit lock wait a store transaction can
+// take (advisory topic locks and receipt row locks). A save or handoff must
+// never wait on a lock indefinitely; a timeout surfaces as SQLSTATE 55P03,
+// which the save and handoff taxonomies map to retryable contention.
+//
+// Ownership note (R4b design amendment reconciliation): boundedLockTimeout,
+// workspaceKey/workspaceFromContext, and bindWorkspace below live in store.go
+// because they are transaction-lifecycle primitives shared by the observation
+// save core and the handoff executor (amendment decisions AD5/AD6: one
+// workspace bigint resolution per transaction; bounded, JSON-framed advisory
+// lock key). The R4b dispatch authorizes store.go for exactly these seams.
+const boundedLockTimeout = "5s"
 
 func withTenant(ctx context.Context, t *domain.TenantContext) context.Context {
 	return context.WithValue(ctx, tenantKey{}, t)
@@ -215,6 +229,15 @@ func (s *Store) projectGrantFilter() (projects []string, wildcard bool) {
 	return projects, false
 }
 
+func (s *Store) isAdmin() bool {
+	for _, r := range s.principal.Roles {
+		if strings.EqualFold(r, "admin") || strings.EqualFold(r, "owner") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) classificationGrantFilter() (classes []string, wildcard bool) {
 	if s.principal.Type == "service_account" || len(s.principal.ClassificationClearance) == 0 {
 		return nil, false
@@ -236,7 +259,12 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	if err != nil {
 		return fmt.Errorf("postgres store: begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// The bind helpers below return a nil context together with their
+	// error, so the deferred rollback must close over the original
+	// non-nil context: rolling back with the reassigned ctx would panic
+	// inside pgconn and wedge the connection pool whenever a bind fails.
+	rollbackCtx := ctx
+	defer func() { _ = tx.Rollback(rollbackCtx) }()
 	if err := s.bind(ctx, tx); err != nil {
 		return err
 	}
@@ -244,6 +272,39 @@ func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx
 	if err != nil {
 		return err
 	}
+	ctx, err = s.bindWorkspace(ctx, tx)
+	if err != nil {
+		return err
+	}
+	// The fresh-transaction path must expose the tx to the closure through
+	// the context: receipt primitives (claim/read/finalize) resolve it via
+	// txFromContext, exactly like the WithinTx path does.
+	ctx = context.WithValue(ctx, txKey{}, tx)
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres store: commit: %w", err)
+	}
+	return nil
+}
+
+// unboundTransaction runs fn in a transaction WITHOUT a principal binding.
+// It exists for authentication only: credential verification happens before
+// any principal exists, and the mediated verify routine derives the tenant
+// from the presented credential itself and requires no bound caller. Every
+// other store path must keep using transaction, which binds the verified
+// principal and fails closed without one.
+func (s *Store) unboundTransaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
+	ctx = s.context(ctx)
+	if tx, ok := txFromContext(ctx); ok {
+		return fn(ctx, tx)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("postgres store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}
@@ -275,6 +336,10 @@ func (s *Store) WithinTx(ctx context.Context, handle any, fn func(context.Contex
 	if err != nil {
 		return err
 	}
+	ctx, err = s.bindWorkspace(ctx, tx)
+	if err != nil {
+		return err
+	}
 	return fn(ctx)
 }
 
@@ -282,14 +347,16 @@ var _ domain.TxParticipant = (*Store)(nil)
 
 func notFound(kind string, id any) error { return &domain.NotFoundError{Type: kind, ID: id} }
 
-func (s *Store) bindActor(ctx context.Context, tx pgx.Tx) (context.Context, error) {
-	if id, err := uuid.Parse(s.principal.Subject); err == nil {
-		return context.WithValue(ctx, actorKey{}, id), nil
-	}
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `INSERT INTO actor_subjects(tenant_id,subject,actor_type) VALUES(public.cortex_current_tenant(),$1,$2) ON CONFLICT(tenant_id,subject) DO UPDATE SET subject=EXCLUDED.subject RETURNING public_id`, s.principal.Subject, s.principal.Type).Scan(&id)
+// bindActor resolves the transaction's actor public id for audit columns.
+// Only a principal whose subject is an actor public id (UUID) can resolve:
+// the historical non-UUID upsert into actor_subjects is removed because the
+// application role no longer holds any direct DML on the identity tables —
+// provisioning is mediated by migration-owned definer routines — so an
+// opaque subject now fails closed instead of silently minting identity.
+func (s *Store) bindActor(ctx context.Context, _ pgx.Tx) (context.Context, error) {
+	id, err := uuid.Parse(s.principal.Subject)
 	if err != nil {
-		return nil, fmt.Errorf("postgres store: resolve actor: %w", err)
+		return nil, fmt.Errorf("%w: principal public id: %v", ErrPrincipalRequired, err)
 	}
 	return context.WithValue(ctx, actorKey{}, id), nil
 }
@@ -306,4 +373,40 @@ type txKey struct{}
 func txFromContext(ctx context.Context) (pgx.Tx, bool) {
 	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
 	return tx, ok
+}
+
+// workspaceKey carries the transaction-resolved workspaces.id bigint. The
+// verified TenantContext workspace UUID is exchanged for it once per
+// transaction so receipt, topic-lock, dedup, insert, update, and replay
+// statements never re-derive the workspace binding per statement.
+type workspaceKey struct{}
+
+func workspaceFromContext(ctx context.Context) (int64, bool) {
+	id, ok := ctx.Value(workspaceKey{}).(int64)
+	return id, ok
+}
+
+// bindWorkspace resolves the durable workspace binding once per transaction:
+// the verified TenantContext workspace UUID is exchanged for the workspaces
+// row bigint, and every workspace-scoped statement in the transaction
+// (receipts, topic locks, dedup, session resolution, relation targets)
+// reuses it. A tenant context without a workspace keeps the compatibility
+// (trigger-derived) behavior; a bound workspace that does not resolve inside
+// the tenant fails the transaction closed before any effect.
+func (s *Store) bindWorkspace(ctx context.Context, tx pgx.Tx) (context.Context, error) {
+	if s.tenant == nil || s.tenant.WorkspaceID == "" {
+		return ctx, nil
+	}
+	if _, err := uuid.Parse(s.tenant.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("%w: workspace id: %v", ErrTenantContextRequired, err)
+	}
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, s.tenant.WorkspaceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("postgres store: bound workspace %q is not visible in tenant %q", s.tenant.WorkspaceID, s.tenant.TenantID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres store: resolve workspace: %w", err)
+	}
+	return context.WithValue(ctx, workspaceKey{}, id), nil
 }

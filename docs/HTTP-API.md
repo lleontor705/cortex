@@ -36,10 +36,20 @@ Server mode exposes only authorized operation boundaries and public UUIDs:
 | `GET` | `/api/search` | Search observations |
 | `POST` | `/api/graph/edges` | Create graph edge |
 | `GET` | `/api/graph/{uuid}/related` | Related observations |
+| `GET` | `/api/graph/{uuid}/subgraph` | Heterogeneous subgraph |
+| `GET` | `/api/graph/project-graph` | Full project code & knowledge graph |
+| `GET` | `/api/graph/analytics` | Structural health report (Louvain communities, God nodes, cycles) |
+| `GET` | `/api/graph/blast-radius` | Blast radius impact calculation |
+| `POST` | `/api/graph/ingest-code` | Ingest AST code entities into project graph |
+| `POST` | `/api/graph/resolve` | Dynamic conflict resolution (`supersedes`) |
 | `DELETE` | `/api/graph/edges/{uuid}` | Delete graph edge |
 | `GET` | `/api/scores/{uuid}` | Importance score |
 | `GET` | `/api/stats` | Workspace counters |
 | `GET` | `/api/projects` | Visible project keys |
+| `GET` | `/api/projects/context` | Corporate rules & system prompt |
+| `GET` | `/api/projects/artifacts` | List project artifacts |
+| `POST` | `/api/projects/artifacts` | Save project artifact |
+| `DELETE` | `/api/projects/artifacts/{id}` | Delete project artifact |
 | `GET` | `/api/audit` | Admin-only audit entries |
 | `POST` | `/mcp` | Streamable HTTP MCP |
 

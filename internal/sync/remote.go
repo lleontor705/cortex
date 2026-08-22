@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/internal/transportpolicy"
 )
 
 const (
@@ -40,8 +41,15 @@ type RemoteSyncer struct {
 
 func NewRemoteSyncer(db *sql.DB, baseURL, token string, timeout time.Duration) (*RemoteSyncer, error) {
 	u, err := url.Parse(strings.TrimRight(baseURL, "/"))
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || u.Host == "" {
 		return nil, errors.New("remote sync: invalid server URL")
+	}
+	// Enforce the shared Bearer transport policy (REM-TRANSPORT-001) before
+	// any request — and therefore before any Authorization header — exists:
+	// HTTPS for non-loopback destinations, plain HTTP only on strict
+	// loopback.
+	if err := transportpolicy.ValidateBearerDestination(u.String()); err != nil {
+		return nil, fmt.Errorf("remote sync: %w", err)
 	}
 	if db == nil || strings.TrimSpace(token) == "" {
 		return nil, errors.New("remote sync: database and token are required")
@@ -49,7 +57,15 @@ func NewRemoteSyncer(db *sql.DB, baseURL, token string, timeout time.Duration) (
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &RemoteSyncer{db: db, baseURL: u.String(), token: token, client: &http.Client{Timeout: timeout}}, nil
+	return &RemoteSyncer{
+		db:      db,
+		baseURL: u.String(),
+		token:   token,
+		client: &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: transportpolicy.CheckBearerRedirect,
+		},
+	}, nil
 }
 
 func (s *RemoteSyncer) Sync(ctx context.Context) (*RemoteResult, error) {

@@ -1,47 +1,71 @@
 # Configuration
 
-Cortex reads YAML configuration and applies `CORTEX_*` environment overrides. The default local file is `~/.cortex/cortex.yaml`; the default SQLite database is `~/.cortex/cortex.db`.
+Cortex supports multi-format configuration (**YAML**, **JSON**, **TOML**) and applies `CORTEX_*` environment overrides. The default configuration file is `~/.cortex/cortex.yaml` (or `cortex.json` / `cortex.toml`); the default SQLite database is `~/.cortex/cortex.db`.
 
 ## Choose A Configuration Method
 
 | Method | Best for | How |
 |---|---|---|
-| TUI | Interactive local setup | Run `cortex tui`, choose **Local settings**, edit, then restart Cortex and your agent |
-| YAML | Reviewable, complete configuration | Edit `~/.cortex/cortex.yaml` using `cortex.yaml.example` as reference |
+| CLI Direct | Instant programmatic & scriptable updates | `cortex config set <key> <value>` / `cortex config get <key>` |
+| TUI Visual Center | Interactive navigation & theme switching | Run `cortex tui`, press `t` for themes, `L` for auth, or choose **Local settings** |
+| Multi-Format File | Reviewable, version-controlled config | Edit `cortex.yaml`, `cortex.json`, or `cortex.toml` using minimal clean schema |
 | Environment | Containers, CI, temporary overrides | Set the corresponding `CORTEX_*` variable |
 
-Precedence is **defaults → YAML → environment**. An environment variable always wins over the value shown in YAML or saved by the TUI. The TUI preserves existing YAML comments and custom keys, validates before writing, and uses an atomic restricted-permission file replacement.
+Precedence is **defaults → config file → environment**. An environment variable always wins over the value shown in the file or saved by the TUI. The configuration loader automatically trims default/empty sections to guarantee a **Zero-Bloat configuration file** (under 15 lines for typical local setups).
 
-The Local settings screen intentionally does not apply database, listener, MCP transport, or sync changes in place. Restart Cortex and any running agent after saving.
-
-## Local-First Setup
-
-For the normal local-first mode, MCP and the plugin use SQLite while a background worker exchanges changes with Cortex Server:
+## Zero-Bloat Local Setup
 
 ```yaml
+ai:
+  provider: ollama
+  model: qwen3-embedding:8b
+  base_url: http://localhost:11434
+
 database:
   path: ~/.cortex/cortex-v2.db
 
-mcp:
-  remote:
-    enabled: false
-
-sync:
+http:
   enabled: true
-  url: https://cortex.example.com
-  token_env: CORTEX_REMOTE_TOKEN
-  interval: 30s
-  timeout: 30s
+  port: 7438
 ```
 
-Set `CORTEX_REMOTE_TOKEN` outside YAML. `token_env` is the **name** of the environment variable, never the token itself.
+## CLI Configuration Management
 
-Use `mcp.remote.enabled: true` only when you want `cortex mcp` to bypass SQLite and forward every MCP call directly to the remote `/mcp` endpoint. Remote MCP proxy and local-first sync are different modes.
+```bash
+# Initialize a minimal clean configuration
+cortex config init --format=yaml --force
+
+# Get / Set properties instantly
+cortex config get ai.provider
+cortex config set ai.provider ollama
+cortex config set ai.model qwen3-embedding:8b
+cortex config set http.port 8080
+
+# Interactive CLI Wizard & Path lookup
+cortex config wizard
+cortex config path
+```
+
+## CLI Authentication Management
+
+```bash
+# Authenticate session with Bearer Token
+cortex auth login --token=ctx_secret_token_123456
+
+# Inspect current authentication status and active role
+cortex auth status
+
+# End session / logout
+cortex auth logout
+```
 
 ## Common Keys
 
 | Key | Environment | Notes |
 |---|---|---|
+| `ai.provider` | `CORTEX_AI_PROVIDER` | Unified AI provider (`none`, `ollama`, `openai`, `anthropic`, `openrouter`, `groq`, `deepseek`, `custom`) |
+| `ai.model` | `CORTEX_AI_MODEL` | Unified embedding/LLM model name |
+| `ai.base_url` | `CORTEX_AI_BASE_URL` | Endpoint URL for Ollama or custom providers |
 | `database.path` | `CORTEX_DATABASE_PATH` | Local SQLite path |
 | `http.enabled` | `CORTEX_HTTP_ENABLED` | Enable local/server HTTP composition |
 | `http.host` | `CORTEX_HTTP_HOST` | Bind address |
@@ -50,20 +74,23 @@ Use `mcp.remote.enabled: true` only when you want `cortex mcp` to bypass SQLite 
 | `http.allowed_origins` | `CORTEX_HTTP_ALLOWED_ORIGINS` | Comma-separated browser origins |
 | `mcp.remote.enabled` | `CORTEX_MCP_REMOTE_ENABLED` | Proxy `cortex mcp` to a remote Streamable HTTP server |
 | `mcp.remote.url` | `CORTEX_MCP_REMOTE_URL` | Remote MCP endpoint, including `/mcp` |
-| `mcp.remote.token_env` | `CORTEX_MCP_REMOTE_TOKEN_ENV` | Name of the environment variable holding the bearer token |
-| `mcp.remote.timeout` | `CORTEX_MCP_REMOTE_TIMEOUT` | Remote request timeout, default `30s` |
-| `sync.enabled` | `CORTEX_SYNC_ENABLED` | Keep SQLite local and enable bidirectional server replication |
+| `mcp.remote.token_env` | `CORTEX_MCP_REMOTE_TOKEN_ENV` | Environment variable holding the bearer token |
+| `sync.enabled` | `CORTEX_SYNC_ENABLED` | Enable bidirectional server replication |
 | `sync.url` | `CORTEX_SYNC_URL` | Cortex Server base URL, without `/mcp` |
 | `sync.token_env` | `CORTEX_SYNC_TOKEN_ENV` | Environment variable containing the bearer token |
 | `sync.interval` | `CORTEX_SYNC_INTERVAL` | Background replication interval, default `30s` |
-| `sync.timeout` | `CORTEX_SYNC_TIMEOUT` | Per-request timeout, default `30s` |
-| `search.embedding_provider` | `CORTEX_SEARCH_EMBEDDING_PROVIDER` | `none`, `ollama`, or `openai` |
-| `search.embedding_model` | `CORTEX_SEARCH_EMBEDDING_MODEL` | Provider-specific model |
-| `vector.provider` | `CORTEX_VECTOR_PROVIDER` | Local stub/BLOB or server adapter |
 
 `CORTEX_PORT` is not a Cortex configuration key. Use `CORTEX_HTTP_PORT`.
 
 With `sync.enabled`, local HTTP, MCP, CLI, and plugin writes continue to use SQLite. Cortex retries idempotent pushes and incrementally pulls server changes in the background; `cortex sync --remote` forces an immediate cycle. Set `mcp.remote.enabled: false` for local-first MCP operation.
+
+## Bearer transport policy
+
+`mcp.remote.url` and `sync.url` are Bearer destinations and share one transport policy (implemented in `internal/transportpolicy`):
+
+- HTTPS is required for every non-loopback destination.
+- Plain HTTP is accepted only on strict loopback: an IPv4 literal in `127.0.0.0/8`, the IPv6 literal `[::1]`, or the exact dotless name `localhost`. Any other plain-HTTP URL is rejected at configuration load time and by the sync client before any credential is attached. Hostnames are never resolved to decide this.
+- Redirects are followed only when they keep the scheme — an HTTPS-to-HTTP downgrade is always rejected, even towards loopback — and keep the exact origin (scheme + host + port). Otherwise the request fails before the token is forwarded.
 
 ## TUI Fields
 
@@ -86,6 +113,7 @@ Keyboard controls: `h/l`, `tab`, or left/right move between sections; `j/k` or u
 - Local memories do not appear remotely: run `cortex sync --remote` and inspect the reported cursor/error.
 - MCP does not use local SQLite: ensure `mcp.remote.enabled` is `false`.
 - Sync authentication fails: verify that the variable named by `sync.token_env` exists in the environment of the Cortex process.
+- A `sync.url` or `mcp.remote.url` using plain HTTP towards a non-loopback host is rejected at startup: switch the destination to HTTPS. A local development server on `127.0.0.1` (any `127.x` address), `[::1]`, or `localhost` may keep plain HTTP.
 - A database path points to a Cortex v1 file: Cortex v2 refuses it without mutation; use an explicit migration/import rather than replacing it automatically.
 
 ## Server-only Keys

@@ -5,13 +5,71 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/internal/authz"
 	"github.com/lleontor705/cortex/internal/domain"
 )
+
+// pushWorkspace resolves the transaction-bound workspace bigint. The sync
+// surface is never tenant-wide: a store without a workspace binding fails
+// closed before any statement runs.
+func pushWorkspace(ctx context.Context) (int64, error) {
+	if ws, ok := workspaceFromContext(ctx); ok {
+		return ws, nil
+	}
+	return 0, errors.New("postgres sync: workspace context is required")
+}
+
+// pushResolveSession resolves a session client id strictly inside the bound
+// workspace. A client id that only exists in a sibling workspace behaves as
+// absent here: instead of attaching to (or mutating) the sibling chain, the
+// reference materializes a placeholder session inside the caller's
+// workspace. A later push carrying the real session payload upserts over
+// the placeholder through the normal conflict path.
+func pushResolveSession(ctx context.Context, tx pgx.Tx, workspace int64, clientID, project string, at time.Time, actor any) (int64, error) {
+	resolve := `SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND client_id=$2`
+	var id int64
+	err := tx.QueryRow(ctx, resolve, workspace, clientID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err = tx.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,client_id,project_key,started_at,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$4,$4,$5,$5) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO NOTHING`, workspace, clientID, project, at, actor); err != nil {
+			return 0, err
+		}
+		err = tx.QueryRow(ctx, resolve, workspace, clientID).Scan(&id)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("resolve session %q: %w", clientID, err)
+	}
+	return id, nil
+}
+
+// pushResolveEndpoint resolves an edge endpoint observation client id
+// strictly inside the bound workspace. Like session references, an endpoint
+// that only exists in a sibling workspace behaves as absent: the caller
+// materializes a placeholder chain (an unattributed session plus an empty
+// observation carrying the referenced client id) inside its own workspace,
+// never the sibling's rows. The real observation payload upserts over the
+// placeholder when it arrives.
+func pushResolveEndpoint(ctx context.Context, tx pgx.Tx, workspace int64, clientID string, at time.Time, actor any) (int64, error) {
+	resolve := `SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND client_id=$2`
+	var id int64
+	err := tx.QueryRow(ctx, resolve, workspace, clientID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var sessionID int64
+		if err = tx.QueryRow(ctx, `INSERT INTO sessions(tenant_id,workspace_id,client_id,project_key,started_at,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,NULL,'',$2,$2,$2,$3,$3) RETURNING id`, workspace, at, actor).Scan(&sessionID); err != nil {
+			return 0, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO observations(tenant_id,session_id,client_id,type,title,content,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,'','',$4,$4,$5,$5) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO NOTHING`, sessionID, clientID, domain.TypeManual, at, actor); err != nil {
+			return 0, err
+		}
+		err = tx.QueryRow(ctx, resolve, workspace, clientID).Scan(&id)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("resolve endpoint %q: %w", clientID, err)
+	}
+	return id, nil
+}
 
 func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch) (*domain.SyncResult, error) {
 	if batch == nil {
@@ -34,20 +92,20 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 	}
 	accepted := 0
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		workspace := s.store.tenant.WorkspaceID
-		if workspace == "" {
-			return errors.New("postgres sync: workspace context is required")
+		workspace, err := pushWorkspace(ctx)
+		if err != nil {
+			return err
 		}
 		actor := actorFromContext(ctx)
 		for _, value := range batch.Sessions {
-			if strings.TrimSpace(value.SyncID) == "" || value.StartedAt.IsZero() {
+			if value.SyncID == "" || value.StartedAt.IsZero() {
 				return domain.ErrInvalidInput
 			}
 			updated := value.UpdatedAt
 			if updated.IsZero() {
 				updated = value.StartedAt
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,client_id,project_key,started_at,ended_at,summary,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid),$2,$3,$4,$5,$6,$4,$7,$8,$8) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET project_key=EXCLUDED.project_key,ended_at=EXCLUDED.ended_at,summary=EXCLUDED.summary,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > sessions.updated_at`, workspace, value.SyncID, value.Project, value.StartedAt, value.EndedAt, value.Summary, updated, actor)
+			_, err := tx.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,client_id,project_key,started_at,ended_at,summary,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$4,$7,$8,$8) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET project_key=EXCLUDED.project_key,ended_at=EXCLUDED.ended_at,summary=EXCLUDED.summary,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > sessions.updated_at`, workspace, value.SyncID, value.Project, value.StartedAt, value.EndedAt, value.Summary, updated, actor)
 			if err != nil {
 				return fmt.Errorf("postgres sync session %q: %w", value.SyncID, err)
 			}
@@ -57,13 +115,17 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			if value.SyncID == "" || value.SessionSyncID == "" || value.Title == "" || value.Content == "" {
 				return domain.ErrInvalidInput
 			}
+			sessionID, err := pushResolveSession(ctx, tx, workspace, value.SessionSyncID, value.Project, value.CreatedAt, actor)
+			if err != nil {
+				return fmt.Errorf("postgres sync observation %q: %w", value.SyncID, err)
+			}
 			tags, _ := json.Marshal(value.Tags)
-			_, err := tx.Exec(ctx, `INSERT INTO observations(tenant_id,session_id,client_id,project_key,scope,classification,source,type,title,content,topic_key,confidence,tags,owner_subject,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND client_id=$1),$2,$3,COALESCE(NULLIF($4,''),'project'),COALESCE(NULLIF($4,''),'project'),COALESCE(NULLIF($5,''),'manual'),$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$15) ON CONFLICT(tenant_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET project_key=EXCLUDED.project_key,scope=EXCLUDED.scope,classification=EXCLUDED.classification,source=EXCLUDED.source,type=EXCLUDED.type,title=EXCLUDED.title,content=EXCLUDED.content,topic_key=EXCLUDED.topic_key,confidence=EXCLUDED.confidence,tags=EXCLUDED.tags,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > observations.updated_at`, value.SessionSyncID, value.SyncID, value.Project, value.Scope, value.Source, value.Type, value.Title, value.Content, value.TopicKey, value.Confidence, tags, s.store.principal.Subject, value.CreatedAt, value.UpdatedAt, actor)
+			_, err = tx.Exec(ctx, `INSERT INTO observations(tenant_id,session_id,client_id,project_key,scope,classification,source,type,title,content,topic_key,confidence,tags,owner_subject,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,COALESCE(NULLIF($4,''),'project'),COALESCE(NULLIF($4,''),'project'),COALESCE(NULLIF($5,''),'manual'),$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13,$14,$15,$15) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET project_key=EXCLUDED.project_key,scope=EXCLUDED.scope,classification=EXCLUDED.classification,source=EXCLUDED.source,type=EXCLUDED.type,title=EXCLUDED.title,content=EXCLUDED.content,topic_key=EXCLUDED.topic_key,confidence=EXCLUDED.confidence,tags=EXCLUDED.tags,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > observations.updated_at`, sessionID, value.SyncID, value.Project, value.Scope, value.Source, value.Type, value.Title, value.Content, value.TopicKey, value.Confidence, tags, s.store.principal.Subject, value.CreatedAt, value.UpdatedAt, actor)
 			if err != nil {
 				return fmt.Errorf("postgres sync observation %q: %w", value.SyncID, err)
 			}
 			if value.Deleted {
-				_, err = tx.Exec(ctx, `UPDATE observations SET deleted_at=$1,updated_at=$1 WHERE tenant_id=public.cortex_current_tenant() AND client_id=$2 AND (deleted_at IS NULL OR deleted_at<$1)`, value.UpdatedAt, value.SyncID)
+				_, err = tx.Exec(ctx, `UPDATE observations SET deleted_at=$1,updated_at=$1 WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$2 AND client_id=$3 AND (deleted_at IS NULL OR deleted_at<$1)`, value.UpdatedAt, workspace, value.SyncID)
 			}
 			if err != nil {
 				return err
@@ -74,7 +136,11 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			if value.SyncID == "" || value.SessionSyncID == "" || value.Content == "" {
 				return domain.ErrInvalidInput
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO prompts(tenant_id,session_id,client_id,project_key,content,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),(SELECT id FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND client_id=$1),$2,$3,$4,$5,$6,$7,$7) ON CONFLICT(tenant_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET content=EXCLUDED.content,project_key=EXCLUDED.project_key,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > prompts.updated_at`, value.SessionSyncID, value.SyncID, value.Project, value.Content, value.CreatedAt, value.UpdatedAt, actor)
+			sessionID, err := pushResolveSession(ctx, tx, workspace, value.SessionSyncID, value.Project, value.CreatedAt, actor)
+			if err != nil {
+				return fmt.Errorf("postgres sync prompt %q: %w", value.SyncID, err)
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO prompts(tenant_id,session_id,client_id,project_key,content,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET content=EXCLUDED.content,project_key=EXCLUDED.project_key,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > prompts.updated_at`, sessionID, value.SyncID, value.Project, value.Content, value.CreatedAt, value.UpdatedAt, actor)
 			if err != nil {
 				return fmt.Errorf("postgres sync prompt %q: %w", value.SyncID, err)
 			}
@@ -84,12 +150,20 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			if value.SyncID == "" || value.FromSyncID == "" || value.ToSyncID == "" || value.Relation == "" {
 				return domain.ErrInvalidInput
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO edges(tenant_id,client_id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,valid_until,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,(SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND client_id=$2),(SELECT id FROM observations WHERE tenant_id=public.cortex_current_tenant() AND client_id=$3),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13) ON CONFLICT(tenant_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET relation_type=EXCLUDED.relation_type,weight=EXCLUDED.weight,confidence=EXCLUDED.confidence,source=EXCLUDED.source,reasoning=EXCLUDED.reasoning,valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > edges.updated_at`, value.SyncID, value.FromSyncID, value.ToSyncID, value.Relation, value.Weight, value.Confidence, value.Source, value.Reasoning, value.ValidFrom, value.ValidUntil, value.CreatedAt, value.UpdatedAt, actor)
+			fromID, err := pushResolveEndpoint(ctx, tx, workspace, value.FromSyncID, value.CreatedAt, actor)
+			if err != nil {
+				return fmt.Errorf("postgres sync edge %q: %w", value.SyncID, err)
+			}
+			toID, err := pushResolveEndpoint(ctx, tx, workspace, value.ToSyncID, value.CreatedAt, actor)
+			if err != nil {
+				return fmt.Errorf("postgres sync edge %q: %w", value.SyncID, err)
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO edges(tenant_id,client_id,from_observation_id,to_observation_id,relation_type,weight,confidence,source,reasoning,valid_from,valid_until,created_at,updated_at,created_by,updated_by) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13) ON CONFLICT(tenant_id,workspace_id,client_id) WHERE client_id IS NOT NULL DO UPDATE SET relation_type=EXCLUDED.relation_type,weight=EXCLUDED.weight,confidence=EXCLUDED.confidence,source=EXCLUDED.source,reasoning=EXCLUDED.reasoning,valid_from=EXCLUDED.valid_from,valid_until=EXCLUDED.valid_until,updated_at=EXCLUDED.updated_at,updated_by=EXCLUDED.updated_by WHERE EXCLUDED.updated_at > edges.updated_at`, value.SyncID, fromID, toID, value.Relation, value.Weight, value.Confidence, value.Source, value.Reasoning, value.ValidFrom, value.ValidUntil, value.CreatedAt, value.UpdatedAt, actor)
 			if err != nil {
 				return fmt.Errorf("postgres sync edge %q: %w", value.SyncID, err)
 			}
 			if value.Deleted {
-				_, err = tx.Exec(ctx, `UPDATE edges SET deleted_at=$1,updated_at=$1 WHERE tenant_id=public.cortex_current_tenant() AND client_id=$2 AND (deleted_at IS NULL OR deleted_at<$1)`, value.UpdatedAt, value.SyncID)
+				_, err = tx.Exec(ctx, `UPDATE edges SET deleted_at=$1,updated_at=$1 WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$2 AND client_id=$3 AND (deleted_at IS NULL OR deleted_at<$1)`, value.UpdatedAt, workspace, value.SyncID)
 			}
 			if err != nil {
 				return err
@@ -123,7 +197,11 @@ func (s *AuthorizedStore) PullSync(ctx context.Context, cursor int64, limit int)
 	}
 	page := &domain.SyncPage{Cursor: cursor}
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT sequence,entity_type,public_id::text,sync_id,deleted FROM sync_changes WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid) AND sequence>$2 ORDER BY sequence LIMIT $3`, s.store.tenant.WorkspaceID, cursor, limit+1)
+		workspace, err := pushWorkspace(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT sequence,entity_type,public_id::text,sync_id,deleted FROM sync_changes WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, workspace, cursor, limit+1)
 		if err != nil {
 			return err
 		}
@@ -147,7 +225,7 @@ func (s *AuthorizedStore) PullSync(ctx context.Context, cursor int64, limit int)
 			case "sessions":
 				var v domain.SyncSession
 				var updated time.Time
-				err = tx.QueryRow(ctx, `SELECT COALESCE(client_id,public_id::text),COALESCE(project_key,''),started_at,ended_at,COALESCE(summary,''),updated_at FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid`, c.publicID).Scan(&v.SyncID, &v.Project, &v.StartedAt, &v.EndedAt, &v.Summary, &updated)
+				err = tx.QueryRow(ctx, `SELECT COALESCE(client_id,public_id::text),COALESCE(project_key,''),started_at,ended_at,COALESCE(summary,''),updated_at FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND public_id=$2::uuid`, workspace, c.publicID).Scan(&v.SyncID, &v.Project, &v.StartedAt, &v.EndedAt, &v.Summary, &updated)
 				v.UpdatedAt = updated
 				if err == nil {
 					page.Sessions = append(page.Sessions, v)
@@ -156,7 +234,7 @@ func (s *AuthorizedStore) PullSync(ctx context.Context, cursor int64, limit int)
 				var v domain.SyncObservation
 				var tags []byte
 				var deletedAt *time.Time
-				err = tx.QueryRow(ctx, `SELECT COALESCE(o.client_id,o.public_id::text),COALESCE(s.client_id,s.public_id::text),o.title,o.content,o.type,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.topic_key,''),o.confidence,COALESCE(o.source,''),o.tags,o.created_at,o.updated_at,o.deleted_at FROM observations o JOIN sessions s ON s.tenant_id=o.tenant_id AND s.id=o.session_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.public_id=$1::uuid`, c.publicID).Scan(&v.SyncID, &v.SessionSyncID, &v.Title, &v.Content, &v.Type, &v.Project, &v.Scope, &v.TopicKey, &v.Confidence, &v.Source, &tags, &v.CreatedAt, &v.UpdatedAt, &deletedAt)
+				err = tx.QueryRow(ctx, `SELECT COALESCE(o.client_id,o.public_id::text),COALESCE(s.client_id,s.public_id::text),o.title,o.content,o.type,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.topic_key,''),o.confidence,COALESCE(o.source,''),o.tags,o.created_at,o.updated_at,o.deleted_at FROM observations o JOIN sessions s ON s.tenant_id=o.tenant_id AND s.id=o.session_id AND s.workspace_id=o.workspace_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.workspace_id=$1 AND o.public_id=$2::uuid`, workspace, c.publicID).Scan(&v.SyncID, &v.SessionSyncID, &v.Title, &v.Content, &v.Type, &v.Project, &v.Scope, &v.TopicKey, &v.Confidence, &v.Source, &tags, &v.CreatedAt, &v.UpdatedAt, &deletedAt)
 				_ = json.Unmarshal(tags, &v.Tags)
 				v.Deleted = deletedAt != nil
 				if err == nil {
@@ -164,14 +242,14 @@ func (s *AuthorizedStore) PullSync(ctx context.Context, cursor int64, limit int)
 				}
 			case "prompts":
 				var v domain.SyncPrompt
-				err = tx.QueryRow(ctx, `SELECT COALESCE(p.client_id,p.public_id::text),COALESCE(s.client_id,s.public_id::text),p.content,COALESCE(p.project_key,''),p.created_at,p.updated_at FROM prompts p JOIN sessions s ON s.tenant_id=p.tenant_id AND s.id=p.session_id WHERE p.tenant_id=public.cortex_current_tenant() AND p.public_id=$1::uuid`, c.publicID).Scan(&v.SyncID, &v.SessionSyncID, &v.Content, &v.Project, &v.CreatedAt, &v.UpdatedAt)
+				err = tx.QueryRow(ctx, `SELECT COALESCE(p.client_id,p.public_id::text),COALESCE(s.client_id,s.public_id::text),p.content,COALESCE(p.project_key,''),p.created_at,p.updated_at FROM prompts p JOIN sessions s ON s.tenant_id=p.tenant_id AND s.id=p.session_id AND s.workspace_id=p.workspace_id WHERE p.tenant_id=public.cortex_current_tenant() AND p.workspace_id=$1 AND p.public_id=$2::uuid`, workspace, c.publicID).Scan(&v.SyncID, &v.SessionSyncID, &v.Content, &v.Project, &v.CreatedAt, &v.UpdatedAt)
 				if err == nil {
 					page.Prompts = append(page.Prompts, v)
 				}
 			case "edges":
 				var v domain.SyncEdge
 				var deletedAt *time.Time
-				err = tx.QueryRow(ctx, `SELECT COALESCE(e.client_id,e.public_id::text),COALESCE(a.client_id,a.public_id::text),COALESCE(b.client_id,b.public_id::text),e.relation_type,e.weight,e.confidence,COALESCE(e.source,''),COALESCE(e.reasoning,''),e.valid_from,e.valid_until,e.created_at,e.updated_at,e.deleted_at FROM edges e JOIN observations a ON a.tenant_id=e.tenant_id AND a.id=e.from_observation_id JOIN observations b ON b.tenant_id=e.tenant_id AND b.id=e.to_observation_id WHERE e.tenant_id=public.cortex_current_tenant() AND e.public_id=$1::uuid`, c.publicID).Scan(&v.SyncID, &v.FromSyncID, &v.ToSyncID, &v.Relation, &v.Weight, &v.Confidence, &v.Source, &v.Reasoning, &v.ValidFrom, &v.ValidUntil, &v.CreatedAt, &v.UpdatedAt, &deletedAt)
+				err = tx.QueryRow(ctx, `SELECT COALESCE(e.client_id,e.public_id::text),COALESCE(a.client_id,a.public_id::text),COALESCE(b.client_id,b.public_id::text),e.relation_type,e.weight,e.confidence,COALESCE(e.source,''),COALESCE(e.reasoning,''),e.valid_from,e.valid_until,e.created_at,e.updated_at,e.deleted_at FROM edges e JOIN observations a ON a.tenant_id=e.tenant_id AND a.id=e.from_observation_id AND a.workspace_id=e.workspace_id JOIN observations b ON b.tenant_id=e.tenant_id AND b.id=e.to_observation_id AND b.workspace_id=e.workspace_id WHERE e.tenant_id=public.cortex_current_tenant() AND e.workspace_id=$1 AND e.public_id=$2::uuid`, workspace, c.publicID).Scan(&v.SyncID, &v.FromSyncID, &v.ToSyncID, &v.Relation, &v.Weight, &v.Confidence, &v.Source, &v.Reasoning, &v.ValidFrom, &v.ValidUntil, &v.CreatedAt, &v.UpdatedAt, &deletedAt)
 				v.Deleted = deletedAt != nil
 				if err == nil {
 					page.Edges = append(page.Edges, v)

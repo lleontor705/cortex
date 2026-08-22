@@ -484,3 +484,23 @@ func TestViewGraphEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderNewObsModal(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+	m.NewObsModalOpen = true
+	m.NewObsTitleInput.SetValue("My Test Memory")
+	m.NewObsContentInput.SetValue("Content details")
+
+	output := m.renderNewObsModal()
+	if !strings.Contains(output, "Quick Create Memory") {
+		t.Errorf("expected modal header in output, got %q", output)
+	}
+	if !strings.Contains(output, "My Test Memory") {
+		t.Errorf("expected input value in output, got %q", output)
+	}
+	if !strings.Contains(output, "Save Observation") {
+		t.Errorf("expected save button in output, got %q", output)
+	}
+}
+
+
