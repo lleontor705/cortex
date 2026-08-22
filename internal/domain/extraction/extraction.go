@@ -28,6 +28,8 @@ type LLMProvider string
 const (
 	ProviderOpenAI    LLMProvider = "openai"
 	ProviderAnthropic LLMProvider = "anthropic"
+	ProviderGoogle    LLMProvider = "google"
+	ProviderGemini    LLMProvider = "gemini"
 	ProviderOllama    LLMProvider = "ollama"
 	ProviderGeneric   LLMProvider = "generic"
 )
@@ -440,6 +442,10 @@ func ProviderDefaultBaseURL(provider LLMProvider) string {
 	switch provider {
 	case ProviderAnthropic:
 		return "https://api.anthropic.com/v1"
+	case ProviderGoogle, ProviderGemini:
+		return "https://generativelanguage.googleapis.com/v1beta/openai"
+	case ProviderOllama:
+		return "http://localhost:11434/v1"
 	case ProviderOpenAI, ProviderGeneric:
 		return "https://api.openai.com/v1"
 	}

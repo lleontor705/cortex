@@ -150,10 +150,10 @@ func ValidateServerLLM(cfg *ServerLLMConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("invalid llm configuration: nil")
 	}
-	switch cfg.Provider {
-	case "", "openai", "anthropic", "generic":
+	switch strings.ToLower(cfg.Provider) {
+	case "", "openai", "anthropic", "google", "gemini", "ollama", "generic":
 	default:
-		return fmt.Errorf("invalid llm provider %q (valid: openai, anthropic, generic)", cfg.Provider)
+		return fmt.Errorf("invalid llm provider %q (valid: openai, anthropic, google, gemini, ollama, generic)", cfg.Provider)
 	}
 	if cfg.BaseURL != "" {
 		u, err := url.Parse(cfg.BaseURL)

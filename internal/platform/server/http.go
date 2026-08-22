@@ -134,25 +134,31 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 }
 
 func corsHandler(allowed []string, next http.Handler) http.Handler {
+	allowAll := len(allowed) == 0
 	allow := make(map[string]struct{}, len(allowed))
 	for _, origin := range allowed {
 		if origin = strings.TrimSpace(origin); origin != "" {
+			if origin == "*" {
+				allowAll = true
+			}
 			allow[origin] = struct{}{}
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if _, ok := allow[origin]; !ok || origin == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+		if origin != "" {
+			if allowAll {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			} else if _, ok := allow[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

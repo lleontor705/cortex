@@ -108,12 +108,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     setIsSubmitting(false);
   };
 
-  const userRoles = principal?.roles || ["admin"];
+  const userRoles = principal?.roles || ["developer"];
   const isAdmin = userRoles.some(
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
   );
-  const userName = principal?.id || "usrLuisLeon";
-  const primaryRole = userRoles[0] || (isAdmin ? "admin" : "member");
+  const isDeveloper = userRoles.some(
+    (r) =>
+      r.toLowerCase() === "developer" ||
+      r.toLowerCase() === "member" ||
+      r.toLowerCase() === "admin" ||
+      r.toLowerCase() === "owner",
+  );
+  const userName =
+    principal?.id
+      ? `Principal: ${principal.id.slice(0, 8)}...`
+      : "Usuario Cortex";
+  const primaryRole = userRoles[0] || (isAdmin ? "admin" : isDeveloper ? "developer" : "member");
 
   const allNavItems = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: "Live", minRole: "all" },
@@ -123,11 +133,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/search", label: "Retrieval Playground", icon: Search, minRole: "all" },
     { href: "/extract", label: "Extracción LLM", icon: Sparkles, badge: "AI", minRole: "all" },
     { href: "/admin", label: "Agentes & Tokens", icon: ShieldCheck, minRole: "admin" },
-    { href: "/settings", label: "Configuración Servidor", icon: Settings, minRole: "admin" },
+    { href: "/settings", label: "Configuración Servidor", icon: Settings, minRole: "developer" },
   ];
 
   const navItems = allNavItems.filter((item) => {
     if (item.minRole === "admin" && !isAdmin) return false;
+    if (item.minRole === "developer" && !isDeveloper) return false;
     return true;
   });
 
@@ -315,25 +326,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Sidebar Footer / System Status */}
       <div className="p-3.5 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-3">
-        <div className="p-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)] space-y-1.5">
+        {/* Node & Principal Status */}
+        <div className="p-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-[11px] font-semibold text-emerald-400">
-                {cloudSyncEnabled ? "Cloud Sync: ON" : "Local Only"}
+                {serverUrl.includes("railway") || serverUrl.includes("http") ? "PostgreSQL Cloud Node" : "Local SQLite Node"}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setCloudSyncEnabled(!cloudSyncEnabled)}
-              title="Alternar subida a la nube"
-              className="text-[var(--text-muted)] hover:text-blue-400 transition-colors"
-            >
-              {cloudSyncEnabled ? <Cloud className="h-3.5 w-3.5 text-blue-400" /> : <CloudOff className="h-3.5 w-3.5" />}
-            </button>
+            <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase font-mono tracking-wider">
+              {primaryRole}
+            </Badge>
           </div>
-          <div className="text-[10px] text-[var(--text-muted)] truncate font-mono">
-            {principal ? principal.id || "Connected Principal" : "Local SQLite Node"}
+          <div className="text-[11px] text-[var(--text-secondary)] font-medium truncate">
+            {userName}
+          </div>
+          <div className="text-[9px] text-[var(--text-muted)] truncate font-mono">
+            {principal?.id ? `Subject: ${principal.id.slice(0, 8)}...` : serverUrl}
           </div>
         </div>
 
