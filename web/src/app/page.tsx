@@ -48,15 +48,34 @@ export default function DashboardPage() {
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
   );
 
+  const userDisplayName =
+    principal?.display_name ||
+    (principal?.email ? principal.email.split("@")[0] : "") ||
+    "Desarrollador";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">
-            Control Room de Memoria
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+              {isAdmin ? "Control Room de Memoria" : `Bienvenido, ${userDisplayName} 👋`}
+            </h1>
+            <Badge
+              variant="outline"
+              className={`text-[10px] uppercase font-mono px-2 py-0.5 ${
+                isAdmin
+                  ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                  : "border-blue-500/40 text-blue-400 bg-blue-500/10"
+              }`}
+            >
+              {isAdmin ? "Admin Workspace" : "Developer Workspace"}
+            </Badge>
+          </div>
           <p className="text-xs text-[var(--text-muted)] mt-1">
-            Monitor de conocimiento semántico, sesiones de codificación y grafo relacional de agentes
+            {isAdmin
+              ? "Monitor global de conocimiento semántico, sesiones de codificación y grafo relacional"
+              : "Tu espacio de trabajo cognitivo: notas de desarrollo, sesiones de IA y grafo de dependencias"}
           </p>
         </div>
 

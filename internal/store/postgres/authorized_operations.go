@@ -453,6 +453,17 @@ func (s *AuthorizedStore) ListUsers(ctx context.Context) ([]identity.UserRecord,
 	}
 	return s.store.users().List(ctx)
 }
+func (s *AuthorizedStore) GetUserProfile(ctx context.Context, id string) (*identity.UserRecord, error) {
+	if s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	if id != s.store.principal.Subject {
+		if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionRead, "", "", ""); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.users().GetByPublicID(ctx, id)
+}
 func (s *AuthorizedStore) SetUserActive(ctx context.Context, id string, active bool) error {
 	if err := s.authorize(ctx, authz.ResourceUsers, authz.ActionManage, "", "", ""); err != nil {
 		return err

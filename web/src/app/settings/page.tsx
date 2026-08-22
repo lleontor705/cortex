@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import {
   initialSecretInput,
@@ -44,7 +45,12 @@ interface AIStatusData {
 }
 
 export default function SettingsPage() {
-  const { client, serverUrl, token, resetGeneration, setCredentials, logout } = useAuth();
+  const { client, serverUrl, token, resetGeneration, setCredentials, logout, principal } = useAuth();
+
+  const userRoles = principal?.roles || ["developer"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
 
   const [inputUrl, setInputUrl] = useState(serverUrl);
   const [secretBearer, setSecretBearer] = useState<SecretInputState>(() =>
@@ -295,6 +301,27 @@ export default function SettingsPage() {
       setIsWorkerRunning(false);
     }
   };
+
+  if (!isAdmin) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+          <AlertCircle className="h-7 w-7" />
+        </div>
+        <h2 className="text-xl font-bold text-[var(--text-primary)]">Acceso Restringido</h2>
+        <p className="text-xs text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed">
+          La configuración avanzada del servidor, llaves de infraestructura y los agentes autónomos de mantenimiento están reservados para usuarios con rol de Administrador.
+        </p>
+        <div className="pt-3">
+          <Link href="/">
+            <Button variant="outline" className="border-[var(--border-subtle)] text-xs">
+              Volver al Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

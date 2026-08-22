@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { User, Token } from "@/lib/api";
 import {
@@ -108,7 +109,12 @@ const AGENT_PROFILES = [
 ];
 
 export default function AdminPage() {
-  const { client, serverUrl } = useAuth();
+  const { client, serverUrl, principal } = useAuth();
+
+  const userRoles = principal?.roles || ["developer"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
 
   // Data states
   const [users, setUsers] = useState<User[]>([]);
@@ -327,6 +333,27 @@ export default function AdminPage() {
       return `# Error generando script: ${e.message}`;
     }
   }, [scriptOs, serverUrl, exportProject]);
+
+  if (!isAdmin) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+          <ShieldCheck className="h-7 w-7" />
+        </div>
+        <h2 className="text-xl font-bold text-[var(--text-primary)]">Acceso Restringido</h2>
+        <p className="text-xs text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed">
+          La gestión de identidades, agentes autónomos y generación de tokens de infraestructura están reservados para administradores.
+        </p>
+        <div className="pt-3">
+          <Link href="/">
+            <Button variant="outline" className="border-[var(--border-subtle)] text-xs">
+              Volver al Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

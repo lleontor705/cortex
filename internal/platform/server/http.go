@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -60,6 +61,7 @@ type Operations interface {
 	GetImportanceScore(context.Context, int64) (*domain.ImportanceScore, error)
 	CreateUser(context.Context, identity.UserCreate) (identity.UserRecord, error)
 	ListUsers(context.Context) ([]identity.UserRecord, error)
+	GetUserProfile(context.Context, string) (*identity.UserRecord, error)
 	SetUserActive(context.Context, string, bool) error
 	IssueToken(context.Context, identity.TokenIssue) (identity.IssuedToken, error)
 	ListTokens(context.Context) ([]identity.TokenRecord, error)
@@ -252,7 +254,18 @@ func (a *apiHandler) me(w http.ResponseWriter, r *http.Request) {
 		writeUnauthorized(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, principalResponse(principal))
+	resp := principalResponse(principal)
+	if principal.Type == "user" && principal.Subject != "" {
+		if u, err := a.ops.GetUserProfile(r.Context(), principal.Subject); err == nil && u != nil {
+			if u.DisplayName != "" {
+				resp["display_name"] = u.DisplayName
+			}
+			if u.Email != "" {
+				resp["email"] = u.Email
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
@@ -1347,9 +1360,48 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_get_status", mcp.WithDescription("Get the active operational mode (Server PostgreSQL), version, and capabilities.")), getStatusTool(ops))
 }
 
+func cleanProjectName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "/") || strings.Contains(raw, "\\") || strings.HasSuffix(raw, ".git") {
+		raw = strings.TrimSuffix(raw, ".git")
+		parts := strings.FieldsFunc(raw, func(r rune) bool {
+			return r == '/' || r == '\\' || r == ':'
+		})
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	return filepath.Base(raw)
+}
+
+func toolProject(req mcp.CallToolRequest) string {
+	if p := toolString(req, "project"); p != "" {
+		return cleanProjectName(p)
+	}
+	if p := toolString(req, "folder_name"); p != "" {
+		return cleanProjectName(p)
+	}
+	if p := toolString(req, "folder"); p != "" {
+		return cleanProjectName(p)
+	}
+	if p := toolString(req, "directory"); p != "" {
+		return cleanProjectName(p)
+	}
+	if p := toolString(req, "cwd"); p != "" {
+		return cleanProjectName(p)
+	}
+	if p := toolString(req, "path"); p != "" {
+		return cleanProjectName(p)
+	}
+	return ""
+}
+
 func sessionStartTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		s := &domain.Session{Project: toolString(req, "project"), Summary: toolString(req, "summary"), StartedAt: time.Now().UTC()}
+		s := &domain.Session{Project: toolProject(req), Summary: toolString(req, "summary"), StartedAt: time.Now().UTC()}
 		err := ops.CreateSession(ctx, s)
 		return toolResult(s, err)
 	}
@@ -1467,7 +1519,7 @@ func structuredErrorResult(payload memorycontract.ErrorStructured, format string
 
 func saveTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		o := &domain.Observation{Title: toolString(req, "title"), Content: toolString(req, "content"), Type: toolString(req, "type"), SessionID: toolString(req, "session_id"), Project: toolString(req, "project"), Scope: toolString(req, "scope"), TopicKey: toolString(req, "topic_key"), Confidence: toolFloat(req, "confidence", 0), Source: toolString(req, "source"), Tags: toolTags(req, "tags")}
+		o := &domain.Observation{Title: toolString(req, "title"), Content: toolString(req, "content"), Type: toolString(req, "type"), SessionID: toolString(req, "session_id"), Project: toolProject(req), Scope: toolString(req, "scope"), TopicKey: toolString(req, "topic_key"), Confidence: toolFloat(req, "confidence", 0), Source: toolString(req, "source"), Tags: toolTags(req, "tags")}
 		effect, err := ops.SaveObservationWithEffect(ctx, o)
 		if err != nil {
 			payload := serverMemoryError(err)

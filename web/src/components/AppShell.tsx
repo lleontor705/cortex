@@ -119,10 +119,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       r.toLowerCase() === "admin" ||
       r.toLowerCase() === "owner",
   );
-  const userName =
-    principal?.id
-      ? `Principal: ${principal.id.slice(0, 8)}...`
-      : "Usuario Cortex";
+  const displayName =
+    principal?.display_name ||
+    (principal?.email ? principal.email.split("@")[0] : "") ||
+    (principal?.id ? `ID: ${principal.id.slice(0, 8)}...` : "Usuario Cortex");
+  const userEmail = principal?.email || "";
   const primaryRole = userRoles[0] || (isAdmin ? "admin" : isDeveloper ? "developer" : "member");
 
   const allNavItems = [
@@ -133,12 +134,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/search", label: "Retrieval Playground", icon: Search, minRole: "all" },
     { href: "/extract", label: "Extracción LLM", icon: Sparkles, badge: "AI", minRole: "all" },
     { href: "/admin", label: "Agentes & Tokens", icon: ShieldCheck, minRole: "admin" },
-    { href: "/settings", label: "Configuración Servidor", icon: Settings, minRole: "developer" },
+    { href: "/settings", label: "Configuración Servidor", icon: Settings, minRole: "admin" },
   ];
 
   const navItems = allNavItems.filter((item) => {
     if (item.minRole === "admin" && !isAdmin) return false;
-    if (item.minRole === "developer" && !isDeveloper) return false;
     return true;
   });
 
@@ -274,7 +274,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <User className="h-3.5 w-3.5" />
           </div>
           <div className="overflow-hidden">
-            <div className="text-xs font-semibold truncate">{userName}</div>
+            <div className="text-xs font-semibold truncate">{displayName}</div>
             <div className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">
               {primaryRole}
             </div>
@@ -326,24 +326,50 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Sidebar Footer / System Status */}
       <div className="p-3.5 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-3">
-        {/* Node & Principal Status */}
-        <div className="p-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1.5">
+        {/* User Identity & Role Card */}
+        <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-2">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[11px] font-semibold text-emerald-400">
-                {serverUrl.includes("railway") || serverUrl.includes("http") ? "PostgreSQL Cloud Node" : "Local SQLite Node"}
-              </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-xs shrink-0">
+                {displayName.charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                  {displayName}
+                </div>
+                {userEmail ? (
+                  <div className="text-[10px] text-[var(--text-muted)] truncate">
+                    {userEmail}
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase font-mono tracking-wider">
+            <Badge
+              variant="outline"
+              className={`text-[9px] px-1.5 py-0 uppercase font-mono tracking-wider shrink-0 ${
+                isAdmin
+                  ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                  : isDeveloper
+                  ? "border-blue-500/40 text-blue-400 bg-blue-500/10"
+                  : "border-slate-500/40 text-slate-400 bg-slate-500/10"
+              }`}
+            >
               {primaryRole}
             </Badge>
           </div>
-          <div className="text-[11px] text-[var(--text-secondary)] font-medium truncate">
-            {userName}
-          </div>
-          <div className="text-[9px] text-[var(--text-muted)] truncate font-mono">
-            {principal?.id ? `Subject: ${principal.id.slice(0, 8)}...` : serverUrl}
+
+          <div className="pt-1 border-t border-[var(--border-subtle)]/50 flex items-center justify-between text-[10px]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-emerald-400 font-medium">
+                {serverUrl.includes("railway") || serverUrl.includes("http") ? "PostgreSQL Cloud Node" : "Local SQLite Node"}
+              </span>
+            </div>
+            {principal?.id ? (
+              <span className="text-[9px] text-[var(--text-muted)] font-mono">
+                {principal.id.slice(0, 6)}...
+              </span>
+            ) : null}
           </div>
         </div>
 

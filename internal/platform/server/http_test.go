@@ -241,6 +241,15 @@ func (f *fakeOperations) DeleteProjectArtifact(_ context.Context, id string, rea
 	return nil
 }
 
+func (f *fakeOperations) GetUserProfile(_ context.Context, id string) (*identity.UserRecord, error) {
+	return &identity.UserRecord{
+		ID:          id,
+		Email:       "test@example.com",
+		DisplayName: "Test User",
+		Active:      true,
+	}, nil
+}
+
 
 func testHandler(health healthCheck) http.Handler {
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}, newFakeOperations(), health)

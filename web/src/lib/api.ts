@@ -35,6 +35,8 @@ export type Principal = {
   id: string;
   type: string;
   org_id: string;
+  display_name?: string;
+  email?: string;
   workspaces: string[];
   projects: string[];
   roles: string[];

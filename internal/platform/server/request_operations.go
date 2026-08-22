@@ -200,6 +200,13 @@ func (requestOperations) ListUsers(ctx context.Context) ([]identity.UserRecord, 
 	}
 	return ops.ListUsers(ctx)
 }
+func (requestOperations) GetUserProfile(ctx context.Context, id string) (*identity.UserRecord, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetUserProfile(ctx, id)
+}
 func (requestOperations) SetUserActive(ctx context.Context, id string, active bool) error {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {

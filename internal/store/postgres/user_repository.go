@@ -130,6 +130,20 @@ func (r *UserRepository) SetActive(ctx context.Context, id string, active bool) 
 	})
 }
 
+func (r *UserRepository) GetByPublicID(ctx context.Context, id string) (*identity.UserRecord, error) {
+	var user identity.UserRecord
+	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT u.public_id::text,u.email,COALESCE(u.display_name,''),u.active,u.created_at FROM app_users u WHERE u.tenant_id=public.cortex_current_tenant() AND u.public_id=$1::uuid`, id).Scan(&user.ID, &user.Email, &user.DisplayName, &user.Active, &user.CreatedAt)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, notFound("user", id)
+		}
+		return nil, err
+	}
+	return &user, nil
+}
+
 type persistedGrant struct{ kind, value string }
 
 // userGrants canonicalizes the administrator-supplied grants. Duplicates are
