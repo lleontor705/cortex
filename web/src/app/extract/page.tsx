@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -81,7 +82,6 @@ export default function ExtractPage() {
     llmProvider,
     llmModel,
     llmBaseURL,
-    setLLMCredentials,
   } = useAuth();
 
   const [activeMode, setActiveMode] = useState<"extract" | "synthesis" | "quick_log">("extract");
@@ -108,13 +108,6 @@ export default function ExtractPage() {
   const [quickType, setQuickType] = useState("decision");
   const [quickTags, setQuickTags] = useState("");
   const [isQuickSaving, setIsQuickSaving] = useState(false);
-
-  // LLM Config
-  const [showLLMSettings, setShowLLMSettings] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState(llmApiKey);
-  const [providerInput, setProviderInput] = useState(llmProvider || "openai");
-  const [modelInput, setModelInput] = useState(llmModel || "gpt-4o-mini");
-  const [baseURLInput, setBaseURLInput] = useState(llmBaseURL || "");
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -136,12 +129,6 @@ export default function ExtractPage() {
     }
   };
 
-  const handleSaveLLMSettings = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLLMCredentials(apiKeyInput, providerInput, modelInput, baseURLInput);
-    setShowLLMSettings(false);
-  };
-
   const handleApplyTemplate = (tplKey: keyof typeof TEMPLATES) => {
     setRawText(TEMPLATES[tplKey].text);
   };
@@ -159,6 +146,18 @@ export default function ExtractPage() {
     reader.readAsText(file);
   };
 
+  const getGeneralLLMConfig = () => {
+    if (llmApiKey || llmBaseURL || llmProvider === "ollama") {
+      return {
+        provider: llmProvider || "gemini",
+        api_key: llmApiKey || undefined,
+        model: llmModel || undefined,
+        base_url: llmBaseURL || undefined,
+      };
+    }
+    return undefined;
+  };
+
   const handleExtract = async () => {
     if (!client || !rawText.trim()) return;
     setIsExtracting(true);
@@ -171,15 +170,7 @@ export default function ExtractPage() {
       const res = await client.extract({
         text: rawText,
         project: project,
-        llm_config:
-          apiKeyInput || baseURLInput || providerInput === "ollama"
-            ? {
-                provider: providerInput,
-                api_key: apiKeyInput,
-                model: modelInput,
-                base_url: baseURLInput || undefined,
-              }
-            : undefined,
+        llm_config: getGeneralLLMConfig(),
       });
 
       const items: DraftItem[] = (res.observations || []).map((o) => ({
@@ -285,15 +276,7 @@ export default function ExtractPage() {
       const res = await client.synthesize({
         project,
         observations: obsList,
-        llm_config:
-          apiKeyInput || baseURLInput || providerInput === "ollama"
-            ? {
-                provider: providerInput,
-                api_key: apiKeyInput,
-                model: modelInput,
-                base_url: baseURLInput || undefined,
-              }
-            : undefined,
+        llm_config: getGeneralLLMConfig(),
       });
       setSynthesisResult(res);
     } catch (err: any) {
@@ -356,38 +339,9 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
     }
   };
 
-  const handleProviderSelect = (p: string) => {
-    setProviderInput(p);
-    if (p === "openai") {
-      setBaseURLInput("https://api.openai.com/v1");
-      setModelInput("gpt-4o-mini");
-    } else if (p === "anthropic") {
-      setBaseURLInput("https://api.anthropic.com/v1");
-      setModelInput("claude-3-5-sonnet-20241022");
-    } else if (p === "ollama") {
-      setBaseURLInput("http://localhost:11434/v1");
-      setModelInput("llama3.3");
-    } else if (p === "openrouter") {
-      setBaseURLInput("https://openrouter.ai/api/v1");
-      setModelInput("openai/gpt-4o-mini");
-    } else if (p === "groq") {
-      setBaseURLInput("https://api.groq.com/openai/v1");
-      setModelInput("llama-3.3-70b-versatile");
-    } else if (p === "together") {
-      setBaseURLInput("https://api.together.xyz/v1");
-      setModelInput("meta-llama/Llama-3.3-70B-Instruct-Turbo");
-    } else if (p === "gemini") {
-      setBaseURLInput("https://generativelanguage.googleapis.com/v1beta/openai");
-      setModelInput("gemini-2.5-flash");
-    } else if (p === "deepseek") {
-      setBaseURLInput("https://api.deepseek.com/v1");
-      setModelInput("deepseek-chat");
-    }
-  };
-
   return (
     <div className="space-y-6">
-      {/* Top Banner: Explanatory & Utility Header */}
+      {/* Top Banner: Explanatory & Utility Header with Global LLM Status */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-transparent border border-blue-500/20 shadow-xl">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
@@ -401,107 +355,33 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <Button
-            onClick={() => setShowLLMSettings(!showLLMSettings)}
-            variant="outline"
-            size="sm"
-            className="gap-2 text-xs border-[var(--border-subtle)] bg-[var(--bg-surface)]"
-          >
-            <Settings className="h-4 w-4 text-blue-400" />
-            <span>{apiKeyInput || baseURLInput ? "IA Personalizada: Activa" : "Configurar LLM"}</span>
-          </Button>
-        </div>
-      </div>
-
-      {/* LLM Settings Collapsible Card */}
-      {showLLMSettings && (
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl animate-in fade-in">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
-            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
-              <Key className="h-4 w-4 text-blue-400" />
-              <span>Configuración de Proveedor LLM Personalizado</span>
-            </CardTitle>
-            <Badge variant="outline" className="text-[10px] font-mono">
-              In-Memory Client Credential
-            </Badge>
+        {/* Global LLM Configuration Status */}
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs shadow-sm">
+            <Cpu className="h-4 w-4 text-purple-400 shrink-0" />
+            <div className="flex flex-col sm:flex-row sm:items-center sm:gap-1.5">
+              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">
+                LLM General:
+              </span>
+              <span className="font-mono font-bold text-purple-300">
+                {(llmProvider || "gemini").toUpperCase()} / {llmModel || "gemini-2.5-flash"}
+              </span>
+            </div>
           </div>
 
-          <form onSubmit={handleSaveLLMSettings} className="space-y-3 text-xs">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  PROVEEDOR
-                </label>
-                <Select
-                  value={providerInput}
-                  onChange={(e) => handleProviderSelect(e.target.value)}
-                  className="h-9 text-xs w-full"
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="anthropic">Anthropic Claude</option>
-                  <option value="ollama">Ollama (Local)</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="groq">Groq LPU</option>
-                  <option value="together">Together AI</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="custom">Personalizado</option>
-                </Select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  MODELO
-                </label>
-                <Input
-                  type="text"
-                  placeholder="gpt-4o-mini / llama3.3"
-                  value={modelInput}
-                  onChange={(e) => setModelInput(e.target.value)}
-                  className="h-9 text-xs font-mono w-full"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  API ENDPOINT / BASE URL
-                </label>
-                <Input
-                  type="text"
-                  placeholder="https://api.openai.com/v1"
-                  value={baseURLInput}
-                  onChange={(e) => setBaseURLInput(e.target.value)}
-                  className="h-9 text-xs font-mono w-full"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                  API KEY / TOKEN
-                </label>
-                <Input
-                  type="password"
-                  placeholder={providerInput === "ollama" ? "Opcional (Ollama)" : "sk-..."}
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  className="h-9 text-xs font-mono w-full"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-[var(--border-subtle)]">
-              <span className="text-[11px] text-[var(--text-muted)]">
-                Las credenciales se guardan localmente en el navegador para tus peticiones de IA.
-              </span>
-              <Button type="submit" size="sm" className="h-8 text-xs shrink-0">
-                Guardar Configuración
-              </Button>
-            </div>
-          </form>
-        </Card>
-      )}
+          <Link href="/settings">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-hover)]"
+              title="Ir a Configuración para cambiar el proveedor de IA o API Key general"
+            >
+              <Settings className="h-3.5 w-3.5 text-purple-400" />
+              <span>Configuración LLM</span>
+            </Button>
+          </Link>
+        </div>
+      </div>
 
       {/* Success Notification */}
       {saveSuccessMessage && (
