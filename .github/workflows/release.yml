@@ -49,7 +49,14 @@ jobs:
           go-version: "1.26.5"
 
       - name: Run unit tests
-        run: go test -v -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -v -count=1 ./... 2>&1 | tee unit_test.log || {
+            echo "::error::Unit tests failed! Extracted failure details:"
+            grep -E "FAIL|--- FAIL" -B 2 -A 15 unit_test.log || true
+            exit 1
+          }
 
   vector-tests:
     name: Vector-enabled Tests
@@ -64,7 +71,14 @@ jobs:
           go-version: "1.26.5"
 
       - name: Run vector-enabled tests
-        run: go test -v -count=1 -tags cortex_vectors ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -v -count=1 -tags cortex_vectors ./... 2>&1 | tee vector_test.log || {
+            echo "::error::Vector tests failed! Extracted failure details:"
+            grep -E "FAIL|--- FAIL" -B 2 -A 15 vector_test.log || true
+            exit 1
+          }
 
   web-tests:
     name: Web Tests
@@ -128,7 +142,14 @@ jobs:
           PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
 
       - name: Run e2e tests
-        run: go test -v -count=1 -tags "integration postgres_integration" ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -v -count=1 -tags "integration postgres_integration" ./... 2>&1 | tee e2e_test.log || {
+            echo "::error::E2E tests failed! Extracted failure details:"
+            grep -E "FAIL|--- FAIL" -B 2 -A 15 e2e_test.log || true
+            exit 1
+          }
 
   lint:
     name: Lint
