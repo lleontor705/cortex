@@ -129,7 +129,7 @@ func newPostgresE2EFixture(t *testing.T, port int) *postgresE2EFixture {
 				WorkspaceID:             workspace.String(),
 				PrincipalSubject:        subject.String(),
 				Roles:                   []string{"owner"},
-				Scopes:                  []string{"workspaces:read"},
+				Scopes:                  []string{"*"},
 				ProjectIDs:              []string{"*"},
 				ClassificationClearance: []string{"*"},
 			},

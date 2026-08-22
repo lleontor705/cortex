@@ -687,14 +687,6 @@ type rwHarness struct {
 
 func newRWHarness(t *testing.T) *rwHarness {
 	t.Helper()
-	adminDSN := os.Getenv("CORTEX_SPIKE_PG_ADMIN_DSN")
-	if adminDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PG_ADMIN_DSN is required for the principal RW-gating runtime proof (spike PostgreSQL 16 superuser DSN)")
-	}
-	poolerDSN := os.Getenv("CORTEX_SPIKE_PGBOUNCER_DSN")
-	if poolerDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PGBOUNCER_DSN is required for the principal RW-gating runtime proof (transaction-mode PgBouncer DSN)")
-	}
 	h := openRWProofHarness(t, "")
 	// A harness owns client pools for exactly one test invocation.  Closing
 	// them before RECONNECT is important: otherwise PgBouncer can retain
@@ -720,11 +712,17 @@ func openRWProofHarness(t *testing.T, variantSQLPath string) *rwHarness {
 	t.Helper()
 	adminDSN := os.Getenv("CORTEX_SPIKE_PG_ADMIN_DSN")
 	if adminDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PG_ADMIN_DSN is required for the principal RW-gating runtime proof (spike PostgreSQL 16 superuser DSN)")
+		adminDSN = os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
+	}
+	if adminDSN == "" {
+		t.Fatal("CORTEX_SPIKE_PG_ADMIN_DSN or CORTEX_TEST_POSTGRES_MIGRATION_DSN is required for the principal RW-gating runtime proof (spike PostgreSQL 16 superuser DSN)")
 	}
 	poolerDSN := os.Getenv("CORTEX_SPIKE_PGBOUNCER_DSN")
 	if poolerDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PGBOUNCER_DSN is required for the principal RW-gating runtime proof (transaction-mode PgBouncer DSN)")
+		poolerDSN = os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+	}
+	if poolerDSN == "" {
+		t.Fatal("CORTEX_SPIKE_PGBOUNCER_DSN or CORTEX_TEST_POSTGRES_DSN is required for the principal RW-gating runtime proof (transaction-mode PgBouncer DSN)")
 	}
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

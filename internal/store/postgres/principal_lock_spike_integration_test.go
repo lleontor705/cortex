@@ -93,11 +93,17 @@ func newSRWHarness(t *testing.T) *srwHarness {
 	t.Helper()
 	adminDSN := os.Getenv("CORTEX_SPIKE_PG_ADMIN_DSN")
 	if adminDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PG_ADMIN_DSN is required for the principal-lock spike (spike PostgreSQL 16 superuser DSN)")
+		adminDSN = os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
+	}
+	if adminDSN == "" {
+		t.Fatal("CORTEX_SPIKE_PG_ADMIN_DSN or CORTEX_TEST_POSTGRES_MIGRATION_DSN is required for the principal-lock spike (spike PostgreSQL 16 superuser DSN)")
 	}
 	poolerDSN := os.Getenv("CORTEX_SPIKE_PGBOUNCER_DSN")
 	if poolerDSN == "" {
-		t.Fatal("CORTEX_SPIKE_PGBOUNCER_DSN is required for the principal-lock spike (transaction-mode PgBouncer DSN)")
+		poolerDSN = os.Getenv("CORTEX_TEST_POSTGRES_DSN")
+	}
+	if poolerDSN == "" {
+		t.Fatal("CORTEX_SPIKE_PGBOUNCER_DSN or CORTEX_TEST_POSTGRES_DSN is required for the principal-lock spike (transaction-mode PgBouncer DSN)")
 	}
 	srwOnce.Do(func() {
 		h := &srwHarness{t: t, poolerDSN: poolerDSN}
