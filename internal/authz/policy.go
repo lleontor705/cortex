@@ -96,10 +96,10 @@ func NewPolicy() *Policy { return &Policy{} }
 var rolePermissions = map[Role]map[Resource]map[Action]bool{
 	RoleOwner:     allPermissions(),
 	RoleAdmin:     allPermissions(),
-	RoleMember:    {ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
-	RoleDeveloper: {ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
-	RoleAgent:     {ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}},
-	RoleViewer:    {ResourceMemory: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
+	RoleMember:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleDeveloper: {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleAgent:     {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}},
+	RoleViewer:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
 }
 
 func allPermissions() map[Resource]map[Action]bool {
