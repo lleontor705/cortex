@@ -175,7 +175,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+          if ! go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./... > coverage.log 2>&1; then
+            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
+              echo "::error title=Coverage Test Failure::$line"
+            done
+            cat coverage.log
+            exit 1
+          fi
           total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
           total="${total_line%%%}"
           awk -v coverage="$total" 'BEGIN {
@@ -243,8 +249,9 @@ jobs:
         run: |
           set -o pipefail
           if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
-            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" e2e_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
-            echo "::error title=Failed E2E Tests::$FAILED_TESTS"
+            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" e2e_test.log | head -n 50 | while IFS= read -r line; do
+              echo "::error title=E2E Failure::$line"
+            done
             cat e2e_test.log
             exit 1
           fi
