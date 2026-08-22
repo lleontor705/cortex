@@ -7,6 +7,7 @@ export type Observation = {
   type: string;
   project: string;
   scope: string;
+  owner_subject?: string;
   topic_key?: string;
   confidence: number;
   source: string;

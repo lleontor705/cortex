@@ -459,6 +459,13 @@ func (a *apiHandler) projects(w http.ResponseWriter, r *http.Request) {
 func (a *apiHandler) listObservations(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := domain.ObservationFilter{Project: q.Get("project"), Scope: q.Get("scope"), Type: q.Get("type"), Source: q.Get("source"), SessionID: q.Get("session_id")}
+	owner := q.Get("owner")
+	if owner == "me" {
+		principal, _ := principalFromContext(r.Context())
+		f.OwnerSubject = principal.Subject
+	} else if owner != "" {
+		f.OwnerSubject = owner
+	}
 	f.Limit = queryInt(q.Get("limit"), a.defaultLimit, 1, a.maxLimit)
 	f.Offset = queryInt(q.Get("offset"), 0, 0, 1_000_000)
 	result, err := a.ops.ListObservations(r.Context(), f)
@@ -1180,6 +1187,7 @@ func observationResponse(observation *domain.Observation) map[string]any {
 		"id": observation.PublicID, "title": observation.Title,
 		"content": observation.Content, "type": observation.Type,
 		"project": observation.Project, "scope": observation.Scope,
+		"owner_subject": observation.OwnerSubject,
 		"topic_key": observation.TopicKey, "confidence": observation.Confidence,
 		"source": observation.Source, "created_at": observation.CreatedAt,
 		"updated_at": observation.UpdatedAt,

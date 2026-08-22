@@ -20,19 +20,20 @@ type Observation struct {
 	ID int64 `json:"id"`
 	// PublicID is the opaque server identifier. ID remains an internal/local
 	// compatibility field and must not be used at a server API boundary.
-	PublicID   string    `json:"-"`
-	Title      string    `json:"title"`
-	Content    string    `json:"content"`
-	Type       string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
-	Project    string    `json:"project"` // Project name or identifier
-	Scope      string    `json:"scope"`   // project, personal
-	SessionID  string    `json:"session_id"`
-	TopicKey   string    `json:"topic_key"`  // Optional topic key for upserts
-	Confidence float64   `json:"confidence"` // Confidence score (0.0 to 1.0), default 1.0
-	Source     string    `json:"source"`     // Origin: manual, ai, auto, import
-	Tags       []string  `json:"tags,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	PublicID     string    `json:"-"`
+	Title        string    `json:"title"`
+	Content      string    `json:"content"`
+	Type         string    `json:"type"`    // manual, tool_use, decision, bugfix, etc.
+	Project      string    `json:"project"` // Project name or identifier
+	Scope        string    `json:"scope"`   // project, personal
+	OwnerSubject string    `json:"owner_subject,omitempty"`
+	SessionID    string    `json:"session_id"`
+	TopicKey     string    `json:"topic_key"`  // Optional topic key for upserts
+	Confidence   float64   `json:"confidence"` // Confidence score (0.0 to 1.0), default 1.0
+	Source       string    `json:"source"`     // Origin: manual, ai, auto, import
+	Tags         []string  `json:"tags,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (o Observation) MarshalJSON() ([]byte, error) {
@@ -264,6 +265,7 @@ type ImportanceScore struct {
 type ObservationFilter struct {
 	Project         string     `json:"project,omitempty"`
 	Scope           string     `json:"scope,omitempty"`
+	OwnerSubject    string     `json:"owner_subject,omitempty"`
 	Type            string     `json:"type,omitempty"`
 	Source          string     `json:"source,omitempty"`
 	SessionID       string     `json:"session_id,omitempty"`

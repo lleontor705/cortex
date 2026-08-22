@@ -260,6 +260,20 @@ func (s *AuthorizedStore) GetServerStats(ctx context.Context) (*domain.ServerSta
 		return nil, err
 	}
 	stats := new(domain.ServerStats)
+	if !s.store.isAdmin() {
+		err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `
+				SELECT
+					(SELECT count(*) FROM observations o JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND se.workspace_id=w.id AND o.owner_subject=$2),
+					(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND (created_by::text=$2 OR updated_by::text=$2)),
+					(SELECT count(*) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND ended_at IS NULL AND (created_by::text=$2 OR updated_by::text=$2)),
+					(SELECT count(*) FROM edges e JOIN observations o ON o.tenant_id=e.tenant_id AND o.id=e.from_observation_id JOIN sessions se ON se.tenant_id=o.tenant_id AND se.id=o.session_id WHERE e.tenant_id=public.cortex_current_tenant() AND se.workspace_id=w.id AND o.owner_subject=$2),
+					(SELECT count(DISTINCT project_key) FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=w.id AND project_key <> '' AND (created_by::text=$2 OR updated_by::text=$2))
+				FROM workspaces w WHERE w.tenant_id=public.cortex_current_tenant() AND w.public_id=$1::uuid`, s.store.tenant.WorkspaceID, s.store.principal.Subject).
+				Scan(&stats.Observations, &stats.Sessions, &stats.ActiveSessions, &stats.Edges, &stats.Projects)
+		})
+		return stats, err
+	}
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT

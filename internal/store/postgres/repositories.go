@@ -402,7 +402,7 @@ func (r *ObservationRepository) Update(ctx context.Context, o *domain.Observatio
 func (r *ObservationRepository) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND id=$1 AND deleted_at IS NULL`, id).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt, &o.OwnerSubject)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", id)
@@ -423,7 +423,7 @@ func (r *ObservationRepository) GetByTopicKey(ctx context.Context, project, key 
 		if err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL AND workspace_id=$3 ORDER BY updated_at DESC LIMIT 1`, project, key, ws).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND project_key=$1 AND topic_key=$2 AND deleted_at IS NULL AND workspace_id=$3 ORDER BY updated_at DESC LIMIT 1`, project, key, ws).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt, &o.OwnerSubject)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", key)
@@ -483,6 +483,11 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 			args = append(args, r.principal.Subject)
 			n++
 		}
+		if f.OwnerSubject != "" {
+			q += fmt.Sprintf(" AND owner_subject=$%d", n)
+			args = append(args, f.OwnerSubject)
+			n++
+		}
 		if f.Type != "" {
 			q += fmt.Sprintf(" AND type=$%d", n)
 			args = append(args, f.Type)
@@ -525,7 +530,7 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 		defer rows.Close()
 		for rows.Next() {
 			o := new(domain.Observation)
-			if e := rows.Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt); e != nil {
+			if e := rows.Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt, &o.OwnerSubject); e != nil {
 				return e
 			}
 			out = append(out, o)
@@ -574,12 +579,12 @@ func (r *ObservationRepository) GetByType(ctx context.Context, typ string, limit
 	return r.List(ctx, domain.ObservationFilter{Type: typ, Limit: limit})
 }
 
-const observationSelect = `SELECT public_id::text, id, session_id::text, COALESCE(project_key,''), COALESCE(scope,''), COALESCE(source,''), type, title, content, COALESCE(topic_key,''), created_at, updated_at FROM observations`
+const observationSelect = `SELECT public_id::text, id, session_id::text, COALESCE(project_key,''), COALESCE(scope,''), COALESCE(source,''), type, title, content, COALESCE(topic_key,''), created_at, updated_at, COALESCE(owner_subject,'') FROM observations`
 
 func (r *ObservationRepository) GetByPublicID(ctx context.Context, publicID string) (*domain.Observation, error) {
 	var o domain.Observation
 	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid AND deleted_at IS NULL`, publicID).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt)
+		return tx.QueryRow(ctx, observationSelect+` WHERE tenant_id=public.cortex_current_tenant() AND public_id=$1::uuid AND deleted_at IS NULL`, publicID).Scan(&o.PublicID, &o.ID, &o.SessionID, &o.Project, &o.Scope, &o.Source, &o.Type, &o.Title, &o.Content, &o.TopicKey, &o.CreatedAt, &o.UpdatedAt, &o.OwnerSubject)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, notFound("observation", publicID)
@@ -660,7 +665,14 @@ func (r *SessionRepository) End(ctx context.Context, id, summary string) error {
 func (r *SessionRepository) List(ctx context.Context, project string) (out []*domain.Session, err error) {
 	out = make([]*domain.Session, 0)
 	err = r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND ($1='' OR project_key=$1) AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid) ORDER BY started_at DESC`, project, r.tenant.WorkspaceID)
+		query := `SELECT public_id::text,started_at,ended_at,COALESCE(summary,'') FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND ($1='' OR project_key=$1) AND workspace_id=(SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() AND public_id=$2::uuid)`
+		args := []any{project, r.tenant.WorkspaceID}
+		if r.authorized && !r.isAdmin() {
+			query += ` AND (created_by::text=$3 OR updated_by::text=$3)`
+			args = append(args, r.principal.Subject)
+		}
+		query += ` ORDER BY started_at DESC`
+		rows, e := tx.Query(ctx, query, args...)
 		if e != nil {
 			return e
 		}

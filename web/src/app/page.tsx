@@ -26,11 +26,18 @@ export default function DashboardPage() {
   const [recentSessions, setRecentSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [viewMode, setViewMode] = useState<"personal" | "global">("personal");
+  const userRoles = principal?.roles || ["developer"];
+  const isAdmin = userRoles.some(
+    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
+  );
+
   useEffect(() => {
     if (!client) return;
     setLoading(true);
+    const obsQuery = !isAdmin || viewMode === "personal" ? "?limit=6&owner=me" : "?limit=6";
     Promise.all([
-      client.listObservations("?limit=6").catch(() => []),
+      client.listObservations(obsQuery).catch(() => []),
       client.sessions().catch(() => []),
     ])
       .then(([obs, sess]) => {
@@ -38,18 +45,12 @@ export default function DashboardPage() {
         const userFiltered = (sess || []).filter(
           (s) => !s.summary?.startsWith("Imported 90 sessions"),
         );
-        setRecentSessions((!isAdmin && userFiltered.length > 0 ? userFiltered : (sess || [])).slice(0, 5));
+        setRecentSessions((!isAdmin || viewMode === "personal" ? userFiltered : (sess || [])).slice(0, 5));
       })
       .finally(() => {
         setLoading(false);
       });
-  }, [client]);
-
-  const [viewMode, setViewMode] = useState<"personal" | "global">("personal");
-  const userRoles = principal?.roles || ["admin"];
-  const isAdmin = userRoles.some(
-    (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
-  );
+  }, [client, isAdmin, viewMode]);
 
   const userDisplayName =
     principal?.display_name ||
@@ -212,7 +213,13 @@ export default function DashboardPage() {
             {loading ? (
               <p className="text-xs text-[var(--text-muted)] py-6 text-center">Cargando observaciones...</p>
             ) : recentObs.length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)] py-6 text-center">No hay observaciones guardadas aún.</p>
+              <div className="py-8 px-4 text-center border border-dashed border-[var(--border-subtle)] rounded-lg bg-[var(--bg-surface)]/50">
+                <BrainCircuit className="h-8 w-8 text-[var(--text-muted)] mx-auto mb-2 opacity-50" />
+                <p className="text-xs font-medium text-[var(--text-secondary)]">No tienes observaciones registradas aún</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1 max-w-sm mx-auto">
+                  Al capturar notas desde tu agente MCP (Claude Code, Cursor) o usar el extractor LLM, se indexarán aquí bajo tu perfil.
+                </p>
+              </div>
             ) : (
               <div className="space-y-3">
                 {recentObs.map((obs) => (
@@ -257,7 +264,13 @@ export default function DashboardPage() {
               </CardTitle>
             </div>
             {recentSessions.length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)] py-4 text-center">No hay sesiones activas registradas.</p>
+              <div className="py-6 px-4 text-center border border-dashed border-[var(--border-subtle)] rounded-lg bg-[var(--bg-surface)]/50">
+                <Layers className="h-7 w-7 text-[var(--text-muted)] mx-auto mb-2 opacity-50" />
+                <p className="text-xs font-medium text-[var(--text-secondary)]">Sin sesiones activas</p>
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">
+                  Inicia una sesión desde tu Coding Agent vía MCP para que se sincronice en vivo.
+                </p>
+              </div>
             ) : (
               <div className="space-y-2.5">
                 {recentSessions.map((sess) => (

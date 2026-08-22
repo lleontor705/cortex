@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -226,6 +227,15 @@ func (s *Store) projectGrantFilter() (projects []string, wildcard bool) {
 		}
 	}
 	return projects, false
+}
+
+func (s *Store) isAdmin() bool {
+	for _, r := range s.principal.Roles {
+		if strings.EqualFold(r, "admin") || strings.EqualFold(r, "owner") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) classificationGrantFilter() (classes []string, wildcard bool) {
