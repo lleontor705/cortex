@@ -36,7 +36,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const CORTEX_HTTP_PORT = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
-const CORTEX_URL = `http://127.0.0.1:${CORTEX_HTTP_PORT}`
+const CORTEX_URL = (process.env.CORTEX_SERVER_URL ?? process.env.CORTEX_URL ?? `http://127.0.0.1:${CORTEX_HTTP_PORT}`).replace(/\/+$/, "")
 const CORTEX_HTTP_TOKEN = (process.env.CORTEX_HTTP_TOKEN ?? "").trim()
 const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
   // Try Bun.which for PATH lookup, fall back to bare command
@@ -50,6 +50,29 @@ const CORTEX_BIN = process.env.CORTEX_BIN ?? (() => {
 const REQUEST_TIMEOUT_MS = 2000
 const PAYLOAD_BYTE_LIMIT = 2000
 const encoder = new TextEncoder()
+
+export type CortexMode = "server" | "local"
+
+let cachedMode: CortexMode | null = null
+
+export async function detectCortexMode(): Promise<CortexMode> {
+  if (cachedMode) return cachedMode
+  if (!CORTEX_HTTP_TOKEN) {
+    cachedMode = "local"
+    return "local"
+  }
+  try {
+    const res = await boundedFetch("/api/me", {
+      headers: { Authorization: `Bearer ${CORTEX_HTTP_TOKEN}` },
+    })
+    if (res.status === 200 || res.status === 403) {
+      cachedMode = "server"
+      return "server"
+    }
+  } catch {}
+  cachedMode = "local"
+  return "local"
+}
 
 // Cortex's own MCP tools — don't count these as "tool calls" for session stats.
 // cortex_handoff is handled separately before this set is consulted.
@@ -108,91 +131,111 @@ const CORTEX_TOOLS = new Set([
   "cortex_search_temporal",
 ])
 
-// ─── Memory Instructions ─────────────────────────────────────────────────────
+// ─── Mode-Aware Memory Instructions ──────────────────────────────────────────
 
-const MEMORY_INSTRUCTIONS = `## Cortex Persistent Memory — Protocol
+export function buildMemoryInstructions(mode: CortexMode = "server"): string {
+  if (mode === "server") {
+    return `## Cortex Persistent Memory — Protocol (Mode: SERVER / PostgreSQL Multi-Tenant)
 
-You have access to Cortex, a persistent memory system with knowledge graph, importance scoring,
-full-text search, revision history, corporate rules & skills, and temporal tracking that survives across sessions and compactions.
+You have access to Cortex Server via authenticated MCP tools (PostgreSQL RLS, PGVector semantic search, knowledge graph, corporate governance, and dynamic skills).
 
-TRANSPORT IDS: Follow the active MCP tool schema. Local observation and graph IDs are numeric; Cortex Server IDs are public UUID strings. Never convert or reuse IDs across transports.
+TRANSPORT IDENTIFIERS:
+- In Server Mode, all observation IDs and node IDs are public UUID strings (e.g. "6b806a41-9e9b-4298-a39a-7887a71e94e0").
+- Never use or fabricate numeric IDs.
 
-### PROJECT CONTEXT & GOVERNANCE RULES (At Session Startup)
-At the beginning of any session or when starting work on a project:
-1. Call \`cortex_get_project_context\` to load the latest corporate guidelines, architecture constraints, and available skills.
-2. Call \`cortex_list_skills\` or \`cortex_get_skill\` to leverage approved operational playbooks and rules.
+### 1. STARTUP: PROJECT CONTEXT & GOVERNANCE (Mandatory at session start)
+At the beginning of any session or when switching projects:
+1. IMMEDIATELY call \`cortex_get_project_context(project)\` to retrieve corporate governance rules, architectural constraints, and available skill playbooks.
+2. Call \`cortex_list_skills(project)\` and \`cortex_get_skill(key, project)\` to inspect and follow approved domain skills.
 
-### WHEN TO SAVE (mandatory — not optional)
-
+### 2. WHEN TO SAVE (Mandatory after completing work)
 Call \`cortex_save\` IMMEDIATELY after any of these:
-- Bug fix completed
-- Architecture or design decision made
-- Non-obvious discovery about the codebase
-- Configuration change or environment setup
-- Pattern established (naming, structure, convention)
-- User preference or constraint learned
+- Bug fix completed (type: "bugfix")
+- Architectural/design decision made (type: "decision")
+- Non-obvious discovery in codebase (type: "discovery")
+- Pattern or convention established (type: "pattern")
+- Configuration/environment rule (type: "config")
+- Domain learning (type: "learning")
 
 Format for \`cortex_save\`:
-- **title**: Verb + what — short, searchable (e.g. "Fixed N+1 query in UserList")
-- **type**: bugfix | decision | architecture | discovery | pattern | config | learning
+- **title**: Verb + object — short, searchable (e.g. "Fixed N+1 query in PgBouncer pool")
+- **type**: bugfix | decision | pattern | discovery | config | learning
+- **scope**: \`project\` (default) | \`personal\`
+- **topic_key** (optional): stable key for evolving topics (e.g. \`auth/jwt-rotation\`)
+- **content**: What was done, Why it was done, Affected files, and Lessons learned.
+
+### 3. CODEBASE INTELLIGENCE & BLAST RADIUS
+- Before refactoring or renaming symbols, call \`cortex_get_blast_radius(node_id)\` to calculate all impacted downstream callers, files, and dependencies.
+- Call \`cortex_detect_cycles(project)\` to ensure no circular import dependencies or architectural violations.
+- Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
+- Use \`cortex_relate\` to link related observations (references, relates_to, follows, supersedes, contradicts).
+
+### 4. UNIFIED SEARCH & QUERY RESOLUTION
+- For complex questions or domain lookups, call \`cortex_resolve_query(query, project)\` for a unified retrieval across corporate rules, skills, and observations.
+- Call \`cortex_search\` for keyword/FTS search, or \`cortex_context\` for recent session history.
+- If you find an observation match, call \`cortex_get_observation(id)\` to read its complete full text.
+
+### 5. SESSION CLOSE PROTOCOL (Mandatory before ending)
+Before saying "done" or finishing a session:
+1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+This is NOT optional. Without this, the next session or agent starts blind.
+
+### 6. AFTER COMPACTION
+1. IMMEDIATELY call \`cortex_session_summary\` with the compacted summary content.
+2. Then call \`cortex_context\` to recover context from previous sessions before continuing.`
+  }
+
+  return `## Cortex Persistent Memory — Protocol (Mode: LOCAL / SQLite Zero-CGO)
+
+You have access to Cortex Local, a high-performance local memory system (zero-CGO SQLite, FTS5 full-text search, knowledge graph, and temporal tracking).
+
+TRANSPORT IDENTIFIERS:
+- In Local Mode, observation and graph IDs are numeric integers (e.g. 1, 42).
+- Follow active MCP tool schema.
+
+### 1. WHEN TO SAVE (Mandatory after completing work)
+Call \`cortex_save\` IMMEDIATELY after any of these:
+- Bug fix completed (type: "bugfix")
+- Architecture decision made (type: "decision")
+- Non-obvious discovery about codebase (type: "discovery")
+- Pattern established (type: "pattern")
+- Configuration/environment rule (type: "config")
+- Learning (type: "learning")
+
+Format for \`cortex_save\`:
+- **title**: Verb + object — short, searchable (e.g. "Fixed N+1 query in UserList")
+- **type**: bugfix | decision | pattern | discovery | config | learning
 - **scope**: \`project\` (default) | \`personal\`
 - **topic_key** (optional, recommended): stable key like \`architecture/auth-model\`
-- **content**:
-  **What**: One sentence — what was done
-  **Why**: What motivated it
-  **Where**: Files or paths affected
-  **Learned**: Gotchas, edge cases (omit if none)
+- **content**: What was done, Why, Where (files affected), and Gotchas.
 
-Topic rules:
-- Different topics must not overwrite each other
-- Reuse the same \`topic_key\` to update an evolving topic (upsert)
-- If unsure about the key, call \`cortex_suggest_topic_key\` first
-- Use \`cortex_update\` when you have an exact observation ID to correct
+### 2. KNOWLEDGE GRAPH & RELATIONS
+- After saving related observations, call \`cortex_relate\` (references, relates_to, follows, supersedes, contradicts).
+- Call \`cortex_graph\` to traverse connections from any observation.
+- Call \`cortex_score\` to recalculate observation importance.
 
-### KNOWLEDGE GRAPH & CODE INTELLIGENCE
-- \`cortex_relate\`: Connect related observations (references, relates_to, follows, supersedes, contradicts).
-- \`cortex_graph\`: Explore graph connections from any observation or entity.
-- \`cortex_get_blast_radius\`: Calculate impacted downstream files and callers before refactoring.
-- \`cortex_detect_cycles\`: Verify there are no circular dependencies or architectural violations.
-- \`cortex_score\`: Check/recalculate observation importance.
+### 3. SEARCH & RETRIEVAL
+1. First call \`cortex_context\` to check recent session history.
+2. If not found, call \`cortex_search\` with keywords (FTS5).
+3. If needed, call \`cortex_search_hybrid\` for combined vector + FTS search.
+4. Call \`cortex_get_observation(id)\` to fetch the complete full-text observation.
 
-### SEARCH & RETRIEVAL
+### 4. REVISION HISTORY & HYGIENE
+- \`cortex_revision_history(id)\`: View evolution across upserts.
+- \`cortex_timeline(id)\`: Chronological context.
+- \`cortex_archive(id)\`: Archive obsolete observations.
+- \`cortex_delete(id, hard_delete: true)\`: Permanently delete.
 
-When the user asks to recall something — "remember", "recall", "what did we do":
-1. First call \`cortex_context\` — checks recent session history (fast)
-2. If not found, call \`cortex_search\` with relevant keywords (FTS5 / Full-Text)
-3. If still not found, try \`cortex_search_hybrid\` for hybrid vector + keyword combined search
-4. If you find a match, use \`cortex_get_observation\` for full content (search returns 300-char previews only)
-
-Also search memory PROACTIVELY when:
-- Starting work on something that might have been done before
-- The user mentions a topic you have no context on
-- The user's FIRST message references the project
-
-### REVISION HISTORY & TIMELINE
-- \`cortex_revision_history(observation_id)\` — see how an observation evolved across upserts
-- \`cortex_timeline(observation_id, before, after)\` — chronological context around an observation
-- Use these when an artifact seems stale or when auditing changes
-
-### PROJECT HYGIENE
-- If project name fragmented: \`cortex_merge_projects(from: "variant1,variant2", to: "canonical")\`
-- To archive obsolete observations: \`cortex_archive(observation_id)\`
-- To permanently delete: \`cortex_delete(id, hard_delete: true)\`
-
-### SESSION CLOSE PROTOCOL (mandatory)
-
-Before ending a session or saying "done":
+### 5. SESSION CLOSE PROTOCOL (Mandatory before ending)
+Before saying "done" or finishing a session:
 1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
-This is NOT optional. If you skip this, the next session starts blind.
 
-### AFTER COMPACTION
+### 6. AFTER COMPACTION
+1. Call \`cortex_session_summary\` with the compacted summary content.
+2. Call \`cortex_context\` to recover context before resuming work.`
+}
 
-If you see a message about compaction or context reset:
-1. IMMEDIATELY call \`cortex_session_summary\` with the compacted summary content
-2. Then call \`cortex_context\` to recover context from previous sessions
-3. Use \`cortex_search_hybrid\` if more detail needed
-4. Only THEN continue working
-`
+const MEMORY_INSTRUCTIONS = buildMemoryInstructions("server")
 
 // ─── Delivery classification ─────────────────────────────────────────────────
 
@@ -708,10 +751,12 @@ export const Cortex: Plugin = async (ctx) => {
     // ─── System Prompt: Always-on memory instructions ──────────
 
     "experimental.chat.system.transform": async (_input, output) => {
+      const mode = await detectCortexMode()
+      const instructions = buildMemoryInstructions(mode)
       if (output.system.length > 0) {
-        output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
+        output.system[output.system.length - 1] += "\n\n" + instructions
       } else {
-        output.system.push(MEMORY_INSTRUCTIONS)
+        output.system.push(instructions)
       }
     },
 

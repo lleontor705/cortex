@@ -1159,3 +1159,27 @@ describe("ORACLE-PLUGIN-006 SEC-04 auth-gated writes and confirmed-session conte
     expect(context.join("\n")).toContain("- [decision] Use zero-downtime deploys")
   })
 })
+
+describe("Cortex Mode Detection & Memory Instructions", () => {
+  it("builds server-specific memory instructions with UUID IDs and governance rules", async () => {
+    const { buildMemoryInstructions } = await import("./cortex")
+    const serverInstructions = buildMemoryInstructions("server")
+    expect(serverInstructions).toContain("Mode: SERVER")
+    expect(serverInstructions).toContain("public UUID strings")
+    expect(serverInstructions).toContain("cortex_get_project_context")
+    expect(serverInstructions).toContain("cortex_resolve_query")
+    expect(serverInstructions).toContain("cortex_get_blast_radius")
+    expect(serverInstructions).toContain("cortex_detect_cycles")
+  })
+
+  it("builds local-specific memory instructions with numeric IDs and FTS5 search", async () => {
+    const { buildMemoryInstructions } = await import("./cortex")
+    const localInstructions = buildMemoryInstructions("local")
+    expect(localInstructions).toContain("Mode: LOCAL")
+    expect(localInstructions).toContain("numeric integers")
+    expect(localInstructions).toContain("cortex_search")
+    expect(localInstructions).toContain("cortex_context")
+    expect(localInstructions).toContain("cortex_relate")
+  })
+})
+
