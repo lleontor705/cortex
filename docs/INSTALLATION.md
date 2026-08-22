@@ -7,21 +7,34 @@
 - Docker for the reproducible server stack.
 - `curl` and `jq` only when using the Claude Code hook integration.
 
-## Release Binary
+## Homebrew (macOS / Linux)
 
-Download the archive for your operating system from the project Releases page. Release artifacts enable the `cortex_vectors` build tag.
+```bash
+brew install lleontor705/tap/cortex
+```
 
-## Source Build
+## Go Install
 
 ```bash
 go install github.com/lleontor705/cortex/cmd/cortex@latest
 ```
 
-This installs the default zero-CGO vector-stub build. For a local functional SQLite BLOB vector adapter:
+## Release Binary
+
+Download the archive for your operating system from the project [Releases](https://github.com/lleontor705/cortex/releases) page. Release artifacts enable the `cortex_vectors` build tag.
+
+## Source Build
 
 ```bash
 git clone https://github.com/lleontor705/cortex.git
 cd cortex
+make build
+```
+
+This installs the default zero-CGO vector-stub build. For a local functional SQLite BLOB vector adapter, build with the `cortex_vectors` build tag:
+
+```bash
+go build -tags cortex_vectors ./cmd/cortex
 ```
 
 ## Local Setup

@@ -47,9 +47,52 @@ Combina extracción estática de código AST (Go, TS/JS, Python, SQL), clusterin
 
 ---
 
+## 📦 Instalación
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install lleontor705/tap/cortex
+```
+
+### Go Install (Multiplataforma)
+
+```bash
+go install github.com/lleontor705/cortex/cmd/cortex@latest
+```
+
+### Binarios Precompilados & Compilación desde Fuente
+
+Descarga directa de binarios (Windows, macOS, Linux) desde [GitHub Releases](https://github.com/lleontor705/cortex/releases), o compila localmente desde el código fuente:
+
+```bash
+git clone https://github.com/lleontor705/cortex.git
+cd cortex
+make build
+```
+
+---
+
 ## 🚀 Inicio Rápido
 
-### Modo Servidor con Docker (Recomendado)
+### 1. Modo Local (SQLite, CLI & TUI)
+
+```bash
+# Configurar integración automática con tu agente preferido
+cortex setup claude-code
+cortex setup opencode
+
+# Diagnóstico de base de datos e índices
+cortex doctor
+
+# Búsqueda semántica e híbrida
+cortex search "decisión de arquitectura"
+
+# Lanzar interfaz interactiva en terminal
+cortex tui
+```
+
+### 2. Modo Servidor con Docker (Recomendado para Equipos & Multi-Tenant)
 
 ```bash
 # Iniciar PostgreSQL y Cortex Server
@@ -58,7 +101,7 @@ docker compose up --build -d
 
 Inicia el servidor autenticado en el puerto `7438` con soporte MCP Streamable HTTP en `/mcp` y API REST en `/api/*`.
 
-### Interfaz Web (Control Room Next.js 15)
+### 3. Interfaz Web (Control Room Next.js 15)
 
 ```bash
 cd web
