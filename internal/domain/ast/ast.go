@@ -79,26 +79,61 @@ func (e *Extractor) ExtractFile(filePath string) (*ExtractionResult, error) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))
-	switch ext {
-	case ".go":
-		entities, rels := extractGoFile(filePath, relPath)
-		result.Entities = entities
-		result.Relationships = rels
-	case ".ts", ".tsx", ".js", ".jsx":
-		entities, rels := extractTSJSFile(filePath, relPath)
-		result.Entities = entities
-		result.Relationships = rels
-	case ".py":
-		entities, rels := extractPythonFile(filePath, relPath)
-		result.Entities = entities
-		result.Relationships = rels
-	case ".sql":
-		entities, rels := extractSQLFile(filePath, relPath)
-		result.Entities = entities
-		result.Relationships = rels
-	}
+	entities, rels := extractByExtension(ext, filePath, relPath)
+	result.Entities = entities
+	result.Relationships = rels
 
 	return result, nil
+}
+
+// isIgnoredDir returns true if the directory name matches known artifact or dependency folders.
+func isIgnoredDir(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "node_modules", "vendor", "dist", "build", "out", "target", "bin", "obj",
+		"__pycache__", ".venv", "venv", ".gradle", ".idea", ".vs", ".vscode",
+		"cmake-build-debug", "cmake-build-release", "packages":
+		return true
+	}
+	return false
+}
+
+// extractByExtension routes source files to their dedicated zero-CGO AST/symbol extractor.
+func extractByExtension(ext, fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
+	switch ext {
+	case ".go":
+		return extractGoFile(fullPath, relPath)
+	case ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs":
+		return extractTSJSFile(fullPath, relPath)
+	case ".py", ".pyw":
+		return extractPythonFile(fullPath, relPath)
+	case ".sql":
+		return extractSQLFile(fullPath, relPath)
+	case ".cs":
+		return extractCSharpFile(fullPath, relPath)
+	case ".fs", ".fsi", ".fsx":
+		return extractFSharpFile(fullPath, relPath)
+	case ".vb":
+		return extractVBDotNetFile(fullPath, relPath)
+	case ".java":
+		return extractJavaFile(fullPath, relPath)
+	case ".kt", ".kts":
+		return extractKotlinFile(fullPath, relPath)
+	case ".rs":
+		return extractRustFile(fullPath, relPath)
+	case ".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hxx", ".h++":
+		return extractCppFile(fullPath, relPath)
+	case ".php", ".phtml":
+		return extractPhpFile(fullPath, relPath)
+	case ".rb", ".rake":
+		return extractRubyFile(fullPath, relPath)
+	case ".swift":
+		return extractSwiftFile(fullPath, relPath)
+	default:
+		return nil, nil
+	}
 }
 
 // ExtractDir scans a directory recursively and extracts code entities and relationships.
@@ -119,8 +154,7 @@ func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, err
 			return nil
 		}
 		if info.IsDir() {
-			name := info.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" {
+			if isIgnoredDir(info.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -137,39 +171,8 @@ func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, err
 		relPath = filepath.ToSlash(relPath)
 
 		ext := strings.ToLower(filepath.Ext(path))
-		switch ext {
-		case ".go":
-			entities, rels := extractGoFile(path, relPath)
-			for _, ent := range entities {
-				if !entityMap[ent.ID] {
-					entityMap[ent.ID] = true
-					result.Entities = append(result.Entities, ent)
-				}
-			}
-			result.Relationships = append(result.Relationships, rels...)
-			result.FilesScanned++
-		case ".ts", ".tsx", ".js", ".jsx":
-			entities, rels := extractTSJSFile(path, relPath)
-			for _, ent := range entities {
-				if !entityMap[ent.ID] {
-					entityMap[ent.ID] = true
-					result.Entities = append(result.Entities, ent)
-				}
-			}
-			result.Relationships = append(result.Relationships, rels...)
-			result.FilesScanned++
-		case ".py":
-			entities, rels := extractPythonFile(path, relPath)
-			for _, ent := range entities {
-				if !entityMap[ent.ID] {
-					entityMap[ent.ID] = true
-					result.Entities = append(result.Entities, ent)
-				}
-			}
-			result.Relationships = append(result.Relationships, rels...)
-			result.FilesScanned++
-		case ".sql":
-			entities, rels := extractSQLFile(path, relPath)
+		entities, rels := extractByExtension(ext, path, relPath)
+		if len(entities) > 0 || len(rels) > 0 {
 			for _, ent := range entities {
 				if !entityMap[ent.ID] {
 					entityMap[ent.ID] = true

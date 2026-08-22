@@ -14,14 +14,14 @@
 
 **Cortex** es una plataforma enterprise de **memoria episódica autónoma, gobernanza de proyectos y grafo de conocimiento de código** diseñada para agentes de IA (Cursor, Claude Code, Cline, Windsurf) y equipos de desarrollo.
 
-Combina extracción estática de código AST (Go, TS/JS, Python, SQL), clustering de comunidades (Louvain/Leiden), análisis de blast radius, gobernanza corporativa, búsqueda híbrida (BM25 + Vectores) y persistencia segura Multi-Tenant respaldada por PostgreSQL con Row-Level Security (RLS) y SQLite local.
+Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotlin, Rust, C/C++, PHP, Ruby, Swift, Go, TS/JS, Python, SQL), clustering de comunidades (Louvain/Leiden), análisis de blast radius, gobernanza corporativa, búsqueda híbrida (BM25 + Vectores) y persistencia segura Multi-Tenant respaldada por PostgreSQL con Row-Level Security (RLS) y SQLite local.
 
 ---
 
 ## ⚡ Capacidades Principales
 
 ### 1. 🌐 Grafo de Código & Conocimiento por Proyecto (Estilo Graphify)
-- **Extractor AST Nativo (Zero-CGO):** Analiza código en Go puro (`.go`, `.ts`, `.tsx`, `.js`, `.py`, `.sql`) sin enviar código a LLMs externos ni gastar tokens de API.
+- **Extractor AST Nativo Políglota (Zero-CGO):** Analiza código en Go puro para **.NET** (`.cs`, `.fs`, `.vb`), **Java/Kotlin** (`.java`, `.kt`), **Rust** (`.rs`), **C/C++** (`.c`, `.cpp`, `.h`, `.hpp`), **PHP** (`.php`), **Ruby** (`.rb`), **Swift** (`.swift`), **TypeScript/JavaScript** (`.ts`, `.tsx`, `.js`), **Python** (`.py`), **Go** (`.go`) y **SQL** (`.sql`) sin enviar código a LLMs externos ni gastar tokens de API.
 - **Clustering de Comunidades (Louvain/Hubs):** Agrupa automáticamente los subsistemas funcionales del proyecto y etiqueta los hubs arquitectónicos.
 - **God Nodes & Detección de Ciclos:** Identifica cuellos de botella (`in_degree`/`out_degree`) y dependencias circulares (Tarjan SCC).
 - **Cálculo de Blast Radius:** Mide el impacto porcentual y lista los archivos/funciones afectados al modificar cualquier componente.

@@ -10,9 +10,19 @@ The AST extractor analyzes codebase repositories and extracts structured symbols
 
 ### Supported Languages
 - **Go (`.go`):** Native parsing via `go/parser` and `go/ast`. Extracts modules, packages, structs, interfaces, methods, functions, and direct call invocations.
-- **TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`):** Regex scanner extracting ES modules, import declarations, exported classes, functions, and arrow functions.
-- **Python (`.py`):** Scanner extracting modules, package imports (`from X import Y`), classes, methods, and functions.
-- **SQL (`.sql`):** Scanner extracting database table definitions (`CREATE TABLE`).
+- **.NET Ecosystem:**
+  - **C# (`.cs`):** Namespaces, `using` directives, classes, interfaces, structs, records, enums, and methods.
+  - **F# (`.fs`, `.fsi`, `.fsx`):** `open` imports, modules, types (records/unions/classes), and `let` functions.
+  - **VB.NET (`.vb`):** `Imports`, `Namespace`, `Class`, `Interface`, `Structure`, `Module`, `Sub`, and `Function`.
+- **Java & Kotlin (`.java`, `.kt`, `.kts`):** Packages, imports, classes, data classes, interfaces, objects, enums, records, and functions/methods.
+- **Rust (`.rs`):** Modules (`mod`), imports (`use`), structs, enums, traits, and functions (`fn`).
+- **C / C++ (`.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hxx`):** `#include` directives, namespaces, classes, structs, and functions.
+- **PHP (`.php`):** Namespaces, `use` statements, classes, interfaces, traits, enums, and functions.
+- **Ruby (`.rb`):** `require`/`require_relative`, modules, classes, and `def` methods.
+- **Swift (`.swift`):** Modules, imports, classes, structs, protocols, enums, extensions, and functions.
+- **TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`):** ES modules, import declarations, exported classes, functions, and arrow functions.
+- **Python (`.py`, `.pyw`):** Modules, package imports (`from X import Y`), classes, methods, and functions.
+- **SQL (`.sql`):** Database table definitions (`CREATE TABLE`).
 
 ### Structural Relationships
 - `defines`: File/module declares a struct, class, or function.
