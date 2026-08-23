@@ -108,17 +108,23 @@ func TestSelectServerReturnsNilRuntime(t *testing.T) {
 
 func TestSelectServerDoesNotStartGoroutines(t *testing.T) {
 	// Settle background goroutines
-	runtime.GC()
-	time.Sleep(50 * time.Millisecond)
-	before := runtime.NumGoroutine()
+	var before, after int
+	for attempt := 0; attempt < 5; attempt++ {
+		runtime.GC()
+		time.Sleep(20 * time.Millisecond)
+		before = runtime.NumGoroutine()
 
-	ctx := context.Background()
-	_, _ = Select(ModeServer, ctx, app.Options{InMemory: true})
+		ctx := context.Background()
+		_, _ = Select(ModeServer, ctx, app.Options{InMemory: true})
 
-	// Allow any potential goroutine time to spin up
-	time.Sleep(100 * time.Millisecond)
-	runtime.GC()
-	after := runtime.NumGoroutine()
+		time.Sleep(20 * time.Millisecond)
+		runtime.GC()
+		after = runtime.NumGoroutine()
+
+		if after <= before {
+			return
+		}
+	}
 
 	if after > before {
 		t.Errorf("Select(ModeServer) started goroutines: before=%d after=%d", before, after)

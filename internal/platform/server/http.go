@@ -20,6 +20,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 	"github.com/lleontor705/cortex/v2/internal/domain/graph"
 	"github.com/lleontor705/cortex/v2/internal/identity"
@@ -77,6 +78,10 @@ type Operations interface {
 	DeleteProjectArtifact(context.Context, string, string) error
 	GetProjectDuplicates(context.Context) ([]domain.ProjectDuplicateGroup, error)
 	MergeProject(context.Context, string, string) (*domain.ProjectMergeResult, error)
+	ListCodeSymbols(context.Context, code.SymbolFilter) ([]code.Symbol, error)
+	GetCodeGraph(context.Context, string) (*code.CodeGraph, error)
+	SaveCodeGraph(context.Context, *code.CodeGraph) error
+	GetRAGStats(context.Context, string) (*domain.RAGStats, error)
 }
 
 type healthCheck func(context.Context) error
@@ -197,6 +202,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("GET /api/admin/ai/status", a.aiStatus)
 	mux.HandleFunc("POST /api/admin/ai/test-llm", a.testLLM)
 	mux.HandleFunc("POST /api/admin/ai/test-embedding", a.testEmbedding)
+	mux.HandleFunc("GET /api/rag/stats", a.ragStats)
 	mux.HandleFunc("GET /api/observations/{id}", a.getObservation)
 	mux.HandleFunc("PUT /api/observations/{id}", a.updateObservation)
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
@@ -221,6 +227,10 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/artifacts/{id}", a.deleteProjectArtifact)
 	mux.HandleFunc("GET /api/projects/duplicates", a.getProjectDuplicates)
 	mux.HandleFunc("POST /api/projects/merge", a.mergeProject)
+	mux.HandleFunc("GET /api/code/symbols", a.listCodeSymbols)
+	mux.HandleFunc("GET /api/code/graph", a.getCodeGraph)
+	mux.HandleFunc("GET /api/code/analytics", a.getCodeAnalytics)
+	mux.HandleFunc("POST /api/code/ingest", a.ingestCodeAST)
 	return mux
 }
 
@@ -627,6 +637,16 @@ func (a *apiHandler) subgraph(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (a *apiHandler) ragStats(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	stats, err := a.ops.GetRAGStats(r.Context(), project)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (a *apiHandler) graphAnalytics(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	limit := queryInt(r.URL.Query().Get("limit"), 100, 1, 500)
@@ -691,6 +711,19 @@ func (a *apiHandler) graphAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	report := graph.AnalyzeGraph(nodes, edges)
+	searchQuery := strings.TrimSpace(r.URL.Query().Get("query"))
+	if searchQuery != "" && len(nodes) > 0 {
+		seeds := make(map[string]float64)
+		lowerQ := strings.ToLower(searchQuery)
+		for _, n := range nodes {
+			if strings.Contains(strings.ToLower(n.Label), lowerQ) || strings.Contains(strings.ToLower(n.ID), lowerQ) {
+				seeds[n.ID] = 1.0
+			}
+		}
+		if len(seeds) > 0 {
+			report.PPRScores = graph.ComputePersonalizedPageRank(nodes, edges, seeds, graph.DefaultPPROptions())
+		}
+	}
 	writeJSON(w, http.StatusOK, report)
 }
 
@@ -1195,6 +1228,15 @@ func observationResponse(observation *domain.Observation) map[string]any {
 		"topic_key":     observation.TopicKey, "confidence": observation.Confidence,
 		"source": observation.Source, "created_at": observation.CreatedAt,
 		"updated_at": observation.UpdatedAt,
+		"has_embedding": observation.HasEmbedding || (observation.RAGStatus == "" || observation.RAGStatus == "indexed"),
+		"rag_status": func() string {
+			if observation.RAGStatus != "" {
+				return observation.RAGStatus
+			}
+			return "indexed"
+		}(),
+		"embedding_model": observation.EmbeddingModel,
+		"embedding_dimensions": observation.EmbeddingDim,
 	}
 	if _, err := uuid.Parse(observation.SessionID); err == nil {
 		out["session_id"] = observation.SessionID
@@ -1361,9 +1403,16 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_graph", mcp.WithDescription("Get related observations."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth")), graphTool(ops))
 	add(mcp.NewTool("cortex_graph_subgraph", mcp.WithDescription("Get a bounded heterogeneous graph containing observations, entities, actors, sessions, and projects."), mcp.WithString("observation_id", mcp.Required()), mcp.WithNumber("depth"), mcp.WithNumber("max_nodes")), graphSubgraphTool(ops))
 	add(mcp.NewTool("cortex_get_blast_radius", mcp.WithDescription("Calculate the blast radius (impacted downstream symbols, callers, and files) when modifying a code entity or observation."), mcp.WithString("node_id", mcp.Required()), mcp.WithNumber("depth")), getBlastRadiusTool(ops))
+	add(mcp.NewTool("cortex_code_impact", mcp.WithDescription("Calculate the blast radius (impacted downstream symbols, callers, and files) when modifying a code entity or observation."), mcp.WithString("node_id", mcp.Required()), mcp.WithNumber("depth")), getBlastRadiusTool(ops))
 	add(mcp.NewTool("cortex_analyze_architecture", mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."), mcp.WithString("project")), analyzeArchitectureTool(ops))
+	add(mcp.NewTool("cortex_code_analyze", mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."), mcp.WithString("project")), analyzeArchitectureTool(ops))
 	add(mcp.NewTool("cortex_detect_cycles", mcp.WithDescription("Detect circular dependencies and import cycles across code entities in the knowledge graph."), mcp.WithString("project")), detectCyclesTool(ops))
+	add(mcp.NewTool("cortex_get_code_symbols", mcp.WithDescription("Query indexed code symbols (functions, structs, interfaces, classes, tables) from the dedicated code_symbols table."), mcp.WithString("project"), mcp.WithString("file"), mcp.WithString("kind"), mcp.WithString("package"), mcp.WithString("query"), mcp.WithNumber("limit")), getCodeSymbolsTool(ops))
+	add(mcp.NewTool("cortex_code_symbols", mcp.WithDescription("Query indexed code symbols (functions, structs, interfaces, classes, tables) from the dedicated code_symbols table."), mcp.WithString("project"), mcp.WithString("file"), mcp.WithString("kind"), mcp.WithString("package"), mcp.WithString("query"), mcp.WithNumber("limit")), getCodeSymbolsTool(ops))
+	add(mcp.NewTool("cortex_get_code_graph", mcp.WithDescription("Get the full structural code graph with symbols and caller/callee relations for a project."), mcp.WithString("project")), getCodeGraphTool(ops))
+	add(mcp.NewTool("cortex_code_graph", mcp.WithDescription("Get the full structural code graph with symbols and caller/callee relations for a project."), mcp.WithString("project")), getCodeGraphTool(ops))
 	add(mcp.NewTool("cortex_ingest_code", mcp.WithDescription("Scan, ingest or update codebase AST symbols and dependencies into a project knowledge graph. Supports whole repositories or single modified files during refactoring."), mcp.WithString("path"), mcp.WithString("project"), mcp.WithNumber("max_files")), ingestCodeTool(ops))
+	add(mcp.NewTool("cortex_code_scan", mcp.WithDescription("Scan, ingest or update codebase AST symbols and dependencies into a project knowledge graph. Supports whole repositories or single modified files during refactoring."), mcp.WithString("path"), mcp.WithString("project"), mcp.WithNumber("max_files")), ingestCodeTool(ops))
 	add(mcp.NewTool("cortex_score", mcp.WithDescription("Get an observation importance score."), mcp.WithString("observation_id", mcp.Required())), scoreTool(ops))
 	add(mcp.NewTool("cortex_get_project_context", mcp.WithDescription("Get corporate & project governance rules, system prompt, and available skills."), mcp.WithString("project")), getProjectContextTool(ops))
 	add(mcp.NewTool("cortex_list_skills", mcp.WithDescription("List available corporate and project skills."), mcp.WithString("project")), listProjectSkillsTool(ops))
@@ -1845,6 +1894,17 @@ func getBlastRadiusTool(ops Operations) mcpserver.ToolHandlerFunc {
 func analyzeArchitectureTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		project := toolString(req, "project")
+		if project == "" {
+			project = "default"
+		}
+
+		codeGraph, err := ops.GetCodeGraph(ctx, project)
+		if err == nil && codeGraph != nil && len(codeGraph.Symbols) > 0 {
+			report := code.ComputeAnalytics(codeGraph)
+			return toolResult(report, nil)
+		}
+
+		// Fallback to cognitive observations graph
 		observations, err := ops.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 200})
 		if err != nil {
 			return toolResult(nil, err)
@@ -1886,6 +1946,21 @@ func analyzeArchitectureTool(ops Operations) mcpserver.ToolHandlerFunc {
 func detectCyclesTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		project := toolString(req, "project")
+		if project == "" {
+			project = "default"
+		}
+
+		codeGraph, err := ops.GetCodeGraph(ctx, project)
+		if err == nil && codeGraph != nil && len(codeGraph.Symbols) > 0 {
+			report := code.ComputeAnalytics(codeGraph)
+			return toolResult(map[string]any{
+				"total_cycles_detected": len(report.ImportCycles),
+				"cycles":                report.ImportCycles,
+				"project":               project,
+			}, nil)
+		}
+
+		// Fallback to cognitive observations graph
 		observations, err := ops.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 200})
 		if err != nil {
 			return toolResult(nil, err)
@@ -1918,17 +1993,66 @@ func detectCyclesTool(ops Operations) mcpserver.ToolHandlerFunc {
 	}
 }
 
+func getCodeSymbolsTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		if project == "" {
+			project = "default"
+		}
+		filter := code.SymbolFilter{
+			Project:     project,
+			FilePath:    toolString(req, "file"),
+			Kind:        toolString(req, "kind"),
+			PackageName: toolString(req, "package"),
+			Query:       toolString(req, "query"),
+			Limit:       toolInt(req, "limit", 100),
+		}
+		symbols, err := ops.ListCodeSymbols(ctx, filter)
+		return toolResult(symbols, err)
+	}
+}
+
+func getCodeGraphTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolString(req, "project")
+		if project == "" {
+			project = "default"
+		}
+		graph, err := ops.GetCodeGraph(ctx, project)
+		return toolResult(graph, err)
+	}
+}
+
 func ingestCodeTool(ops Operations) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		path := toolString(req, "path")
 		if path == "" {
 			path = toolString(req, "directory")
 		}
+		if path == "" {
+			path = "."
+		}
 		project := toolString(req, "project")
-		maxFiles := toolInt(req, "max_files", 250)
+		if project == "" {
+			project = "default"
+		}
+		maxFiles := toolInt(req, "max_files", 500)
+		if maxFiles <= 0 || maxFiles > 2000 {
+			maxFiles = 500
+		}
 
-		result, err := processIngestCode(ctx, ops, path, project, maxFiles, true)
-		return toolResult(result, err)
+		extractor := ast.NewExtractor(path)
+		codeGraph, err := extractor.ExtractCodeGraph(path, project, maxFiles)
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		if err := ops.SaveCodeGraph(ctx, codeGraph); err != nil {
+			return toolResult(nil, err)
+		}
+
+		report := code.ComputeAnalytics(codeGraph)
+		return toolResult(report, nil)
 	}
 }
 func graphTool(ops Operations) mcpserver.ToolHandlerFunc {
@@ -2418,3 +2542,98 @@ func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
 		"sample_vector": sample,
 	})
 }
+
+func (a *apiHandler) listCodeSymbols(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = "default"
+	}
+	filter := code.SymbolFilter{
+		Project:     project,
+		FilePath:    r.URL.Query().Get("file"),
+		Kind:        r.URL.Query().Get("kind"),
+		PackageName: r.URL.Query().Get("package"),
+		Query:       r.URL.Query().Get("q"),
+		Limit:       queryInt(r.URL.Query().Get("limit"), 100, 1, 1000),
+		Offset:      queryInt(r.URL.Query().Get("offset"), 0, 0, 100000),
+	}
+
+	symbols, err := a.ops.ListCodeSymbols(r.Context(), filter)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	if symbols == nil {
+		symbols = []code.Symbol{}
+	}
+	writeJSON(w, http.StatusOK, symbols)
+}
+
+func (a *apiHandler) getCodeGraph(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = "default"
+	}
+	graph, err := a.ops.GetCodeGraph(r.Context(), project)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	if graph == nil {
+		graph = &code.CodeGraph{Project: project, Symbols: []code.Symbol{}, Relations: []code.Relation{}}
+	}
+	writeJSON(w, http.StatusOK, graph)
+}
+
+func (a *apiHandler) getCodeAnalytics(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = "default"
+	}
+	graph, err := a.ops.GetCodeGraph(r.Context(), project)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	if graph == nil {
+		graph = &code.CodeGraph{Project: project}
+	}
+	report := code.ComputeAnalytics(graph)
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (a *apiHandler) ingestCodeAST(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Path     string `json:"path"`
+		Project  string `json:"project"`
+		MaxFiles int    `json:"max_files"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.Path == "" {
+		input.Path = "."
+	}
+	if input.Project == "" {
+		input.Project = "default"
+	}
+	if input.MaxFiles <= 0 || input.MaxFiles > 2000 {
+		input.MaxFiles = 500
+	}
+
+	extractor := ast.NewExtractor(input.Path)
+	codeGraph, err := extractor.ExtractCodeGraph(input.Path, input.Project, input.MaxFiles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ast_extraction_failed", err.Error())
+		return
+	}
+
+	if err := a.ops.SaveCodeGraph(r.Context(), codeGraph); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+
+	report := code.ComputeAnalytics(codeGraph)
+	writeJSON(w, http.StatusOK, report)
+}
+

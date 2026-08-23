@@ -78,9 +78,11 @@ type GraphAnalyticsReport struct {
 	TotalEdges            int                    `json:"total_edges"`
 	Density               float64                `json:"density"`
 	Communities           []Community            `json:"communities"`
+	CommunitySummaries    []CommunitySummary     `json:"community_summaries,omitempty"`
 	GodNodes              []GodNode              `json:"god_nodes"`
 	SurprisingConnections []SurprisingConnection `json:"surprising_connections"`
 	Cycles                []DependencyCycle      `json:"cycles"`
+	PPRScores             map[string]float64     `json:"ppr_scores,omitempty"`
 }
 
 // Noise labels to ignore in god node rankings
@@ -92,10 +94,12 @@ var builtinNoiseLabels = map[string]bool{
 
 // AnalyzeGraph performs full structural analysis and community detection.
 func AnalyzeGraph(nodes []GraphAnalyticsNode, edges []GraphAnalyticsEdge) *GraphAnalyticsReport {
+	communities := DetectCommunities(nodes, edges)
 	report := &GraphAnalyticsReport{
 		TotalNodes:            len(nodes),
 		TotalEdges:            len(edges),
-		Communities:           DetectCommunities(nodes, edges),
+		Communities:           communities,
+		CommunitySummaries:    GenerateCommunitySummaries(communities, nodes, edges),
 		GodNodes:              FindGodNodes(nodes, edges, 10),
 		SurprisingConnections: FindSurprisingConnections(nodes, edges, 5),
 		Cycles:                FindCycles(nodes, edges),

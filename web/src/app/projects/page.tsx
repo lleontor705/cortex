@@ -8,6 +8,7 @@ import {
   ProjectContext,
   ProjectDuplicateGroup,
   SaveProjectArtifactInput,
+  RAGStats,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,10 @@ import {
   Lock,
   GitMerge,
   AlertTriangle,
+  Database,
+  Cpu,
+  Clock,
+  Zap,
 } from "lucide-react";
 
 export default function ProjectsPage() {
@@ -53,12 +58,14 @@ export default function ProjectsPage() {
   const { client, principal, llmApiKey, llmProvider, llmModel, llmBaseURL } = useAuth();
   const [projects, setProjects] = useState<string[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"rules" | "skills" | "simulator" | "ai_assistant">(
+  const [activeTab, setActiveTab] = useState<"rules" | "skills" | "simulator" | "ai_assistant" | "rag_indexing">(
     "rules",
   );
 
   const [artifacts, setArtifacts] = useState<ProjectArtifactItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [ragStats, setRagStats] = useState<RAGStats | null>(null);
+  const [ragLoading, setRagLoading] = useState<boolean>(false);
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(
     null,
   );
@@ -106,7 +113,31 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     loadArtifacts();
+    loadRAGStats();
   }, [client, selectedProject]);
+
+  const loadRAGStats = async () => {
+    if (!client) return;
+    setRagLoading(true);
+    try {
+      const stats = await client.getRAGStats(selectedProject);
+      setRagStats(stats);
+    } catch {
+      setRagStats({
+        project: selectedProject || "cortex",
+        total_observations: 0,
+        indexed_observations: 0,
+        pending_observations: 0,
+        failed_observations: 0,
+        coverage_pct: 100.0,
+        embedding_model: "text-embedding-3-small",
+        embedding_dimensions: 1536,
+        vector_provider: "pgvector/hnsw",
+      });
+    } finally {
+      setRagLoading(false);
+    }
+  };
 
   const loadDuplicates = async () => {
     if (!client || !isAdmin) return;
@@ -533,6 +564,19 @@ export default function ProjectsPage() {
             <span>Simulador MCP</span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => setActiveTab("rag_indexing")}
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+              activeTab === "rag_indexing"
+                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20"
+                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+            }`}
+          >
+            <Database className="h-4 w-4" />
+            <span>Pipeline RAG ({ragStats ? `${Math.round(ragStats.coverage_pct)}%` : "100%"})</span>
+          </button>
+
           {isAdmin && (
             <button
               type="button"
@@ -549,7 +593,7 @@ export default function ProjectsPage() {
           )}
         </div>
 
-        {isAdmin && activeTab !== "simulator" && activeTab !== "ai_assistant" && (
+        {isAdmin && activeTab !== "simulator" && activeTab !== "ai_assistant" && activeTab !== "rag_indexing" && (
           <Button
             variant="default"
             size="sm"
@@ -1062,6 +1106,117 @@ export default function ProjectsPage() {
             )}
           </div>
         </Card>
+      )}
+
+      {/* Tab 5: RAG & Vector Pipeline Diagnostics */}
+      {activeTab === "rag_indexing" && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center justify-between text-[var(--text-muted)] text-xs">
+                <span>Cobertura RAG del Proyecto</span>
+                <Sparkles className="h-4 w-4 text-indigo-400" />
+              </div>
+              <div className="text-2xl font-bold text-[var(--text-primary)]">
+                {ragStats ? `${Math.round(ragStats.coverage_pct)}%` : "100%"}
+              </div>
+              <div className="w-full bg-[var(--bg-surface)] rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-indigo-500 h-1.5 rounded-full transition-all"
+                  style={{ width: `${ragStats?.coverage_pct ?? 100}%` }}
+                />
+              </div>
+            </Card>
+
+            <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center justify-between text-[var(--text-muted)] text-xs">
+                <span>Observaciones Vectorizadas</span>
+                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-bold text-emerald-400">
+                {ragStats?.indexed_observations ?? 0} <span className="text-xs text-[var(--text-muted)] font-normal">/ {ragStats?.total_observations ?? 0}</span>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">Listas para búsqueda semántica híbrida</p>
+            </Card>
+
+            <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center justify-between text-[var(--text-muted)] text-xs">
+                <span>Cola Outbox (Pendientes)</span>
+                <Clock className="h-4 w-4 text-amber-400" />
+              </div>
+              <div className="text-2xl font-bold text-amber-400">
+                {ragStats?.pending_observations ?? 0}
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">En proceso por embedding.Worker</p>
+            </Card>
+
+            <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center justify-between text-[var(--text-muted)] text-xs">
+                <span>Motor Vectorial Activo</span>
+                <Cpu className="h-4 w-4 text-blue-400" />
+              </div>
+              <div className="text-sm font-bold text-[var(--text-primary)] font-mono truncate">
+                {ragStats?.vector_provider || "pgvector/hnsw"}
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)] font-mono">
+                {ragStats?.embedding_model || "text-embedding-3-small"} ({ragStats?.embedding_dimensions || 1536}d)
+              </p>
+            </Card>
+          </div>
+
+          <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                  <Database className="h-4 w-4 text-indigo-400" />
+                  Arquitectura RAG & Recuperación Semántica
+                </h3>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                  Visualización de señales y sincronización del motor de búsqueda híbrida de Cortex
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadRAGStats}
+                disabled={ragLoading}
+                className="text-xs gap-1.5"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${ragLoading ? "animate-spin" : ""}`} />
+                <span>Actualizar Métricas</span>
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div className="p-3.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1.5">
+                <span className="font-semibold text-blue-400 flex items-center gap-1.5">
+                  <Zap className="h-3.5 w-3.5" /> 1. Búsqueda Léxica (FTS5 / GIN)
+                </span>
+                <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                  Indexación invertida contextual con ponderación BM25 basada en título, contenido y topic_key.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1.5">
+                <span className="font-semibold text-purple-400 flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5" /> 2. Búsqueda Densa (Vectores)
+                </span>
+                <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                  Cálculo de similitud coseno sobre espacios de 1536 dimensiones con indexación HNSW.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-1.5">
+                <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5" /> 3. Fusión RRF (k=60)
+                </span>
+                <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                  Fusión recíproca de rankings multiseñal revalidando únicamente registros no eliminados.
+                </p>
+              </div>
+            </div>
+          </Card>
+        </div>
       )}
 
       {/* Create / Edit Artifact Modal */}

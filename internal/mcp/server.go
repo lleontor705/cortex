@@ -50,13 +50,20 @@ var ProfileAgent = map[string]bool{
 	"cortex_search_hybrid":       true,
 	"cortex_revision_history":    true,
 	"cortex_handoff":             true,
-	// Directives, Rules & Codebase Intelligence
+	// Directives, Rules & Codebase Intelligence (Canonical & Legacy Aliases)
 	"cortex_get_rules":            true,
 	"cortex_save_rule":            true,
 	"cortex_ingest_code":          true,
+	"cortex_code_scan":            true,
 	"cortex_get_blast_radius":     true,
+	"cortex_code_impact":          true,
 	"cortex_detect_cycles":        true,
 	"cortex_analyze_architecture": true,
+	"cortex_code_analyze":         true,
+	"cortex_get_code_symbols":     true,
+	"cortex_code_symbols":         true,
+	"cortex_get_code_graph":        true,
+	"cortex_code_graph":           true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
 	"cortex_consolidate":   true,
 	"cortex_project_dna":   true,

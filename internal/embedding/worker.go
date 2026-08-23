@@ -287,8 +287,13 @@ func (w *Worker) processIntent(ctx, finalizeCtx context.Context, in sqlitestore.
 	}
 
 	// 2. Embed with model-version namespace (runCtx-bounded).
-	text := obs.Title + "\n" + obs.Content
-	vec, err := w.embeddings.Embed(ctx, text)
+	text := PrepareObservationText(obs)
+	chunks := ChunkText(text, MaxSingleEmbeddingLength, ChunkOverlapChars)
+	targetText := text
+	if len(chunks) > 0 {
+		targetText = chunks[0]
+	}
+	vec, err := w.embeddings.Embed(ctx, targetText)
 	if err != nil {
 		if ctx.Err() != nil {
 			// Cancellation during embed: leave leased; recovery handles restart.

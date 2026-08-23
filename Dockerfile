@@ -8,7 +8,7 @@ RUN go mod download
 
 # Build
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o cortex ./cmd/cortex
+RUN CGO_ENABLED=0 go build -tags cortex_vectors -ldflags="-s -w" -o cortex ./cmd/cortex
 
 # Runtime image
 FROM alpine:3.20

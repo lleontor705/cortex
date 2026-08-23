@@ -34,6 +34,25 @@ type Observation struct {
 	Tags         []string  `json:"tags,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+
+	// RAG & Vector Indexing Status (Visible tracking)
+	HasEmbedding   bool   `json:"has_embedding"`
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+	EmbeddingDim   int    `json:"embedding_dimensions,omitempty"`
+	RAGStatus      string `json:"rag_status,omitempty"` // "indexed", "pending", "failed", "unindexed"
+}
+
+// RAGStats encapsulates the indexing coverage and vector pipeline metrics for a project or workspace.
+type RAGStats struct {
+	Project             string  `json:"project"`
+	TotalObservations   int     `json:"total_observations"`
+	IndexedObservations int     `json:"indexed_observations"`
+	PendingObservations int     `json:"pending_observations"`
+	FailedObservations  int     `json:"failed_observations"`
+	CoveragePct         float64 `json:"coverage_pct"`
+	EmbeddingModel      string  `json:"embedding_model"`
+	EmbeddingDim        int     `json:"embedding_dimensions"`
+	VectorProvider      string  `json:"vector_provider"`
 }
 
 func (o Observation) MarshalJSON() ([]byte, error) {

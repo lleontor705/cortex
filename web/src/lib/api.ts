@@ -15,6 +15,22 @@ export type Observation = {
   tags?: string[];
   created_at: string;
   updated_at: string;
+  has_embedding?: boolean;
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  rag_status?: "indexed" | "pending" | "failed" | "unindexed";
+};
+
+export type RAGStats = {
+  project: string;
+  total_observations: number;
+  indexed_observations: number;
+  pending_observations: number;
+  failed_observations: number;
+  coverage_pct: number;
+  embedding_model: string;
+  embedding_dimensions: number;
+  vector_provider: string;
 };
 
 export type Session = {
@@ -125,10 +141,14 @@ export type Community = {
 
 export type GodNode = {
   id: string;
-  label: string;
+  name?: string;
+  label?: string;
+  kind?: string;
+  file_path?: string;
   degree: number;
   in_degree: number;
   out_degree: number;
+  score?: number;
   source_file?: string;
 };
 
@@ -153,14 +173,28 @@ export type BlastRadiusResult = {
   blast_radius_pct: number;
 };
 
+export type CommunitySummary = {
+  community_id: number;
+  label: string;
+  hub_node_id: string;
+  hub_node_label: string;
+  member_count: number;
+  cohesion_score: number;
+  key_symbols: string[];
+  external_deps: string[];
+  summary_markdown: string;
+};
+
 export type GraphAnalyticsReport = {
   total_nodes: number;
   total_edges: number;
   density: number;
   communities: Community[];
+  community_summaries?: CommunitySummary[];
   god_nodes: GodNode[];
   surprising_connections: SurprisingConnection[];
   cycles: DependencyCycle[];
+  ppr_scores?: Record<string, number>;
 };
 
 export type ExtractedObservation = {
@@ -478,10 +512,11 @@ export class CortexClient {
     return this.request<GraphSubgraph>(`/api/graph/project-graph?${params.toString()}`);
   }
 
-  analytics(project?: string, limit = 100) {
+  analytics(project?: string, limit = 100, query?: string) {
     const params = new URLSearchParams();
     if (project) params.set("project", project);
     params.set("limit", limit.toString());
+    if (query) params.set("query", query);
     return this.request<GraphAnalyticsReport>(`/api/graph/analytics?${params.toString()}`);
   }
 
@@ -680,5 +715,108 @@ export class CortexClient {
       }),
     });
   }
+
+  getCodeSymbols(params?: {
+    project?: string;
+    file?: string;
+    kind?: string;
+    package?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const q = new URLSearchParams();
+    if (params?.project) q.set("project", params.project);
+    if (params?.file) q.set("file", params.file);
+    if (params?.kind) q.set("kind", params.kind);
+    if (params?.package) q.set("package", params.package);
+    if (params?.q) q.set("q", params.q);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    return this.request<CodeSymbol[]>(`/api/code/symbols?${q.toString()}`);
+  }
+
+  getCodeGraph(project?: string) {
+    const q = new URLSearchParams();
+    if (project) q.set("project", project);
+    return this.request<CodeGraph>(`/api/code/graph?${q.toString()}`);
+  }
+
+  getCodeAnalytics(project?: string) {
+    const q = new URLSearchParams();
+    if (project) q.set("project", project);
+    return this.request<CodeAnalyticsReport>(`/api/code/analytics?${q.toString()}`);
+  }
+
+  ingestCodeAST(data: { path: string; project: string; max_files?: number }) {
+    return this.request<CodeAnalyticsReport>("/api/code/ingest", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  getRAGStats(project?: string) {
+    const q = new URLSearchParams();
+    if (project) q.set("project", project);
+    return this.request<RAGStats>(`/api/rag/stats?${q.toString()}`);
+  }
 }
+
+export type CodeSymbol = {
+  id: string;
+  project: string;
+  file_path: string;
+  line_number: number;
+  kind: string;
+  name: string;
+  package_name?: string;
+  signature?: string;
+  doc_summary?: string;
+  file_hash?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CodeRelation = {
+  id?: number;
+  project: string;
+  source_id: string;
+  target_id: string;
+  relation: string;
+  confidence: number;
+  reasoning?: string;
+  created_at: string;
+};
+
+export type CodeGraph = {
+  project: string;
+  symbols: CodeSymbol[];
+  relations: CodeRelation[];
+};
+
+export type ImportCycle = {
+  id: string;
+  nodes: string[];
+  length: number;
+};
+
+export type CommunityCohesion = {
+  name: string;
+  symbol_count: number;
+  internal_edges: number;
+  cohesion_score: number;
+};
+
+export type CodeAnalyticsReport = {
+  project: string;
+  total_symbols: number;
+  total_relations: number;
+  total_files: number;
+  average_cohesion: number;
+  god_nodes: GodNode[];
+  import_cycles: ImportCycle[];
+  communities: CommunityCohesion[];
+  generated_at: string;
+};
+
 

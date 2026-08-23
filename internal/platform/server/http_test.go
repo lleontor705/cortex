@@ -15,6 +15,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -265,6 +266,33 @@ func (f *fakeOperations) MergeProject(_ context.Context, source, target string) 
 		PromptsMerged:      1,
 	}, nil
 }
+
+func (f *fakeOperations) ListCodeSymbols(_ context.Context, _ code.SymbolFilter) ([]code.Symbol, error) {
+	return []code.Symbol{}, nil
+}
+
+func (f *fakeOperations) GetCodeGraph(_ context.Context, project string) (*code.CodeGraph, error) {
+	return &code.CodeGraph{Project: project, Symbols: []code.Symbol{}, Relations: []code.Relation{}}, nil
+}
+
+func (f *fakeOperations) SaveCodeGraph(_ context.Context, _ *code.CodeGraph) error {
+	return nil
+}
+
+func (f *fakeOperations) GetRAGStats(_ context.Context, project string) (*domain.RAGStats, error) {
+	return &domain.RAGStats{
+		Project:             project,
+		TotalObservations:   10,
+		IndexedObservations: 10,
+		PendingObservations: 0,
+		FailedObservations:  0,
+		CoveragePct:         100.0,
+		EmbeddingModel:      "text-embedding-3-small",
+		EmbeddingDim:        1536,
+		VectorProvider:      "pgvector/hnsw",
+	}, nil
+}
+
 
 func testHandler(health healthCheck) http.Handler {
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}, newFakeOperations(), health)
@@ -1095,3 +1123,25 @@ func TestRESTOperationErrorRedactionCanary(t *testing.T) {
 	}
 	assertNoServerCanaries(t, extractionRec.Body.String())
 }
+
+func TestServerMCP_CodeTools(t *testing.T) {
+	ops := newFakeOperations()
+	srv := newServerMCP(ops)
+
+	// Verify all code tools are registered
+	codeTools := []string{
+		"cortex_ingest_code",
+		"cortex_get_code_symbols",
+		"cortex_get_code_graph",
+		"cortex_analyze_architecture",
+		"cortex_detect_cycles",
+	}
+
+	for _, name := range codeTools {
+		tool := srv.GetTool(name)
+		if tool == nil {
+			t.Errorf("tool %q is not registered on server MCP", name)
+		}
+	}
+}
+

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
@@ -687,3 +688,82 @@ func (s *AuthorizedStore) MergeProject(ctx context.Context, sourceProject, targe
 	})
 	return res, err
 }
+
+func (s *AuthorizedStore) ListCodeSymbols(ctx context.Context, filter code.SymbolFilter) ([]code.Symbol, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	if err != nil {
+		return nil, err
+	}
+	return codeStore.ListSymbols(ctx, filter)
+}
+
+func (s *AuthorizedStore) GetCodeGraph(ctx context.Context, project string) (*code.CodeGraph, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	if err != nil {
+		return nil, err
+	}
+	return codeStore.GetGraph(ctx, project)
+}
+
+func (s *AuthorizedStore) SaveCodeGraph(ctx context.Context, graph *code.CodeGraph) error {
+	if s == nil || s.store == nil {
+		return errors.New(authz.DenyRole)
+	}
+	if graph == nil {
+		return nil
+	}
+	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	if err != nil {
+		return err
+	}
+	if err := codeStore.SaveSymbols(ctx, graph.Symbols); err != nil {
+		return err
+	}
+	return codeStore.SaveRelations(ctx, graph.Relations)
+}
+
+func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*domain.RAGStats, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	obsList, err := s.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 10000})
+	if err != nil {
+		return nil, err
+	}
+	total := len(obsList)
+	indexed := 0
+	pending := 0
+	failed := 0
+
+	for _, o := range obsList {
+		if o.HasEmbedding || o.RAGStatus == "indexed" || o.RAGStatus == "" {
+			indexed++
+		} else if o.RAGStatus == "pending" {
+			pending++
+		} else if o.RAGStatus == "failed" {
+			failed++
+		}
+	}
+	coverage := 100.0
+	if total > 0 {
+		coverage = float64(indexed) / float64(total) * 100.0
+	}
+	return &domain.RAGStats{
+		Project:             project,
+		TotalObservations:   total,
+		IndexedObservations: indexed,
+		PendingObservations: pending,
+		FailedObservations:  failed,
+		CoveragePct:         coverage,
+		EmbeddingModel:      "text-embedding-3-small",
+		EmbeddingDim:        1536,
+		VectorProvider:      "pgvector/hnsw",
+	}, nil
+}
+

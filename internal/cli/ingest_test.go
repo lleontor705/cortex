@@ -44,20 +44,33 @@ type Order struct {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "AST Ingestion Complete!") {
+	if !strings.Contains(out, "AST Ingestion & Graphify Analysis Complete!") {
 		t.Fatalf("unexpected output: %s", out)
 	}
-	if !strings.Contains(out, "Symbols extracted:") {
-		t.Fatalf("missing symbols extracted: %s", out)
+	if !strings.Contains(out, "Symbols indexed:") {
+		t.Fatalf("missing symbols indexed: %s", out)
 	}
 
 	stdout.Reset()
 	stderr.Reset()
-	code = Run([]string{"cortex", "search", "CalculateTax", "--project", "test-project"}, stdout, stderr)
+	code = Run([]string{"cortex", "code", "symbols", "--project=test-project"}, stdout, stderr)
 	if code != 0 {
-		t.Fatalf("search failed: code=%d, stderr=%s", code, stderr.String())
+		t.Fatalf("code symbols failed: code=%d, stderr=%s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "CalculateTax") {
-		t.Fatalf("search did not find ingested symbol: %s", stdout.String())
+		t.Fatalf("expected CalculateTax in symbols: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "UserService") {
+		t.Fatalf("expected UserService in symbols: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"cortex", "code", "analyze", "--project=test-project"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("code analyze failed: code=%d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Architectural Analysis") {
+		t.Fatalf("expected Architectural Analysis: %s", stdout.String())
 	}
 }

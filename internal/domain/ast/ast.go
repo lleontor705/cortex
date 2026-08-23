@@ -5,14 +5,20 @@ package ast
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 )
 
 // CodeEntity represents a structural symbol discovered in source code.
@@ -557,3 +563,104 @@ func extractSQLFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship)
 
 	return entities, rels
 }
+
+// ComputeFileHash computes a deterministic SHA-256 hash for incremental caching.
+func ComputeFileHash(filePath string) string {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ExtractCodeGraph runs a 2-pass polyglot extraction and builds a native *code.CodeGraph.
+func (e *Extractor) ExtractCodeGraph(targetPath, project string, maxFiles int) (*code.CodeGraph, error) {
+	rawResult, err := e.ExtractPath(targetPath, maxFiles)
+	if err != nil {
+		return nil, err
+	}
+
+	fileHashes := make(map[string]string)
+	symbols := make([]code.Symbol, 0, len(rawResult.Entities))
+	symbolIDMap := make(map[string]string) // rawEntityID -> canonicalSymbolID
+	symbolByName := make(map[string][]string) // name -> []canonicalSymbolID
+
+	now := time.Now().UTC()
+	for _, ent := range rawResult.Entities {
+		hash, ok := fileHashes[ent.File]
+		if !ok {
+			fullPath := filepath.Join(e.RootPath, ent.File)
+			hash = ComputeFileHash(fullPath)
+			fileHashes[ent.File] = hash
+		}
+
+		// Generate deterministic canonical ID
+		canonicalID := fmt.Sprintf("sym:%s:%s:%s:%s:%d", project, ent.Kind, ent.Name, ent.File, ent.Line)
+		h := sha256.Sum256([]byte(canonicalID))
+		symbolID := hex.EncodeToString(h[:16])
+
+		sym := code.Symbol{
+			ID:          symbolID,
+			Project:     project,
+			FilePath:    ent.File,
+			LineNumber:  ent.Line,
+			Kind:        ent.Kind,
+			Name:        ent.Name,
+			PackageName: ent.Package,
+			Signature:   ent.Signature,
+			DocSummary:  fmt.Sprintf("%s %s in %s (line %d)", ent.Kind, ent.Name, ent.File, ent.Line),
+			FileHash:    hash,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+
+		symbols = append(symbols, sym)
+		symbolIDMap[ent.ID] = symbolID
+		symbolIDMap[ent.Name] = symbolID
+		symbolByName[ent.Name] = append(symbolByName[ent.Name], symbolID)
+	}
+
+	// Pass 2: 2-Pass Call & Reference Resolution
+	relations := make([]code.Relation, 0, len(rawResult.Relationships))
+	for _, rel := range rawResult.Relationships {
+		srcID, okSrc := symbolIDMap[rel.Source]
+		tgtID, okTgt := symbolIDMap[rel.Target]
+
+		// If target was not found by exact ID, attempt resolution by symbol name
+		if !okTgt {
+			if candidates, ok := symbolByName[rel.Target]; ok && len(candidates) > 0 {
+				tgtID = candidates[0]
+				okTgt = true
+			}
+		}
+
+		if okSrc && okTgt && srcID != tgtID {
+			confidence := rel.Confidence
+			if confidence <= 0 {
+				confidence = code.ConfidenceExtracted
+			}
+			relations = append(relations, code.Relation{
+				Project:    project,
+				SourceID:   srcID,
+				TargetID:   tgtID,
+				Relation:   rel.Relation,
+				Confidence: confidence,
+				Reasoning:  rel.Reasoning,
+				CreatedAt:  now,
+			})
+		}
+	}
+
+	return &code.CodeGraph{
+		Project:   project,
+		Symbols:   symbols,
+		Relations: relations,
+	}, nil
+}
+

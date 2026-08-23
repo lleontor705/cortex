@@ -113,6 +113,12 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, err
 	}
 
+	codeStore, err := sqlitestore.NewCodeStore(manager.DB())
+	if err != nil {
+		_ = manager.Close()
+		return nil, fmt.Errorf("app: initialize code store: %w", err)
+	}
+
 	stores := &bundle.Stores{
 		Observations:      sqlitestore.NewStore(manager.DB()),
 		Sessions:          session.NewStore(manager.DB()),
@@ -125,6 +131,7 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		Entities:          entitystore.NewStore(manager.DB()),
 		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
 		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
+		Code:              codeStore,
 	}
 
 	// Wire the UnitOfWork for atomic cross-store saves (W2.1, W4.1). Always

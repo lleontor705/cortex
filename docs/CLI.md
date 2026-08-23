@@ -22,6 +22,8 @@ The production entrypoint is `cmd/cortex`. Run `cortex help` for flags and `cort
 | `export` / `import` | Exchange observation data |
 | `sync` | Synchronize configured chunks |
 | `merge-projects` | Merge local project names |
+| `code` | Ingest AST symbols and code relationships |
+| `watch` | Continuous file watcher for incremental AST indexing |
 | `migrate status` | Inspect migration state |
 
 The local v2 baseline is forward-only. `migrate down` is not a supported normal operation and existing v2 databases must not be downgraded automatically.

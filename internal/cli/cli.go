@@ -17,6 +17,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	cortexhttp "github.com/lleontor705/cortex/v2/internal/http"
 	"github.com/lleontor705/cortex/v2/internal/mcp"
 	"github.com/lleontor705/cortex/v2/internal/ollama"
@@ -105,6 +106,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runAuth(args[2:], stdout, stderr)
 	case "ingest":
 		exitCode = runIngest(args[2:], stdout, stderr)
+	case "code":
+		exitCode = runCode(args[2:], stdout, stderr)
+	case "watch":
+		exitCode = runWatch(args[2:], stdout, stderr)
 	case "update":
 		exitCode = runUpdate(args[2:], stdout, stderr)
 	default:
@@ -1780,7 +1785,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	writef(stdout, "🔍 Scanning codebase at %q (project: %q, max files: %d)...\n", targetPath, project, maxFiles)
 
 	extractor := ast.NewExtractor(targetPath)
-	res, err := extractor.ExtractPath(targetPath, maxFiles)
+	codeGraph, err := extractor.ExtractCodeGraph(targetPath, project, maxFiles)
 	if err != nil {
 		writef(stderr, "error: ast extraction failed: %v\n", err)
 		return 1
@@ -1794,73 +1799,133 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = a.Close() }()
 
 	ctx := context.Background()
-	sessionID := fmt.Sprintf("ingest-%s-%d", project, time.Now().Unix())
-	_ = a.Stores.Sessions.Create(ctx, &domain.Session{
-		ID:        sessionID,
-		Project:   project,
-		Directory: targetPath,
-		StartedAt: time.Now().UTC(),
-	})
-
-	indexedCount := 0
-	relsCreated := 0
-	entityIDMap := make(map[string]int64)
-
-	for _, ent := range res.Entities {
-		title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
-		content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s. Signature: %s", ent.File, ent.Line, ent.Kind, ent.Package, ent.Signature)
-		topicKey := fmt.Sprintf("ast/%s/%s", ent.File, ent.Name)
-
-		obs := &domain.Observation{
-			Title:      title,
-			Content:    content,
-			Type:       domain.TypePattern,
-			SessionID:  sessionID,
-			Project:    project,
-			Scope:      "project",
-			TopicKey:   topicKey,
-			Confidence: 1.0,
-			Source:     "auto",
-			Tags:       []string{"ast", ent.Kind, ent.Package, ent.File},
-			CreatedAt:  time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
+	if a.Stores.Code != nil {
+		if err := a.Stores.Code.SaveSymbols(ctx, codeGraph.Symbols); err != nil {
+			writef(stderr, "error saving symbols: %v\n", err)
+			return 1
 		}
-		effect, err := a.Stores.Observations.SaveWithEffect(ctx, obs)
-		if err == nil || domain.IsClass(err, domain.ClassDedupSkipped) || effect.Observation != nil {
-			indexedCount++
-			obsID := obs.ID
-			if effect.Observation != nil && effect.Observation.ID > 0 {
-				obsID = effect.Observation.ID
-			}
-			entityIDMap[ent.Name] = obsID
-			entityIDMap[ent.ID] = obsID
+		if err := a.Stores.Code.SaveRelations(ctx, codeGraph.Relations); err != nil {
+			writef(stderr, "error saving relations: %v\n", err)
+			return 1
 		}
 	}
 
-	for _, rel := range res.Relationships {
-		srcID, ok1 := entityIDMap[rel.Source]
-		tgtID, ok2 := entityIDMap[rel.Target]
-		if ok1 && ok2 && srcID != tgtID {
-			err := a.Stores.Graph.CreateEdge(ctx, &domain.Edge{
-				FromObsID:    srcID,
-				ToObsID:      tgtID,
-				RelationType: rel.Relation,
-				Weight:       1.0,
-				Confidence:   rel.Confidence,
-				Source:       "ast_extractor",
-				Reasoning:    rel.Reasoning,
-			})
-			if err == nil {
-				relsCreated++
+	analytics := code.ComputeAnalytics(codeGraph)
+
+	writef(stdout, "✔ AST Ingestion & Graphify Analysis Complete!\n")
+	writef(stdout, "  • Symbols indexed:      %d (dedicated code_symbols table)\n", len(codeGraph.Symbols))
+	writef(stdout, "  • Relationships linked: %d (dedicated code_relations table)\n", len(codeGraph.Relations))
+	writef(stdout, "  • Files scanned:        %d\n", analytics.TotalFiles)
+	writef(stdout, "  • Average Cohesion:     %.2f\n", analytics.AverageCohesion)
+	if len(analytics.GodNodes) > 0 {
+		writef(stdout, "\n🏛  Top Architectural Hubs (God Nodes):\n")
+		for i, gn := range analytics.GodNodes {
+			if i >= 5 {
+				break
 			}
+			writef(stdout, "     [%s] %s (%s, degree: %d, score: %.1f)\n", gn.Kind, gn.Name, gn.FilePath, gn.Degree, gn.Score)
 		}
 	}
-
-	writef(stdout, "✔ AST Ingestion Complete!\n")
-	writef(stdout, "  • Files scanned:        %d\n", res.FilesScanned)
-	writef(stdout, "  • Symbols extracted:    %d\n", len(res.Entities))
-	writef(stdout, "  • Symbols indexed:      %d\n", indexedCount)
-	writef(stdout, "  • Relationships linked: %d\n", relsCreated)
-	writef(stdout, "  • Project:              %s\n", project)
+	if len(analytics.ImportCycles) > 0 {
+		writef(stdout, "\n⚠️  Detected Circular Dependencies (%d):\n", len(analytics.ImportCycles))
+		for i, c := range analytics.ImportCycles {
+			if i >= 3 {
+				break
+			}
+			writef(stdout, "     %s\n", c.ID)
+		}
+	}
 	return 0
+}
+
+func runCode(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		writef(stdout, "Usage: cortex code <command> [arguments]\n\n")
+		writef(stdout, "Commands:\n")
+		writef(stdout, "  scan [path] [--project=<name>] [--max-files=N]  Scan repository and index code AST\n")
+		writef(stdout, "  symbols [--project=<name>] [--kind=<kind>]      List indexed code symbols\n")
+		writef(stdout, "  analyze [--project=<name>]                      Run Graphify architectural analytics\n")
+		return 0
+	}
+
+	switch args[0] {
+	case "scan":
+		return runIngest(args[1:], stdout, stderr)
+	case "symbols":
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		filter := code.SymbolFilter{Project: "default", Limit: 100}
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				filter.Project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--kind=") {
+				filter.Kind = strings.TrimPrefix(arg, "--kind=")
+			} else if strings.HasPrefix(arg, "--file=") {
+				filter.FilePath = strings.TrimPrefix(arg, "--file=")
+			}
+		}
+
+		symbols, err := a.Stores.Code.ListSymbols(context.Background(), filter)
+		if err != nil {
+			writef(stderr, "error listing symbols: %v\n", err)
+			return 1
+		}
+
+		writef(stdout, "Indexed Symbols for project %q (%d found):\n\n", filter.Project, len(symbols))
+		for _, s := range symbols {
+			writef(stdout, "  • [%-9s] %-30s %s (line %d)\n", s.Kind, s.Name, s.FilePath, s.LineNumber)
+		}
+		return 0
+
+	case "analyze":
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		project := "default"
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			}
+		}
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		report := code.ComputeAnalytics(graph)
+		writef(stdout, "Architectural Analysis for project %q:\n", project)
+		writef(stdout, "  • Total Symbols:    %d\n", report.TotalSymbols)
+		writef(stdout, "  • Total Relations:  %d\n", report.TotalRelations)
+		writef(stdout, "  • Total Files:      %d\n", report.TotalFiles)
+		writef(stdout, "  • Average Cohesion: %.2f\n", report.AverageCohesion)
+
+		if len(report.GodNodes) > 0 {
+			writef(stdout, "\n🏛  Top God Nodes (Architectural Hubs):\n")
+			for _, gn := range report.GodNodes {
+				writef(stdout, "     [%s] %-25s (%s, degree: %d, score: %.1f)\n", gn.Kind, gn.Name, gn.FilePath, gn.Degree, gn.Score)
+			}
+		}
+		if len(report.ImportCycles) > 0 {
+			writef(stdout, "\n⚠️  Detected Circular Dependencies (%d):\n", len(report.ImportCycles))
+			for _, c := range report.ImportCycles {
+				writef(stdout, "     %s\n", c.ID)
+			}
+		}
+		return 0
+
+	default:
+		writef(stderr, "unknown code subcommand: %s\n", args[0])
+		return 1
+	}
 }

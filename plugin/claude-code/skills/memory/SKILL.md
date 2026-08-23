@@ -28,11 +28,13 @@ They are available immediately — no manual ToolSearch needed.
 - `cortex_get_rules` — retrieve active project and global directives, guidelines, and behavioral rules
 - `cortex_save_rule` — create or update a persistent project or global directive/rule in Cortex
 
-**Codebase AST & Intelligence:**
-- `cortex_ingest_code` — scan local files using Zero-CGO Static AST Extractor into knowledge graph
+**Codebase AST & Graphify Intelligence:**
+- `cortex_ingest_code` — scan local files using Zero-CGO 2-Pass Static AST Extractor into dedicated tables (`code_symbols`, `code_relations`)
+- `cortex_get_code_symbols` — query indexed code symbols (functions, structs, classes, interfaces) with filtering by kind, package, file, or pattern
+- `cortex_get_code_graph` — retrieve complete structural call and reference graph for a project
 - `cortex_get_blast_radius` — calculate downstream impact of modifying symbols/files before refactoring
-- `cortex_detect_cycles` — detect circular dependencies and import cycles
-- `cortex_analyze_architecture` — analyze code communities, god nodes, and architecture
+- `cortex_detect_cycles` — detect circular dependencies and import/call cycles in codebase
+- `cortex_analyze_architecture` — analyze code communities, god nodes (centrality score), and modular cohesion
 
 **Transport IDs:** Follow the active MCP tool schema. Local observations and graph records use numeric IDs; Cortex Server uses public UUID strings. Never convert or reuse IDs across transports.
 

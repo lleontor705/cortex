@@ -37,6 +37,7 @@ type Stores struct {
 	Entities          *entitystore.Store
 	Metrics           *sqlitestore.MetricsRepository
 	QualityMetrics    *sqlitestore.QualityMetricsRepository
+	Code              *sqlitestore.CodeStore
 
 	// Embeddings is the optional embedding service for vector search.
 	Embeddings embedding.Service

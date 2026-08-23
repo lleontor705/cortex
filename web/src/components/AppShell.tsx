@@ -130,6 +130,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: "Live", minRole: "all" },
     { href: "/projects", label: "Proyectos & Skills", icon: FolderKanban, badge: "MCP", minRole: "all" },
     { href: "/memory", label: "Memoria & Notas", icon: BrainCircuit, minRole: "all" },
+    { href: "/code", label: "Código & AST", icon: Terminal, badge: "Graphify", minRole: "all" },
     { href: "/graph", label: "Grafo de Conocimiento", icon: Share2, badge: "2D Force", minRole: "all" },
     { href: "/search", label: "Retrieval Playground", icon: Search, minRole: "all" },
     { href: "/extract", label: "Extracción LLM", icon: Sparkles, badge: "AI", minRole: "all" },

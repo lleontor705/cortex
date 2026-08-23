@@ -230,8 +230,9 @@ function GraphPageContent() {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Color Mode
-  const [colorMode, setColorMode] = useState<"kind" | "community">("kind");
+  // Color Mode & HippoRAG Activation Heatmap
+  const [colorMode, setColorMode] = useState<"kind" | "community" | "hipporag">("kind");
+  const [pprScores, setPprScores] = useState<Record<string, number>>({});
 
   // Type Filters
   const [typeFilters, setTypeFilters] = useState<Record<string, boolean>>({
@@ -420,11 +421,22 @@ function GraphPageContent() {
       const x = Math.cos(angle) * radius + (Math.random() - 0.5) * 20;
       const y = Math.sin(angle) * radius + (Math.random() - 0.5) * 20;
 
-      // Color selection (kind vs community)
+      // Color selection (kind vs community vs hipporag activation heatmap)
       let nodeColor = kindInfo.hex;
       if (colorMode === "community" && typeof n.metadata?.community === "number") {
         const commIdx = n.metadata.community % COMMUNITY_COLORS.length;
         nodeColor = COMMUNITY_COLORS[commIdx];
+      } else if (colorMode === "hipporag") {
+        const score = pprScores[id] || pprScores[`observation:${id}`] || 0;
+        if (score >= 0.05) {
+          nodeColor = "#f59e0b"; // Gold / Amber Seed Activation
+        } else if (score >= 0.02) {
+          nodeColor = "#8b5cf6"; // Purple High Multi-Hop Activation
+        } else if (score >= 0.005) {
+          nodeColor = "#06b6d4"; // Cyan Medium Multi-Hop Activation
+        } else {
+          nodeColor = "#334155"; // Dimmed Slate
+        }
       }
 
       graph.addNode(id, {
@@ -587,14 +599,14 @@ function GraphPageContent() {
       renderer.kill();
       sigmaRef.current = null;
     };
-  }, [rawSubgraph, observations, graphLayer, colorMode, isNodeInSelectedLayer, normalizeId]);
+  }, [rawSubgraph, observations, graphLayer, colorMode, pprScores, isNodeInSelectedLayer, normalizeId]);
 
   // Refresh Sigma on state updates
   useEffect(() => {
     if (sigmaRef.current) {
       sigmaRef.current.refresh();
     }
-  }, [hoveredNodeId, selectedNodeId, searchQuery, typeFilters, colorMode]);
+  }, [hoveredNodeId, selectedNodeId, searchQuery, typeFilters, colorMode, pprScores]);
 
   // Selected Node Details
   const selectedNodeData = useMemo(() => {
@@ -967,6 +979,31 @@ function GraphPageContent() {
             <Compass className="h-3.5 w-3.5 text-emerald-400" />
             <span className="hidden sm:inline">
               {colorMode === "community" ? "Comunidades Activas" : "Ver Comunidades"}
+            </span>
+          </Button>
+
+          <Button
+            onClick={async () => {
+              if (colorMode === "hipporag") {
+                setColorMode("kind");
+              } else {
+                if (client) {
+                  const res = await client.analytics(selectedProject, 200, searchQuery || "auth");
+                  setPprScores(res.ppr_scores || {});
+                }
+                setColorMode("hipporag");
+              }
+            }}
+            variant="outline"
+            size="sm"
+            className={`h-8 text-xs gap-1.5 ${
+              colorMode === "hipporag" ? "bg-amber-950/40 text-amber-300 border-amber-800" : ""
+            }`}
+            title="Activar Heatmap de Activación HippoRAG (Personalized PageRank)"
+          >
+            <Flame className="h-3.5 w-3.5 text-amber-400" />
+            <span className="hidden sm:inline">
+              {colorMode === "hipporag" ? "HippoRAG Activo" : "Heatmap HippoRAG"}
             </span>
           </Button>
 
@@ -1432,6 +1469,41 @@ function GraphPageContent() {
                         <Badge variant="purple" className="text-[10px]">
                           Grado: {n.degree} (in: {n.in_degree}, out: {n.out_degree})
                         </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* LightRAG Hierarchical Community Summaries */}
+              {analyticsReport.community_summaries && analyticsReport.community_summaries.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-[11px] font-semibold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Resúmenes Jerárquicos de Módulos (LightRAG)
+                  </label>
+                  <div className="space-y-2 max-h-56 overflow-y-auto">
+                    {analyticsReport.community_summaries.map((s, idx) => (
+                      <div
+                        key={idx}
+                        className="p-3 rounded-lg bg-blue-950/20 border border-blue-500/30 space-y-1.5 text-[11px]"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-blue-300">
+                            Comunidad #{s.community_id}: {s.label}
+                          </span>
+                          <Badge variant="outline" className="text-[9px] font-mono text-emerald-400 border-emerald-500/30">
+                            Cohesión: {s.cohesion_score.toFixed(2)}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-slate-300 leading-relaxed font-mono">
+                          Hub: <span className="text-amber-300">{s.hub_node_label}</span> | Elementos: {s.member_count}
+                        </p>
+                        {s.key_symbols.length > 0 && (
+                          <div className="text-[10px] text-slate-400 truncate">
+                            Componentes: {s.key_symbols.join(", ")}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

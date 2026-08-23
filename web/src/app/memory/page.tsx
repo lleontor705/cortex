@@ -27,15 +27,21 @@ import {
   Calendar,
   Shield,
   Folder,
+  Sparkles,
+  CheckCircle2,
+  AlertCircle,
+  Database,
+  Cpu,
 } from "lucide-react";
 
 export default function MemoryPage() {
-  const { client } = useAuth();
+  const { client, principal } = useAuth();
   const [observations, setObservations] = useState<Observation[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterProject, setFilterProject] = useState("");
   const [filterType, setFilterType] = useState("");
+  const [filterRAG, setFilterRAG] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Detail Modal State
@@ -108,7 +114,6 @@ export default function MemoryPage() {
     }
   };
 
-  const { principal } = useAuth();
   const userRoles = principal?.roles || ["admin"];
   const isAdmin = userRoles.some(
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
@@ -136,6 +141,14 @@ export default function MemoryPage() {
   };
 
   const filteredObservations = observations.filter((obs) => {
+    if (filterRAG === "indexed") {
+      if (obs.rag_status !== "indexed" && obs.has_embedding !== true && obs.rag_status !== undefined) return false;
+    } else if (filterRAG === "pending") {
+      if (obs.rag_status !== "pending") return false;
+    } else if (filterRAG === "unindexed") {
+      if (obs.rag_status !== "unindexed" && obs.rag_status !== "failed") return false;
+    }
+
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -200,6 +213,19 @@ export default function MemoryPage() {
           </div>
 
           <div className="w-full sm:w-44">
+            <Select
+              value={filterRAG}
+              onChange={(e) => setFilterRAG(e.target.value)}
+              className="h-9 text-xs w-full"
+            >
+              <option value="">Todos los estados RAG</option>
+              <option value="indexed">🟢 Vectorizado en RAG</option>
+              <option value="pending">🟡 RAG En Cola</option>
+              <option value="unindexed">⚪ Sin Vectorizar</option>
+            </Select>
+          </div>
+
+          <div className="w-full sm:w-44">
             <Input
               type="text"
               placeholder="Filtrar proyecto..."
@@ -238,9 +264,28 @@ export default function MemoryPage() {
                   <h3 className="text-xs font-semibold text-[var(--text-primary)] group-hover:text-blue-400 leading-snug line-clamp-2 transition-colors">
                     {obs.title}
                   </h3>
-                  <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"} className="shrink-0 text-[10px]">
-                    {obs.type}
-                  </Badge>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"} className="text-[10px]">
+                      {obs.type}
+                    </Badge>
+                  </div>
+                </div>
+
+                {/* RAG Status Indicator Chip */}
+                <div className="mb-2 flex items-center gap-1.5">
+                  {obs.rag_status === "pending" ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <Clock className="h-2.5 w-2.5 animate-spin" /> RAG En Cola
+                    </span>
+                  ) : obs.rag_status === "failed" ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                      <AlertCircle className="h-2.5 w-2.5" /> Error RAG
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <Sparkles className="h-2.5 w-2.5" /> RAG Vectorizado
+                    </span>
+                  )}
                 </div>
 
                 <p className="text-xs text-[var(--text-secondary)] line-clamp-4 leading-relaxed mb-3 whitespace-pre-wrap">
@@ -364,6 +409,47 @@ export default function MemoryPage() {
                     </span>
                   </div>
                 )}
+              </div>
+
+              {/* RAG & Semantic Pipeline Panel */}
+              <div className="p-3.5 rounded-lg bg-gradient-to-r from-blue-950/30 via-purple-950/20 to-[var(--bg-surface)] border border-blue-500/30 space-y-2.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-blue-400" />
+                    <span className="font-semibold text-xs text-[var(--text-primary)]">Pipeline RAG & Indexación Semántica</span>
+                  </div>
+                  {selectedObservation.rag_status === "pending" ? (
+                    <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-400 border-amber-500/30 flex items-center gap-1 font-mono">
+                      <Clock className="h-3 w-3 animate-spin" /> En Cola de Vectorización (Outbox)
+                    </Badge>
+                  ) : selectedObservation.rag_status === "failed" ? (
+                    <Badge variant="outline" className="text-[10px] bg-rose-500/10 text-rose-400 border-rose-500/30 flex items-center gap-1 font-mono">
+                      <AlertCircle className="h-3 w-3" /> Error de Vectorización
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30 flex items-center gap-1 font-mono">
+                      <CheckCircle2 className="h-3 w-3" /> Vectorizado y Activo en RAG
+                    </Badge>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[11px] pt-1.5 border-t border-[var(--border-subtle)]/70">
+                  <div>
+                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Modelo de Embeddings</span>
+                    <span className="font-mono text-[var(--text-primary)] font-medium">
+                      {selectedObservation.embedding_model || "text-embedding-3-small"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Dimensiones Vectoriales</span>
+                    <span className="font-mono text-[var(--text-primary)] font-medium">
+                      {selectedObservation.embedding_dimensions ? `${selectedObservation.embedding_dimensions}d` : "1536d"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Recuperación Híbrida</span>
+                    <span className="text-emerald-400 font-medium font-mono">FTS5 + Cosine (RRF k=60)</span>
+                  </div>
+                </div>
               </div>
 
               {/* Full Content Block */}

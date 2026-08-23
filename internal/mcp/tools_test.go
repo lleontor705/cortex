@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +128,8 @@ func setupTestStores(t *testing.T) *Stores {
 	testDB := testutil.NewTestDBWithMigrations(t, registry)
 	db := testDB.DB()
 
+	codeStore, _ := sqlitestore.NewCodeStore(db)
+
 	return &Stores{
 		Observations:      sqlitestore.NewStore(db),
 		Sessions:          session.NewStore(db),
@@ -135,6 +139,7 @@ func setupTestStores(t *testing.T) *Stores {
 		Scoring:           scoringstore.NewStore(db),
 		Vectors:           sqlite_blob.New(db),
 		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(db),
+		Code:              codeStore,
 	}
 }
 
@@ -797,5 +802,72 @@ func TestHandleCodebaseIntelligenceTools(t *testing.T) {
 	}
 }
 
+func TestMCP_CodeTools(t *testing.T) {
+	stores := setupTestStores(t)
+	codeDir := t.TempDir()
+
+	// Write test source files
+	goCode := `package engine
+func ProcessData(x int) int { return x * 2 }
+type Processor struct { ID string }
+func (p *Processor) Run() { ProcessData(10) }
+`
+	_ = os.WriteFile(filepath.Join(codeDir, "engine.go"), []byte(goCode), 0o600)
+
+	// 1. Test Ingest Code
+	ingestHandler := handleIngestCode(stores)
+	res := callTool(t, ingestHandler, map[string]interface{}{
+		"path":      codeDir,
+		"project":   "test-proj",
+		"max_files": 10,
+	})
+	txt := resultText(res)
+	if !strings.Contains(txt, "symbols_indexed") {
+		t.Fatalf("expected symbols_indexed in ingest result: %s", txt)
+	}
+
+	// 2. Test Get Code Symbols
+	symbolsHandler := handleGetCodeSymbols(stores)
+	symRes := callTool(t, symbolsHandler, map[string]interface{}{
+		"project": "test-proj",
+		"kind":    "func",
+	})
+	symTxt := resultText(symRes)
+	if !strings.Contains(symTxt, "ProcessData") {
+		t.Fatalf("expected ProcessData in symbols: %s", symTxt)
+	}
+
+	// 3. Test Get Code Graph
+	graphHandler := handleGetCodeGraph(stores)
+	graphRes := callTool(t, graphHandler, map[string]interface{}{
+		"project": "test-proj",
+	})
+	graphTxt := resultText(graphRes)
+	if !strings.Contains(graphTxt, "test-proj") {
+		t.Fatalf("expected project in graph: %s", graphTxt)
+	}
+
+	// 4. Test Analyze Architecture
+	archHandler := handleAnalyzeArchitecture(stores)
+	archRes := callTool(t, archHandler, map[string]interface{}{
+		"project": "test-proj",
+	})
+	archTxt := resultText(archRes)
+	if !strings.Contains(archTxt, "god_nodes") || !strings.Contains(archTxt, "total_symbols") {
+		t.Fatalf("expected god_nodes in architecture report: %s", archTxt)
+	}
+
+	// 5. Test Detect Cycles
+	cycleHandler := handleDetectCycles(stores)
+	cycleRes := callTool(t, cycleHandler, map[string]interface{}{
+		"project": "test-proj",
+	})
+	cycleTxt := resultText(cycleRes)
+	if !strings.Contains(cycleTxt, "total_cycles_detected") {
+		t.Fatalf("expected total_cycles_detected: %s", cycleTxt)
+	}
+}
+
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)
+

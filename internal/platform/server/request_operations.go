@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
@@ -298,3 +299,32 @@ func (requestOperations) MergeProject(ctx context.Context, source, target string
 	}
 	return ops.MergeProject(ctx, source, target)
 }
+func (requestOperations) ListCodeSymbols(ctx context.Context, filter code.SymbolFilter) ([]code.Symbol, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListCodeSymbols(ctx, filter)
+}
+func (requestOperations) GetCodeGraph(ctx context.Context, project string) (*code.CodeGraph, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetCodeGraph(ctx, project)
+}
+func (requestOperations) SaveCodeGraph(ctx context.Context, graph *code.CodeGraph) error {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	return ops.SaveCodeGraph(ctx, graph)
+}
+func (requestOperations) GetRAGStats(ctx context.Context, project string) (*domain.RAGStats, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetRAGStats(ctx, project)
+}
+

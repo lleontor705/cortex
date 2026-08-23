@@ -12,6 +12,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
@@ -169,6 +170,9 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithString("scope",
 					mcp.Description("Filter by scope: project or personal"),
 				),
+				mcp.WithString("mode",
+					mcp.Description("Adaptive retrieval mode: 'auto' (Adaptive-RAG with HippoRAG and CRAG gating), 'direct' (fast factual), 'semantic' (hybrid vectors), 'multi_hop' (HippoRAG graph reasoning)"),
+				),
 				mcp.WithNumber("limit",
 					mcp.Description("Max results (default: 10, max: 50)"),
 				),
@@ -307,41 +311,47 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- cortex_ingest_code ---------------------------------------------
-	if shouldRegister("cortex_ingest_code", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_ingest_code",
-				mcp.WithTitleAnnotation("Ingest Codebase AST Symbols"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDescription("Scan local project files (.go, .ts, .js, .py, .sql) using the Zero-CGO Static AST Extractor to index code symbols (functions, structs, classes) and dependencies into the knowledge graph."),
-				mcp.WithString("path",
-					mcp.Description("Relative or absolute root path to scan (defaults to '.' or project root)"),
-				),
-				mcp.WithString("project",
-					mcp.Description("Project name (defaults to 'default')"),
-				),
-				mcp.WithNumber("max_files",
-					mcp.Description("Maximum files to scan (default: 500, max: 2000)"),
-				),
+	// --- cortex_code_scan & cortex_ingest_code -------------------------
+	ingestToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Scan & Ingest Codebase AST Symbols"),
+			mcp.WithReadOnlyHintAnnotation(false),
+			mcp.WithDescription("Scan local project files (.go, .ts, .js, .py, .sql) using the Zero-CGO 2-Pass Static AST Extractor to index code symbols and dependencies into dedicated tables."),
+			mcp.WithString("path",
+				mcp.Description("Relative or absolute root path to scan (defaults to '.' or project root)"),
 			),
-			handleIngestCode(stores),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+			mcp.WithNumber("max_files",
+				mcp.Description("Maximum files to scan (default: 500, max: 2000)"),
+			),
 		)
 	}
+	if shouldRegister("cortex_code_scan", allowlist) {
+		srv.AddTool(ingestToolDef("cortex_code_scan"), handleIngestCode(stores))
+	}
+	if shouldRegister("cortex_ingest_code", allowlist) {
+		srv.AddTool(ingestToolDef("cortex_ingest_code"), handleIngestCode(stores))
+	}
 
-	// --- cortex_get_blast_radius ----------------------------------------
-	if shouldRegister("cortex_get_blast_radius", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_get_blast_radius",
-				mcp.WithTitleAnnotation("Get Blast Radius"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol or observation."),
-				withIntegerID("observation_id", "Observation ID to analyze"),
-				mcp.WithNumber("depth",
-					mcp.Description("Traversal depth (default: 3)"),
-				),
+	// --- cortex_code_impact & cortex_get_blast_radius -------------------
+	blastToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Get Code Impact & Blast Radius"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol or observation."),
+			withIntegerID("observation_id", "Observation ID or symbol reference to analyze"),
+			mcp.WithNumber("depth",
+				mcp.Description("Traversal depth (default: 3)"),
 			),
-			handleGetBlastRadius(stores),
 		)
+	}
+	if shouldRegister("cortex_code_impact", allowlist) {
+		srv.AddTool(blastToolDef("cortex_code_impact"), handleGetBlastRadius(stores))
+	}
+	if shouldRegister("cortex_get_blast_radius", allowlist) {
+		srv.AddTool(blastToolDef("cortex_get_blast_radius"), handleGetBlastRadius(stores))
 	}
 
 	// --- cortex_detect_cycles -------------------------------------------
@@ -359,19 +369,73 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- cortex_analyze_architecture ------------------------------------
-	if shouldRegister("cortex_analyze_architecture", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_analyze_architecture",
-				mcp.WithTitleAnnotation("Analyze Architecture"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes, and surprising connections."),
-				mcp.WithString("project",
-					mcp.Description("Project name to analyze"),
-				),
+	// --- cortex_code_analyze & cortex_analyze_architecture --------------
+	archToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Analyze Code Architecture"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Analyze knowledge and code graph architecture, detecting communities, god nodes (centrality score), import cycles, and modular cohesion."),
+			mcp.WithString("project",
+				mcp.Description("Project name to analyze"),
 			),
-			handleAnalyzeArchitecture(stores),
 		)
+	}
+	if shouldRegister("cortex_code_analyze", allowlist) {
+		srv.AddTool(archToolDef("cortex_code_analyze"), handleAnalyzeArchitecture(stores))
+	}
+	if shouldRegister("cortex_analyze_architecture", allowlist) {
+		srv.AddTool(archToolDef("cortex_analyze_architecture"), handleAnalyzeArchitecture(stores))
+	}
+
+	// --- cortex_code_symbols & cortex_get_code_symbols ------------------
+	symToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Get Code AST Symbols"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Query indexed code symbols (functions, structs, interfaces, classes, tables) from the dedicated code_symbols table."),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+			mcp.WithString("file",
+				mcp.Description("Filter by file path"),
+			),
+			mcp.WithString("kind",
+				mcp.Description("Filter by symbol kind (func, struct, interface, class, module, table)"),
+			),
+			mcp.WithString("package",
+				mcp.Description("Filter by package name"),
+			),
+			mcp.WithString("query",
+				mcp.Description("Search pattern for symbol name or signature"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum symbols to return (default: 100)"),
+			),
+		)
+	}
+	if shouldRegister("cortex_code_symbols", allowlist) {
+		srv.AddTool(symToolDef("cortex_code_symbols"), handleGetCodeSymbols(stores))
+	}
+	if shouldRegister("cortex_get_code_symbols", allowlist) {
+		srv.AddTool(symToolDef("cortex_get_code_symbols"), handleGetCodeSymbols(stores))
+	}
+
+	// --- cortex_code_graph & cortex_get_code_graph ----------------------
+	graphToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Get Code Structural Graph"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Get the full structural code graph with symbols and caller/callee relations for a project."),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+		)
+	}
+	if shouldRegister("cortex_code_graph", allowlist) {
+		srv.AddTool(graphToolDef("cortex_code_graph"), handleGetCodeGraph(stores))
+	}
+	if shouldRegister("cortex_get_code_graph", allowlist) {
+		srv.AddTool(graphToolDef("cortex_get_code_graph"), handleGetCodeGraph(stores))
 	}
 
 	// --- cortex_get_status ----------------------------------------------
@@ -617,11 +681,20 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("FTS5 search failed: %s", localErrorText(err))
 		}
 
-		searchMode := "FTS5"
+		var tier retrieval.QueryTier
+		switch stringArg(req, "mode") {
+		case "direct":
+			tier = retrieval.TierDirectFactual
+		case "multi_hop":
+			tier = retrieval.TierMultiHopGraph
+		case "semantic":
+			tier = retrieval.TierSemanticHybrid
+		default:
+			tier = retrieval.ClassifyQueryComplexity(query)
+		}
 
-		// Vector search (when available). W8.1: stores.Vectors is a
-		// domain.VectorIndex; availability is checked via Health.
-		if domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
+		// Vector search (when available and not in pure direct mode).
+		if tier != retrieval.TierDirectFactual && domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
 			var queryVec []float32
 
 			// Prefer generating a real query embedding via the embedding service
@@ -634,7 +707,6 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			}
 
 			if len(queryVec) > 0 {
-				searchMode = "hybrid (FTS5 + vector)"
 				vecQuery := domain.VectorQuery{
 					Vector:    queryVec,
 					Limit:     limit,
@@ -644,12 +716,6 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 						"scope":   scope,
 					},
 				}
-				// W8.4: use the capability-driven SearchVectors entry point.
-				// The engine reads VectorIndex.Capabilities and selects
-				// PreFilter (trust adapter) vs PostFilter (pool expansion +
-				// in-engine safety net). This replaces the manual Search +
-				// RevalidateCandidates + filter-drop-prone path with the
-				// centralized strategy selector (REQ-VEC-001/002).
 				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
 				if vecErr == nil && len(vecResults) > 0 {
 					ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
@@ -657,12 +723,61 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			}
 		}
 
+		// HippoRAG Multi-Hop Graph Reasoning Path
+		if tier == retrieval.TierMultiHopGraph && stores.Graph != nil && len(ftsResults) > 0 {
+			var graphNodes []graphdomain.GraphAnalyticsNode
+			var graphEdges []graphdomain.GraphAnalyticsEdge
+			var seeds = make(map[string]float64)
+			seenNodes := make(map[int64]bool)
+
+			for _, r := range ftsResults {
+				seeds[fmt.Sprintf("%d", r.ID)] += r.Rank
+				if !seenNodes[r.ID] {
+					seenNodes[r.ID] = true
+					graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
+						ID:    fmt.Sprintf("%d", r.ID),
+						Label: r.Title,
+					})
+				}
+
+				edges, _ := stores.Graph.GetEdgesForObservation(ctx, r.ID)
+				for _, e := range edges {
+					graphEdges = append(graphEdges, graphdomain.GraphAnalyticsEdge{
+						Source: fmt.Sprintf("%d", e.FromObsID),
+						Target: fmt.Sprintf("%d", e.ToObsID),
+						Weight: e.Weight,
+					})
+					if !seenNodes[e.ToObsID] {
+						seenNodes[e.ToObsID] = true
+						graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
+							ID: fmt.Sprintf("%d", e.ToObsID),
+						})
+					}
+				}
+			}
+
+			if len(graphEdges) > 0 && len(seeds) > 0 {
+				pprScores := graphdomain.ComputePersonalizedPageRank(graphNodes, graphEdges, seeds, graphdomain.DefaultPPROptions())
+				for _, r := range ftsResults {
+					if boost, ok := pprScores[fmt.Sprintf("%d", r.ID)]; ok {
+						r.Rank += boost * 2.0
+					}
+				}
+			}
+		}
+
+		// CRAG Confidence Gating
+		cragEval := retrieval.EvaluateCRAG(ftsResults, retrieval.DefaultCRAGConfig())
+		if len(cragEval.FilteredResults) > 0 {
+			ftsResults = cragEval.FilteredResults
+		}
+
 		if len(ftsResults) == 0 {
-			return textResult("No results found for %q", query)
+			return textResult("No relevant context found for %q [CRAG: low confidence/suppressed]", query)
 		}
 
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "Search results for %q [%s] (%d found):\n\n", query, searchMode, len(ftsResults))
+		fmt.Fprintf(&sb, "Search results for %q [Adaptive-RAG: %s, CRAG: %s] (%d found):\n\n", query, tier, cragEval.Grade, len(ftsResults))
 		for i, r := range ftsResults {
 			fmt.Fprintf(&sb, "%d. [%d] %s (%s, rank: %.2f)\n   %s\n",
 				i+1, r.ID, r.Title, r.Type, r.Rank, truncate(r.Content, 120))
@@ -1023,89 +1138,39 @@ func handleIngestCode(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		extractor := ast.NewExtractor(targetPath)
-		res, err := extractor.ExtractPath(targetPath, maxFiles)
+		codeGraph, err := extractor.ExtractCodeGraph(targetPath, project, maxFiles)
 		if err != nil {
 			return errorResult("ast extraction failed: %v", err)
 		}
 
-		sessionID := defaultSessionID(project)
-		_ = stores.Sessions.Create(ctx, &domain.Session{
-			ID:        sessionID,
-			Project:   project,
-			Directory: targetPath,
-			StartedAt: time.Now().UTC(),
-		})
-
-		indexedCount := 0
-		relsCreated := 0
-
-		// Save discovered entities as observations and index in knowledge graph
-		entityIDMap := make(map[string]int64)
-		for _, ent := range res.Entities {
-			title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
-			content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s. Signature: %s", ent.File, ent.Line, ent.Kind, ent.Package, ent.Signature)
-			topicKey := fmt.Sprintf("ast/%s/%s", ent.File, ent.Name)
-
-			obs := &domain.Observation{
-				Title:      title,
-				Content:    content,
-				Type:       domain.TypePattern,
-				SessionID:  sessionID,
-				Project:    project,
-				Scope:      "project",
-				TopicKey:   topicKey,
-				Confidence: 1.0,
-				Source:     "auto",
-				Tags:       []string{"ast", ent.Kind, ent.Package, ent.File},
-				CreatedAt:  time.Now().UTC(),
-				UpdatedAt:  time.Now().UTC(),
+		if stores.Code != nil {
+			if err := stores.Code.SaveSymbols(ctx, codeGraph.Symbols); err != nil {
+				return errorResult("error saving code symbols: %v", err)
 			}
-			effect, err := stores.Observations.SaveWithEffect(ctx, obs)
-			if err == nil || domain.IsClass(err, domain.ClassDedupSkipped) || effect.Observation != nil {
-				indexedCount++
-				obsID := obs.ID
-				if effect.Observation != nil && effect.Observation.ID > 0 {
-					obsID = effect.Observation.ID
-				}
-				entityIDMap[ent.Name] = obsID
-				entityIDMap[ent.ID] = obsID
+			if err := stores.Code.SaveRelations(ctx, codeGraph.Relations); err != nil {
+				return errorResult("error saving code relations: %v", err)
 			}
 		}
 
-		// Relate entities in the knowledge graph
-		for _, rel := range res.Relationships {
-			srcID, ok1 := entityIDMap[rel.Source]
-			tgtID, ok2 := entityIDMap[rel.Target]
-			if ok1 && ok2 && srcID != tgtID {
-				err := stores.Graph.CreateEdge(ctx, &domain.Edge{
-					FromObsID:    srcID,
-					ToObsID:      tgtID,
-					RelationType: rel.Relation,
-					Weight:       1.0,
-					Confidence:   rel.Confidence,
-					Source:       "ast_extractor",
-					Reasoning:    rel.Reasoning,
-				})
-				if err == nil {
-					relsCreated++
-				}
-			}
-		}
+		analytics := code.ComputeAnalytics(codeGraph)
 
 		summary := map[string]any{
-			"files_scanned":        res.FilesScanned,
-			"entities_extracted":   len(res.Entities),
-			"entities_indexed":     indexedCount,
-			"relationships_linked": relsCreated,
+			"files_scanned":        analytics.TotalFiles,
+			"symbols_indexed":      len(codeGraph.Symbols),
+			"relationships_linked": len(codeGraph.Relations),
+			"average_cohesion":     analytics.AverageCohesion,
+			"god_nodes_count":      len(analytics.GodNodes),
+			"import_cycles_count":  len(analytics.ImportCycles),
 			"project":              project,
-			"root_path":            targetPath,
+			"god_nodes":            analytics.GodNodes,
+			"import_cycles":        analytics.ImportCycles,
 		}
 
-		b, err := json.MarshalIndent(summary, "", "  ")
+		data, err := json.MarshalIndent(summary, "", "  ")
 		if err != nil {
-			return errorResult("serialize summary: %v", err)
+			return errorResult("marshal summary: %v", err)
 		}
-		return mcp.NewToolResultText(string(b)), nil
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 
@@ -1171,6 +1236,27 @@ func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
 func handleDetectCycles(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+
+		if stores.Code != nil {
+			graph, err := stores.Code.GetGraph(ctx, project)
+			if err == nil && len(graph.Symbols) > 0 {
+				report := code.ComputeAnalytics(graph)
+				b, err := json.MarshalIndent(map[string]any{
+					"total_cycles_detected": len(report.ImportCycles),
+					"cycles":                report.ImportCycles,
+					"project":               project,
+				}, "", "  ")
+				if err != nil {
+					return errorResult("serialize cycles: %v", err)
+				}
+				return mcp.NewToolResultText(string(b)), nil
+			}
+		}
+
+		// Fallback to cognitive observations graph
 		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Limit: 500})
 		if err != nil {
 			return errorResult("list observations: %v", err)
@@ -1213,6 +1299,23 @@ func handleDetectCycles(stores *Stores) server.ToolHandlerFunc {
 func handleAnalyzeArchitecture(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+
+		if stores.Code != nil {
+			codeGraph, err := stores.Code.GetGraph(ctx, project)
+			if err == nil && len(codeGraph.Symbols) > 0 {
+				report := code.ComputeAnalytics(codeGraph)
+				b, err := json.MarshalIndent(report, "", "  ")
+				if err != nil {
+					return errorResult("serialize report: %v", err)
+				}
+				return mcp.NewToolResultText(string(b)), nil
+			}
+		}
+
+		// Fallback to cognitive observations graph
 		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Limit: 500})
 		if err != nil {
 			return errorResult("list observations: %v", err)
@@ -1246,6 +1349,60 @@ func handleAnalyzeArchitecture(stores *Stores) server.ToolHandlerFunc {
 		b, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			return errorResult("serialize report: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleGetCodeSymbols(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+		filter := code.SymbolFilter{
+			Project:     project,
+			FilePath:    stringArg(req, "file"),
+			Kind:        stringArg(req, "kind"),
+			PackageName: stringArg(req, "package"),
+			Query:       stringArg(req, "query"),
+			Limit:       intArg(req, "limit", 100),
+		}
+
+		if stores.Code == nil {
+			return errorResult("code store is not initialized")
+		}
+
+		symbols, err := stores.Code.ListSymbols(ctx, filter)
+		if err != nil {
+			return errorResult("list code symbols: %v", err)
+		}
+		b, err := json.MarshalIndent(symbols, "", "  ")
+		if err != nil {
+			return errorResult("serialize symbols: %v", err)
+		}
+		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleGetCodeGraph(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+
+		if stores.Code == nil {
+			return errorResult("code store is not initialized")
+		}
+
+		graph, err := stores.Code.GetGraph(ctx, project)
+		if err != nil {
+			return errorResult("get code graph: %v", err)
+		}
+		b, err := json.MarshalIndent(graph, "", "  ")
+		if err != nil {
+			return errorResult("serialize code graph: %v", err)
 		}
 		return mcp.NewToolResultText(string(b)), nil
 	}
