@@ -16,6 +16,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	cortexhttp "github.com/lleontor705/cortex/v2/internal/http"
 	"github.com/lleontor705/cortex/v2/internal/mcp"
 	"github.com/lleontor705/cortex/v2/internal/ollama"
@@ -102,6 +103,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runConfig(args[2:], stdout, stderr)
 	case "auth":
 		exitCode = runAuth(args[2:], stdout, stderr)
+	case "ingest":
+		exitCode = runIngest(args[2:], stdout, stderr)
 	case "update":
 		exitCode = runUpdate(args[2:], stdout, stderr)
 	default:
@@ -124,6 +127,7 @@ Commands:
   mcp [--tools=PROFILE]  Start MCP server (stdio)
   search <query>         Search memories
   save <title> <content> Save a memory
+  ingest [path]          Scan and index codebase AST symbols and knowledge graph
   timeline <obs_id>      Show chronological context around an observation
   revisions <obs_id>     Show revision history for an observation
   context [project]      Show recent memory context
@@ -1729,5 +1733,119 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	writef(stdout, "\n🎉 Cortex successfully updated to %s!\n\n", res.Latest)
+	return 0
+}
+
+func runIngest(args []string, stdout, stderr io.Writer) int {
+	targetPath := "."
+	project := ""
+	maxFiles := 500
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project", "-p":
+			if i+1 < len(args) {
+				project = args[i+1]
+				i++
+			}
+		case "--max-files", "-m":
+			if i+1 < len(args) {
+				n, err := strconv.Atoi(args[i+1])
+				if err == nil && n > 0 {
+					maxFiles = n
+				}
+				i++
+			}
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				targetPath = args[i]
+			}
+		}
+	}
+
+	if project == "" {
+		project = projectpkg.DetectProject(targetPath)
+		if project == "" || project == "unknown" {
+			project = "default"
+		}
+	}
+
+	writef(stdout, "🔍 Scanning codebase at %q (project: %q, max files: %d)...\n", targetPath, project, maxFiles)
+
+	extractor := ast.NewExtractor(targetPath)
+	res, err := extractor.ExtractPath(targetPath, maxFiles)
+	if err != nil {
+		writef(stderr, "error: ast extraction failed: %v\n", err)
+		return 1
+	}
+
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	ctx := context.Background()
+	sessionID := fmt.Sprintf("ingest-%s-%d", project, time.Now().Unix())
+	_ = a.Stores.Sessions.Create(ctx, &domain.Session{
+		ID:        sessionID,
+		Project:   project,
+		Directory: targetPath,
+	})
+
+	indexedCount := 0
+	relsCreated := 0
+	entityIDMap := make(map[string]int64)
+
+	for _, ent := range res.Entities {
+		title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
+		content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s. Signature: %s", ent.File, ent.Line, ent.Kind, ent.Package, ent.Signature)
+		topicKey := fmt.Sprintf("ast/%s/%s", ent.Kind, ent.Name)
+
+		obs := &domain.Observation{
+			Title:      title,
+			Content:    content,
+			Type:       "pattern",
+			SessionID:  sessionID,
+			Project:    project,
+			Scope:      "project",
+			TopicKey:   topicKey,
+			Confidence: 1.0,
+			Source:     ent.File,
+			Tags:       []string{"ast", ent.Kind, ent.Package},
+		}
+		if err := a.Stores.Observations.Save(ctx, obs); err == nil {
+			indexedCount++
+			entityIDMap[ent.Name] = obs.ID
+			entityIDMap[ent.ID] = obs.ID
+		}
+	}
+
+	for _, rel := range res.Relationships {
+		srcID, ok1 := entityIDMap[rel.Source]
+		tgtID, ok2 := entityIDMap[rel.Target]
+		if ok1 && ok2 && srcID != tgtID {
+			err := a.Stores.Graph.CreateEdge(ctx, &domain.Edge{
+				FromObsID:    srcID,
+				ToObsID:      tgtID,
+				RelationType: rel.Relation,
+				Weight:       1.0,
+				Confidence:   rel.Confidence,
+				Source:       "ast_extractor",
+				Reasoning:    rel.Reasoning,
+			})
+			if err == nil {
+				relsCreated++
+			}
+		}
+	}
+
+	writef(stdout, "✔ AST Ingestion Complete!\n")
+	writef(stdout, "  • Files scanned:        %d\n", res.FilesScanned)
+	writef(stdout, "  • Symbols extracted:    %d\n", len(res.Entities))
+	writef(stdout, "  • Symbols indexed:      %d\n", indexedCount)
+	writef(stdout, "  • Relationships linked: %d\n", relsCreated)
+	writef(stdout, "  • Project:              %s\n", project)
 	return 0
 }
