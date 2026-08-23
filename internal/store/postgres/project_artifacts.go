@@ -148,17 +148,19 @@ func (s *AuthorizedStore) SaveProjectArtifact(ctx context.Context, in domain.Sav
 	}
 
 	metaBytes, _ := json.Marshal(in.Parameters)
-	metaStr := string(metaBytes)
-	if in.Description != "" {
-		var metaMap map[string]any
-		_ = json.Unmarshal(metaBytes, &metaMap)
-		if metaMap == nil {
-			metaMap = make(map[string]any)
-		}
-		metaMap["description"] = in.Description
-		b, _ := json.Marshal(metaMap)
-		metaStr = string(b)
+	var metaMap map[string]any
+	_ = json.Unmarshal(metaBytes, &metaMap)
+	if metaMap == nil {
+		metaMap = make(map[string]any)
 	}
+	if in.Title != "" {
+		metaMap["title"] = in.Title
+	}
+	if in.Description != "" {
+		metaMap["description"] = in.Description
+	}
+	finalMetaBytes, _ := json.Marshal(metaMap)
+	metaStr := string(finalMetaBytes)
 
 	item := &domain.ProjectArtifactItem{
 		ID:          uuid.New().String(),
@@ -176,13 +178,13 @@ func (s *AuthorizedStore) SaveProjectArtifact(ctx context.Context, in domain.Sav
 	}
 
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		// Verify if table project_artifacts exists, insert or upsert
 		var existingID string
 		var currentRev int64
 		err := tx.QueryRow(ctx, `
-			SELECT public_id::text, current_revision
-			FROM project_artifacts
-			WHERE tenant_id=public.cortex_current_tenant() AND kind=$1 AND key=$2 AND (project_key=$3 OR (project_key IS NULL AND $3='')) AND status='active'`,
+			SELECT a.public_id::text, a.current_revision
+			FROM project_artifacts a
+			LEFT JOIN projects p ON p.id = a.project_id
+			WHERE a.tenant_id=public.cortex_current_tenant() AND a.kind=$1 AND a.key=$2 AND (p.name=$3 OR (a.project_id IS NULL AND $3='')) AND a.status='active'`,
 			in.Kind, in.Key, in.Project).Scan(&existingID, &currentRev)
 
 		if err == nil && existingID != "" {
@@ -190,19 +192,18 @@ func (s *AuthorizedStore) SaveProjectArtifact(ctx context.Context, in domain.Sav
 			item.Revision = currentRev + 1
 			_, err = tx.Exec(ctx, `
 				UPDATE project_artifacts
-				SET title=$1, current_revision=$2, updated_at=NOW()
-				WHERE tenant_id=public.cortex_current_tenant() AND public_id=$3::uuid`,
-				in.Title, item.Revision, existingID)
+				SET current_revision=$1, updated_at=NOW(), content_bytes=$2, metadata_bytes=$3
+				WHERE tenant_id=public.cortex_current_tenant() AND public_id=$4::uuid`,
+				item.Revision, len(in.Content), len(metaStr), existingID)
 			if err != nil {
 				return err
 			}
 		} else {
 			_, err = tx.Exec(ctx, `
-				INSERT INTO project_artifacts (public_id, tenant_id, workspace_id, kind, key, title, source_scope, project_key, status, current_revision, content_bytes, metadata_bytes, digest)
-				VALUES ($1::uuid, public.cortex_current_tenant(), (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() LIMIT 1), $2, $3, $4, $5, NULLIF($6,''), 'active', 1, $7, $8, '0000000000000000000000000000000000000000000000000000000000000000')`,
-				item.ID, in.Kind, in.Key, in.Title, in.Scope, in.Project, len(in.Content), len(metaStr))
+				INSERT INTO project_artifacts (public_id, tenant_id, workspace_id, project_id, kind, key, source_scope, status, current_revision, content_bytes, metadata_bytes, digest)
+				VALUES ($1::uuid, public.cortex_current_tenant(), (SELECT id FROM workspaces WHERE tenant_id=public.cortex_current_tenant() LIMIT 1), (SELECT id FROM projects WHERE tenant_id=public.cortex_current_tenant() AND name=$5 LIMIT 1), $2, $3, $4, 'active', 1, $6, $7, '0000000000000000000000000000000000000000000000000000000000000000')`,
+				item.ID, in.Kind, in.Key, in.Scope, in.Project, len(in.Content), len(metaStr))
 			if err != nil {
-				// If table doesn't exist, we silently swallow in test stubs
 				return nil
 			}
 		}
@@ -210,7 +211,7 @@ func (s *AuthorizedStore) SaveProjectArtifact(ctx context.Context, in domain.Sav
 		// Insert revision record
 		_, _ = tx.Exec(ctx, `
 			INSERT INTO project_artifact_revisions (public_id, artifact_id, revision, content, content_bytes, metadata, metadata_bytes, digest, created_by)
-			VALUES ($1::uuid, (SELECT id FROM project_artifacts WHERE public_id=$2::uuid), $3, $4, $5, $6, $7, '0000000000000000000000000000000000000000000000000000000000000000', $8)`,
+			VALUES ($1::uuid, (SELECT id FROM project_artifacts WHERE public_id=$2::uuid), $3, $4, $5, $6::jsonb, $7, '0000000000000000000000000000000000000000000000000000000000000000', $8)`,
 			uuid.New().String(), item.ID, item.Revision, in.Content, len(in.Content), metaStr, len(metaStr), s.store.principal.Subject)
 
 		return nil
@@ -232,13 +233,14 @@ func (s *AuthorizedStore) ListProjectArtifacts(ctx context.Context, project stri
 
 	_ = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		query := `
-			SELECT a.public_id::text, a.kind, a.key, a.title, a.source_scope, COALESCE(a.project_key,''), a.status, a.current_revision, a.updated_at, COALESCE(r.content, ''), COALESCE(r.metadata, '{}')
+			SELECT a.public_id::text, a.kind, a.key, COALESCE(r.metadata->>'title', a.key), a.source_scope, COALESCE(p.name,''), a.status, a.current_revision, a.updated_at, COALESCE(r.content, ''), COALESCE(r.metadata::text, '{}')
 			FROM project_artifacts a
+			LEFT JOIN projects p ON p.id = a.project_id
 			LEFT JOIN project_artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.current_revision
 			WHERE a.tenant_id = public.cortex_current_tenant()
 			  AND a.status = 'active'
 			  AND ($1 = '' OR a.kind = $1)
-			  AND ($2 = '' OR a.project_key = $2 OR a.source_scope = 'workspace_default')
+			  AND ($2 = '' OR p.name = $2 OR a.source_scope = 'workspace_default')
 			ORDER BY a.kind, a.key`
 
 		rows, err := tx.Query(ctx, query, kind, project)
