@@ -697,9 +697,9 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
 	}
 
 	// pgvector HNSW and IVFFlat indexes in PostgreSQL have a hard limit of 2000 dimensions.
-	// For high-dimension embedding models (> 2000, e.g. 2560d, 3072d), vectors are stored
-	// and queried with exact cosine distance scan without index DDL failure.
-	if dimension <= 2000 {
+	// For high-dimension embedding models (> 2000, e.g. 2560d, 3072d) or unconstrained vectors (dimension == 0),
+	// vectors are stored and queried with exact cosine distance scan without index DDL failure.
+	if dimension > 0 && dimension <= 2000 {
 		var options string
 		switch t.IndexType {
 		case "ivfflat":

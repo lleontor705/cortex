@@ -36,7 +36,7 @@ func (a *AuditSink) Record(ctx context.Context, e authz.AuditEvent) error {
 		return err
 	}
 	metadata, _ := json.Marshal(map[string]any{"reason": e.Reason, "allowed": e.Allowed})
-	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_subject,action,resource_type,resource_id,correlation_id,reason,allowed,metadata,event_hash) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$8,digest($8::text,'sha256'))`, e.Actor, e.Action, e.Resource, e.ResourceID, e.CorrelationID, e.Reason, e.Allowed, metadata); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor_subject,action,resource_type,resource_id,correlation_id,reason,allowed,metadata,event_hash) VALUES(public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$8::jsonb,digest($8::text,'sha256'))`, e.Actor, e.Action, e.Resource, e.ResourceID, e.CorrelationID, e.Reason, e.Allowed, string(metadata)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
