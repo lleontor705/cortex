@@ -455,3 +455,25 @@ func TestCortexSavePublishesSharedOutputSchema(t *testing.T) {
 
 // boolHint dereferences a nullable JSON-LD hint: nil means unset (default).
 func boolHint(hint *bool) bool { return hint != nil && *hint }
+
+// TestAllToolsMarshalJSONWithoutSchemaConflict verifies that every tool registered
+// in both default and filtered modes can be marshaled to JSON without mcp-go schema conflicts.
+func TestAllToolsMarshalJSONWithoutSchemaConflict(t *testing.T) {
+	stores := setupTestStores(t)
+	srv := NewServer(stores)
+
+	tools := srv.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("expected registered tools, got 0")
+	}
+
+	for _, tool := range tools {
+		data, err := json.Marshal(tool.Tool)
+		if err != nil {
+			t.Fatalf("tool %s failed to marshal JSON: %v", tool.Tool.Name, err)
+		}
+		if len(data) == 0 {
+			t.Errorf("tool %s produced empty JSON", tool.Tool.Name)
+		}
+	}
+}

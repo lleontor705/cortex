@@ -95,25 +95,26 @@ TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query s
 
 	// --- cortex_handoff (eager, R6/REM-MCP-001) ---
 	if shouldRegister(memorycontract.ToolHandoff, allowlist) {
-		srv.AddTool(
-			mcp.NewTool(memorycontract.ToolHandoff,
-				mcp.WithTitleAnnotation(memorycontract.HandoffHints.Title),
-				mcp.WithReadOnlyHintAnnotation(memorycontract.HandoffHints.ReadOnly),
-				mcp.WithDestructiveHintAnnotation(memorycontract.HandoffHints.Destructive),
-				mcp.WithIdempotentHintAnnotation(memorycontract.HandoffHints.Idempotent),
-				mcp.WithOpenWorldHintAnnotation(memorycontract.HandoffHints.OpenWorld),
-				mcp.WithDescription(`Record a durable, idempotent handoff: persist an observation (and an optional relation) exactly once per idempotency key.
+		handoffTool := mcp.NewTool(memorycontract.ToolHandoff,
+			mcp.WithTitleAnnotation(memorycontract.HandoffHints.Title),
+			mcp.WithReadOnlyHintAnnotation(memorycontract.HandoffHints.ReadOnly),
+			mcp.WithDestructiveHintAnnotation(memorycontract.HandoffHints.Destructive),
+			mcp.WithIdempotentHintAnnotation(memorycontract.HandoffHints.Idempotent),
+			mcp.WithOpenWorldHintAnnotation(memorycontract.HandoffHints.OpenWorld),
+			mcp.WithDescription(`Record a durable, idempotent handoff: persist an observation (and an optional relation) exactly once per idempotency key.
 
 Replaying the identical payload under the same key returns the SAME observation with status "replayed"; the same key with a DIFFERENT payload is a conflict and mutates nothing. Any failure rolls back every effect — observation, relation, and receipt — atomically.
 
 observation.session_id is required and must reference an existing local session; it is validated before any mutation.
 
 The local namespace returns observation_ref.local_id only.`),
-				mcp.WithRawInputSchema(memorycontract.HandoffInputSchemaJSON),
-				mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON),
-			),
-			handleHandoff(stores),
+			mcp.WithRawInputSchema(memorycontract.HandoffInputSchemaJSON),
+			mcp.WithRawOutputSchema(memorycontract.WriteOutputSchemaJSON),
 		)
+		// mcp.NewTool seeds a structural InputSchema; a raw schema must replace
+		// it or Tool.MarshalJSON rejects the tool (mcp-go schema conflict).
+		handoffTool.InputSchema = mcp.ToolInputSchema{}
+		srv.AddTool(handoffTool, handleHandoff(stores))
 	}
 
 	// --- cortex_search (eager) ---
