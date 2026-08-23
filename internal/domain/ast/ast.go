@@ -88,7 +88,7 @@ func (e *Extractor) ExtractFile(filePath string) (*ExtractionResult, error) {
 
 // isIgnoredDir returns true if the directory name matches known artifact or dependency folders.
 func isIgnoredDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
+	if name != "." && name != ".." && strings.HasPrefix(name, ".") {
 		return true
 	}
 	switch strings.ToLower(name) {
