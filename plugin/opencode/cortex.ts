@@ -708,7 +708,7 @@ export const Cortex: Plugin = async (ctx) => {
   // Try to start cortex server if not running. Never attempted without a
   // configured credential: an unauthenticated plugin sends nothing.
   if (CORTEX_HTTP_TOKEN) {
-    const running = await isCortexRunning()
+    let running = await isCortexRunning()
     if (!running) {
       try {
         Bun.spawn([CORTEX_BIN, "serve"], {
@@ -716,7 +716,11 @@ export const Cortex: Plugin = async (ctx) => {
           stderr: "ignore",
           stdin: "ignore",
         })
-        await new Promise((r) => setTimeout(r, 500))
+        for (let i = 0; i < 6; i++) {
+          await new Promise((r) => setTimeout(r, 200))
+          running = await isCortexRunning()
+          if (running) break
+        }
       } catch {}
     }
   }
