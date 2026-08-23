@@ -16,17 +16,23 @@ const (
 
 // Standard relation types.
 const (
-	RelationCalls      = "calls"
-	RelationImports    = "imports"
-	RelationImplements = "implements"
-	RelationDefines    = "defines"
-	RelationUses       = "uses"
-	RelationContains   = "contains"
+	RelationCalls        = "calls"
+	RelationImports      = "imports"
+	RelationImplements   = "implements"
+	RelationDefines      = "defines"
+	RelationUses         = "uses"
+	RelationContains     = "contains"
+	RelationExtends      = "extends"
+	RelationInstantiates = "instantiates"
+	RelationUsesType     = "uses_type"
+	RelationReferences   = "references"
+	RelationExports      = "exports"
 )
 
 // Standard symbol kinds.
 const (
 	KindFunc      = "func"
+	KindMethod    = "method"
 	KindStruct    = "struct"
 	KindInterface = "interface"
 	KindClass     = "class"
@@ -34,22 +40,48 @@ const (
 	KindPackage   = "package"
 	KindType      = "type"
 	KindTable     = "table"
+	KindEnum      = "enum"
+	KindVariable  = "variable"
+	KindConstant  = "constant"
 )
 
-// Symbol represents an extracted code entity (function, struct, class, interface, etc.).
+// Standard visibility levels.
+const (
+	VisibilityPublic    = "public"
+	VisibilityPrivate   = "private"
+	VisibilityProtected = "protected"
+	VisibilityInternal  = "internal"
+)
+
+// Parameter represents a typed input parameter of a function or method.
+type Parameter struct {
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+}
+
+// Symbol represents an extracted code entity with rich semantic metadata.
 type Symbol struct {
-	ID          string    `json:"id"`           // Deterministic unique hash or ID
-	Project     string    `json:"project"`      // Project namespace
-	FilePath    string    `json:"file_path"`    // Relative file path (e.g. "internal/cli/cli.go")
-	LineNumber  int       `json:"line_number"`  // 1-based source line
-	Kind        string    `json:"kind"`         // "func", "struct", "interface", "class", etc.
-	Name        string    `json:"name"`         // Symbol identifier (e.g. "NewExtractor")
-	PackageName string    `json:"package_name"` // Package or namespace
-	Signature   string    `json:"signature"`    // Type signature or header
-	DocSummary  string    `json:"doc_summary"`  // Extracted docstring / comment summary
-	FileHash    string    `json:"file_hash"`    // SHA-256 of file for incremental scanning
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string         `json:"id"`                    // Deterministic unique ID (e.g. "func:domain.NewService")
+	Project     string         `json:"project"`               // Project namespace
+	FilePath    string         `json:"file_path"`             // Relative file path (e.g. "internal/domain/service.go")
+	LineNumber  int            `json:"line_number"`           // 1-based start line
+	EndLine     int            `json:"end_line,omitempty"`    // 1-based end line
+	StartColumn int            `json:"start_col,omitempty"`   // Start column offset
+	EndColumn   int            `json:"end_col,omitempty"`     // End column offset
+	Kind        string         `json:"kind"`                  // "func", "method", "struct", "class", "interface", "table", "module", "enum"
+	Name        string         `json:"name"`                  // Symbol identifier (e.g. "CalculateBlastRadius")
+	PackageName string         `json:"package_name"`          // Package or namespace (e.g. "domain")
+	ParentID    string         `json:"parent_id,omitempty"`   // Hierarchical parent ID (e.g. class ID for methods, struct ID for fields)
+	Visibility  string         `json:"visibility,omitempty"`  // "public", "private", "protected", "internal"
+	Signature   string         `json:"signature,omitempty"`   // Full declaration signature
+	DocSummary  string         `json:"doc_summary,omitempty"` // GoDoc / JSDoc / Docstring description
+	Parameters  []Parameter    `json:"parameters,omitempty"`  // Ordered list of typed parameters
+	ReturnType  string         `json:"return_type,omitempty"` // Explicit return type
+	Complexity  int            `json:"complexity,omitempty"`  // Cyclomatic complexity score (branches + 1)
+	Metadata    map[string]any `json:"metadata,omitempty"`    // Language-specific extras (async, static, decorators, fields)
+	FileHash    string         `json:"file_hash,omitempty"`   // SHA-256 of file for incremental scanning
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
 // Relation represents a directed architectural edge between two code symbols.
@@ -58,8 +90,8 @@ type Relation struct {
 	Project    string    `json:"project"`
 	SourceID   string    `json:"source_id"`  // Caller / Importer symbol ID
 	TargetID   string    `json:"target_id"`  // Callee / Imported symbol ID
-	Relation   string    `json:"relation"`   // "calls", "imports", "implements", "defines", "uses"
-	Confidence float64   `json:"confidence"` // 1.0 = EXTRACTED, 0.8 = INFERRED, 0.5 = AMBIGUOUS
+	Relation   string    `json:"relation"`   // "calls", "imports", "implements", "defines", "uses", "contains", "extends", "instantiates", "uses_type", "references", "exports"
+	Confidence float64   `json:"confidence"` // 1.0 = EXTRACTED, 0.85 = INFERRED, 0.5 = AMBIGUOUS
 	Reasoning  string    `json:"reasoning,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }

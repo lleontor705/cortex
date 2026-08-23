@@ -7,17 +7,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 )
 
 var (
-	// Rust Regexes
-	rsUseRe    = regexp.MustCompile(`(?m)^\s*(?:pub(?:\([^)]+\))?\s+)?use\s+([a-zA-Z0-9_:]+)`)
-	rsModRe    = regexp.MustCompile(`(?m)^\s*(?:pub(?:\([^)]+\))?\s+)?mod\s+([a-zA-Z0-9_]+)\s*;`)
-	rsStructRe = regexp.MustCompile(`(?m)^\s*(?:#\[[^\]]+\]\s*)*(?:pub(?:\([^)]+\))?\s+)?struct\s+([a-zA-Z0-9_]+)`)
-	rsEnumRe   = regexp.MustCompile(`(?m)^\s*(?:#\[[^\]]+\]\s*)*(?:pub(?:\([^)]+\))?\s+)?enum\s+([a-zA-Z0-9_]+)`)
-	rsTraitRe  = regexp.MustCompile(`(?m)^\s*(?:#\[[^\]]+\]\s*)*(?:pub(?:\([^)]+\))?\s+)?trait\s+([a-zA-Z0-9_]+)`)
-	rsFnRe     = regexp.MustCompile(`(?m)^\s*(?:#\[[^\]]+\]\s*)*(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+(?:"[^"]+"\s+)?)?fn\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(`)
-
 	// C / C++ Regexes
 	cppIncludeRe   = regexp.MustCompile(`(?m)^\s*#include\s+[<"]([^>"]+)[>"]`)
 	cppNamespaceRe = regexp.MustCompile(`(?m)^\s*namespace\s+([a-zA-Z0-9_]+)`)
@@ -50,145 +44,28 @@ var (
 	swiftFuncRe      = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|override|static|class|mutating|\s)*func\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(`)
 )
 
-func extractRustFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
+func extractCppFile(fullPath, relPath string) *ExtractionResult {
+	res := &ExtractionResult{
+		Entities:      make([]CodeEntity, 0),
+		Relationships: make([]CodeRelationship, 0),
+		Imports:       make([]ImportFact, 0),
+		Exports:       make([]ExportFact, 0),
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
-		return entities, rels
+		return res
 	}
 	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
-	})
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") {
-			continue
-		}
-
-		if m := rsUseRe.FindStringSubmatch(line); len(m) > 1 {
-			targetID := fmt.Sprintf("pkg:%s", m[1])
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
-			})
-		} else if m := rsModRe.FindStringSubmatch(line); len(m) > 1 {
-			modID := fmt.Sprintf("module:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   modID,
-				Name: m[1],
-				Kind: "module",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     modID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-
-		if m := rsStructRe.FindStringSubmatch(line); len(m) > 1 {
-			structID := fmt.Sprintf("struct:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   structID,
-				Name: m[1],
-				Kind: "struct",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     structID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		} else if m := rsEnumRe.FindStringSubmatch(line); len(m) > 1 {
-			enumID := fmt.Sprintf("enum:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   enumID,
-				Name: m[1],
-				Kind: "enum",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     enumID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		} else if m := rsTraitRe.FindStringSubmatch(line); len(m) > 1 {
-			traitID := fmt.Sprintf("interface:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   traitID,
-				Name: m[1],
-				Kind: "interface",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     traitID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		} else if m := rsFnRe.FindStringSubmatch(line); len(m) > 1 {
-			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-	}
-
-	return entities, rels
-}
-
-func extractCppFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
-
-	file, err := os.Open(fullPath)
-	if err != nil {
-		return entities, rels
-	}
-	defer func() { _ = file.Close() }()
-
-	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
+	res.Entities = append(res.Entities, CodeEntity{
+		ID:         fileEntityID,
+		Name:       filepath.Base(relPath),
+		Kind:       code.KindModule,
+		File:       relPath,
+		Line:       1,
+		Visibility: code.VisibilityPublic,
 	})
 
 	scanner := bufio.NewScanner(file)
@@ -210,88 +87,106 @@ func extractCppFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship)
 
 		if m := cppIncludeRe.FindStringSubmatch(line); len(m) > 1 {
 			targetID := fmt.Sprintf("pkg:%s", m[1])
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
+				Relation:   code.RelationImports,
+				Confidence: code.ConfidenceExtracted,
+			})
+			res.Imports = append(res.Imports, ImportFact{
+				SourceFile:   relPath,
+				ImportPath:   m[1],
+				LocalName:    filepath.Base(m[1]),
+				ImportedName: "*",
+				Line:         lineNum,
 			})
 		}
 
 		if m := cppClassRe.FindStringSubmatch(line); len(m) > 1 {
 			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      classID,
-				Name:    m[1],
-				Kind:    "class",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         classID,
+				Name:       m[1],
+				Kind:       code.KindClass,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := cppStructRe.FindStringSubmatch(line); len(m) > 1 {
 			structID := fmt.Sprintf("struct:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      structID,
-				Name:    m[1],
-				Kind:    "struct",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         structID,
+				Name:       m[1],
+				Kind:       code.KindStruct,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     structID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := cppFuncRe.FindStringSubmatch(line); len(m) > 1 {
 			fnName := m[1]
 			if fnName != "if" && fnName != "for" && fnName != "while" && fnName != "switch" && fnName != "catch" {
 				funcID := fmt.Sprintf("func:%s:%s", relPath, fnName)
-				entities = append(entities, CodeEntity{
-					ID:      funcID,
-					Name:    fnName,
-					Kind:    "func",
-					File:    relPath,
-					Line:    lineNum,
-					Package: currentNs,
+				res.Entities = append(res.Entities, CodeEntity{
+					ID:         funcID,
+					Name:       fnName,
+					Kind:       code.KindFunc,
+					File:       relPath,
+					Line:       lineNum,
+					Package:    currentNs,
+					ParentID:   fileEntityID,
+					Visibility: code.VisibilityPublic,
 				})
-				rels = append(rels, CodeRelationship{
+				res.Relationships = append(res.Relationships, CodeRelationship{
 					Source:     fileEntityID,
 					Target:     funcID,
-					Relation:   "defines",
-					Confidence: 1.0,
+					Relation:   code.RelationDefines,
+					Confidence: code.ConfidenceExtracted,
 				})
 			}
 		}
 	}
 
-	return entities, rels
+	return res
 }
 
-func extractPhpFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
+func extractPhpFile(fullPath, relPath string) *ExtractionResult {
+	res := &ExtractionResult{
+		Entities:      make([]CodeEntity, 0),
+		Relationships: make([]CodeRelationship, 0),
+		Imports:       make([]ImportFact, 0),
+		Exports:       make([]ExportFact, 0),
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
-		return entities, rels
+		return res
 	}
 	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
+	res.Entities = append(res.Entities, CodeEntity{
+		ID:         fileEntityID,
+		Name:       filepath.Base(relPath),
+		Kind:       code.KindModule,
+		File:       relPath,
+		Line:       1,
+		Visibility: code.VisibilityPublic,
 	})
 
 	scanner := bufio.NewScanner(file)
@@ -313,117 +208,139 @@ func extractPhpFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship)
 
 		if m := phpUseRe.FindStringSubmatch(line); len(m) > 1 {
 			targetID := fmt.Sprintf("pkg:%s", m[1])
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
+				Relation:   code.RelationImports,
+				Confidence: code.ConfidenceExtracted,
+			})
+			res.Imports = append(res.Imports, ImportFact{
+				SourceFile:   relPath,
+				ImportPath:   m[1],
+				LocalName:    filepath.Base(strings.ReplaceAll(m[1], `\`, "/")),
+				ImportedName: "*",
+				Line:         lineNum,
 			})
 		}
 
 		if m := phpClassRe.FindStringSubmatch(line); len(m) > 1 {
 			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      classID,
-				Name:    m[1],
-				Kind:    "class",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         classID,
+				Name:       m[1],
+				Kind:       code.KindClass,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := phpInterfaceRe.FindStringSubmatch(line); len(m) > 1 {
 			ifID := fmt.Sprintf("interface:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      ifID,
-				Name:    m[1],
-				Kind:    "interface",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         ifID,
+				Name:       m[1],
+				Kind:       code.KindInterface,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     ifID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := phpTraitRe.FindStringSubmatch(line); len(m) > 1 {
 			traitID := fmt.Sprintf("interface:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      traitID,
-				Name:    m[1],
-				Kind:    "interface",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         traitID,
+				Name:       m[1],
+				Kind:       code.KindInterface,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     traitID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := phpEnumRe.FindStringSubmatch(line); len(m) > 1 {
 			enumID := fmt.Sprintf("enum:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      enumID,
-				Name:    m[1],
-				Kind:    "enum",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         enumID,
+				Name:       m[1],
+				Kind:       code.KindEnum,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     enumID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := phpFuncRe.FindStringSubmatch(line); len(m) > 1 {
 			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:      funcID,
-				Name:    m[1],
-				Kind:    "func",
-				File:    relPath,
-				Line:    lineNum,
-				Package: currentNs,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         funcID,
+				Name:       m[1],
+				Kind:       code.KindFunc,
+				File:       relPath,
+				Line:       lineNum,
+				Package:    currentNs,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		}
 	}
 
-	return entities, rels
+	return res
 }
 
-func extractRubyFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
+func extractRubyFile(fullPath, relPath string) *ExtractionResult {
+	res := &ExtractionResult{
+		Entities:      make([]CodeEntity, 0),
+		Relationships: make([]CodeRelationship, 0),
+		Imports:       make([]ImportFact, 0),
+		Exports:       make([]ExportFact, 0),
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
-		return entities, rels
+		return res
 	}
 	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
+	res.Entities = append(res.Entities, CodeEntity{
+		ID:         fileEntityID,
+		Name:       filepath.Base(relPath),
+		Kind:       code.KindModule,
+		File:       relPath,
+		Line:       1,
+		Visibility: code.VisibilityPublic,
 	})
 
 	scanner := bufio.NewScanner(file)
@@ -440,82 +357,93 @@ func extractRubyFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship
 
 		if m := rbRequireRe.FindStringSubmatch(line); len(m) > 1 {
 			targetID := fmt.Sprintf("module:%s", m[1])
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
+				Relation:   code.RelationImports,
+				Confidence: code.ConfidenceExtracted,
 			})
 		}
 
 		if m := rbModuleRe.FindStringSubmatch(line); len(m) > 1 {
 			modID := fmt.Sprintf("module:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   modID,
-				Name: m[1],
-				Kind: "module",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         modID,
+				Name:       m[1],
+				Kind:       code.KindModule,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     modID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := rbClassRe.FindStringSubmatch(line); len(m) > 1 {
 			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   classID,
-				Name: m[1],
-				Kind: "class",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         classID,
+				Name:       m[1],
+				Kind:       code.KindClass,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := rbDefRe.FindStringSubmatch(line); len(m) > 1 {
 			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         funcID,
+				Name:       m[1],
+				Kind:       code.KindFunc,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		}
 	}
 
-	return entities, rels
+	return res
 }
 
-func extractSwiftFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
+func extractSwiftFile(fullPath, relPath string) *ExtractionResult {
+	res := &ExtractionResult{
+		Entities:      make([]CodeEntity, 0),
+		Relationships: make([]CodeRelationship, 0),
+		Imports:       make([]ImportFact, 0),
+		Exports:       make([]ExportFact, 0),
+	}
 
 	file, err := os.Open(fullPath)
 	if err != nil {
-		return entities, rels
+		return res
 	}
 	defer func() { _ = file.Close() }()
 
 	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
+	res.Entities = append(res.Entities, CodeEntity{
+		ID:         fileEntityID,
+		Name:       filepath.Base(relPath),
+		Kind:       code.KindModule,
+		File:       relPath,
+		Line:       1,
+		Visibility: code.VisibilityPublic,
 	})
 
 	scanner := bufio.NewScanner(file)
@@ -532,99 +460,101 @@ func extractSwiftFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationshi
 
 		if m := swiftImportRe.FindStringSubmatch(line); len(m) > 1 {
 			targetID := fmt.Sprintf("pkg:%s", m[1])
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
+				Relation:   code.RelationImports,
+				Confidence: code.ConfidenceExtracted,
 			})
 		}
 
 		if m := swiftClassRe.FindStringSubmatch(line); len(m) > 1 {
 			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   classID,
-				Name: m[1],
-				Kind: "class",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         classID,
+				Name:       m[1],
+				Kind:       code.KindClass,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := swiftStructRe.FindStringSubmatch(line); len(m) > 1 {
 			structID := fmt.Sprintf("struct:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   structID,
-				Name: m[1],
-				Kind: "struct",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         structID,
+				Name:       m[1],
+				Kind:       code.KindStruct,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     structID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := swiftProtocolRe.FindStringSubmatch(line); len(m) > 1 {
 			protoID := fmt.Sprintf("interface:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   protoID,
-				Name: m[1],
-				Kind: "interface",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         protoID,
+				Name:       m[1],
+				Kind:       code.KindInterface,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     protoID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := swiftEnumRe.FindStringSubmatch(line); len(m) > 1 {
 			enumID := fmt.Sprintf("enum:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   enumID,
-				Name: m[1],
-				Kind: "enum",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         enumID,
+				Name:       m[1],
+				Kind:       code.KindEnum,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     enumID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		} else if m := swiftExtensionRe.FindStringSubmatch(line); len(m) > 1 {
-			extID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     extID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		} else if m := swiftFuncRe.FindStringSubmatch(line); len(m) > 1 {
 			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
+			res.Entities = append(res.Entities, CodeEntity{
+				ID:         funcID,
+				Name:       m[1],
+				Kind:       code.KindFunc,
+				File:       relPath,
+				Line:       lineNum,
+				ParentID:   fileEntityID,
+				Visibility: code.VisibilityPublic,
 			})
-			rels = append(rels, CodeRelationship{
+			res.Relationships = append(res.Relationships, CodeRelationship{
 				Source:     fileEntityID,
 				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
+				Relation:   code.RelationDefines,
+				Confidence: code.ConfidenceExtracted,
 			})
 		}
 	}
 
-	return entities, rels
+	return res
 }

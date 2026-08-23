@@ -1,54 +1,78 @@
-// Package ast provides zero-CGO static code analysis and symbol extraction
-// for Go, TypeScript/JavaScript, Python, and SQL files, building deterministic
-// code knowledge graphs.
+// Package ast provides zero-CGO static code analysis, rich symbol extraction,
+// and cross-file call graph resolution for Go, TypeScript/JavaScript, Python,
+// Rust, SQL, and polyglot codebases.
 package ast
 
 import (
-	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
 )
 
-// CodeEntity represents a structural symbol discovered in source code.
+// CodeEntity represents a structural symbol discovered in source code with rich semantic metadata.
 type CodeEntity struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Kind      string `json:"kind"` // "func", "struct", "interface", "class", "module", "table"
-	File      string `json:"file"`
-	Line      int    `json:"line"`
-	Package   string `json:"package,omitempty"`
-	Signature string `json:"signature,omitempty"`
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Kind        string                 `json:"kind"` // "func", "method", "struct", "interface", "class", "module", "table", "enum", "type"
+	File        string                 `json:"file"`
+	Line        int                    `json:"line"`
+	EndLine     int                    `json:"end_line,omitempty"`
+	StartCol    int                    `json:"start_col,omitempty"`
+	EndCol      int                    `json:"end_col,omitempty"`
+	Package     string                 `json:"package,omitempty"`
+	ParentID    string                 `json:"parent_id,omitempty"`
+	Visibility  string                 `json:"visibility,omitempty"` // "public", "private", "protected", "internal"
+	Signature   string                 `json:"signature,omitempty"`
+	DocSummary  string                 `json:"doc_summary,omitempty"`
+	Parameters  []code.Parameter       `json:"parameters,omitempty"`
+	ReturnType  string                 `json:"return_type,omitempty"`
+	Complexity  int                    `json:"complexity,omitempty"`
+	Metadata    map[string]any         `json:"metadata,omitempty"`
 }
 
-// CodeRelationship represents a directed edge between two code entities.
+// CodeRelationship represents a directed architectural edge between two code entities.
 type CodeRelationship struct {
 	Source     string  `json:"source"`
 	Target     string  `json:"target"`
-	Relation   string  `json:"relation"` // "calls", "imports", "implements", "defines", "uses"
+	Relation   string  `json:"relation"` // "calls", "imports", "implements", "defines", "uses", "contains", "extends", "instantiates", "uses_type", "references", "exports"
 	Confidence float64 `json:"confidence"`
 	Reasoning  string  `json:"reasoning,omitempty"`
 }
 
-// ExtractionResult is the output of analyzing a file or directory tree.
+// ImportFact records an import statement in a source file for global cross-file symbol resolution.
+type ImportFact struct {
+	SourceFile   string `json:"source_file"`
+	ImportPath   string `json:"import_path"`   // e.g. "./utils", "github.com/user/pkg", "os"
+	LocalName    string `json:"local_name"`    // Local binding name (e.g. "foo" in `import { foo }`)
+	ImportedName string `json:"imported_name"` // Original exported name (e.g. "bar" in `import { bar as foo }`)
+	IsWildcard   bool   `json:"is_wildcard"`   // `import * as X` or Go dot import
+	Line         int    `json:"line"`
+}
+
+// ExportFact records an exported symbol for cross-file linkage.
+type ExportFact struct {
+	SourceFile   string `json:"source_file"`
+	ExportedName string `json:"exported_name"`
+	SymbolID     string `json:"symbol_id"`
+	IsDefault    bool   `json:"is_default"`
+	Line         int    `json:"line"`
+}
+
+// ExtractionResult is the output of analyzing a single file or directory.
 type ExtractionResult struct {
 	Entities      []CodeEntity       `json:"entities"`
 	Relationships []CodeRelationship `json:"relationships"`
+	Imports       []ImportFact       `json:"imports"`
+	Exports       []ExportFact       `json:"exports"`
 	FilesScanned  int                `json:"files_scanned"`
 }
 
-// Extractor performs static AST and regex-based symbol analysis.
+// Extractor performs static AST and multi-pass symbol analysis.
 type Extractor struct {
 	RootPath string
 }
@@ -78,18 +102,10 @@ func (e *Extractor) ExtractFile(filePath string) (*ExtractionResult, error) {
 	}
 	relPath = filepath.ToSlash(relPath)
 
-	result := &ExtractionResult{
-		Entities:      make([]CodeEntity, 0),
-		Relationships: make([]CodeRelationship, 0),
-		FilesScanned:  1,
-	}
-
 	ext := strings.ToLower(filepath.Ext(filePath))
-	entities, rels := extractByExtension(ext, filePath, relPath)
-	result.Entities = entities
-	result.Relationships = rels
-
-	return result, nil
+	res := extractByExtension(ext, filePath, relPath)
+	res.FilesScanned = 1
+	return res, nil
 }
 
 // isIgnoredDir returns true if the directory name matches known artifact or dependency folders.
@@ -100,14 +116,14 @@ func isIgnoredDir(name string) bool {
 	switch strings.ToLower(name) {
 	case "node_modules", "vendor", "dist", "build", "out", "target", "bin", "obj",
 		"__pycache__", ".venv", "venv", ".gradle", ".idea", ".vs", ".vscode",
-		"cmake-build-debug", "cmake-build-release", "packages":
+		"cmake-build-debug", "cmake-build-release", "packages", ".git", ".next":
 		return true
 	}
 	return false
 }
 
 // extractByExtension routes source files to their dedicated zero-CGO AST/symbol extractor.
-func extractByExtension(ext, fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
+func extractByExtension(ext, fullPath, relPath string) *ExtractionResult {
 	switch ext {
 	case ".go":
 		return extractGoFile(fullPath, relPath)
@@ -117,6 +133,8 @@ func extractByExtension(ext, fullPath, relPath string) ([]CodeEntity, []CodeRela
 		return extractPythonFile(fullPath, relPath)
 	case ".sql":
 		return extractSQLFile(fullPath, relPath)
+	case ".rs":
+		return extractRustFile(fullPath, relPath)
 	case ".cs":
 		return extractCSharpFile(fullPath, relPath)
 	case ".fs", ".fsi", ".fsx":
@@ -127,8 +145,6 @@ func extractByExtension(ext, fullPath, relPath string) ([]CodeEntity, []CodeRela
 		return extractJavaFile(fullPath, relPath)
 	case ".kt", ".kts":
 		return extractKotlinFile(fullPath, relPath)
-	case ".rs":
-		return extractRustFile(fullPath, relPath)
 	case ".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hxx", ".h++":
 		return extractCppFile(fullPath, relPath)
 	case ".php", ".phtml":
@@ -138,7 +154,7 @@ func extractByExtension(ext, fullPath, relPath string) ([]CodeEntity, []CodeRela
 	case ".swift":
 		return extractSwiftFile(fullPath, relPath)
 	default:
-		return nil, nil
+		return &ExtractionResult{}
 	}
 }
 
@@ -151,6 +167,8 @@ func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, err
 	result := &ExtractionResult{
 		Entities:      make([]CodeEntity, 0),
 		Relationships: make([]CodeRelationship, 0),
+		Imports:       make([]ImportFact, 0),
+		Exports:       make([]ExportFact, 0),
 	}
 
 	entityMap := make(map[string]bool)
@@ -177,15 +195,17 @@ func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, err
 		relPath = filepath.ToSlash(relPath)
 
 		ext := strings.ToLower(filepath.Ext(path))
-		entities, rels := extractByExtension(ext, path, relPath)
-		if len(entities) > 0 || len(rels) > 0 {
-			for _, ent := range entities {
+		res := extractByExtension(ext, path, relPath)
+		if len(res.Entities) > 0 || len(res.Relationships) > 0 || len(res.Imports) > 0 {
+			for _, ent := range res.Entities {
 				if !entityMap[ent.ID] {
 					entityMap[ent.ID] = true
 					result.Entities = append(result.Entities, ent)
 				}
 			}
-			result.Relationships = append(result.Relationships, rels...)
+			result.Relationships = append(result.Relationships, res.Relationships...)
+			result.Imports = append(result.Imports, res.Imports...)
+			result.Exports = append(result.Exports, res.Exports...)
 			result.FilesScanned++
 		}
 
@@ -195,378 +215,9 @@ func (e *Extractor) ExtractDir(dir string, maxFiles int) (*ExtractionResult, err
 	return result, err
 }
 
-// extractGoFile uses go/parser and go/ast for pure Go AST extraction.
-func extractGoFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
-
-	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, fullPath, nil, parser.ParseComments)
-	if err != nil {
-		return entities, rels
-	}
-
-	pkgName := node.Name.Name
-	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:      fileEntityID,
-		Name:    filepath.Base(relPath),
-		Kind:    "module",
-		File:    relPath,
-		Line:    1,
-		Package: pkgName,
-	})
-
-	// Extract imports
-	for _, imp := range node.Imports {
-		importPath := strings.Trim(imp.Path.Value, `"`)
-		targetID := fmt.Sprintf("pkg:%s", importPath)
-		rels = append(rels, CodeRelationship{
-			Source:     fileEntityID,
-			Target:     targetID,
-			Relation:   "imports",
-			Confidence: 1.0,
-			Reasoning:  "Direct Go import statement",
-		})
-	}
-
-	// Extract functions, methods, types
-	ast.Inspect(node, func(n ast.Node) bool {
-		switch t := n.(type) {
-		case *ast.TypeSpec:
-			pos := fset.Position(t.Pos())
-			kind := "struct"
-			if _, ok := t.Type.(*ast.InterfaceType); ok {
-				kind = "interface"
-			}
-			structID := fmt.Sprintf("type:%s.%s", pkgName, t.Name.Name)
-			entities = append(entities, CodeEntity{
-				ID:      structID,
-				Name:    t.Name.Name,
-				Kind:    kind,
-				File:    relPath,
-				Line:    pos.Line,
-				Package: pkgName,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     structID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-
-		case *ast.FuncDecl:
-			pos := fset.Position(t.Pos())
-			funcName := t.Name.Name
-			kind := "func"
-			receiver := ""
-			if t.Recv != nil && len(t.Recv.List) > 0 {
-				kind = "method"
-				if ident, ok := t.Recv.List[0].Type.(*ast.Ident); ok {
-					receiver = ident.Name
-				} else if star, ok := t.Recv.List[0].Type.(*ast.StarExpr); ok {
-					if ident, ok := star.X.(*ast.Ident); ok {
-						receiver = ident.Name
-					}
-				}
-			}
-
-			funcID := fmt.Sprintf("func:%s.%s", pkgName, funcName)
-			if receiver != "" {
-				funcID = fmt.Sprintf("method:%s.%s.%s", pkgName, receiver, funcName)
-			}
-
-			entities = append(entities, CodeEntity{
-				ID:      funcID,
-				Name:    funcName,
-				Kind:    kind,
-				File:    relPath,
-				Line:    pos.Line,
-				Package: pkgName,
-			})
-
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-
-			if receiver != "" {
-				structID := fmt.Sprintf("type:%s.%s", pkgName, receiver)
-				rels = append(rels, CodeRelationship{
-					Source:     funcID,
-					Target:     structID,
-					Relation:   "implements",
-					Confidence: 1.0,
-				})
-			}
-
-			// Inspect calls inside function body
-			if t.Body != nil {
-				ast.Inspect(t.Body, func(bodyNode ast.Node) bool {
-					if call, ok := bodyNode.(*ast.CallExpr); ok {
-						switch fun := call.Fun.(type) {
-						case *ast.Ident:
-							targetID := fmt.Sprintf("func:%s.%s", pkgName, fun.Name)
-							rels = append(rels, CodeRelationship{
-								Source:     funcID,
-								Target:     targetID,
-								Relation:   "calls",
-								Confidence: 0.9,
-							})
-						case *ast.SelectorExpr:
-							if pkgIdent, ok := fun.X.(*ast.Ident); ok {
-								targetID := fmt.Sprintf("func:%s.%s", pkgIdent.Name, fun.Sel.Name)
-								rels = append(rels, CodeRelationship{
-									Source:     funcID,
-									Target:     targetID,
-									Relation:   "calls",
-									Confidence: 0.9,
-								})
-							}
-						}
-					}
-					return true
-				})
-			}
-		}
-		return true
-	})
-
-	return entities, rels
-}
-
-// Regex definitions for JavaScript/TypeScript, Python and SQL
-var (
-	tsImportRe = regexp.MustCompile(`import\s+(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)\s+from\s+['"]([^'"]+)['"]`)
-	tsFuncRe   = regexp.MustCompile(`(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(`)
-	tsClassRe  = regexp.MustCompile(`(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_]+)`)
-	tsConstFn  = regexp.MustCompile(`(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>`)
-
-	pyImportRe = regexp.MustCompile(`(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))`)
-	pyClassRe  = regexp.MustCompile(`class\s+([a-zA-Z0-9_]+)(?:\(([^)]*)\))?:`)
-	pyFuncRe   = regexp.MustCompile(`(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(`)
-
-	sqlTableRe = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]+)`)
-)
-
-func extractTSJSFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
-
-	file, err := os.Open(fullPath)
-	if err != nil {
-		return entities, rels
-	}
-	defer func() { _ = file.Close() }()
-
-	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
-	})
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		if m := tsImportRe.FindStringSubmatch(line); len(m) > 1 {
-			targetID := fmt.Sprintf("module:%s", m[1])
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     targetID,
-				Relation:   "imports",
-				Confidence: 1.0,
-			})
-		}
-
-		if m := tsClassRe.FindStringSubmatch(line); len(m) > 1 {
-			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   classID,
-				Name: m[1],
-				Kind: "class",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-
-		if m := tsFuncRe.FindStringSubmatch(line); len(m) > 1 {
-			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		} else if m := tsConstFn.FindStringSubmatch(line); len(m) > 1 {
-			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-	}
-
-	return entities, rels
-}
-
-func extractPythonFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
-
-	file, err := os.Open(fullPath)
-	if err != nil {
-		return entities, rels
-	}
-	defer func() { _ = file.Close() }()
-
-	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
-	})
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		if m := pyImportRe.FindStringSubmatch(line); len(m) > 1 {
-			pkg := m[1]
-			if pkg == "" && len(m) > 2 {
-				pkg = m[2]
-			}
-			if pkg != "" {
-				targetID := fmt.Sprintf("pkg:%s", pkg)
-				rels = append(rels, CodeRelationship{
-					Source:     fileEntityID,
-					Target:     targetID,
-					Relation:   "imports",
-					Confidence: 1.0,
-				})
-			}
-		}
-
-		if m := pyClassRe.FindStringSubmatch(line); len(m) > 1 {
-			classID := fmt.Sprintf("class:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   classID,
-				Name: m[1],
-				Kind: "class",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     classID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-
-		if m := pyFuncRe.FindStringSubmatch(line); len(m) > 1 {
-			funcID := fmt.Sprintf("func:%s:%s", relPath, m[1])
-			entities = append(entities, CodeEntity{
-				ID:   funcID,
-				Name: m[1],
-				Kind: "func",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     funcID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-	}
-
-	return entities, rels
-}
-
-func extractSQLFile(fullPath, relPath string) ([]CodeEntity, []CodeRelationship) {
-	var entities []CodeEntity
-	var rels []CodeRelationship
-
-	file, err := os.Open(fullPath)
-	if err != nil {
-		return entities, rels
-	}
-	defer func() { _ = file.Close() }()
-
-	fileEntityID := fmt.Sprintf("module:%s", relPath)
-	entities = append(entities, CodeEntity{
-		ID:   fileEntityID,
-		Name: filepath.Base(relPath),
-		Kind: "module",
-		File: relPath,
-		Line: 1,
-	})
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-
-		if m := sqlTableRe.FindStringSubmatch(line); len(m) > 1 {
-			tableID := fmt.Sprintf("table:%s", m[1])
-			entities = append(entities, CodeEntity{
-				ID:   tableID,
-				Name: m[1],
-				Kind: "table",
-				File: relPath,
-				Line: lineNum,
-			})
-			rels = append(rels, CodeRelationship{
-				Source:     fileEntityID,
-				Target:     tableID,
-				Relation:   "defines",
-				Confidence: 1.0,
-			})
-		}
-	}
-
-	return entities, rels
-}
-
-// ComputeFileHash computes a deterministic SHA-256 hash for incremental caching.
-func ComputeFileHash(filePath string) string {
-	f, err := os.Open(filePath)
+// ComputeFileHash computes the SHA-256 hash of a file.
+func ComputeFileHash(path string) string {
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
@@ -579,88 +230,14 @@ func ComputeFileHash(filePath string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// ExtractCodeGraph runs a 2-pass polyglot extraction and builds a native *code.CodeGraph.
+// ExtractCodeGraph runs the high-density polyglot extraction and 2-pass symbol resolution
+// to produce a complete, connected *code.CodeGraph.
 func (e *Extractor) ExtractCodeGraph(targetPath, project string, maxFiles int) (*code.CodeGraph, error) {
 	rawResult, err := e.ExtractPath(targetPath, maxFiles)
 	if err != nil {
 		return nil, err
 	}
 
-	fileHashes := make(map[string]string)
-	symbols := make([]code.Symbol, 0, len(rawResult.Entities))
-	symbolIDMap := make(map[string]string) // rawEntityID -> canonicalSymbolID
-	symbolByName := make(map[string][]string) // name -> []canonicalSymbolID
-
-	now := time.Now().UTC()
-	for _, ent := range rawResult.Entities {
-		hash, ok := fileHashes[ent.File]
-		if !ok {
-			fullPath := filepath.Join(e.RootPath, ent.File)
-			hash = ComputeFileHash(fullPath)
-			fileHashes[ent.File] = hash
-		}
-
-		// Generate deterministic canonical ID
-		canonicalID := fmt.Sprintf("sym:%s:%s:%s:%s:%d", project, ent.Kind, ent.Name, ent.File, ent.Line)
-		h := sha256.Sum256([]byte(canonicalID))
-		symbolID := hex.EncodeToString(h[:16])
-
-		sym := code.Symbol{
-			ID:          symbolID,
-			Project:     project,
-			FilePath:    ent.File,
-			LineNumber:  ent.Line,
-			Kind:        ent.Kind,
-			Name:        ent.Name,
-			PackageName: ent.Package,
-			Signature:   ent.Signature,
-			DocSummary:  fmt.Sprintf("%s %s in %s (line %d)", ent.Kind, ent.Name, ent.File, ent.Line),
-			FileHash:    hash,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-
-		symbols = append(symbols, sym)
-		symbolIDMap[ent.ID] = symbolID
-		symbolIDMap[ent.Name] = symbolID
-		symbolByName[ent.Name] = append(symbolByName[ent.Name], symbolID)
-	}
-
-	// Pass 2: 2-Pass Call & Reference Resolution
-	relations := make([]code.Relation, 0, len(rawResult.Relationships))
-	for _, rel := range rawResult.Relationships {
-		srcID, okSrc := symbolIDMap[rel.Source]
-		tgtID, okTgt := symbolIDMap[rel.Target]
-
-		// If target was not found by exact ID, attempt resolution by symbol name
-		if !okTgt {
-			if candidates, ok := symbolByName[rel.Target]; ok && len(candidates) > 0 {
-				tgtID = candidates[0]
-				okTgt = true
-			}
-		}
-
-		if okSrc && okTgt && srcID != tgtID {
-			confidence := rel.Confidence
-			if confidence <= 0 {
-				confidence = code.ConfidenceExtracted
-			}
-			relations = append(relations, code.Relation{
-				Project:    project,
-				SourceID:   srcID,
-				TargetID:   tgtID,
-				Relation:   rel.Relation,
-				Confidence: confidence,
-				Reasoning:  rel.Reasoning,
-				CreatedAt:  now,
-			})
-		}
-	}
-
-	return &code.CodeGraph{
-		Project:   project,
-		Symbols:   symbols,
-		Relations: relations,
-	}, nil
+	resolver := NewResolver(e.RootPath, project)
+	return resolver.Resolve(rawResult), nil
 }
-

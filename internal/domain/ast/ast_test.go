@@ -3,6 +3,7 @@ package ast
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -548,3 +549,272 @@ func TestExtractDirIgnoresArtifactFolders(t *testing.T) {
 		}
 	}
 }
+
+func TestHighDensityGoExtraction(t *testing.T) {
+	tempDir := t.TempDir()
+	goCode := `package engine
+
+// EngineService manages graph compute operations.
+type EngineService struct {
+	ID   string ` + "`json:\"id\"`" + `
+	Host string ` + "`json:\"host\"`" + `
+}
+
+// CalculateMetrics computes complex graph analytics.
+func (s *EngineService) CalculateMetrics(depth int, filter string) (int, error) {
+	if depth > 10 {
+		return 0, nil
+	} else if depth > 5 {
+		return 5, nil
+	}
+	return depth, nil
+}
+`
+	goPath := filepath.Join(tempDir, "service.go")
+	if err := os.WriteFile(goPath, []byte(goCode), 0644); err != nil {
+		t.Fatalf("failed to write go file: %v", err)
+	}
+
+	extractor := NewExtractor(tempDir)
+	graph, err := extractor.ExtractCodeGraph(tempDir, "testproj", 10)
+	if err != nil {
+		t.Fatalf("ExtractCodeGraph failed: %v", err)
+	}
+
+	foundStruct := false
+	foundMethod := false
+
+	for _, sym := range graph.Symbols {
+		if sym.Name == "EngineService" && sym.Kind == "struct" {
+			foundStruct = true
+			if !strings.Contains(sym.DocSummary, "EngineService manages graph compute") {
+				t.Errorf("expected doc summary, got %q", sym.DocSummary)
+			}
+			if fields, ok := sym.Metadata["fields"].([]map[string]string); ok {
+				if len(fields) != 2 {
+					t.Errorf("expected 2 struct fields, got %d", len(fields))
+				}
+			} else {
+				t.Errorf("expected metadata.fields on struct, got nil")
+			}
+		}
+
+		if sym.Name == "CalculateMetrics" && sym.Kind == "method" {
+			foundMethod = true
+			if sym.Complexity < 3 {
+				t.Errorf("expected complexity >= 3, got %d", sym.Complexity)
+			}
+			if len(sym.Parameters) != 2 {
+				t.Fatalf("expected 2 parameters, got %d", len(sym.Parameters))
+			}
+			if sym.Parameters[0].Name != "depth" || sym.Parameters[0].Type != "int" {
+				t.Errorf("unexpected param 0: %+v", sym.Parameters[0])
+			}
+			if sym.ReturnType != "(int, error)" {
+				t.Errorf("expected return type (int, error), got %q", sym.ReturnType)
+			}
+			if !strings.Contains(sym.DocSummary, "CalculateMetrics computes complex graph") {
+				t.Errorf("expected method doc summary, got %q", sym.DocSummary)
+			}
+		}
+	}
+
+	if !foundStruct {
+		t.Errorf("struct EngineService not found")
+	}
+	if !foundMethod {
+		t.Errorf("method CalculateMetrics not found")
+	}
+}
+
+func TestHighDensityTSAndPython(t *testing.T) {
+	tempDir := t.TempDir()
+
+	tsCode := `
+/**
+ * UserService provides user lifecycle operations.
+ */
+export class UserService extends BaseService implements IAuthService {
+  /**
+   * Authenticates a user with token.
+   */
+  public async authenticate(token: string, retries: number): Promise<boolean> {
+    return true;
+  }
+}
+`
+	tsPath := filepath.Join(tempDir, "user.ts")
+	_ = os.WriteFile(tsPath, []byte(tsCode), 0644)
+
+	pyCode := `
+class TaskWorker(BaseWorker):
+    """Worker handling asynchronous background tasks."""
+
+    @dataclass
+    def execute(self, task_id: str, timeout: int = 30) -> bool:
+        """Executes a single unit of work."""
+        return True
+`
+	pyPath := filepath.Join(tempDir, "worker.py")
+	_ = os.WriteFile(pyPath, []byte(pyCode), 0644)
+
+	extractor := NewExtractor(tempDir)
+	graph, err := extractor.ExtractCodeGraph(tempDir, "testproj", 10)
+	if err != nil {
+		t.Fatalf("ExtractCodeGraph failed: %v", err)
+	}
+
+	foundTSClass := false
+	foundTSMethod := false
+	foundPyClass := false
+	foundPyMethod := false
+
+	for _, sym := range graph.Symbols {
+		if sym.Name == "UserService" && sym.Kind == "class" {
+			foundTSClass = true
+			if !strings.Contains(sym.DocSummary, "UserService provides user lifecycle") {
+				t.Errorf("expected TS JSDoc, got %q", sym.DocSummary)
+			}
+		}
+		if sym.Name == "authenticate" && sym.Kind == "method" {
+			foundTSMethod = true
+			if len(sym.Parameters) != 2 {
+				t.Errorf("expected 2 params for TS method, got %d", len(sym.Parameters))
+			}
+			if sym.ReturnType != "Promise<boolean>" {
+				t.Errorf("expected Promise<boolean>, got %q", sym.ReturnType)
+			}
+		}
+		if sym.Name == "TaskWorker" && sym.Kind == "class" {
+			foundPyClass = true
+			if !strings.Contains(sym.DocSummary, "Worker handling asynchronous") {
+				t.Errorf("expected Python class docstring, got %q", sym.DocSummary)
+			}
+		}
+		if sym.Name == "execute" && sym.Kind == "method" {
+			foundPyMethod = true
+			if len(sym.Parameters) != 2 {
+				t.Errorf("expected 2 params for Python method, got %d", len(sym.Parameters))
+			}
+			if sym.ReturnType != "bool" {
+				t.Errorf("expected return type bool, got %q", sym.ReturnType)
+			}
+		}
+	}
+
+	if !foundTSClass || !foundTSMethod {
+		t.Errorf("TS class or method missing")
+	}
+	if !foundPyClass || !foundPyMethod {
+		t.Errorf("Python class or method missing")
+	}
+}
+
+func TestSQLExtractionAndForeignKeyRelations(t *testing.T) {
+	tempDir := t.TempDir()
+	sqlCode := `
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE
+);
+
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id),
+    total_amount DECIMAL(10,2)
+);
+`
+	sqlPath := filepath.Join(tempDir, "schema.sql")
+	_ = os.WriteFile(sqlPath, []byte(sqlCode), 0644)
+
+	extractor := NewExtractor(tempDir)
+	graph, err := extractor.ExtractCodeGraph(tempDir, "testproj", 10)
+	if err != nil {
+		t.Fatalf("ExtractCodeGraph failed: %v", err)
+	}
+
+	foundUsersTable := false
+	foundOrdersTable := false
+	foundFKRelation := false
+
+	for _, sym := range graph.Symbols {
+		if sym.Name == "users" && sym.Kind == "table" {
+			foundUsersTable = true
+			if len(sym.Parameters) != 3 {
+				t.Errorf("expected 3 columns for users table, got %d", len(sym.Parameters))
+			}
+		}
+		if sym.Name == "orders" && sym.Kind == "table" {
+			foundOrdersTable = true
+		}
+	}
+
+	for _, rel := range graph.Relations {
+		if rel.Relation == "references" {
+			foundFKRelation = true
+		}
+	}
+
+	if !foundUsersTable || !foundOrdersTable {
+		t.Errorf("SQL tables extraction failed")
+	}
+	if !foundFKRelation {
+		t.Errorf("expected foreign key 'references' relation between orders and users")
+	}
+}
+
+func TestCrossFileTwoPassResolution(t *testing.T) {
+	tempDir := t.TempDir()
+
+	utilsCode := `
+export function computeHash(input: string): string {
+  return "hash_" + input;
+}
+`
+	utilsPath := filepath.Join(tempDir, "utils.ts")
+	_ = os.WriteFile(utilsPath, []byte(utilsCode), 0644)
+
+	appCode := `
+import { computeHash } from "./utils";
+
+export function runApp() {
+  const h = computeHash("data");
+}
+`
+	appPath := filepath.Join(tempDir, "app.ts")
+	_ = os.WriteFile(appPath, []byte(appCode), 0644)
+
+	extractor := NewExtractor(tempDir)
+	graph, err := extractor.ExtractCodeGraph(tempDir, "testproj", 10)
+	if err != nil {
+		t.Fatalf("ExtractCodeGraph failed: %v", err)
+	}
+
+	var computeHashID, runAppID string
+	for _, sym := range graph.Symbols {
+		if sym.Name == "computeHash" {
+			computeHashID = sym.ID
+		}
+		if sym.Name == "runApp" {
+			runAppID = sym.ID
+		}
+	}
+
+	if computeHashID == "" || runAppID == "" {
+		t.Fatalf("expected symbols computeHash and runApp to be indexed")
+	}
+
+	foundResolvedCall := false
+	for _, rel := range graph.Relations {
+		if rel.SourceID == runAppID && rel.TargetID == computeHashID && rel.Relation == "calls" {
+			foundResolvedCall = true
+			break
+		}
+	}
+
+	if !foundResolvedCall {
+		t.Errorf("expected 2-pass resolver to connect runApp -> computeHash with 'calls' relation")
+	}
+}
+
