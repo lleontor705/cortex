@@ -121,11 +121,15 @@ After saving related observations, use `cortex_relate` to connect them:
 
 Use `cortex_graph` to explore connections: `cortex_graph(observation_id, depth=2)`
 
-## SEARCH & RETRIEVAL
+## SEARCH & RETRIEVAL (SOTA Adaptive-RAG & HippoRAG)
 
 When the user asks to recall something — any variation of "remember", "recall", "what did we do":
 1. First call `cortex_context` — checks recent session history (fast, cheap)
-2. If not found, call `cortex_search` with relevant keywords (FTS5 full-text search)
+2. If not found, call `cortex_search` with relevant keywords and optional `mode`:
+   - `mode="auto"` (default): Adaptive-RAG 4-tier classifier (direct, hybrid, multi-hop graph, or global architectural summary)
+   - `mode="direct"`: Fast FTS5 exact lexical match
+   - `mode="semantic"`: FTS5 + Dense Vector RRF fusion with ColBERT MaxSim re-ranking
+   - `mode="multi_hop"`: HippoRAG Personalized PageRank (PPR) knowledge graph activation
 3. If still not found, try `cortex_search_hybrid` for FTS5 + vector combined search
 4. If you find a match, use `cortex_get_observation` for full untruncated content (search returns 300-char previews only)
 
