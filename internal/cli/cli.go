@@ -1792,6 +1792,7 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 		ID:        sessionID,
 		Project:   project,
 		Directory: targetPath,
+		StartedAt: time.Now().UTC(),
 	})
 
 	indexedCount := 0
@@ -1801,24 +1802,31 @@ func runIngest(args []string, stdout, stderr io.Writer) int {
 	for _, ent := range res.Entities {
 		title := fmt.Sprintf("[%s] %s", ent.Kind, ent.Name)
 		content := fmt.Sprintf("Source file: %s (line %d). Kind: %s. Package: %s. Signature: %s", ent.File, ent.Line, ent.Kind, ent.Package, ent.Signature)
-		topicKey := fmt.Sprintf("ast/%s/%s", ent.Kind, ent.Name)
+		topicKey := fmt.Sprintf("ast/%s/%s", ent.File, ent.Name)
 
 		obs := &domain.Observation{
 			Title:      title,
 			Content:    content,
-			Type:       "pattern",
+			Type:       domain.TypePattern,
 			SessionID:  sessionID,
 			Project:    project,
 			Scope:      "project",
 			TopicKey:   topicKey,
 			Confidence: 1.0,
-			Source:     ent.File,
-			Tags:       []string{"ast", ent.Kind, ent.Package},
+			Source:     "auto",
+			Tags:       []string{"ast", ent.Kind, ent.Package, ent.File},
+			CreatedAt:  time.Now().UTC(),
+			UpdatedAt:  time.Now().UTC(),
 		}
-		if err := a.Stores.Observations.Save(ctx, obs); err == nil {
+		effect, err := a.Stores.Observations.SaveWithEffect(ctx, obs)
+		if err == nil || domain.IsClass(err, domain.ClassDedupSkipped) || effect.Observation != nil {
 			indexedCount++
-			entityIDMap[ent.Name] = obs.ID
-			entityIDMap[ent.ID] = obs.ID
+			obsID := obs.ID
+			if effect.Observation != nil && effect.Observation.ID > 0 {
+				obsID = effect.Observation.ID
+			}
+			entityIDMap[ent.Name] = obsID
+			entityIDMap[ent.ID] = obsID
 		}
 	}
 
