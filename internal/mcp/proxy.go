@@ -63,6 +63,9 @@ func OpenRemoteProxy(ctx context.Context, cfg RemoteProxyConfig) (*RemoteProxy, 
 		return nil, fmt.Errorf("remote MCP destination rejected: %w", err)
 	}
 	token := strings.TrimSpace(os.Getenv(cfg.TokenEnv))
+	if token == "" && (strings.HasPrefix(cfg.TokenEnv, "ctx_") || strings.HasPrefix(cfg.TokenEnv, "ey")) {
+		token = strings.TrimSpace(cfg.TokenEnv)
+	}
 	if token == "" {
 		return nil, fmt.Errorf("remote MCP token environment variable %s is empty", cfg.TokenEnv)
 	}

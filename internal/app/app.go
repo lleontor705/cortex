@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"log"
@@ -199,6 +200,12 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 
 	if cfg.Sync.Enabled && !opts.DisableRemoteSync {
 		token := os.Getenv(cfg.Sync.TokenEnv)
+		if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
+			token = cfg.Sync.TokenEnv
+		}
+		if token == "" && cfg.HTTP.Token != "" {
+			token = cfg.HTTP.Token
+		}
 		remote, syncErr := cortsync.NewRemoteSyncer(manager.DB(), cfg.Sync.URL, token, cfg.Sync.Timeout)
 		if syncErr != nil {
 			log.Printf("warning: remote sync disabled: %v", syncErr)

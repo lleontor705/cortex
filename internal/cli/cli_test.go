@@ -45,6 +45,7 @@ func TestRunRevisions(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "cortex.db")
 	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
 	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+	t.Setenv("CORTEX_SYNC_ENABLED", "false")
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}

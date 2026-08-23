@@ -944,6 +944,12 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		token := os.Getenv(a.Config.Sync.TokenEnv)
+		if token == "" && (strings.HasPrefix(a.Config.Sync.TokenEnv, "ctx_") || strings.HasPrefix(a.Config.Sync.TokenEnv, "ey")) {
+			token = a.Config.Sync.TokenEnv
+		}
+		if token == "" && a.Config.HTTP.Token != "" {
+			token = a.Config.HTTP.Token
+		}
 		remote, err := cortsync.NewRemoteSyncer(a.DB.DB(), a.Config.Sync.URL, token, a.Config.Sync.Timeout)
 		if err != nil {
 			writef(stderr, "sync remote: %v\n", err)
