@@ -40,7 +40,6 @@ var (
 	swiftStructRe    = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*struct\s+([a-zA-Z0-9_]+)`)
 	swiftProtocolRe  = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*protocol\s+([a-zA-Z0-9_]+)`)
 	swiftEnumRe      = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*enum\s+([a-zA-Z0-9_]+)`)
-	swiftExtensionRe = regexp.MustCompile(`(?m)^\s*extension\s+([a-zA-Z0-9_]+)`)
 	swiftFuncRe      = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|override|static|class|mutating|\s)*func\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(`)
 )
 

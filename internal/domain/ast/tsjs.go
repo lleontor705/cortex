@@ -28,10 +28,8 @@ var (
 	tsArrowFnRe   = regexp.MustCompile(`(?m)(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)(?:\s*:\s*([a-zA-Z0-9_$<>[\]\s|&]+))?\s*=>`)
 	tsMethodRe    = regexp.MustCompile(`(?m)^\s*(?:public|private|protected|static|async|override|\s)*(?:get|set\s+)?([a-zA-Z0-9_$]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?\s*[{;]`)
 
-	// Call sites & Instantiation
+	// Call sites
 	tsCallRe      = regexp.MustCompile(`\b([a-zA-Z0-9_$]+)\s*\(`)
-	tsMemberCall  = regexp.MustCompile(`\b([a-zA-Z0-9_$]+)\.([a-zA-Z0-9_$]+)\s*\(`)
-	tsNewRe       = regexp.MustCompile(`\bnew\s+([a-zA-Z0-9_$]+)\s*\(`)
 )
 
 var tsKeywords = map[string]bool{
@@ -84,7 +82,7 @@ func extractTSJSFile(fullPath, relPath string) *ExtractionResult {
 
 	var currentClassID string
 	var currentClassName string
-	var currentScopeID string = fileEntityID
+	var currentScopeID = fileEntityID
 
 	for scanner.Scan() {
 		lineNum++

@@ -51,7 +51,7 @@ func extractPythonFile(fullPath, relPath string) *ExtractionResult {
 
 	var currentClassID string
 	var currentClassName string
-	var currentScopeID string = fileEntityID
+	var currentScopeID = fileEntityID
 	var pendingDecorators []string
 
 	for i := 0; i < len(lines); i++ {
