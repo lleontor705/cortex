@@ -76,9 +76,9 @@ const (
 const MaxErrorMessageLength = 200
 
 // WriteOutputSchemaJSON is the exact output schema for cortex_save and
-// cortex_handoff success results: a structured payload carrying the exclusive
-// observation reference (local_id XOR public_id) and the closed write status.
-// Error results are isError=true with the error body and never a reference.
+// cortex_handoff results: a structured payload carrying the exclusive
+// observation reference (local_id XOR public_id) and the closed write status,
+// or a structured error payload.
 var WriteOutputSchemaJSON = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -102,9 +102,17 @@ var WriteOutputSchemaJSON = json.RawMessage(`{
 				}
 			]
 		},
-		"status": {"type": "string", "enum": ["created", "replayed", "updated"]}
+		"status": {"type": "string", "enum": ["created", "replayed", "updated"]},
+		"error": {
+			"type": "object",
+			"properties": {
+				"code": {"type": "string"},
+				"message": {"type": "string"}
+			},
+			"required": ["code", "message"],
+			"additionalProperties": false
+		}
 	},
-	"required": ["observation_ref", "status"],
 	"additionalProperties": false
 }`)
 

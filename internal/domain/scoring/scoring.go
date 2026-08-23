@@ -85,12 +85,13 @@ const (
 
 // Type bonuses for different observation types.
 var typeBonuses = map[string]float64{
-	domain.TypeDecision:  0.5,
-	domain.TypeBugfix:    0.3,
-	domain.TypePattern:   0.2,
-	domain.TypeDiscovery: 0.15,
-	domain.TypeConfig:    0.1,
-	domain.TypeLearning:  0.1,
+	domain.TypeDecision:     0.5,
+	domain.TypeArchitecture: 0.5,
+	domain.TypeBugfix:       0.3,
+	domain.TypePattern:      0.2,
+	domain.TypeDiscovery:    0.15,
+	domain.TypeConfig:       0.1,
+	domain.TypeLearning:     0.1,
 }
 
 // Service implements the scoring business logic.

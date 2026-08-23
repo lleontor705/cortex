@@ -1806,7 +1806,7 @@ func validateObservationEnvelope(obs *domain.Observation, maxContent int) error 
 	if obs.Type != "" && !isAllowedObservationType(normalizeObservationType(obs.Type)) {
 		return &domain.ValidationError{
 			Field:   "type",
-			Message: "type must be one of manual, tool_use, decision, bugfix, pattern, config, discovery, learning, session_summary, passive",
+			Message: "type must be one of manual, tool_use, decision, architecture, bugfix, pattern, config, discovery, learning, session_summary, passive",
 		}
 	}
 
@@ -1836,9 +1836,9 @@ func validateObservationEnvelope(obs *domain.Observation, maxContent int) error 
 
 func isAllowedObservationType(obsType string) bool {
 	switch obsType {
-	case domain.TypeManual, domain.TypeToolUse, domain.TypeDecision, domain.TypeBugfix,
-		domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery, domain.TypeLearning,
-		domain.TypeSessionSummary, domain.TypePassive:
+	case domain.TypeManual, domain.TypeToolUse, domain.TypeDecision, domain.TypeArchitecture,
+		domain.TypeBugfix, domain.TypePattern, domain.TypeConfig, domain.TypeDiscovery,
+		domain.TypeLearning, domain.TypeSessionSummary, domain.TypePassive:
 		return true
 	default:
 		return false

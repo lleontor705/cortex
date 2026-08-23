@@ -404,6 +404,7 @@ const (
 	TypeManual         = "manual"
 	TypeToolUse        = "tool_use"
 	TypeDecision       = "decision"
+	TypeArchitecture   = "architecture"
 	TypeBugfix         = "bugfix"
 	TypePattern        = "pattern"
 	TypeConfig         = "config"
