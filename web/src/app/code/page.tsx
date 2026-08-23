@@ -88,7 +88,7 @@ export default function CodeExplorerPage() {
         client.getCodeAnalytics(selectedProject).catch(() => null),
         client.getCodeGraph(selectedProject).catch(() => null),
       ]);
-      setSymbols(syms || []);
+      setSymbols(Array.isArray(syms) ? syms : []);
       setAnalytics(rep);
       setGraph(gr);
     } finally {
@@ -112,7 +112,7 @@ export default function CodeExplorerPage() {
         max_files: maxFiles,
       });
       setAnalytics(rep);
-      setIngestSuccess(`¡Escaneo exitoso! ${rep.total_symbols} símbolos y ${rep.total_relations} relaciones indexadas.`);
+      setIngestSuccess(`¡Escaneo exitoso! ${rep?.total_symbols ?? 0} símbolos y ${rep?.total_relations ?? 0} relaciones indexadas.`);
       await loadCodeData();
     } catch (err: any) {
       setIngestSuccess(`Error al escanear: ${err.message || err}`);
@@ -129,19 +129,25 @@ export default function CodeExplorerPage() {
 
   // Filtered symbols
   const filteredSymbols = useMemo(() => {
+    if (!Array.isArray(symbols)) return [];
     return symbols.filter((s) => {
+      if (!s) return false;
+      const name = s.name || "";
+      const filePath = s.file_path || "";
+      const signature = s.signature || "";
       const matchesSearch =
         searchQuery === "" ||
-        s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        s.file_path.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (s.signature && s.signature.toLowerCase().includes(searchQuery.toLowerCase()));
+        name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        filePath.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        signature.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesKind = kindFilter === "all" || s.kind === kindFilter;
       return matchesSearch && matchesKind;
     });
   }, [symbols, searchQuery, kindFilter]);
 
   const symbolKinds = useMemo(() => {
-    const set = new Set(symbols.map((s) => s.kind));
+    if (!Array.isArray(symbols)) return [];
+    const set = new Set(symbols.map((s) => s.kind).filter(Boolean));
     return Array.from(set);
   }, [symbols]);
 
@@ -226,7 +232,7 @@ export default function CodeExplorerPage() {
               <span className="text-xs font-medium text-muted-foreground">Símbolos AST</span>
               <Code2 className="h-4 w-4 text-blue-400" />
             </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_symbols || symbols.length}</div>
+            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_symbols ?? symbols?.length ?? 0}</div>
             <p className="text-[10px] text-muted-foreground mt-1">Funciones, tipos, tablas</p>
           </CardContent>
         </Card>
@@ -237,7 +243,7 @@ export default function CodeExplorerPage() {
               <span className="text-xs font-medium text-muted-foreground">Relaciones</span>
               <Share2 className="h-4 w-4 text-purple-400" />
             </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_relations || graph?.relations.length || 0}</div>
+            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_relations ?? graph?.relations?.length ?? 0}</div>
             <p className="text-[10px] text-muted-foreground mt-1">Llamadas y usos resueltos</p>
           </CardContent>
         </Card>
@@ -248,7 +254,7 @@ export default function CodeExplorerPage() {
               <span className="text-xs font-medium text-muted-foreground">Archivos Código</span>
               <FileCode className="h-4 w-4 text-emerald-400" />
             </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_files || 0}</div>
+            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_files ?? 0}</div>
             <p className="text-[10px] text-muted-foreground mt-1">Módulos escaneados</p>
           </CardContent>
         </Card>
@@ -272,7 +278,7 @@ export default function CodeExplorerPage() {
               <span className="text-xs font-medium text-muted-foreground">God Nodes</span>
               <Zap className="h-4 w-4 text-amber-400" />
             </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.god_nodes?.length || 0}</div>
+            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.god_nodes?.length ?? 0}</div>
             <p className="text-[10px] text-muted-foreground mt-1">Hubs arquitectónicos</p>
           </CardContent>
         </Card>
@@ -283,7 +289,7 @@ export default function CodeExplorerPage() {
               <span className="text-xs font-medium text-muted-foreground">Ciclos</span>
               <AlertTriangle className={`h-4 w-4 ${(analytics?.import_cycles?.length || 0) > 0 ? "text-red-400" : "text-emerald-400"}`} />
             </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.import_cycles?.length || 0}</div>
+            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.import_cycles?.length ?? 0}</div>
             <p className="text-[10px] text-muted-foreground mt-1">Dependencias circulares</p>
           </CardContent>
         </Card>
@@ -366,7 +372,7 @@ export default function CodeExplorerPage() {
           className="flex items-center gap-2 text-xs"
         >
           <Layers className="h-3.5 w-3.5" />
-          Cohesión Modular ({analytics?.communities?.length || 0})
+          Cohesión Modular ({analytics?.communities?.length ?? 0})
         </Button>
 
         <Button
@@ -376,7 +382,7 @@ export default function CodeExplorerPage() {
           className="flex items-center gap-2 text-xs"
         >
           <Code2 className="h-3.5 w-3.5" />
-          Símbolos AST ({symbols.length})
+          Símbolos AST ({symbols?.length ?? 0})
         </Button>
       </div>
 
@@ -392,7 +398,7 @@ export default function CodeExplorerPage() {
             </div>
           </div>
 
-          {analytics?.god_nodes && analytics.god_nodes.length > 0 ? (
+          {Array.isArray(analytics?.god_nodes) && analytics.god_nodes.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {analytics.god_nodes.map((gn, idx) => (
                 <Card
@@ -400,7 +406,7 @@ export default function CodeExplorerPage() {
                   className="bg-card hover:bg-card/80 border-border/60 transition cursor-pointer hover:border-primary/40 shadow-sm"
                   onClick={() => {
                     const name = gn.name || gn.label || "";
-                    const found = symbols.find((s) => s.id === gn.id || (name && s.name === name));
+                    const found = symbols.find((s) => s && (s.id === gn.id || (name && s.name === name)));
                     if (found) setSelectedSymbol(found);
                   }}
                 >
@@ -466,7 +472,7 @@ export default function CodeExplorerPage() {
             </div>
           </div>
 
-          {analytics?.import_cycles && analytics.import_cycles.length > 0 ? (
+          {Array.isArray(analytics?.import_cycles) && analytics.import_cycles.length > 0 ? (
             <div className="space-y-3">
               {analytics.import_cycles.map((cyc, idx) => (
                 <Card key={idx} className="bg-destructive/5 border-destructive/30 shadow-sm">
@@ -477,11 +483,11 @@ export default function CodeExplorerPage() {
                         <span className="font-semibold text-sm text-foreground">Ciclo #{idx + 1}</span>
                       </div>
                       <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20 text-xs">
-                        Longitud: {cyc.length} nodos
+                        Longitud: {cyc?.length ?? cyc?.nodes?.length ?? 0} nodos
                       </Badge>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs font-mono bg-background/60 p-3 rounded-lg border border-border/40">
-                      {cyc.nodes.map((node, nIdx) => (
+                      {Array.isArray(cyc?.nodes) && cyc.nodes.map((node, nIdx) => (
                         <React.Fragment key={nIdx}>
                           <span className="px-2 py-1 rounded bg-card border border-border text-foreground font-medium">
                             {node}
@@ -520,7 +526,7 @@ export default function CodeExplorerPage() {
             </div>
           </div>
 
-          {analytics?.communities && analytics.communities.length > 0 ? (
+          {Array.isArray(analytics?.communities) && analytics.communities.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {analytics.communities.map((com, idx) => (
                 <Card key={idx} className="bg-card border-border/60 shadow-sm">
@@ -597,7 +603,7 @@ export default function CodeExplorerPage() {
                 onClick={() => setKindFilter("all")}
                 className="text-xs h-8"
               >
-                Todos ({symbols.length})
+                Todos ({symbols?.length ?? 0})
               </Button>
               {symbolKinds.map((k) => (
                 <Button
@@ -614,7 +620,7 @@ export default function CodeExplorerPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {filteredSymbols.map((sym) => (
+            {Array.isArray(filteredSymbols) && filteredSymbols.map((sym) => (
               <Card
                 key={sym.id}
                 className="bg-card hover:bg-card/80 border-border/60 transition cursor-pointer hover:border-primary/40 shadow-sm"
