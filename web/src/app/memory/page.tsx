@@ -20,6 +20,13 @@ import {
   Clock,
   Layers,
   X,
+  Eye,
+  Copy,
+  ExternalLink,
+  FileText,
+  Calendar,
+  Shield,
+  Folder,
 } from "lucide-react";
 
 export default function MemoryPage() {
@@ -30,6 +37,10 @@ export default function MemoryPage() {
   const [filterProject, setFilterProject] = useState("");
   const [filterType, setFilterType] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Detail Modal State
+  const [selectedObservation, setSelectedObservation] = useState<Observation | null>(null);
+  const [copiedContent, setCopiedContent] = useState(false);
 
   // Create Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -217,10 +228,14 @@ export default function MemoryPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
           {filteredObservations.map((obs) => (
-            <Card key={obs.id} className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between hover:border-[var(--border-focus)] transition-all">
+            <Card
+              key={obs.id}
+              onClick={() => setSelectedObservation(obs)}
+              className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between hover:border-blue-500/50 hover:shadow-md transition-all cursor-pointer group"
+            >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-xs font-semibold text-[var(--text-primary)] leading-snug line-clamp-1">
+                  <h3 className="text-xs font-semibold text-[var(--text-primary)] group-hover:text-blue-400 leading-snug line-clamp-2 transition-colors">
                     {obs.title}
                   </h3>
                   <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"} className="shrink-0 text-[10px]">
@@ -236,37 +251,209 @@ export default function MemoryPage() {
               <div>
                 {obs.tags && obs.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mb-3">
-                    {obs.tags.map((tag, idx) => (
+                    {obs.tags.slice(0, 4).map((tag, idx) => (
                       <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
                         #{tag}
                       </span>
                     ))}
+                    {obs.tags.length > 4 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--bg-surface)] text-[var(--text-muted)] font-mono">
+                        +{obs.tags.length - 4}
+                      </span>
+                    )}
                   </div>
                 )}
 
                 <div className="flex items-center justify-between pt-3 border-t border-[var(--border-subtle)] text-[11px] text-[var(--text-muted)]">
-                  <div className="overflow-hidden mr-2">
+                  <div className="overflow-hidden mr-2 flex items-center gap-1.5">
+                    <Folder className="h-3 w-3 text-blue-400 shrink-0" />
                     <span className="truncate">Proyecto: <b className="text-[var(--text-primary)]">{obs.project}</b></span>
                   </div>
-                  {canDeleteObservation(obs) ? (
+                  <div className="flex items-center gap-1 shrink-0">
                     <Button
-                      onClick={() => handleDeleteObservation(obs)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedObservation(obs);
+                      }}
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 shrink-0"
-                      title="Eliminar observación (propietario / admin)"
+                      className="h-7 w-7 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                      title="Ver detalles completos"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Eye className="h-3.5 w-3.5" />
                     </Button>
-                  ) : (
-                    <span className="text-[10px] text-[var(--text-muted)] italic shrink-0">Protegido</span>
-                  )}
+                    {canDeleteObservation(obs) ? (
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteObservation(obs);
+                        }}
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10"
+                        title="Eliminar observación (propietario / admin)"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : (
+                      <span className="text-[10px] text-[var(--text-muted)] italic">Protegido</span>
+                    )}
+                  </div>
                 </div>
               </div>
             </Card>
           ))}
         </div>
       )}
+
+      {/* Observation Detail View Modal */}
+      <Dialog open={!!selectedObservation} onOpenChange={(open) => !open && setSelectedObservation(null)}>
+        {selectedObservation && (
+          <>
+            <DialogHeader>
+              <div className="flex items-start justify-between gap-3 w-full pr-6">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant={selectedObservation.type === "decision" ? "default" : selectedObservation.type === "bugfix" ? "destructive" : "secondary"} className="text-xs">
+                      {selectedObservation.type}
+                    </Badge>
+                    <Badge variant="purple" className="text-xs font-mono">
+                      {selectedObservation.project}
+                    </Badge>
+                    {selectedObservation.scope && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)]">
+                        Alcance: {selectedObservation.scope}
+                      </span>
+                    )}
+                  </div>
+                  <DialogTitle className="text-base font-bold text-[var(--text-primary)] leading-snug pt-1">
+                    {selectedObservation.title}
+                  </DialogTitle>
+                </div>
+              </div>
+              <DialogClose onClick={() => setSelectedObservation(null)} />
+            </DialogHeader>
+
+            <div className="space-y-4 mt-4 text-xs">
+              {/* Metadata Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+                <div>
+                  <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">ID Local / Ref</span>
+                  <span className="font-mono text-xs text-[var(--text-primary)] font-semibold truncate block">
+                    #{selectedObservation.id}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Confianza</span>
+                  <span className="text-xs text-emerald-400 font-semibold">
+                    {Math.round((selectedObservation.confidence ?? 1.0) * 100)}%
+                  </span>
+                </div>
+                {selectedObservation.topic_key ? (
+                  <div className="col-span-2">
+                    <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Topic Key</span>
+                    <span className="font-mono text-[11px] text-indigo-400 truncate block">
+                      {selectedObservation.topic_key}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="col-span-2">
+                    <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Fuente</span>
+                    <span className="text-xs text-[var(--text-secondary)] truncate block">
+                      {selectedObservation.source || "auto / agente"}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Full Content Block */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5 text-blue-400" />
+                    Contenido Completo & Contexto
+                  </label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedObservation.content);
+                      setCopiedContent(true);
+                      setTimeout(() => setCopiedContent(false), 2000);
+                    }}
+                    className="h-7 text-xs gap-1.5 text-blue-400 hover:text-blue-300"
+                  >
+                    {copiedContent ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">¡Copiado!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>Copiar Texto</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+                <div className="p-3.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] max-h-72 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap select-text text-[var(--text-primary)]">
+                  {selectedObservation.content}
+                </div>
+              </div>
+
+              {/* Tags */}
+              {selectedObservation.tags && selectedObservation.tags.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider block">
+                    Etiquetas / Tags ({selectedObservation.tags.length})
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedObservation.tags.map((tag, idx) => (
+                      <span key={idx} className="text-[11px] px-2.5 py-1 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] font-mono">
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Owner / Multi-Tenant Info */}
+              {selectedObservation.owner_subject && (
+                <div className="text-[10px] text-[var(--text-muted)] flex items-center gap-1.5 pt-1">
+                  <Shield className="h-3 w-3 text-purple-400" />
+                  <span>Propietario / Subject: <code className="font-mono text-purple-300">{selectedObservation.owner_subject}</code></span>
+                </div>
+              )}
+
+              {/* Modal Footer */}
+              <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t border-[var(--border-subtle)]">
+                <div>
+                  {canDeleteObservation(selectedObservation) && (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => {
+                        const obs = selectedObservation;
+                        setSelectedObservation(null);
+                        handleDeleteObservation(obs);
+                      }}
+                      className="gap-1.5"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Eliminar Observación</span>
+                    </Button>
+                  )}
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setSelectedObservation(null)}>
+                  Cerrar
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </Dialog>
 
       {/* Create Observation Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>

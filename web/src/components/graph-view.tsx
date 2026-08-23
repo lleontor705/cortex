@@ -45,8 +45,8 @@ import {
   Globe2,
   FileDown,
   BookOpen,
-  FolderGit2,
   FileCode,
+  FileText,
   Compass,
 } from "lucide-react";
 
@@ -94,8 +94,12 @@ const KIND_COLORS: Record<
   code_entity: { bg: "#1e1b4b", border: "#6366f1", text: "#c7d2fe", hex: "#6366f1", isCode: true, variant: "purple" },
   module: { bg: "#0f372c", border: "#059669", text: "#6ee7b7", hex: "#059669", isCode: true, variant: "success" },
   function: { bg: "#083344", border: "#0891b2", text: "#67e8f9", hex: "#0891b2", isCode: true, variant: "default" },
+  func: { bg: "#083344", border: "#0891b2", text: "#67e8f9", hex: "#0891b2", isCode: true, variant: "default" },
+  struct: { bg: "#1e1b4b", border: "#6366f1", text: "#c7d2fe", hex: "#6366f1", isCode: true, variant: "purple" },
   class: { bg: "#361a38", border: "#a21caf", text: "#f0abfc", hex: "#a21caf", isCode: true, variant: "purple" },
   interface: { bg: "#3b1e08", border: "#d97706", text: "#fcd34d", hex: "#d97706", isCode: true, variant: "warning" },
+  type: { bg: "#3b1e08", border: "#d97706", text: "#fcd34d", hex: "#d97706", isCode: true, variant: "warning" },
+  package: { bg: "#0f372c", border: "#059669", text: "#6ee7b7", hex: "#059669", isCode: true, variant: "success" },
   entity: { bg: "#282736", border: "#818cf8", text: "#e0e7ff", hex: "#818cf8", variant: "secondary" },
 };
 
@@ -123,8 +127,39 @@ function safeObsidianSlug(s: string): string {
   return norm.length > 60 ? norm.slice(0, 60) : norm || "untitled";
 }
 
+export function isCodeEntity(
+  node: any,
+  obsList?: Observation[],
+): boolean {
+  if (!node) return false;
+  const k = (node.kind || node.subtype || "").toLowerCase().trim();
+  if (["code_entity", "module", "function", "func", "struct", "class", "interface", "type", "package", "method"].includes(k)) {
+    return true;
+  }
+  if (node.metadata?.tags?.includes("ast") || (typeof node.metadata?.topic_key === "string" && node.metadata.topic_key.startsWith("ast/"))) {
+    return true;
+  }
+  const label = node.label || "";
+  if (label.startsWith("[") && (label.includes("[func]") || label.includes("[struct]") || label.includes("[class]") || label.includes("[interface]") || label.includes("[type]") || label.includes("[pkg]"))) {
+    return true;
+  }
+  if (obsList && obsList.length > 0 && node.id) {
+    const rawId = node.id.replace(/^observation:/, "").trim();
+    const matched = obsList.find((o) => o.id === rawId || `observation:${o.id}` === node.id);
+    if (matched) {
+      if (matched.tags?.includes("ast") || (matched.topic_key && matched.topic_key.startsWith("ast/"))) {
+        return true;
+      }
+      if (matched.title.startsWith("[") && (matched.title.includes("[func]") || matched.title.includes("[struct]") || matched.title.includes("[class]") || matched.title.includes("[interface]") || matched.title.includes("[type]"))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function getNodeEffectiveKind(
-  node: GraphNode | { kind?: string; subtype?: string; metadata?: any; id?: string },
+  node: GraphNode | { kind?: string; subtype?: string; metadata?: any; id?: string; label?: string },
   obsList?: Observation[],
 ): string {
   if (!node) return "observation";
@@ -143,8 +178,25 @@ function getNodeEffectiveKind(
     const matched = obsList.find(
       (o) => o.id === rawId || `observation:${o.id}` === node.id,
     );
-    if (matched && matched.type) {
-      return matched.type.toLowerCase().trim();
+    if (matched) {
+      if (matched.tags?.includes("ast")) {
+        for (const t of matched.tags) {
+          const lt = t.toLowerCase();
+          if (["func", "struct", "interface", "class", "package", "type", "module"].includes(lt)) {
+            return lt;
+          }
+        }
+        return "code_entity";
+      }
+      if (matched.type) {
+        return matched.type.toLowerCase().trim();
+      }
+    }
+  }
+  const label = node.label || "";
+  if (label.startsWith("[")) {
+    for (const prefix of ["func", "struct", "class", "interface", "type", "pkg"]) {
+      if (label.includes(`[${prefix}]`)) return prefix === "pkg" ? "package" : prefix;
     }
   }
   return rawKind || "observation";
@@ -231,11 +283,36 @@ function GraphPageContent() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
 
+  // Full Observation data for selected node
+  const [selectedNodeFullObs, setSelectedNodeFullObs] = useState<Observation | null>(null);
+  const [loadingNodeObs, setLoadingNodeObs] = useState(false);
+  const [copiedNodeContent, setCopiedNodeContent] = useState(false);
+
   // Helper to normalize IDs
   const normalizeId = useCallback((id: string) => {
     if (!id) return "";
     return id.replace(/^observation:/, "").trim();
   }, []);
+
+  // Fetch full observation when a node is selected
+  useEffect(() => {
+    if (!selectedNodeId || !client) {
+      setSelectedNodeFullObs(null);
+      return;
+    }
+    const norm = normalizeId(selectedNodeId);
+    const local = observations.find((o) => o.id === norm || `observation:${o.id}` === selectedNodeId);
+    if (local && local.content) {
+      setSelectedNodeFullObs(local);
+      return;
+    }
+    setLoadingNodeObs(true);
+    client
+      .getObservation(norm)
+      .then((obs) => setSelectedNodeFullObs(obs))
+      .catch(() => setSelectedNodeFullObs(null))
+      .finally(() => setLoadingNodeObs(false));
+  }, [selectedNodeId, client, observations, normalizeId]);
 
   // Fetch project graph data
   const loadProjectGraph = useCallback(
@@ -281,18 +358,13 @@ function GraphPageContent() {
 
   // Filter nodes based on selected Layer
   const isNodeInSelectedLayer = useCallback(
-    (kind: string) => {
-      const isCode =
-        kind === "code_entity" ||
-        kind === "module" ||
-        kind === "function" ||
-        kind === "class" ||
-        kind === "interface";
+    (node: any) => {
+      const isCode = isCodeEntity(node, observations);
       if (graphLayer === "knowledge") return !isCode;
       if (graphLayer === "code") return isCode;
       return true;
     },
-    [graphLayer],
+    [graphLayer, observations],
   );
 
   // Calculate Layer statistics
@@ -301,21 +373,14 @@ function GraphPageContent() {
     let knowledge = 0;
     let code = 0;
     rawSubgraph.nodes.forEach((n) => {
-      const k = (n.kind || "observation").toLowerCase();
-      if (
-        k === "code_entity" ||
-        k === "module" ||
-        k === "function" ||
-        k === "class" ||
-        k === "interface"
-      ) {
+      if (isCodeEntity(n, observations)) {
         code++;
       } else {
         knowledge++;
       }
     });
     return { knowledge, code, total: rawSubgraph.nodes.length };
-  }, [rawSubgraph]);
+  }, [rawSubgraph, observations]);
 
   // Build Sigma Graphology Instance
   useEffect(() => {
@@ -334,8 +399,7 @@ function GraphPageContent() {
 
     // Filter nodes according to current Layer
     const visibleNodes = allNodes.filter((n) => {
-      const kind = (n.kind || "observation").toLowerCase();
-      return isNodeInSelectedLayer(kind);
+      return isNodeInSelectedLayer(n);
     });
 
     const visibleNodeIds = new Set(visibleNodes.map((n) => normalizeId(n.id) || n.id));
@@ -961,7 +1025,7 @@ function GraphPageContent() {
           </div>
 
           {Object.entries(KIND_COLORS)
-            .filter(([k]) => isNodeInSelectedLayer(k))
+            .filter(([_, info]) => graphLayer === "all" || (graphLayer === "code" ? !!info.isCode : !info.isCode))
             .map(([kind, info]) => {
               const isActive = typeFilters[kind] !== false;
               return (
@@ -1102,101 +1166,166 @@ function GraphPageContent() {
             </div>
 
             {/* Body Info */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-              {/* Type and Score Badges */}
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  variant={
-                    KIND_COLORS[(selectedNodeData.kind || "observation").toLowerCase()]?.variant ||
-                    "default"
-                  }
-                  className="capitalize font-mono text-[10px]"
-                >
-                  {selectedNodeData.kind}
-                </Badge>
-                {typeof selectedNodeData.metadata?.importance_score === "number" && (
-                  <Badge variant="warning" className="text-[10px] font-mono">
-                    Score: {selectedNodeData.metadata.importance_score.toFixed(2)}
-                  </Badge>
-                )}
-                {Boolean(selectedNodeData.metadata?.project) && (
-                  <Badge variant="secondary" className="text-[10px] font-mono">
-                    📁 {String(selectedNodeData.metadata?.project)}
-                  </Badge>
-                )}
-                {typeof selectedNodeData.metadata?.community === "number" && (
-                  <Badge variant="success" className="text-[10px] font-mono">
-                    Cluster: #{selectedNodeData.metadata.community}
-                  </Badge>
-                )}
-              </div>
+            {(() => {
+              const topicKey = selectedNodeFullObs?.topic_key || (typeof selectedNodeData.metadata?.topic_key === "string" ? selectedNodeData.metadata.topic_key : "");
+              const nodeProject = selectedNodeFullObs?.project || (typeof selectedNodeData.metadata?.project === "string" ? selectedNodeData.metadata.project : "");
+              const nodeTags = selectedNodeFullObs?.tags || (Array.isArray(selectedNodeData.metadata?.tags) ? selectedNodeData.metadata.tags : []);
+              const rawContent = selectedNodeFullObs?.content || String(selectedNodeData.metadata?.content || selectedNodeData.metadata?.description || selectedNodeData.label || "Sin descripción adicional.");
 
-              {/* Node Content / Description */}
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
-                  Descripción / Contenido
-                </label>
-                <div className="p-2.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto font-mono text-[11px]">
-                  {String(
-                    selectedNodeData.metadata?.content ||
-                      selectedNodeData.metadata?.description ||
-                      selectedNodeData.label ||
-                      "Sin descripción adicional.",
-                  )}
-                </div>
-              </div>
-
-              {/* Direct Connected Neighbors */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
-                    Conexiones Directas ({connectedEdges.length})
-                  </label>
-                </div>
-
-                {connectedEdges.length === 0 ? (
-                  <p className="text-[11px] text-[var(--text-muted)] italic">
-                    Nodo aislado sin aristas directas en este proyecto.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                    {connectedEdges.map((e, idx) => {
-                      const isOutgoing = normalizeId(e.source) === normalizeId(selectedNodeData.id);
-                      const otherId = isOutgoing ? normalizeId(e.target) : normalizeId(e.source);
-                      const relType = (e.type || "relates_to").toLowerCase();
-                      const relColor = RELATION_COLORS[relType] || DEFAULT_RELATION_COLOR;
-
-                      return (
-                        <div
-                          key={idx}
-                          onClick={() => setSelectedNodeId(otherId)}
-                          className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500 cursor-pointer transition-colors"
-                        >
-                          <div className="flex items-center gap-1.5 truncate">
-                            <span className="text-[10px] font-mono text-[var(--text-muted)]">
-                              {isOutgoing ? "→" : "←"}
-                            </span>
-                            <span className="font-medium text-[var(--text-primary)] truncate">
-                              {otherId}
-                            </span>
-                          </div>
-                          <span
-                            className="text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0 font-semibold"
-                            style={{
-                              backgroundColor: `${relColor}20`,
-                              color: relColor,
-                              border: `1px solid ${relColor}40`,
-                            }}
-                          >
-                            {relType}
-                          </span>
-                        </div>
-                      );
-                    })}
+              return (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+                  {/* Type, Scope and Score Badges */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge
+                      variant={
+                        KIND_COLORS[(selectedNodeData.kind || "observation").toLowerCase()]?.variant ||
+                        "default"
+                      }
+                      className="capitalize font-mono text-[10px]"
+                    >
+                      {selectedNodeData.kind}
+                    </Badge>
+                    {typeof selectedNodeData.metadata?.importance_score === "number" && (
+                      <Badge variant="warning" className="text-[10px] font-mono">
+                        Score: {selectedNodeData.metadata.importance_score.toFixed(2)}
+                      </Badge>
+                    )}
+                    {Boolean(nodeProject) && (
+                      <Badge variant="secondary" className="text-[10px] font-mono">
+                        📁 {nodeProject}
+                      </Badge>
+                    )}
+                    {typeof selectedNodeData.metadata?.community === "number" && (
+                      <Badge variant="success" className="text-[10px] font-mono">
+                        Cluster: #{selectedNodeData.metadata.community}
+                      </Badge>
+                    )}
+                    {selectedNodeFullObs?.scope && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
+                        {selectedNodeFullObs.scope}
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
+
+                  {/* Topic Key if any */}
+                  {Boolean(topicKey) && (
+                    <div className="p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+                      <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono mb-0.5">
+                        Topic Key / Path
+                      </span>
+                      <span className="font-mono text-[11px] text-indigo-400 font-semibold break-all">
+                        {topicKey}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Node Content / Description with Copy */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1">
+                        <FileText className="h-3 w-3 text-blue-400" />
+                        Descripción / Contenido Completo
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(rawContent);
+                          setCopiedNodeContent(true);
+                          setTimeout(() => setCopiedNodeContent(false), 2000);
+                        }}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium transition-colors"
+                      >
+                        {copiedNodeContent ? (
+                          <>
+                            <Check className="h-3 w-3 text-emerald-400" />
+                            <span className="text-emerald-400">¡Copiado!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" />
+                            <span>Copiar</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto font-mono text-[11px] select-text">
+                      {loadingNodeObs ? (
+                        <span className="text-[var(--text-muted)] italic">Cargando detalles completos...</span>
+                      ) : (
+                        rawContent
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Tags Badges */}
+                  {nodeTags.length > 0 && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+                        Etiquetas ({nodeTags.length})
+                      </label>
+                      <div className="flex flex-wrap gap-1">
+                        {nodeTags.map((tag: any, idx: number) => (
+                          <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
+                            #{String(tag)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Direct Connected Neighbors */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
+                        Conexiones Directas ({connectedEdges.length})
+                      </label>
+                    </div>
+
+                    {connectedEdges.length === 0 ? (
+                      <p className="text-[11px] text-[var(--text-muted)] italic">
+                        Nodo aislado sin aristas directas en este proyecto.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                        {connectedEdges.map((e, idx) => {
+                          const isOutgoing = normalizeId(e.source) === normalizeId(selectedNodeData.id);
+                          const otherId = isOutgoing ? normalizeId(e.target) : normalizeId(e.source);
+                          const relType = (e.type || "relates_to").toLowerCase();
+                          const relColor = RELATION_COLORS[relType] || DEFAULT_RELATION_COLOR;
+
+                          return (
+                            <div
+                              key={idx}
+                              onClick={() => setSelectedNodeId(otherId)}
+                              className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500 cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center gap-1.5 truncate">
+                                <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                                  {isOutgoing ? "→" : "←"}
+                                </span>
+                                <span className="font-medium text-[var(--text-primary)] truncate">
+                                  {otherId}
+                                </span>
+                              </div>
+                              <span
+                                className="text-[10px] font-mono px-1.5 py-0.5 rounded shrink-0 font-semibold"
+                                style={{
+                                  backgroundColor: `${relColor}20`,
+                                  color: relColor,
+                                  border: `1px solid ${relColor}40`,
+                                }}
+                              >
+                                {relType}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Footer Action Buttons */}
             <div className="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex flex-col gap-2">

@@ -1650,8 +1650,15 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		writef(stdout, "\n=== 👤 Cortex Authentication Status ===\n")
+		mode := "Local (Zero-CGO SQLite)"
+		if cfg.Sync.Enabled && cfg.Sync.URL != "" {
+			mode = fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", cfg.Sync.URL)
+		} else if cfg.Server.Storage.DSN != "" {
+			mode = "Server (PostgreSQL Multi-Tenant)"
+		}
+		writef(stdout, "Mode:      %s\n", mode)
 		if cfg.HTTP.Token != "" {
-			writef(stdout, "Token: %s\n", maskSecret(cfg.HTTP.Token))
+			writef(stdout, "Token:     %s\n", maskSecret(cfg.HTTP.Token))
 			subject := cfg.Server.PrincipalSubject
 			if subject == "" {
 				subject = os.Getenv("USER")
@@ -1664,13 +1671,13 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 			}
 			writef(stdout, "Principal: %s\n", subject)
 			if len(cfg.Server.Roles) > 0 {
-				writef(stdout, "Role: %s\n", strings.Join(cfg.Server.Roles, ", "))
+				writef(stdout, "Role:      %s\n", strings.Join(cfg.Server.Roles, ", "))
 			} else {
-				writef(stdout, "Role: admin\n")
+				writef(stdout, "Role:      admin\n")
 			}
-			writef(stdout, "Status: Authenticated\n\n")
+			writef(stdout, "Status:    Authenticated\n\n")
 		} else {
-			writef(stdout, "Status: Anonymous / Unauthenticated (local zero-auth mode)\n\n")
+			writef(stdout, "Status:    Anonymous / Unauthenticated (local zero-auth mode)\n\n")
 		}
 		return 0
 

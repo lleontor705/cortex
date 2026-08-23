@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -163,7 +164,16 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 	vectorCfg := cfg.Vector
 	if vectorCfg.Provider == "" {
-		vectorCfg.Provider = cfg.Server.Provider.Vector
+		if p := os.Getenv("CORTEX_VECTOR_PROVIDER"); p != "" {
+			vectorCfg.Provider = p
+		} else if p := os.Getenv("VECTOR_PROVIDER"); p != "" {
+			vectorCfg.Provider = p
+		} else {
+			vectorCfg.Provider = cfg.Server.Provider.Vector
+		}
+	}
+	if vectorCfg.Provider == "" && cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none" {
+		vectorCfg.Provider = "pgvector"
 	}
 	if vectorCfg.Provider == "" {
 		vectorCfg.Provider = "none"

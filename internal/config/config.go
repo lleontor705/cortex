@@ -356,6 +356,34 @@ func Load(configPath string) (*Config, error) {
 		cfg.Search.EmbeddingBaseURL = cfg.AI.BaseURL
 	}
 
+	if cfg.Search.EmbeddingProvider == "" {
+		if p := os.Getenv("CORTEX_SEARCH_EMBEDDING_PROVIDER"); p != "" {
+			cfg.Search.EmbeddingProvider = p
+		} else if p := os.Getenv("CORTEX_AI_PROVIDER"); p != "" {
+			cfg.Search.EmbeddingProvider = p
+		} else if p := os.Getenv("AI_PROVIDER"); p != "" {
+			cfg.Search.EmbeddingProvider = p
+		}
+	}
+	if cfg.Search.EmbeddingModel == "" {
+		if m := os.Getenv("CORTEX_SEARCH_EMBEDDING_MODEL"); m != "" {
+			cfg.Search.EmbeddingModel = m
+		} else if m := os.Getenv("CORTEX_AI_MODEL"); m != "" {
+			cfg.Search.EmbeddingModel = m
+		} else if m := os.Getenv("AI_MODEL"); m != "" {
+			cfg.Search.EmbeddingModel = m
+		}
+	}
+	if cfg.Search.EmbeddingBaseURL == "" {
+		if u := os.Getenv("CORTEX_SEARCH_EMBEDDING_BASE_URL"); u != "" {
+			cfg.Search.EmbeddingBaseURL = u
+		} else if u := os.Getenv("CORTEX_AI_BASE_URL"); u != "" {
+			cfg.Search.EmbeddingBaseURL = u
+		} else if u := os.Getenv("AI_BASE_URL"); u != "" {
+			cfg.Search.EmbeddingBaseURL = u
+		}
+	}
+
 	// Expand ~ in database path
 	if strings.HasPrefix(cfg.Database.Path, "~/") || strings.HasPrefix(cfg.Database.Path, "~\\") {
 		home, _ := os.UserHomeDir()

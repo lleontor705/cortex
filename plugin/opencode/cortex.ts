@@ -38,12 +38,14 @@ import path from "path"
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-function resolveLocalConfig(): { token: string; url: string; port: number } {
+function resolveLocalConfig(): { token: string; url: string; port: number; syncEnabled: boolean; syncUrl: string } {
   // If explicitly set via CORTEX_HTTP_TOKEN (e.g. test harness), use it
   const envHttpToken = process.env.CORTEX_HTTP_TOKEN
   let token = (envHttpToken ?? "").trim()
   let url = (process.env.CORTEX_SERVER_URL ?? process.env.CORTEX_URL ?? "").trim().replace(/\/+$/, "")
   let port = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
+  let syncEnabled = process.env.CORTEX_SYNC_ENABLED === "true"
+  let syncUrl = (process.env.CORTEX_SYNC_URL ?? "").trim()
 
   // Check local ~/.cortex/cortex.yaml to align with the local cortex daemon
   if (envHttpToken === undefined) {
@@ -83,6 +85,14 @@ function resolveLocalConfig(): { token: string; url: string; port: number } {
           if (portMatch && portMatch[1]) {
             port = parseInt(portMatch[1])
           }
+          const syncEnabledMatch = content.match(/sync:[\s\S]*?enabled:\s*(true|false)/i)
+          if (syncEnabledMatch && syncEnabledMatch[1].toLowerCase() === "true") {
+            syncEnabled = true
+          }
+          const syncUrlMatch = content.match(/sync:[\s\S]*?url:\s*["']?([^"'\r\n]+)["']?/)
+          if (syncUrlMatch && syncUrlMatch[1]) {
+            syncUrl = syncUrlMatch[1].trim()
+          }
           break
         }
       }
@@ -97,7 +107,7 @@ function resolveLocalConfig(): { token: string; url: string; port: number } {
     url = `http://127.0.0.1:${port}`
   }
 
-  return { token, url, port }
+  return { token, url, port, syncEnabled, syncUrl }
 }
 
 const _cfg = resolveLocalConfig()
@@ -117,25 +127,40 @@ const REQUEST_TIMEOUT_MS = 2000
 const PAYLOAD_BYTE_LIMIT = 2000
 const encoder = new TextEncoder()
 
-export type CortexMode = "server" | "local"
+export type CortexMode = "server" | "hybrid" | "local"
 
 let cachedMode: CortexMode | null = null
 
 export async function detectCortexMode(): Promise<CortexMode> {
   if (cachedMode) return cachedMode
-  if (!CORTEX_HTTP_TOKEN) {
-    cachedMode = "local"
-    return "local"
-  }
-  try {
-    const res = await boundedFetch("/api/me", {
-      headers: { Authorization: `Bearer ${CORTEX_HTTP_TOKEN}` },
-    })
-    if (res.status === 200 || res.status === 403) {
-      cachedMode = "server"
-      return "server"
+
+  if (process.env.CORTEX_MODE) {
+    const m = process.env.CORTEX_MODE.toLowerCase()
+    if (m === "server" || m === "hybrid" || m === "local") {
+      cachedMode = m as CortexMode
+      return cachedMode
     }
-  } catch {}
+  }
+
+  // 1. Hybrid Mode: Local daemon with active remote sync configured
+  if (_cfg.syncEnabled && _cfg.syncUrl) {
+    cachedMode = "hybrid"
+    return "hybrid"
+  }
+
+  // 2. Server Mode: Direct remote URL probe
+  if (CORTEX_URL.startsWith("https://") || (CORTEX_HTTP_TOKEN && !CORTEX_URL.includes("127.0.0.1") && !CORTEX_URL.includes("localhost"))) {
+    try {
+      const res = await boundedFetch("/api/me", {
+        headers: { Authorization: `Bearer ${CORTEX_HTTP_TOKEN}` },
+      })
+      if (res.status === 200 || res.status === 403) {
+        cachedMode = "server"
+        return "server"
+      }
+    } catch {}
+  }
+
   cachedMode = "local"
   return "local"
 }
