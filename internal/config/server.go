@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
 
 // ServerLLMConfig holds administrator-owned outbound LLM provider settings

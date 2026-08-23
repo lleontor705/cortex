@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/setup"
-	"github.com/lleontor705/cortex/internal/store/session"
-	"github.com/lleontor705/cortex/internal/update"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/setup"
+	"github.com/lleontor705/cortex/v2/internal/store/session"
+	"github.com/lleontor705/cortex/v2/internal/update"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"

@@ -11,7 +11,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 func TestDNABatchCountEdgesByObservationIDs(t *testing.T) {

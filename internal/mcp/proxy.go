@@ -14,8 +14,8 @@ import (
 	protocol "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
-	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
 
 // RemoteProxyConfig describes the remote MCP endpoint used by the local stdio

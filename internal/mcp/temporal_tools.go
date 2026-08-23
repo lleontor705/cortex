@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/observability"
-	"github.com/lleontor705/cortex/internal/domain/temporal"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/observability"
+	"github.com/lleontor705/cortex/v2/internal/domain/temporal"
 	protocol "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

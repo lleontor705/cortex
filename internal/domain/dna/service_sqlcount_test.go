@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 	"modernc.org/sqlite"
 )
 

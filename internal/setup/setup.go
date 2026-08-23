@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	opencodeplugin "github.com/lleontor705/cortex/plugin/opencode"
+	opencodeplugin "github.com/lleontor705/cortex/v2/plugin/opencode"
 )
 
 // cortexMCPTools lists the tool permission names for Claude Code's settings.json.

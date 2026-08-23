@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
 type operationsContextKey struct{}

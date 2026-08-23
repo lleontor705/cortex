@@ -9,10 +9,10 @@ import (
 	"runtime/debug"
 	"syscall"
 
-	"github.com/lleontor705/cortex/internal/cli"
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/platform"
-	serverplatform "github.com/lleontor705/cortex/internal/platform/server"
+	"github.com/lleontor705/cortex/v2/internal/cli"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/platform"
+	serverplatform "github.com/lleontor705/cortex/v2/internal/platform/server"
 )
 
 // version is set by GoReleaser via ldflags at build time.

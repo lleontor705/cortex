@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/bench/common"
+	"github.com/lleontor705/cortex/v2/bench/common"
 )
 
 func TestAdaptBaselineEvidencePreservesExternalProvenance(t *testing.T) {

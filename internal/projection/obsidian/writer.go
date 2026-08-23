@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )

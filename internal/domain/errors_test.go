@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // These tests pin REQ-FOUND-003: a ValidationError taxonomy that classifies

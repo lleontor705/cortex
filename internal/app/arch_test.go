@@ -66,12 +66,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/store/bundle"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 )
 
 // modulePath is the Go module path declared in go.mod.
-const modulePath = "github.com/lleontor705/cortex"
+const modulePath = "github.com/lleontor705/cortex/v2"
 
 // serverTrackSubpkgs lists module-relative package path suffixes that belong to
 // the server track. Local-composition packages MUST NOT import any of these,
@@ -270,7 +270,7 @@ func TestForbiddenImportDetector(t *testing.T) {
 		modulePath + "/internal/vector/sqlite_blob/adapter",
 		"context",
 		"time",
-		"github.com/lleontor705/cortex/internal/store/bundle",
+		"github.com/lleontor705/cortex/v2/internal/store/bundle",
 	}
 	for _, imp := range allowedCases {
 		if got := forbidden(imp); got != "" {

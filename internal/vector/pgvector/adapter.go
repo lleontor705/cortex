@@ -46,7 +46,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/pgvector/pgvector-go"
 )
 

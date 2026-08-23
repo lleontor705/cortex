@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lleontor705/cortex/bench/common"
+	"github.com/lleontor705/cortex/v2/bench/common"
 )
 
 // EvidenceOrchestrationRequest provides the existing production runner,

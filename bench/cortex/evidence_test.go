@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/bench/common"
+	"github.com/lleontor705/cortex/v2/bench/common"
 )
 
 // TestEvidence is the RED contract for #651 and design #720. It closes the

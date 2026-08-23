@@ -11,7 +11,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // MetricsRepository implements the MetricsRepository interface using SQLite.

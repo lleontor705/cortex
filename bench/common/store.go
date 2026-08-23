@@ -6,9 +6,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/app"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
 )
 
 // BenchStores wraps a Cortex app instance for benchmark evaluation.

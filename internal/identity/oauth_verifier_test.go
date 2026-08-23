@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
 func TestOAuthVerifierValidatesIssuerAudienceAndRotation(t *testing.T) {

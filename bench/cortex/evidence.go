@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/bench/common"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // RunEvidence composes identity validation, fresh ingestion, the production

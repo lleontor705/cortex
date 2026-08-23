@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/config"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

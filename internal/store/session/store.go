@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Store implements the SQLite session store.

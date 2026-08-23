@@ -16,7 +16,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/store/bundle"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

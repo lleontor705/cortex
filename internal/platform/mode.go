@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/app"
 )
 
 // Mode selects which backend the binary runs.

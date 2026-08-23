@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	postgresstore "github.com/lleontor705/cortex/internal/store/postgres"
+	postgresstore "github.com/lleontor705/cortex/v2/internal/store/postgres"
 )
 
 func TestRuntimeDoesNotExposePostgresRepositories(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lleontor705/cortex/internal/authz"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
 func (s *AuthorizedStore) authorize(ctx context.Context, typ authz.Resource, action authz.Action, project, owner, classification string) error {

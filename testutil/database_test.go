@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/migration"
 )
 
 func TestNewTestDB(t *testing.T) {

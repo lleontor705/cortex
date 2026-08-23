@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain/projectprotocol"
+	"github.com/lleontor705/cortex/v2/internal/domain/projectprotocol"
 )
 
 // ObservationRepository defines the interface for observation persistence operations.

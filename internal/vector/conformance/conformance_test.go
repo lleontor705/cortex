@@ -13,7 +13,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // fakeIndex is a minimal in-memory VectorIndex that implements CORRECT

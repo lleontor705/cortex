@@ -33,7 +33,7 @@ import (
 
 	moderncsqlite "modernc.org/sqlite" // base driver for the counting wrapper
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lleontor705/cortex/bench/common"
+	"github.com/lleontor705/cortex/v2/bench/common"
 )
 
 func TestAdaptBaselineEvidenceMapsStableQueryAndPreservesLegacyResult(t *testing.T) {

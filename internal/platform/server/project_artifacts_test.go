@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 

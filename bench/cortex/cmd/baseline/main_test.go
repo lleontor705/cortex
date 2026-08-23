@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/bench/common"
-	benchcortex "github.com/lleontor705/cortex/bench/cortex"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	benchcortex "github.com/lleontor705/cortex/v2/bench/cortex"
 )
 
 func TestCLIRequiresSupportedSubcommand(t *testing.T) {

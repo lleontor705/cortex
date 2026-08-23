@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/embedding"
-	"github.com/lleontor705/cortex/internal/migration"
-	"github.com/lleontor705/cortex/internal/store/bundle"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
-	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/vector/sqlite_blob"
 
 	_ "modernc.org/sqlite"
 )

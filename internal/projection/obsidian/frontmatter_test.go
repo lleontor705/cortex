@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 func TestRenderFrontmatterRequiresCortexIDAndEscapesYAML(t *testing.T) {

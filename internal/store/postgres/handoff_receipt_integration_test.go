@@ -17,8 +17,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
 )
 
 func newReceiptTestStore(t *testing.T, h *postgresHarness) (*AuthorizedStore, uuid.UUID) {

@@ -11,7 +11,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // fakeReindexSource is a controllable ReindexSource for unit tests. It serves

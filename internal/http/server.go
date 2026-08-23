@@ -18,15 +18,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
-	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	"github.com/lleontor705/cortex/internal/store/prompt"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	"github.com/lleontor705/cortex/internal/store/search"
-	"github.com/lleontor705/cortex/internal/store/session"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
+	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	"github.com/lleontor705/cortex/v2/internal/store/prompt"
+	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
+	"github.com/lleontor705/cortex/v2/internal/store/search"
+	"github.com/lleontor705/cortex/v2/internal/store/session"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 const (

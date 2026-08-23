@@ -16,7 +16,7 @@ brew install lleontor705/tap/cortex
 ## Go Install
 
 ```bash
-go install github.com/lleontor705/cortex/cmd/cortex@latest
+go install github.com/lleontor705/cortex/v2/cmd/cortex@latest
 ```
 
 ## Release Binary

@@ -22,9 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	sessionstore "github.com/lleontor705/cortex/internal/store/session"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	sessionstore "github.com/lleontor705/cortex/v2/internal/store/session"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 // --- REQ-MCPH-001: passive persists with default source ---------------------

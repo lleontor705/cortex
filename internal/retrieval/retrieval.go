@@ -26,7 +26,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // rrfConstant is the Reciprocal Rank Fusion smoothing constant (k=60, the

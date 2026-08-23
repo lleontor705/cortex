@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 type principalVerifier interface {

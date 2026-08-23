@@ -7,10 +7,10 @@ import (
 
 	_ "modernc.org/sqlite" // Pure Go SQLite driver (zero-CGO)
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/store/bundle"
-	searchstore "github.com/lleontor705/cortex/internal/store/search"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
+	searchstore "github.com/lleontor705/cortex/v2/internal/store/search"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 // feedback_wiring_test.go verifies bundle.WireSearchFeedback connects the

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 	_ "modernc.org/sqlite"
 )
 

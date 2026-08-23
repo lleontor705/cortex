@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Outbox status constants. Stored in index_outbox.status.

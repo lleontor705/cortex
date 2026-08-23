@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // setCLIEnv isolates the CLI execution environment for a single test: a unique

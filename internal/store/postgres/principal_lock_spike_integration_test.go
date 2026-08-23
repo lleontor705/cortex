@@ -53,8 +53,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/lleontor705/cortex/internal/migration"
-	"github.com/lleontor705/cortex/testutil/postgrestest"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	"github.com/lleontor705/cortex/v2/testutil/postgrestest"
 )
 
 // canonicalProtocolFixtureChecksum pins the exact bytes (LF-normalized) of

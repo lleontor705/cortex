@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // mockSessionRepository is a mock implementation of SessionRepository for testing.

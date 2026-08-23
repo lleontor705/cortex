@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
 
 const (

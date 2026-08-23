@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // feedback_test.go pins REQ-RET-001: request/session-scoped feedback

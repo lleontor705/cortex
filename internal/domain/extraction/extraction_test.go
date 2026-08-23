@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ssrfTestProvider is an HTTPS provider on loopback approved through the

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
+	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/server"
 )
 

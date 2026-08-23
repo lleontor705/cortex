@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // fts5SpecialCharsRe matches FTS5 special operators that can cause syntax errors.

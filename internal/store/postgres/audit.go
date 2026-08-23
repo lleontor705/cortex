@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lleontor705/cortex/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/authz"
 )
 
 // AuditSink persists authorization decisions without recording request content,

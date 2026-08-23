@@ -10,7 +10,7 @@
 // adopts them in W1.
 package identity
 
-import "github.com/lleontor705/cortex/internal/domain"
+import "github.com/lleontor705/cortex/v2/internal/domain"
 
 // Principal is a type alias for domain.Principal, re-exported so callers in
 // the identity/authz layers reference identity.Principal without importing

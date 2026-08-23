@@ -34,7 +34,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Fixtures is the identical dataset every adapter is tested against. The

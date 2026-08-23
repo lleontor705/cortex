@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 // ChunkData is the content of a single sync chunk.

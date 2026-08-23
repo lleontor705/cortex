@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 const adapterID = "purego_cosine"

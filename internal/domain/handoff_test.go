@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 func TestObservationRefRequiresExactlyOneNamespace(t *testing.T) {

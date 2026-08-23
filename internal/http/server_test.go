@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	"github.com/lleontor705/cortex/internal/store/prompt"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	"github.com/lleontor705/cortex/internal/store/search"
-	"github.com/lleontor705/cortex/internal/store/session"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
-	"github.com/lleontor705/cortex/testutil"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	"github.com/lleontor705/cortex/v2/internal/store/prompt"
+	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
+	"github.com/lleontor705/cortex/v2/internal/store/search"
+	"github.com/lleontor705/cortex/v2/internal/store/session"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/testutil"
 )
 
 func setupTestServer(t *testing.T) *Server {

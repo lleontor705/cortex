@@ -21,7 +21,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	v2migrations "github.com/lleontor705/cortex/migrations/v2"
+	v2migrations "github.com/lleontor705/cortex/v2/migrations/v2"
 )
 
 // --- helpers ---------------------------------------------------------------

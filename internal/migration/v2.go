@@ -27,7 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
-	v2migrations "github.com/lleontor705/cortex/migrations/v2"
+	v2migrations "github.com/lleontor705/cortex/v2/migrations/v2"
 )
 
 // Schema identity constants recorded in cortex_meta.

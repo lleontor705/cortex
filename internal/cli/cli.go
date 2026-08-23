@@ -13,18 +13,18 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/lleontor705/cortex/internal/app"
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
-	cortexhttp "github.com/lleontor705/cortex/internal/http"
-	"github.com/lleontor705/cortex/internal/mcp"
-	"github.com/lleontor705/cortex/internal/ollama"
-	projectpkg "github.com/lleontor705/cortex/internal/project"
-	"github.com/lleontor705/cortex/internal/projection/obsidian"
-	"github.com/lleontor705/cortex/internal/setup"
-	cortsync "github.com/lleontor705/cortex/internal/sync"
-	"github.com/lleontor705/cortex/internal/tui"
-	"github.com/lleontor705/cortex/internal/update"
+	"github.com/lleontor705/cortex/v2/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	cortexhttp "github.com/lleontor705/cortex/v2/internal/http"
+	"github.com/lleontor705/cortex/v2/internal/mcp"
+	"github.com/lleontor705/cortex/v2/internal/ollama"
+	projectpkg "github.com/lleontor705/cortex/v2/internal/project"
+	"github.com/lleontor705/cortex/v2/internal/projection/obsidian"
+	"github.com/lleontor705/cortex/v2/internal/setup"
+	cortsync "github.com/lleontor705/cortex/v2/internal/sync"
+	"github.com/lleontor705/cortex/v2/internal/tui"
+	"github.com/lleontor705/cortex/v2/internal/update"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -1713,7 +1713,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "You can update manually with:\n")
 		writef(stderr, "  curl -sSL https://raw.githubusercontent.com/%s/%s/main/scripts/install.sh | bash\n", update.RepoOwner, update.RepoName)
 		writef(stderr, "  # or via Go toolchain:\n")
-		writef(stderr, "  go install github.com/%s/%s/cmd/cortex@latest\n\n", update.RepoOwner, update.RepoName)
+		writef(stderr, "  go install github.com/%s/%s/v2/cmd/cortex@latest\n\n", update.RepoOwner, update.RepoName)
 		return 1
 	}
 

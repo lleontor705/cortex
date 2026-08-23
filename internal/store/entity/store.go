@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
 )
 
 const sqliteDatetimeFormat = "2006-01-02 15:04:05"

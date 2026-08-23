@@ -14,8 +14,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lleontor705/cortex/bench/common"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Dataset represents the LongMemEval dataset structure.

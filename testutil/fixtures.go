@@ -3,7 +3,7 @@ package testutil
 import (
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Fixtures provides test data factories for creating domain objects.

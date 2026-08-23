@@ -32,7 +32,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ProviderHealth is the aggregated health surface for a configured vector

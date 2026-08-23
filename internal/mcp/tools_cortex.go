@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/ast"
-	"github.com/lleontor705/cortex/internal/domain/dna"
-	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
-	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
-	"github.com/lleontor705/cortex/internal/retrieval"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/ast"
+	"github.com/lleontor705/cortex/v2/internal/domain/dna"
+	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
+	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

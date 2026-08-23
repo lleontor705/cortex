@@ -20,11 +20,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/lleontor705/cortex/internal/authz"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/lifecycle"
-	"github.com/lleontor705/cortex/internal/identity"
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/lifecycle"
+	"github.com/lleontor705/cortex/v2/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/migration"
 )
 
 // postgresHarness deliberately uses a real PostgreSQL connection and applies

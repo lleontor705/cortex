@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/projectprotocol"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/projectprotocol"
 )
 
 // stubStore proves the domain port is implementable without persistence

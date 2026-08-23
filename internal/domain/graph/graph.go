@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ValidRelationTypes contains all allowed relation types for edges.

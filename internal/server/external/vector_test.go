@@ -17,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	_ "modernc.org/sqlite" // Pure Go SQLite driver for in-memory test DBs
 )
 

@@ -23,9 +23,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/vector/conformance"
-	"github.com/lleontor705/cortex/testutil"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/vector/conformance"
+	"github.com/lleontor705/cortex/v2/testutil"
 )
 
 // conformanceSchemaSQL creates the minimal production-compatible schema needed

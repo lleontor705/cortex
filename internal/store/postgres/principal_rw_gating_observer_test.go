@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lleontor705/cortex/testutil/postgrestest"
+	"github.com/lleontor705/cortex/v2/testutil/postgrestest"
 )
 
 var rwC32ObserverPrefixOnce sync.Once

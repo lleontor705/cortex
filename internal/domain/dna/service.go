@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ObservationLister lists observations with filters.

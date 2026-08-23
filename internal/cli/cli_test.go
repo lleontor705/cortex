@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/app"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 func TestRunSaveThenSearch(t *testing.T) {

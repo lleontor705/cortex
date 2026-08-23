@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lleontor705/cortex/internal/domain"
-	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
 )
 
 type ObservationRepository struct{ *Store }

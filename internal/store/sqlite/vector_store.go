@@ -10,7 +10,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // VectorStore implements the vector similarity search store.

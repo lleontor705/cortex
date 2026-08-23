@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/database"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/database"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 type mockLister struct {

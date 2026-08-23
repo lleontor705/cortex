@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	servermigrations "github.com/lleontor705/cortex/migrations/v2"
+	servermigrations "github.com/lleontor705/cortex/v2/migrations/v2"
 )
 
 // PostgresServerMigration is the isolated server-wave migration. It must not

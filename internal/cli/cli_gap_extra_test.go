@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/app"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // setGapFailingApp isolates HOME and points CORTEX_DATABASE_PATH at a path whose

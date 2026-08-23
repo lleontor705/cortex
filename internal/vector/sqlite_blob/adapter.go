@@ -31,8 +31,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 )
 
 // adapterID is the stable identifier declared via ID() and Capabilities().IndexType.

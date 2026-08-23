@@ -20,9 +20,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	graphdomain "github.com/lleontor705/cortex/internal/domain/graph"
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
+	"github.com/lleontor705/cortex/v2/internal/migration"
 	_ "modernc.org/sqlite"
 )
 

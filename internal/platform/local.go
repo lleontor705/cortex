@@ -3,7 +3,7 @@ package platform
 import (
 	"context"
 
-	"github.com/lleontor705/cortex/internal/app"
+	"github.com/lleontor705/cortex/v2/internal/app"
 )
 
 // Local wires the local-mode Runtime by delegating to [app.Open].

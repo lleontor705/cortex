@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // TemporalService provides enhanced temporal graph functionality.

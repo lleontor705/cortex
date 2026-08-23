@@ -40,7 +40,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // ReindexSource is the narrow port for the authoritative observation store.

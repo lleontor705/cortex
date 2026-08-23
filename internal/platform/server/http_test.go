@@ -12,11 +12,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/lleontor705/cortex/internal/authz"
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/identity"
-	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
+	"github.com/lleontor705/cortex/v2/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )

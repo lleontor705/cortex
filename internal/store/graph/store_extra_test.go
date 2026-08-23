@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // mustCreateEdge is a thin wrapper around Store.CreateEdge that fails the test

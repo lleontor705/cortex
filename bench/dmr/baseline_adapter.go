@@ -3,7 +3,7 @@ package dmr
 import (
 	"fmt"
 
-	"github.com/lleontor705/cortex/bench/common"
+	"github.com/lleontor705/cortex/v2/bench/common"
 )
 
 const (

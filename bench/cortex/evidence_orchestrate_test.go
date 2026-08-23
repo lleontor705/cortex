@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/bench/common"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 func TestEvidenceOrchestrate(t *testing.T) {

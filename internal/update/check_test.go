@@ -166,7 +166,7 @@ func TestCheckCustomWithServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(githubRelease{ //nolint:errcheck
 			TagName: "v2.5.0",
-			HTMLURL: "https://github.com/lleontor705/cortex/releases/tag/v2.5.0",
+			HTMLURL: "https://github.com/lleontor705/cortex/v2/releases/tag/v2.5.0",
 			Body:    "Awesome release with AI and AST",
 			Assets: []githubAsset{
 				{Name: "cortex_2.5.0_windows_amd64.zip", BrowserDownloadURL: "https://example.com/cortex.zip"},

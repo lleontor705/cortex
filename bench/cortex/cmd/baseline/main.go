@@ -16,8 +16,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/lleontor705/cortex/bench/common"
-	benchcortex "github.com/lleontor705/cortex/bench/cortex"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	benchcortex "github.com/lleontor705/cortex/v2/bench/cortex"
 )
 
 const approvalInputSchema = "cortex.baseline-approval-input/v1"

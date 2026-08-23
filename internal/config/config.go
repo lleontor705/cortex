@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"

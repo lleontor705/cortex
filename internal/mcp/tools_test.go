@@ -9,19 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
-	graphstore "github.com/lleontor705/cortex/internal/store/graph"
-	"github.com/lleontor705/cortex/internal/store/prompt"
-	scoringstore "github.com/lleontor705/cortex/internal/store/scoring"
-	"github.com/lleontor705/cortex/internal/store/search"
-	"github.com/lleontor705/cortex/internal/store/session"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
-	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
+	"github.com/lleontor705/cortex/v2/internal/store/prompt"
+	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
+	"github.com/lleontor705/cortex/v2/internal/store/search"
+	"github.com/lleontor705/cortex/v2/internal/store/session"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/vector/sqlite_blob"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/lleontor705/cortex/testutil"
+	"github.com/lleontor705/cortex/v2/testutil"
 )
 
 // setupTestStores creates an in-memory DB with all migrations and returns a Stores bundle.

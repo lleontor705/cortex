@@ -18,9 +18,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
-	"github.com/lleontor705/cortex/testutil"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/testutil"
 )
 
 // TestAdapter_ImplementsVectorIndex is the compile-time + runtime conformance

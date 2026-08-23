@@ -29,8 +29,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lleontor705/cortex/internal/authz"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // wsIsolationSeedAt seeds one observation inside the store's bound workspace

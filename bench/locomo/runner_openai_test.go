@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
 )
 
 func TestRunWithOpenAIEmbeddings(t *testing.T) {

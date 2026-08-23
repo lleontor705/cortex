@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/lleontor705/cortex/internal/identity"
+	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
 var ErrInvalidUser = errors.New("postgres users: invalid user")

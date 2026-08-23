@@ -9,8 +9,8 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/lleontor705/cortex/internal/database"
-	"github.com/lleontor705/cortex/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/database"
+	"github.com/lleontor705/cortex/v2/internal/migration"
 )
 
 // TestDB wraps a test database with automatic cleanup and migration support.

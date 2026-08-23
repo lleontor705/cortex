@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 )
 
 // sqliteDatetimeFormat is the format used by SQLite's datetime() function.

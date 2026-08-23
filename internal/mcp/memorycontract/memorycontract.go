@@ -25,8 +25,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/transportpolicy"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
 
 // Tool names in the cortex_* namespace (REQ-MCP-001). Single source of truth

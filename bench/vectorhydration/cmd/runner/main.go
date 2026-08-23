@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lleontor705/cortex/bench/vectorhydration"
+	"github.com/lleontor705/cortex/v2/bench/vectorhydration"
 )
 
 type collectArgs struct {

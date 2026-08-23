@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/domain/extraction"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 )
 
 // newSSRFServerHandler mirrors the verified production wiring with an

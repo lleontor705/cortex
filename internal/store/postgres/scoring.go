@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lleontor705/cortex/internal/domain"
-	scoringdomain "github.com/lleontor705/cortex/internal/domain/scoring"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 )
 
 // GetScore retrieves the tenant-scoped score for an observation.

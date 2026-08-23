@@ -14,10 +14,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lleontor705/cortex/bench/common"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/embedding" //nolint:all
-	"github.com/lleontor705/cortex/internal/retrieval"
+	"github.com/lleontor705/cortex/v2/bench/common"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/embedding" //nolint:all
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 )
 
 // categoryNames maps LOCOMO numeric categories to names.

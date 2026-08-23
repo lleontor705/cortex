@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	domainentity "github.com/lleontor705/cortex/internal/domain/entity"
-	"github.com/lleontor705/cortex/internal/mcp/memorycontract"
-	projectpkg "github.com/lleontor705/cortex/internal/project"
-	"github.com/lleontor705/cortex/internal/store/bundle"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
+	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
+	projectpkg "github.com/lleontor705/cortex/v2/internal/project"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

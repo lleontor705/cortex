@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/authz"
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/authz"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // SystemService is the only capability granted to background lifecycle work.

@@ -188,7 +188,7 @@ func SelfUpdateWithCustomURL(currentVersion, apiURL string, progressFn func(stri
 	}
 
 	if res.AssetURL == "" {
-		return res, fmt.Errorf("no release binary found for %s/%s. Please install manually or use: go install github.com/%s/%s/cmd/cortex@latest", runtime.GOOS, runtime.GOARCH, RepoOwner, RepoName)
+		return res, fmt.Errorf("no release binary found for %s/%s. Please install manually or use: go install github.com/%s/%s/v2/cmd/cortex@latest", runtime.GOOS, runtime.GOARCH, RepoOwner, RepoName)
 	}
 
 	progressFn(fmt.Sprintf("Downloading %s (%s)...", res.Latest, res.AssetName))

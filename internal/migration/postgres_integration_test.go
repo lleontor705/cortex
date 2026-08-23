@@ -17,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/lleontor705/cortex/testutil/postgrestest"
+	"github.com/lleontor705/cortex/v2/testutil/postgrestest"
 )
 
 func TestMain(m *testing.M) {

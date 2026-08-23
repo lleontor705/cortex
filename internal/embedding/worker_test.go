@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/migration"
-	sqlitestore "github.com/lleontor705/cortex/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/migration"
+	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
 
 	"go.uber.org/goleak"
 	_ "modernc.org/sqlite"

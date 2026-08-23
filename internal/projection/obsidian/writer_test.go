@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 type fakeObs struct{ list []*domain.Observation }

@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // errDedupSkipped is a private sentinel returned by saveInTx when a duplicate

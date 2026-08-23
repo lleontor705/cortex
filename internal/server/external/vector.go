@@ -29,11 +29,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lleontor705/cortex/internal/config"
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/vector/pgvector"
-	"github.com/lleontor705/cortex/internal/vector/qdrant"
-	"github.com/lleontor705/cortex/internal/vector/sqlite_blob"
+	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/vector/pgvector"
+	"github.com/lleontor705/cortex/v2/internal/vector/qdrant"
+	"github.com/lleontor705/cortex/v2/internal/vector/sqlite_blob"
 )
 
 // FactoryInput carries the runtime handles the factory needs to construct a

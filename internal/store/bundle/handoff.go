@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // sqliteHandoffStage names the observable seams of the SQLite handoff path.

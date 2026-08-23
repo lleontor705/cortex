@@ -12,7 +12,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
 // Repository extends domain.ScoringRepository with additional methods needed

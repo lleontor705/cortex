@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lleontor705/cortex/internal/domain"
-	"github.com/lleontor705/cortex/internal/vector/conformance"
+	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/vector/conformance"
 )
 
 // integrationConfig resolves host/port from env (defaults localhost:6334).

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lleontor705/cortex/bench/vectorhydration"
+	"github.com/lleontor705/cortex/v2/bench/vectorhydration"
 )
 
 func TestCollectRequiresExactFlags(t *testing.T) {
