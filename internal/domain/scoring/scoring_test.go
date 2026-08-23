@@ -476,6 +476,7 @@ func TestGetTypeBonus(t *testing.T) {
 		want    float64
 	}{
 		{domain.TypeDecision, 0.5},
+		{domain.TypeArchitecture, 0.5},
 		{domain.TypeBugfix, 0.3},
 		{domain.TypePattern, 0.2},
 		{domain.TypeDiscovery, 0.15},
@@ -499,8 +500,8 @@ func TestGetAllTypeBonuses(t *testing.T) {
 	bonuses := GetAllTypeBonuses()
 
 	// Should be a copy, not the original
-	if len(bonuses) != 6 {
-		t.Errorf("got %d type bonuses, want 6", len(bonuses))
+	if len(bonuses) != 7 {
+		t.Errorf("got %d type bonuses, want 7", len(bonuses))
 	}
 
 	// Modifying the returned map should not affect the original
