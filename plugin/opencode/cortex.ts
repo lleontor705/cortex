@@ -39,16 +39,14 @@ import path from "path"
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 function resolveLocalConfig(): { token: string; url: string; port: number } {
+  // If explicitly set via CORTEX_HTTP_TOKEN (e.g. test harness), use it
   const envHttpToken = process.env.CORTEX_HTTP_TOKEN
-  const envRemoteToken = process.env.CORTEX_REMOTE_TOKEN
-  const envApiKey = process.env.CORTEX_API_KEY
-
-  let token = (envHttpToken ?? envRemoteToken ?? envApiKey ?? "").trim()
+  let token = (envHttpToken ?? "").trim()
   let url = (process.env.CORTEX_SERVER_URL ?? process.env.CORTEX_URL ?? "").trim().replace(/\/+$/, "")
   let port = parseInt(process.env.CORTEX_HTTP_PORT ?? "7438")
 
-  // If no environment variable is provided at all, check local config file
-  if (envHttpToken === undefined && envRemoteToken === undefined && envApiKey === undefined) {
+  // Check local ~/.cortex/cortex.yaml to align with the local cortex daemon
+  if (envHttpToken === undefined) {
     try {
       const home = os.homedir()
       const configFile = process.env.CORTEX_CONFIG_FILE
@@ -64,20 +62,21 @@ function resolveLocalConfig(): { token: string; url: string; port: number } {
         if (fs.existsSync(file)) {
           const content = fs.readFileSync(file, "utf-8")
           if (!token) {
-            const tokenMatch = content.match(/(?:token|token_env|api_key):\s*["']?([^"'\r\n]+)["']?/)
-            if (tokenMatch && tokenMatch[1]) {
-              const rawVal = tokenMatch[1].trim()
-              if (process.env[rawVal]) {
-                token = process.env[rawVal]!.trim()
-              } else if (!rawVal.startsWith("CORTEX_")) {
-                token = rawVal
-              }
+            // First check http.token
+            const httpTokenMatch = content.match(/http:[\s\S]*?token:\s*["']?([^"'\r\n]+)["']?/)
+            if (httpTokenMatch && httpTokenMatch[1]) {
+              token = httpTokenMatch[1].trim()
             }
-          }
-          if (!url) {
-            const urlMatch = content.match(/url:\s*["']?([^"'\r\n]+)["']?/)
-            if (urlMatch && urlMatch[1] && urlMatch[1].trim().startsWith("http")) {
-              url = urlMatch[1].trim().replace(/\/+$/, "").replace(/\/mcp$/, "")
+            if (!token) {
+              const tokenMatch = content.match(/(?:token|token_env|api_key):\s*["']?([^"'\r\n]+)["']?/)
+              if (tokenMatch && tokenMatch[1]) {
+                const rawVal = tokenMatch[1].trim()
+                if (process.env[rawVal]) {
+                  token = process.env[rawVal]!.trim()
+                } else if (!rawVal.startsWith("CORTEX_")) {
+                  token = rawVal
+                }
+              }
             }
           }
           const portMatch = content.match(/port:\s*(\d+)/)
@@ -88,6 +87,10 @@ function resolveLocalConfig(): { token: string; url: string; port: number } {
         }
       }
     } catch {}
+
+    if (!token) {
+      token = (process.env.CORTEX_REMOTE_TOKEN ?? process.env.CORTEX_API_KEY ?? "").trim()
+    }
   }
 
   if (!url) {
