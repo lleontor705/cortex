@@ -82,6 +82,8 @@ type ServerConfig struct {
 	ProjectIDs              []string             `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
 	ClassificationClearance []string             `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
 	BootstrapDevelopment    bool                 `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
+	// MultiTenant enables SaaS request scoping. Tenant and workspace are derived from a verified bearer and an authorized workspace selection.
+	MultiTenant bool `yaml:"multi_tenant,omitempty" json:"multi_tenant,omitempty" toml:"multi_tenant,omitempty" mapstructure:"multi_tenant"`
 }
 
 // ServerStorageConfig contains server-only PostgreSQL connection settings.
@@ -404,8 +406,6 @@ func Load(configPath string) (*Config, error) {
 	if cfg.Server.Storage.MigrationDSN == "" {
 		if dsn := os.Getenv("CORTEX_SERVER_STORAGE_MIGRATION_DSN"); dsn != "" {
 			cfg.Server.Storage.MigrationDSN = dsn
-		} else if cfg.Server.Storage.DSN != "" {
-			cfg.Server.Storage.MigrationDSN = cfg.Server.Storage.DSN
 		}
 	}
 	if cfg.HTTP.Token == "" {
@@ -454,6 +454,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.project_ids", []string{})
 	v.SetDefault("server.classification_clearance", []string{})
 	v.SetDefault("server.bootstrap_development", false)
+	v.SetDefault("server.multi_tenant", false)
 	v.SetDefault("server.workspace_id", "")
 	v.SetDefault("server.principal_subject", "")
 	v.SetDefault("server.secrets.signing_key", "")

@@ -66,7 +66,7 @@ func TestViewSearch(t *testing.T) {
 	m.Width, m.Height = 120, 40
 
 	output := m.viewSearch()
-	if !strings.Contains(output, "Search Memories") {
+	if !strings.Contains(output, "Search Knowledge") || !strings.Contains(output, "tab switch source") {
 		t.Error("should show search header")
 	}
 }
@@ -102,7 +102,7 @@ func TestViewSearchResultsEmpty(t *testing.T) {
 	m.SearchResults = nil
 
 	output := m.viewSearchResults()
-	if !strings.Contains(output, "No memories found") {
+	if !strings.Contains(output, "No results found") {
 		t.Error("should show no results message")
 	}
 }

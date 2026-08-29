@@ -12,10 +12,14 @@ import {
 } from "./prefs";
 import { refreshSnapshot, runLoginHandshake } from "./auth-handshake";
 import { validateBearerDestination } from "./transport-policy";
+import { serverEndpoint } from "./server-endpoint";
 
 interface AuthContextType {
   serverUrl: string;
+  managedServerEndpoint: boolean;
   token: string;
+  /** Verified server-selected workspace used for the current browser session. */
+  workspaceId: string;
   /**
    * Reset generation: advances on every terminal auth event (initial-login
    * 401, logout, 401 invalidation, or a superseded/abandoned attempt).
@@ -39,6 +43,7 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   setCredentials: (url: string, token: string) => Promise<boolean>;
+  setWorkspace: (workspaceId: string) => Promise<void>;
   setLLMCredentials: (apiKey: string, provider: string, model: string, baseURL?: string) => void;
   setEmbeddingCredentials: (provider: string, model: string, dimensions: number, vectorProvider?: string) => void;
   refreshState: () => Promise<void>;
@@ -48,8 +53,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [serverUrl, setServerUrl] = useState<string>("http://localhost:7438");
+  const [serverUrl, setServerUrl] = useState<string>(serverEndpoint.url);
   const [token, setToken] = useState<string>("");
+  const [workspaceId, setActiveWorkspaceId] = useState<string>("");
   const [llmApiKey, setLlmApiKey] = useState<string>("");
   const [llmProvider, setLlmProvider] = useState<string>("gemini");
   const [llmModel, setLlmModel] = useState<string>("gemini-2.5-flash");
@@ -87,7 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const storage = window.localStorage;
     purgeLegacySecrets(storage);
     const prefs = loadPreferences(storage);
-    setServerUrl(prefs.serverUrl);
+    setServerUrl(serverEndpoint.managed ? serverEndpoint.url : prefs.serverUrl);
     setLlmProvider(prefs.llmProvider);
     setLlmModel(prefs.llmModel);
     setLlmBaseURL(prefs.llmBaseURL);
@@ -106,6 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const clearLiveSecrets = () => {
     attemptsRef.current?.supersede();
     setToken("");
+    setActiveWorkspaceId("");
     setLlmApiKey("");
     setClient(null);
     setPrincipal(null);
@@ -169,6 +176,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
+      const initialWorkspace =
+        result.principal?.workspace_id || result.principal?.workspaces?.[0] || "";
+      // The server may default a SaaS request to the first granted workspace.
+      // Pin that confirmed value for later HTTP and SSE requests; the server
+      // still validates every selector independently.
+      cli.setWorkspace(initialWorkspace);
+      setActiveWorkspaceId(initialWorkspace);
       setServerUrl(url);
       setToken(tok);
       setClient(cli);
@@ -209,6 +223,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveEmbeddingPreferences(window.localStorage, provider, model, dimensions, vecProvider);
   };
 
+  const setWorkspace = async (requestedWorkspaceId: string): Promise<void> => {
+    if (!client || !principal) return;
+    const selectedWorkspace = requestedWorkspaceId.trim();
+    if (!selectedWorkspace || !principal.workspaces.includes(selectedWorkspace)) {
+      setError("El workspace seleccionado no pertenece a este token.");
+      return;
+    }
+
+    const previousWorkspace = workspaceId;
+    client.setWorkspace(selectedWorkspace);
+    setActiveWorkspaceId(selectedWorkspace);
+    setError(null);
+    try {
+      const [nextPrincipal, nextStats] = await Promise.all([client.me(), client.stats()]);
+      if (!attemptsRef.current?.owns(client)) return;
+      setPrincipal(nextPrincipal);
+      setStats(nextStats);
+      setActiveWorkspaceId(nextPrincipal.workspace_id || selectedWorkspace);
+    } catch (err: unknown) {
+      // A 401 already cleared the session through the client callback. For a
+      // rejected or stale workspace selector, restore the last safe choice.
+      if (!attemptsRef.current?.owns(client)) return;
+      client.setWorkspace(previousWorkspace);
+      setActiveWorkspaceId(previousWorkspace);
+      setError(err instanceof Error ? err.message : "No se pudo cambiar el workspace.");
+    }
+  };
+
   const refreshState = async () => {
     if (!client) return;
     const snapshot = await refreshSnapshot(client);
@@ -231,7 +273,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider
       value={{
         serverUrl,
+        managedServerEndpoint: serverEndpoint.managed,
         token,
+        workspaceId,
         resetGeneration,
         llmApiKey,
         llmProvider,
@@ -248,6 +292,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         error,
         setCredentials,
+        setWorkspace,
         setLLMCredentials,
         setEmbeddingCredentials,
         refreshState,

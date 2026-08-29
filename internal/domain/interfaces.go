@@ -383,6 +383,9 @@ type Principal struct {
 	AuthMethod   string // oidc, client_credentials, api_key, static
 	GrantDigest  string
 	GrantVersion int64
+	// RateLimitTier is loaded from the verified credential record. Request
+	// bodies and headers must never populate or override it.
+	RateLimitTier string
 	// ProjectIDs and ClassificationClearance are verified grants. They are
 	// intentionally separate from OAuth scopes: a client supplied project
 	// selector can never create either grant.

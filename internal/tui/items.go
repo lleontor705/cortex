@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/store/session"
 )
 
@@ -53,6 +54,23 @@ func (i searchResultItem) Description() string {
 
 func (i searchResultItem) FilterValue() string {
 	return i.result.Title + " " + i.result.Content
+}
+
+type codeSymbolItem struct {
+	symbol code.Symbol
+}
+
+func (i codeSymbolItem) Title() string {
+	badge := lipgloss.NewStyle().Foreground(colorPurple).Bold(true).Render("[" + i.symbol.Kind + "]")
+	return fmt.Sprintf("%s %s", badge, truncateStr(i.symbol.Name, 55))
+}
+
+func (i codeSymbolItem) Description() string {
+	return fmt.Sprintf("%s:%d", i.symbol.FilePath, i.symbol.LineNumber)
+}
+
+func (i codeSymbolItem) FilterValue() string {
+	return i.symbol.Name + " " + i.symbol.FilePath + " " + i.symbol.Signature
 }
 
 // sessionItem wraps session stats.

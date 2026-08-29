@@ -7,6 +7,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/setup"
 	"github.com/lleontor705/cortex/v2/internal/store/session"
 	"github.com/lleontor705/cortex/v2/internal/update"
@@ -66,6 +67,12 @@ type statsLoadedMsg struct {
 
 type searchResultsMsg struct {
 	results []*domain.SearchResult
+	query   string
+	err     error
+}
+
+type codeSearchResultsMsg struct {
+	results []code.Symbol
 	query   string
 	err     error
 }
@@ -209,11 +216,13 @@ type Model struct {
 	Stats *combinedStats
 
 	// Search
-	SearchInput      textinput.Model
-	SearchQuery      string
-	SearchResults    []*domain.SearchResult
-	SearchHistory    []string
-	SearchHistoryIdx int
+	SearchInput       textinput.Model
+	SearchQuery       string
+	SearchResults     []*domain.SearchResult
+	CodeSearchResults []code.Symbol
+	SearchMode        string
+	SearchHistory     []string
+	SearchHistoryIdx  int
 
 	// Recent observations
 	RecentObservations []*domain.Observation
@@ -549,6 +558,7 @@ func New(deps *Deps) Model {
 		UploadToCortex:       uploadToCortex,
 		StatsMode:            0,
 		SearchInput:          ti,
+		SearchMode:           "memory",
 		SetupSpinner:         sp,
 		EmbCfgSpinner:        embSp,
 		EmbCfgModel:          embModel,

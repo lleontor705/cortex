@@ -17,13 +17,25 @@ import (
 // fakeReindexSource is a controllable ReindexSource for unit tests. It serves
 // observations and (optionally) pre-existing embeddings from in-memory maps.
 type fakeReindexSource struct {
-	obs        map[int64]*domain.Observation
-	embeddings map[int64][]float32 // existing vectors (nil = not stored)
-	embedErr   map[int64]error     // per-id embedding retrieval error
-	idsByOrder []int64             // deterministic iteration order
+	obs               map[int64]*domain.Observation
+	embeddings        map[int64][]float32 // existing vectors (nil = not stored)
+	embedErr          map[int64]error     // per-id embedding retrieval error
+	idsByOrder        []int64             // deterministic iteration order
+	scopes            map[int64]ReindexScope
+	listedScope       ReindexScope
+	getEmbeddingCalls int
+	descriptor        ReindexCorpusDescriptor
 }
 
-func (s *fakeReindexSource) List(_ context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error) {
+func (s *fakeReindexSource) DescribeCorpus(_ context.Context, _ ReindexScope) (ReindexCorpusDescriptor, error) {
+	if s.descriptor.Checksum == "" {
+		return ReindexCorpusDescriptor{Generation: "1", Checksum: "stable", Count: len(s.idsByOrder)}, nil
+	}
+	return s.descriptor, nil
+}
+
+func (s *fakeReindexSource) List(_ context.Context, scope ReindexScope, filter domain.ObservationFilter) ([]*domain.Observation, error) {
+	s.listedScope = scope
 	// Apply project filter first, then paginate by Offset/Limit (the reindex
 	// uses Offset-based pagination — the fake MUST respect it or the loop
 	// never terminates).
@@ -49,6 +61,17 @@ func (s *fakeReindexSource) List(_ context.Context, filter domain.ObservationFil
 	return filtered[start:end], nil
 }
 
+func (s *fakeReindexSource) Scope(_ context.Context, id int64) (ReindexScope, error) {
+	if s.scopes != nil {
+		scope, ok := s.scopes[id]
+		if !ok {
+			return ReindexScope{}, domain.ErrNotFound
+		}
+		return scope, nil
+	}
+	return ReindexScope{TenantID: "tenant-a", WorkspaceID: "workspace-a", ProjectID: "10000000-a000-0000-0000-000000000003"}, nil
+}
+
 func (s *fakeReindexSource) GetByID(_ context.Context, id int64) (*domain.Observation, error) {
 	if o, ok := s.obs[id]; ok {
 		return o, nil
@@ -56,7 +79,8 @@ func (s *fakeReindexSource) GetByID(_ context.Context, id int64) (*domain.Observ
 	return nil, domain.ErrNotFound
 }
 
-func (s *fakeReindexSource) GetEmbedding(_ context.Context, id int64) ([]float32, string, error) {
+func (s *fakeReindexSource) GetEmbedding(_ context.Context, _ ReindexScope, id int64) ([]float32, string, error) {
+	s.getEmbeddingCalls++
 	if s.embedErr != nil {
 		if err, ok := s.embedErr[id]; ok {
 			return nil, "", err
@@ -107,6 +131,15 @@ type reindexTarget struct {
 	caps      domain.Capabilities
 }
 
+func scopedReindexOptions(batchSize int) ReindexOptions {
+	return ReindexOptions{
+		BatchSize:   batchSize,
+		TenantID:    "tenant-a",
+		WorkspaceID: "workspace-a",
+		ProjectID:   "10000000-a000-0000-0000-000000000003",
+	}
+}
+
 func (t *reindexTarget) ID() string { return "reindex-target" }
 func (t *reindexTarget) Upsert(_ context.Context, points []domain.VectorPoint) error {
 	if t.upsertErr != nil {
@@ -144,7 +177,7 @@ func TestReindex_CopiesExistingEmbeddings(t *testing.T) {
 		idsByOrder: []int64{1, 2},
 	}
 	target := &reindexTarget{}
-	res, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 10})
+	res, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10))
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -160,6 +193,11 @@ func TestReindex_CopiesExistingEmbeddings(t *testing.T) {
 	// The model from the source embedding is preserved.
 	if target.upserted[0].ModelInfo.Name != "source-model" {
 		t.Errorf("ModelInfo.Name = %q, want source-model", target.upserted[0].ModelInfo.Name)
+	}
+	for _, point := range target.upserted {
+		if point.Metadata["tenant_id"] != "tenant-a" || point.Metadata["workspace_id"] != "workspace-a" {
+			t.Errorf("point %d boundary metadata = %#v, want tenant-a/workspace-a", point.ID, point.Metadata)
+		}
 	}
 }
 
@@ -177,7 +215,7 @@ func TestReindex_ReEmbedsWhenNoExistingVector(t *testing.T) {
 	}
 	provider := &fakeEmbeddingProvider{dim: 4, model: "reembed-model"}
 	target := &reindexTarget{}
-	res, err := Reindex(context.Background(), src, provider, target, ReindexOptions{BatchSize: 10})
+	res, err := Reindex(context.Background(), src, provider, target, scopedReindexOptions(10))
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -208,7 +246,7 @@ func TestReindex_SkipsWhenNoVectorAndNoProvider(t *testing.T) {
 		idsByOrder: []int64{1},
 	}
 	target := &reindexTarget{}
-	res, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 10})
+	res, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10))
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -240,7 +278,7 @@ func TestReindex_VectorSearchDisabledSkipsAndReEmbeds(t *testing.T) {
 	}
 	provider := &fakeEmbeddingProvider{dim: 4, model: "reembed"}
 	target := &reindexTarget{}
-	res, err := Reindex(context.Background(), src, provider, target, ReindexOptions{BatchSize: 10})
+	res, err := Reindex(context.Background(), src, provider, target, scopedReindexOptions(10))
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -269,7 +307,7 @@ func TestReindex_BatchChunking(t *testing.T) {
 		inner:    &reindexTarget{},
 		onUpsert: func() { calls++ },
 	}
-	_, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 2})
+	_, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(2))
 	if err != nil {
 		t.Fatalf("Reindex: %v", err)
 	}
@@ -316,7 +354,7 @@ func TestReindex_TargetUpsertFailureIsExplicit(t *testing.T) {
 	target := &reindexTarget{
 		upsertErr: errors.New("target unavailable"),
 	}
-	_, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 10})
+	_, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10))
 	if err == nil {
 		t.Fatal("expected upsert error to propagate; got nil")
 	}
@@ -333,7 +371,7 @@ func TestReindex_EmptySourceIsSuccess(t *testing.T) {
 		embeddings: map[int64][]float32{},
 	}
 	target := &reindexTarget{}
-	res, err := Reindex(context.Background(), src, nil, target, ReindexOptions{BatchSize: 10})
+	res, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10))
 	if err != nil {
 		t.Fatalf("Reindex empty: %v", err)
 	}
@@ -357,7 +395,10 @@ func TestReindex_ProgressCallback(t *testing.T) {
 	target := &reindexTarget{}
 	var lastProgress ReindexProgress
 	_, err := Reindex(context.Background(), src, nil, target, ReindexOptions{
-		BatchSize: 2,
+		BatchSize:   2,
+		TenantID:    "tenant-a",
+		WorkspaceID: "workspace-a",
+		ProjectID:   "10000000-a000-0000-0000-000000000003",
 		OnProgress: func(p ReindexProgress) {
 			lastProgress = p
 		},
@@ -386,7 +427,7 @@ func TestReindex_Idempotent(t *testing.T) {
 		idsByOrder: []int64{1},
 	}
 	target := &reindexTarget{}
-	opts := ReindexOptions{BatchSize: 10}
+	opts := scopedReindexOptions(10)
 	r1, err := Reindex(context.Background(), src, nil, target, opts)
 	if err != nil {
 		t.Fatalf("first Reindex: %v", err)
@@ -417,5 +458,137 @@ func TestReindex_NilSourceErrors(t *testing.T) {
 	_, err := Reindex(context.Background(), nil, nil, &reindexTarget{}, ReindexOptions{BatchSize: 10})
 	if err == nil {
 		t.Fatal("expected error for nil source; got nil")
+	}
+}
+
+func TestReindex_RejectsMissingTrustedBoundaryBeforeAdapterAccess(t *testing.T) {
+	src := &fakeReindexSource{}
+	target := &reindexTarget{}
+
+	for _, opts := range []ReindexOptions{
+		{WorkspaceID: "workspace-a", ProjectID: "10000000-a000-0000-0000-000000000003"},
+		{TenantID: "tenant-a", ProjectID: "10000000-a000-0000-0000-000000000003"},
+		{TenantID: " ", WorkspaceID: "workspace-a", ProjectID: "10000000-a000-0000-0000-000000000003"},
+		{TenantID: "tenant-a", WorkspaceID: "workspace-a"},
+	} {
+		if _, err := Reindex(context.Background(), src, nil, target, opts); err == nil {
+			t.Fatalf("Reindex(%+v) expected trusted-boundary error", opts)
+		}
+	}
+	if len(target.upserted) != 0 {
+		t.Fatalf("target received %d points for invalid boundary", len(target.upserted))
+	}
+}
+
+func TestReindex_StampsTrustedProjectIdentityAlongsideDisplayLabel(t *testing.T) {
+	src := &fakeReindexSource{
+		obs:        map[int64]*domain.Observation{1: {ID: 1, Project: "duplicate-label", Title: "A", Content: "B"}},
+		embeddings: map[int64][]float32{1: {1, 0}},
+		idsByOrder: []int64{1},
+	}
+	target := &reindexTarget{}
+	if _, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10)); err != nil {
+		t.Fatal(err)
+	}
+	metadata := target.upserted[0].Metadata
+	if metadata["project_id"] != "10000000-a000-0000-0000-000000000003" || metadata["project"] != "duplicate-label" {
+		t.Fatalf("metadata=%v", metadata)
+	}
+}
+
+func TestReindex_RejectsDuplicateLabelFromDifferentProjectUUID(t *testing.T) {
+	src := &fakeReindexSource{
+		obs: map[int64]*domain.Observation{
+			1: {ID: 1, Project: "duplicate-label", Title: "A", Content: "allowed"},
+			2: {ID: 2, Project: "duplicate-label", Title: "B", Content: "foreign"},
+		},
+		embeddings: map[int64][]float32{1: {1, 0}, 2: {0, 1}},
+		idsByOrder: []int64{1, 2},
+		scopes: map[int64]ReindexScope{
+			1: {TenantID: "tenant-a", WorkspaceID: "workspace-a", ProjectID: "10000000-a000-0000-0000-000000000003"},
+			2: {TenantID: "tenant-a", WorkspaceID: "workspace-a", ProjectID: "20000000-a000-0000-0000-000000000003"},
+		},
+	}
+	target := &reindexTarget{}
+	if _, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10)); err == nil {
+		t.Fatal("expected mixed-project corpus to be rejected")
+	}
+	if len(target.upserted) != 0 {
+		t.Fatalf("target received %d points from mixed-project corpus", len(target.upserted))
+	}
+}
+
+func TestReindex_PreflightsWholeCorpusBeforeEmbeddingOrUpsert(t *testing.T) {
+	src := &fakeReindexSource{
+		obs: map[int64]*domain.Observation{
+			1: {ID: 1, Project: "duplicate-label", Title: "A", Content: "allowed"},
+			2: {ID: 2, Project: "duplicate-label", Title: "B", Content: "foreign"},
+		},
+		embeddings: map[int64][]float32{},
+		idsByOrder: []int64{1, 2},
+		scopes: map[int64]ReindexScope{
+			1: {TenantID: "tenant-a", WorkspaceID: "workspace-a", ProjectID: "10000000-a000-0000-0000-000000000003"},
+			2: {TenantID: "tenant-a", WorkspaceID: "workspace-a", ProjectID: "20000000-a000-0000-0000-000000000003"},
+		},
+	}
+	provider := &fakeEmbeddingProvider{dim: 2, model: "must-not-run"}
+	target := &reindexTarget{}
+
+	if _, err := Reindex(context.Background(), src, provider, target, scopedReindexOptions(1)); err == nil {
+		t.Fatal("expected a foreign observation in a later batch to reject the whole corpus")
+	}
+	if src.getEmbeddingCalls != 0 {
+		t.Fatalf("GetEmbedding calls = %d, want 0 before whole-corpus scope validation", src.getEmbeddingCalls)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d, want 0 before whole-corpus scope validation", provider.calls)
+	}
+	if len(target.upserted) != 0 {
+		t.Fatalf("target received %d points before whole-corpus scope validation", len(target.upserted))
+	}
+}
+
+func TestReindex_RejectsProjectlessObservation(t *testing.T) {
+	src := &fakeReindexSource{
+		obs:        map[int64]*domain.Observation{1: {ID: 1, Project: "duplicate-label", Title: "A", Content: "projectless"}},
+		embeddings: map[int64][]float32{1: {1, 0}},
+		idsByOrder: []int64{1},
+		scopes:     map[int64]ReindexScope{1: {TenantID: "tenant-a", WorkspaceID: "workspace-a"}},
+	}
+	target := &reindexTarget{}
+	if _, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10)); err == nil {
+		t.Fatal("expected projectless observation to be rejected")
+	}
+	if len(target.upserted) != 0 {
+		t.Fatalf("target received %d projectless points", len(target.upserted))
+	}
+}
+
+type mutatingReindexTarget struct {
+	reindexTarget
+	source *fakeReindexSource
+}
+
+func (t *mutatingReindexTarget) Upsert(ctx context.Context, points []domain.VectorPoint) error {
+	if err := t.reindexTarget.Upsert(ctx, points); err != nil {
+		return err
+	}
+	t.source.descriptor = ReindexCorpusDescriptor{Generation: "2", Checksum: "changed", Count: 2}
+	return nil
+}
+
+func TestReindex_RejectsSuccessWhenCorpusChangesDuringRun(t *testing.T) {
+	src := &fakeReindexSource{
+		obs:        map[int64]*domain.Observation{1: {ID: 1, Title: "before", Content: "stable"}},
+		embeddings: map[int64][]float32{1: {1, 0}}, idsByOrder: []int64{1},
+		descriptor: ReindexCorpusDescriptor{Generation: "1", Checksum: "before", Count: 1},
+	}
+	target := &mutatingReindexTarget{source: src}
+	result, err := Reindex(context.Background(), src, nil, target, scopedReindexOptions(10))
+	if !errors.Is(err, ErrReindexCorpusChanged) {
+		t.Fatalf("error = %v, want ErrReindexCorpusChanged", err)
+	}
+	if result == nil || result.Upserted != 1 {
+		t.Fatalf("result = %+v, want attempted upsert reported before failed consistency check", result)
 	}
 }

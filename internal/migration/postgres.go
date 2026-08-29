@@ -109,6 +109,21 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 	}
 	sql108 := normalizeLF(servermigrations.ServerPrincipalRWGatingSQL)
 	sum108 := sha256.Sum256([]byte(sql108))
+	if servermigrations.ServerScopedCodeIndexSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL scoped code index SQL is empty")
+	}
+	sql109 := normalizeLF(servermigrations.ServerScopedCodeIndexSQL)
+	sum109 := sha256.Sum256([]byte(sql109))
+	if servermigrations.ServerVerifiedRateLimitTierSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL verified rate limit tier SQL is empty")
+	}
+	sql110 := normalizeLF(servermigrations.ServerVerifiedRateLimitTierSQL)
+	sum110 := sha256.Sum256([]byte(sql110))
+	if servermigrations.ServerMultiTenantVerifierSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL multi-tenant verifier SQL is empty")
+	}
+	sql111 := normalizeLF(servermigrations.ServerMultiTenantVerifierSQL)
+	sum111 := sha256.Sum256([]byte(sql111))
 	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
@@ -139,6 +154,21 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		name:     "principal_rw_gating",
 		sql:      sql108,
 		checksum: hex.EncodeToString(sum108[:]),
+	}, {
+		version:  109,
+		name:     "scoped_code_index",
+		sql:      sql109,
+		checksum: hex.EncodeToString(sum109[:]),
+	}, {
+		version:  110,
+		name:     "verified_rate_limit_tier",
+		sql:      sql110,
+		checksum: hex.EncodeToString(sum110[:]),
+	}, {
+		version:  111,
+		name:     "multi_tenant_verifier",
+		sql:      sql111,
+		checksum: hex.EncodeToString(sum111[:]),
 	}}
 	// Every migration carries the runtime head so any single Apply refuses
 	// databases ledgered by a newer runtime (ErrFutureMigration).

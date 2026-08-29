@@ -4545,3 +4545,73 @@ func verify108Proof(t *testing.T, ctx context.Context, tx *sql.Tx, secret, tenan
 	}
 	return provenance, version, nil
 }
+
+// TestPostgresMigration109ScopedCodeIndex proves the forward-only lifecycle
+// and post-apply security shape against PostgreSQL. Cross-scope row behavior
+// is covered with authenticated principals by the scoped-store gate.
+func TestPostgresMigration109ScopedCodeIndex(t *testing.T) {
+	dsn := os.Getenv("CORTEX_TEST_POSTGRES_MIGRATION_DSN")
+	if dsn == "" {
+		t.Fatal("CORTEX_TEST_POSTGRES_MIGRATION_DSN is required for postgres_integration tests")
+	}
+	isolatedDSN, cleanup, err := isolatedPostgresDatabase(dsn, "migration109")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	db, err := sql.Open("pgx", isolatedDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	migrations := mustPostgresMigrations(t)
+	var subject *PostgresServerMigration
+	for _, migration := range migrations {
+		if migration.Version() == 109 {
+			subject = migration
+			break
+		}
+	}
+	if subject == nil {
+		t.Fatal("migration 109 not registered")
+	}
+	for _, migration := range migrations {
+		if migration.Version() >= 109 {
+			continue
+		}
+		if err := migration.Apply(context.Background(), db); err != nil {
+			t.Fatalf("apply prerequisite %d: %v", migration.Version(), err)
+		}
+	}
+	state, err := subject.Preflight(context.Background(), db)
+	if err != nil || state.Ledgered {
+		t.Fatalf("109 preflight state=%+v err=%v; want unledgered", state, err)
+	}
+	if err := subject.Apply(context.Background(), db); err != nil {
+		t.Fatalf("apply 109: %v", err)
+	}
+	if err := subject.VerifyApplied(context.Background(), db); err != nil {
+		t.Fatalf("verify 109: %v", err)
+	}
+	if err := subject.Apply(context.Background(), db); err != nil {
+		t.Fatalf("idempotent reapply 109: %v", err)
+	}
+
+	for _, table := range []string{"scoped_code_symbols", "scoped_code_relations", "scoped_code_index_state"} {
+		var enabled, forced bool
+		if err := db.QueryRowContext(context.Background(),
+			`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid=to_regclass($1)`,
+			"public."+table).Scan(&enabled, &forced); err != nil || !enabled || !forced {
+			t.Errorf("%s RLS enabled=%v forced=%v err=%v", table, enabled, forced, err)
+		}
+		var appSelect bool
+		if err := db.QueryRowContext(context.Background(),
+			`SELECT has_table_privilege('cortex_app',$1,'SELECT')`, "public."+table).Scan(&appSelect); err != nil || !appSelect {
+			t.Errorf("%s cortex_app SELECT=%v err=%v", table, appSelect, err)
+		}
+	}
+	if err := subject.Down(context.Background(), db); err == nil || !errors.Is(err, ErrForwardOnly) {
+		t.Fatalf("Down(109) err=%v; want ErrForwardOnly", err)
+	}
+}

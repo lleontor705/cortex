@@ -250,6 +250,28 @@ func (s *Store) classificationGrantFilter() (classes []string, wildcard bool) {
 	}
 	return classes, false
 }
+
+// appendObservationVisibilityPredicate is the single SQL boundary for the
+// classification-clearance and personal-owner predicates used by authorized
+// observation readers. The qualified form is restricted to the fixed `o`
+// alias; callers cannot inject identifiers.
+func (s *Store) appendObservationVisibilityPredicate(statement string, args []any, qualified bool) (string, []any) {
+	classification, owner := "classification", "owner_subject"
+	if qualified {
+		classification, owner = "o.classification", "o.owner_subject"
+	}
+	if classes, wildcard := s.classificationGrantFilter(); !wildcard {
+		if len(classes) == 0 {
+			statement += " AND " + classification + " NOT IN ('restricted','confidential')"
+		} else {
+			statement += fmt.Sprintf(" AND (%s = ANY($%d) OR %s NOT IN ('restricted','confidential'))", classification, len(args)+1, classification)
+			args = append(args, classes)
+		}
+	}
+	statement += fmt.Sprintf(" AND (%s <> 'personal' OR %s=$%d)", classification, owner, len(args)+1)
+	args = append(args, s.principal.Subject)
+	return statement, args
+}
 func (s *Store) transaction(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	ctx = s.context(ctx)
 	if tx, ok := txFromContext(ctx); ok {

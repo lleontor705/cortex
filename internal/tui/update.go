@@ -155,6 +155,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.SearchResults = msg.results
+		m.CodeSearchResults = nil
+		m.SearchMode = "memory"
 		m.SearchQuery = msg.query
 		m.Screen = ScreenSearchResults
 		m.Cursor = 0
@@ -170,6 +172,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w = 20
 		}
 		h := m.Height - 10
+		if h < 5 {
+			h = 5
+		}
+		m.SearchListModel.SetSize(w, h)
+		return m, nil
+
+	case codeSearchResultsMsg:
+		if msg.err != nil {
+			m.ErrorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.CodeSearchResults = msg.results
+		m.SearchResults = nil
+		m.SearchMode = "code"
+		m.SearchQuery = msg.query
+		m.Screen = ScreenSearchResults
+		items := make([]list.Item, len(msg.results))
+		for i, symbol := range msg.results {
+			items[i] = codeSymbolItem{symbol: symbol}
+		}
+		m.SearchListModel.SetItems(items)
+		w, h := m.Width-4, m.Height-10
+		if w < 20 {
+			w = 20
+		}
 		if h < 5 {
 			h = 5
 		}
@@ -865,9 +892,23 @@ func (m Model) handleSearchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.SearchHistoryIdx = len(m.SearchHistory)
 			m.SearchInput.Blur()
+			if m.SearchMode == "code" {
+				return m, searchCode(m.deps, query, m.FilterProject)
+			}
 			return m, searchMemories(m.deps, query, m.FilterProject)
 		}
 		return m, nil
+	case "tab":
+		if m.SearchMode == "code" {
+			m.SearchMode = "memory"
+			m.SearchInput.Placeholder = "Search memories..."
+		} else {
+			m.SearchMode = "code"
+			m.SearchInput.Placeholder = "Search symbol or file path..."
+		}
+		return m, nil
+	case "f":
+		return m.cycleProjectFilter()
 	case "up":
 		if len(m.SearchHistory) > 0 {
 			if m.SearchHistoryIdx > 0 {
@@ -944,6 +985,11 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "enter":
+		if m.SearchMode == "code" {
+			m.PreviewVisible = true
+			m.updatePreviewContent()
+			return m, nil
+		}
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			m.PrevScreen = ScreenSearchResults
 			m.PrevCursor = m.SearchListModel.Index()
@@ -951,6 +997,9 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.result.ID))
 		}
 	case "t":
+		if m.SearchMode == "code" {
+			return m, nil
+		}
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			m.PrevScreen = ScreenSearchResults
 			m.PrevCursor = m.SearchListModel.Index()
@@ -967,9 +1016,15 @@ func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.FilterProject = projects[(currentIdx+1)%len(projects)]
+			if m.SearchMode == "code" {
+				return m, searchCode(m.deps, m.SearchQuery, m.FilterProject)
+			}
 			return m, searchMemories(m.deps, m.SearchQuery, m.FilterProject)
 		}
 	case "d":
+		if m.SearchMode == "code" {
+			return m, nil
+		}
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			m.ConfirmDelete = true
 			m.ConfirmDeleteID = item.result.ID
@@ -2001,6 +2056,10 @@ func (m *Model) updatePreviewContent() {
 			r := item.result
 			content = fmt.Sprintf("Title: %s\nType: %s\nProject: %s\nCreated: %s\nScore: %.0f%%\n\n%s",
 				r.Title, r.Type, r.Project, formatTime(r.CreatedAt), r.Rank*100, r.Content)
+		} else if item, ok := m.SearchListModel.SelectedItem().(codeSymbolItem); ok {
+			s := item.symbol
+			content = fmt.Sprintf("Symbol: %s\nKind: %s\nProject: %s\nFile: %s:%d\nPackage: %s\nVisibility: %s\n\n%s",
+				s.Name, s.Kind, s.Project, s.FilePath, s.LineNumber, s.PackageName, s.Visibility, s.Signature)
 		}
 	case ScreenRecent:
 		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
@@ -2021,6 +2080,9 @@ func (m Model) refreshScreen(screen Screen) tea.Cmd {
 		return loadRecentObservations(m.deps, m.FilterProject)
 	case ScreenSearchResults:
 		if m.SearchQuery != "" {
+			if m.SearchMode == "code" {
+				return searchCode(m.deps, m.SearchQuery, m.FilterProject)
+			}
 			return searchMemories(m.deps, m.SearchQuery, m.FilterProject)
 		}
 		return nil
@@ -2068,6 +2130,9 @@ func (m Model) cycleProjectFilter() (tea.Model, tea.Cmd) {
 		return m, loadRecentObservations(m.deps, m.FilterProject)
 	case ScreenSearchResults:
 		if m.SearchQuery != "" {
+			if m.SearchMode == "code" {
+				return m, searchCode(m.deps, m.SearchQuery, m.FilterProject)
+			}
 			return m, searchMemories(m.deps, m.SearchQuery, m.FilterProject)
 		}
 		return m, nil

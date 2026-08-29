@@ -35,9 +35,9 @@ Configura las siguientes variables en el panel de **Cortex Server**:
 | `CORTEX_HTTP_PORT` | Puerto de Cortex | `${{PORT}}` o `7438` |
 | `CORTEX_HTTP_TOKEN` | Token secreto de autenticación API/MCP | `cortex_live_sec_...` |
 | `CORTEX_SERVER_STORAGE_DRIVER` | Driver de persistencia | `postgres` |
-| `CORTEX_SERVER_STORAGE_DSN` | Conexión Postgres de la aplicación | `${{Postgres.DATABASE_URL}}` |
-| `CORTEX_SERVER_STORAGE_MIGRATION_DSN`| Conexión Postgres para migraciones | `${{Postgres.DATABASE_URL}}` |
-| `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | Auto-creación de tenant inicial | `true` |
+| `CORTEX_SERVER_STORAGE_DSN` | DSN del rol runtime sin privilegios (`cortex_app`, sin `BYPASSRLS`) | Secret Reference con el DSN de `cortex_app` |
+| `CORTEX_SERVER_STORAGE_MIGRATION_DSN`| DSN del rol privilegiado y distinto (`cortex_migration`) | Secret Reference con el DSN de `cortex_migration` |
+| `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | Fallback de DSN exclusivamente local | `false` |
 | `CORTEX_SERVER_TENANT_ID` | UUID del tenant principal | `00000000-0000-0000-0000-000000000001` |
 | `CORTEX_SERVER_WORKSPACE_ID` | UUID del workspace por defecto | `00000000-0000-0000-0000-000000000002` |
 | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Subject del token administrador | `00000000-0000-0000-0000-000000000003` |
@@ -46,6 +46,10 @@ Configura las siguientes variables en el panel de **Cortex Server**:
 | `CORTEX_AI_PROVIDER` | Proveedor de embeddings (opcional) | `ollama` / `openai` / `openrouter` |
 | `CORTEX_AI_BASE_URL` | URL del proveedor de AI | `https://api.openai.com/v1` |
 | `CORTEX_AI_API_KEY` | API Key de OpenAI / OpenRouter | `sk-...` |
+
+No asignes `${{Postgres.DATABASE_URL}}` a ambas variables: Cortex rechaza en producción dos DSNs que resuelvan al mismo rol, antes de conectarse o migrar. Aprovisiona `cortex_app` y `cortex_migration` con `scripts/postgres/bootstrap-authz.sql`, guarda cada DSN como un secreto independiente de Railway y permite que ambos apunten al mismo host/base de datos. El proceso usa el DSN de migración solo durante migraciones y reconciliación de bootstrap, cierra ese handle y mantiene el pool de servicio con `cortex_app`.
+
+`CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true` permite omitir el DSN de migración y reutilizar el runtime únicamente para entornos efímeros de desarrollo. No lo uses en un despliegue público. Separar la migración en un job one-shot todavía es una mejora pendiente y no forma parte de este flujo.
 
 ---
 

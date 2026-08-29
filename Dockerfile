@@ -19,10 +19,15 @@ RUN apk add --no-cache ca-certificates curl \
 
 COPY --from=builder /build/cortex /usr/local/bin/cortex
 COPY --from=builder /build/migrations /migrations
+COPY docker/server-entrypoint.sh /usr/local/bin/cortex-server-entrypoint
+
+RUN chmod 755 /usr/local/bin/cortex-server-entrypoint
 
 USER cortex
 
 EXPOSE 7438
+
+ENTRYPOINT ["/usr/local/bin/cortex-server-entrypoint"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:7438/health || exit 1

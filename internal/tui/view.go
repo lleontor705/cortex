@@ -336,13 +336,24 @@ func renderSparkline(data []int) string {
 func (m Model) viewSearch() string {
 	var b strings.Builder
 
-	b.WriteString(headerStyle.Render("  Search Memories"))
+	b.WriteString(headerStyle.Render("  Search Knowledge"))
+	b.WriteString("\n\n")
+
+	source := "Memories"
+	if m.SearchMode == "code" {
+		source = "Code AST"
+	}
+	project := "all projects"
+	if m.FilterProject != "" {
+		project = m.FilterProject
+	}
+	b.WriteString(helpStyle.Render(fmt.Sprintf("  Source: %s  •  Project: %s", source, project)))
 	b.WriteString("\n\n")
 
 	b.WriteString(searchInputStyle.Render(m.SearchInput.View()))
 	b.WriteString("\n\n")
 
-	b.WriteString(helpStyle.Render("  Type a query and press enter • esc go back"))
+	b.WriteString(helpStyle.Render("  enter search • tab switch source • f project • esc back"))
 
 	return b.String()
 }
@@ -353,7 +364,12 @@ func (m Model) viewSearchResults() string {
 	var b strings.Builder
 
 	resultCount := len(m.SearchResults)
-	header := fmt.Sprintf("  Search: %q — %d result", m.SearchQuery, resultCount)
+	source := "memories"
+	if m.SearchMode == "code" {
+		resultCount = len(m.CodeSearchResults)
+		source = "code symbols"
+	}
+	header := fmt.Sprintf("  Search %s: %q — %d result", source, m.SearchQuery, resultCount)
 	if resultCount != 1 {
 		header += "s"
 	}
@@ -364,7 +380,7 @@ func (m Model) viewSearchResults() string {
 	b.WriteString("\n")
 
 	if resultCount == 0 {
-		b.WriteString(noResultsStyle.Render("No memories found. Try a different query."))
+		b.WriteString(noResultsStyle.Render("No results found. Try another query, source, or project."))
 		b.WriteString("\n\n")
 		b.WriteString(helpStyle.Render("  / new search • esc back"))
 		return b.String()
@@ -395,7 +411,12 @@ func (m Model) viewSearchResults() string {
 		b.WriteString(m.SearchListModel.View())
 	}
 
-	helpText := "  j/k navigate • enter detail • t timeline • d delete • f filter"
+	helpText := "  j/k navigate • f filter"
+	if m.SearchMode == "memory" {
+		helpText += " • enter detail • t timeline • d delete"
+	} else {
+		helpText += " • enter preview"
+	}
 	if m.Width >= 100 {
 		helpText += " • p preview"
 	}

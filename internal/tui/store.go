@@ -21,6 +21,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	codeDomain "github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/ollama"
 	entitystore "github.com/lleontor705/cortex/v2/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
@@ -38,6 +39,7 @@ type Deps struct {
 	Observations *sqlitestore.Store
 	Sessions     *session.Store
 	Search       *search.Store
+	Code         codeDomain.Store
 	Graph        *graphstore.Store
 	Scoring      *scoringstore.Store
 	Entities     *entitystore.Store
@@ -128,6 +130,20 @@ func searchMemories(d *Deps, query string, project string) tea.Cmd {
 		ctx := context.Background()
 		results, err := d.Search.Search(ctx, query, domain.SearchOptions{Limit: 50, Project: project})
 		return searchResultsMsg{results: results, query: query, err: err}
+	}
+}
+
+func searchCode(d *Deps, query string, project string) tea.Cmd {
+	return func() tea.Msg {
+		if d == nil || d.Code == nil {
+			return codeSearchResultsMsg{err: fmt.Errorf("code index not available")}
+		}
+		results, err := d.Code.ListSymbols(context.Background(), codeDomain.SymbolFilter{
+			Project: project,
+			Query:   query,
+			Limit:   100,
+		})
+		return codeSearchResultsMsg{results: results, query: query, err: err}
 	}
 }
 

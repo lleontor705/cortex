@@ -410,16 +410,7 @@ func (r *SearchRepository) Search(ctx context.Context, query string, opts domain
 			}
 		}
 		if r.authorized {
-			if classes, wildcard := r.classificationGrantFilter(); !wildcard {
-				if len(classes) == 0 {
-					q += ` AND o.classification NOT IN ('restricted','confidential')`
-				} else {
-					q += fmt.Sprintf(" AND (o.classification = ANY($%d) OR o.classification NOT IN ('restricted','confidential'))", len(args)+1)
-					args = append(args, classes)
-				}
-			}
-			q += fmt.Sprintf(" AND (o.classification <> 'personal' OR o.owner_subject=$%d)", len(args)+1)
-			args = append(args, r.principal.Subject)
+			q, args = r.appendObservationVisibilityPredicate(q, args, true)
 		}
 		if opts.Project != "" {
 			q += fmt.Sprintf(` AND o.project_key=$%d`, len(args)+1)

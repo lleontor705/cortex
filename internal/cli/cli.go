@@ -604,6 +604,7 @@ func runTUI(stdout, stderr io.Writer) int {
 		Observations: a.Stores.Observations,
 		Sessions:     a.Stores.Sessions,
 		Search:       a.Stores.Search,
+		Code:         a.Stores.Code,
 		Graph:        a.Stores.Graph,
 		Scoring:      a.Stores.Scoring,
 		Entities:     a.Stores.Entities,
@@ -644,6 +645,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		Graph:             a.Stores.Graph,
 		Scoring:           a.Stores.Scoring,
 		TemporalSnapshots: a.Stores.TemporalSnapshots,
+		Vectors:           a.Stores.Vectors,
+		Embeddings:        a.Stores.Embeddings,
 	}
 
 	srv := cortexhttp.NewServer(addr, deps, cortexhttp.Options{

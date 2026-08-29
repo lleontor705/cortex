@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -19,11 +20,13 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	agentdomain "github.com/lleontor705/cortex/v2/internal/domain/agent"
 	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 	"github.com/lleontor705/cortex/v2/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
@@ -41,6 +44,8 @@ type Runtime struct {
 	Pool          *pgxpool.Pool
 	Vectors       domain.VectorIndex
 	Embeddings    embedding.Service
+	agent         *serverAgentService
+	reindex       reindexCommandDeps
 	Lifecycle     *lifecycle.ArchivalService
 	httpServer    *http.Server
 	mcpTransport  *mcpserver.StreamableHTTPServer
@@ -61,13 +66,19 @@ func (f principalOperationsFactoryFunc) ForPrincipal(ctx context.Context, princi
 // and constructs tenant-scoped repositories. It performs no work for local
 // mode; callers select this root explicitly.
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
-	if err := validateConfig(cfg); err != nil {
+	return openRuntime(ctx, cfg, true)
+}
+
+// openRuntime composes shared authenticated storage and providers. Transport
+// and background lifecycle surfaces are optional for bounded administrative jobs.
+func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool) (*Runtime, error) {
+	if err := validateRuntimeConfig(cfg, withServerSurfaces); err != nil {
 		return nil, err
 	}
 	storage := cfg.Server.Storage
-	migrationDSN := storage.MigrationDSN
-	if migrationDSN == "" {
-		migrationDSN = storage.DSN
+	runtimeDSN, migrationDSN, err := resolveServerDSNs(cfg)
+	if err != nil {
+		return nil, err
 	}
 	migrationDB, err := sql.Open("pgx", migrationDSN)
 	if err != nil {
@@ -101,7 +112,7 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 	cleanupSQL = false
 
-	poolCfg, err := pgxpool.ParseConfig(storage.DSN)
+	poolCfg, err := pgxpool.ParseConfig(runtimeDSN)
 	if err != nil {
 		return nil, fmt.Errorf("server: parse PostgreSQL DSN: %w", err)
 	}
@@ -137,6 +148,17 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct audit sink: %w", err)
 	}
+	if !cfg.Server.BootstrapDevelopment {
+		startupAudit := newAgentAuditor(audit)
+		if err := startupAudit.RecordAuthorization(ctx, agentdomain.AuditEvent{
+			CorrelationID: uuid.NewString(), ActorID: principal.Subject, TenantID: cfg.Server.TenantID,
+			WorkspaceID: cfg.Server.WorkspaceID, Project: "server-startup", Transport: agentdomain.TransportJSON,
+			ResultClass: "startup_probe",
+		}); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("server: agent audit unavailable: %w", err)
+		}
+	}
 	policy := authz.NewPolicy()
 	policy.Audit = audit
 	ac, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: principal, Tenant: authz.Tenant{ID: cfg.Server.TenantID, WorkspaceID: cfg.Server.WorkspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
@@ -151,7 +173,11 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	}
 
 	model := domain.ModelInfo{Name: cfg.Search.EmbeddingModel, Dimension: embeddingDimensions(cfg.Search.EmbeddingProvider)}
-	emb := embedding.New(embedding.Config{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, BaseURL: cfg.Search.EmbeddingBaseURL})
+	emb, err := newServerEmbedding(cfg)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: outbound embedding configuration: %w", err)
+	}
 	if emb != nil {
 		model.Name, model.Dimension = emb.Model(), emb.Dimensions()
 	}
@@ -183,6 +209,60 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct vector provider: %w", err)
 	}
+	if vec != nil {
+		if cfg.Server.MultiTenant {
+			vec, err = external.NewRequestScopedVectorIndex(vec)
+		} else {
+			vec, err = external.NewServerScopedVectorIndex(vec, cfg.Server.TenantID, cfg.Server.WorkspaceID)
+		}
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("server: scope vector provider: %w", err)
+		}
+	}
+
+	reindexDeps := reindexCommandDeps{
+		target: vec,
+		audit:  reindexPostgresAudit{sink: audit},
+		source: func(authority reindexAuthority) (external.ReindexSource, error) {
+			if authority.source == nil {
+				return nil, errors.New("server: reindex authority has no bound source")
+			}
+			return authority.source, nil
+		},
+	}
+	if emb != nil {
+		reindexDeps.provider = reindexEmbeddingProvider{service: emb}
+	}
+	reindexDeps.authorize = func(ctx context.Context, projectID, correlationID string) (reindexAuthority, error) {
+		decision, err := policy.AuthorizeWithAudit(ctx, authz.Request{
+			Principal:    principal,
+			Tenant:       authz.Tenant{ID: principal.OrgID, WorkspaceID: cfg.Server.WorkspaceID, ProjectID: projectID},
+			Resource:     authz.ResourceRef{TenantID: principal.OrgID, WorkspaceID: cfg.Server.WorkspaceID, ProjectID: projectID, OpaqueID: projectID},
+			ResourceType: authz.ResourceAdmin, Action: authz.ActionManage, CorrelationID: correlationID,
+		})
+		if err != nil {
+			return reindexAuthority{}, err
+		}
+		if !decision.Allowed {
+			return reindexAuthority{}, errors.New(decision.Reason)
+		}
+		source, err := postgresstore.NewPostgresReindexSource(ctx, store, projectID)
+		if err != nil {
+			return reindexAuthority{}, err
+		}
+		scope := source.ReindexScope()
+		return reindexAuthority{
+			ActorID: principal.Subject, TenantID: scope.TenantID, WorkspaceID: scope.WorkspaceID,
+			ProjectID: scope.ProjectID, ProjectLabel: source.CanonicalProjectLabel(), source: source,
+		}, nil
+	}
+	if !withServerSurfaces {
+		return &Runtime{
+			Config: &cfg, Pool: pool, Vectors: vec, Embeddings: emb,
+			reindex: reindexDeps,
+		}, nil
+	}
 
 	system, err := postgresstore.NewSystemService(store)
 	if err != nil {
@@ -190,19 +270,40 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, fmt.Errorf("server: construct system service: %w", err)
 	}
 	factory := principalOperationsFactoryFunc(func(ctx context.Context, requestPrincipal domain.Principal) (Operations, error) {
+		workspaceID := cfg.Server.WorkspaceID
+		if selectedWorkspace, ok := workspaceFromContext(ctx); ok {
+			workspaceID = selectedWorkspace
+		} else if cfg.Server.MultiTenant {
+			return nil, errors.New("server: verified workspace context is required")
+		}
 		audit, err := postgresstore.NewAuditSink(pool, requestPrincipal.Subject, requestPrincipal.GrantDigest, requestPrincipal.GrantVersion)
 		if err != nil {
 			return nil, err
 		}
 		policy := authz.NewPolicy()
 		policy.Audit = audit
-		requestContext, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: requestPrincipal, Tenant: authz.Tenant{ID: requestPrincipal.OrgID, WorkspaceID: cfg.Server.WorkspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
+		requestContext, err := authz.NewAuthorizedContext(ctx, policy, authz.Request{Principal: requestPrincipal, Tenant: authz.Tenant{ID: requestPrincipal.OrgID, WorkspaceID: workspaceID}, ResourceType: authz.ResourceWorkspaces, Action: authz.ActionRead})
 		if err != nil {
 			return nil, err
 		}
 		return postgresstore.NewAuthorizedStore(pool, requestContext)
 	})
-	authenticator := requestAuthenticator{verifier: verifier, factory: factory}
+	var requestVerifier principalVerifier = verifier
+	if cfg.Server.MultiTenant {
+		requestVerifier, err = postgresstore.NewMultiTenantTokenPrincipalVerifier(pool)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("server: construct multi-tenant token verifier: %w", err)
+		}
+	}
+	authenticator := requestAuthenticator{
+		verifier: requestVerifier,
+		factory:  factory,
+		workspace: workspaceSelector{
+			defaultWorkspace:      cfg.Server.WorkspaceID,
+			allowRequestSelection: cfg.Server.MultiTenant,
+		},
+	}
 	// SEC-02: the outbound provider is composed exclusively from trusted
 	// administrator configuration. Invalid provider configuration fails
 	// startup (fail closed); an absent configuration keeps extract and
@@ -217,12 +318,39 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	if llm.Configured() {
 		extractor = newConfiguredExtractor(llm)
 	}
-	handler, transport := newHTTPHandlerWithAuth(cfg, requestOperations{}, pool.Ping, authenticator.middleware, extractor)
+	chatProvider, err := newConfiguredChatProvider(llm)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: outbound agent configuration: %w", err)
+	}
+	agentService := newServerAgentService(requestOperations{}, vec, emb, chatProvider)
+	agentAuditor := agentAuditorFactory(func(_ context.Context, requestPrincipal domain.Principal) (agentdomain.Auditor, error) {
+		sink, err := postgresstore.NewAuditSink(pool, requestPrincipal.Subject, requestPrincipal.GrantDigest, requestPrincipal.GrantVersion)
+		if err != nil {
+			return agentdomain.Auditor{}, err
+		}
+		return newAgentAuditor(sink), nil
+	})
+	adminProbes := composedAdminAIProbes{
+		llmStatus:       adminAIStatus{Provider: llm.Provider, Model: llm.Model, Configured: llm.Configured()},
+		embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: emb != nil},
+		extractor:       extractor,
+		embeddings:      emb,
+	}
+	if emb != nil {
+		adminProbes.embeddingStatus.Model = emb.Model()
+		adminProbes.embeddingStatus.Dimensions = emb.Dimensions()
+	}
+	handler, transport := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, pool.Ping, authenticator.middleware, hybridSearchDependencies{
+		vectors: vec, embeddings: emb, adminAI: adminProbes, agent: agentService, agentAuditor: agentAuditor,
+	}, extractor)
 	rt := &Runtime{
 		Config:     &cfg,
 		Pool:       pool,
 		Vectors:    vec,
 		Embeddings: emb,
+		agent:      agentService,
+		reindex:    reindexDeps,
 		httpServer: &http.Server{
 			Addr:              listenAddress(cfg.HTTP),
 			Handler:           handler,
@@ -427,10 +555,14 @@ func redactStageError(err error, secrets ...string) error {
 }
 
 func validateConfig(cfg config.Config) error {
+	return validateRuntimeConfig(cfg, true)
+}
+
+func validateRuntimeConfig(cfg config.Config, withServerSurfaces bool) error {
 	if cfg.Server.Storage.Driver != "postgres" {
 		return fmt.Errorf("server: storage.driver must be postgres")
 	}
-	if cfg.Server.Storage.DSN == "" {
+	if strings.TrimSpace(cfg.Server.Storage.DSN) == "" {
 		return errors.New("server: storage DSN is required")
 	}
 	for name, value := range map[string]string{"tenant_id": cfg.Server.TenantID, "workspace_id": cfg.Server.WorkspaceID, "principal_subject": cfg.Server.PrincipalSubject} {
@@ -454,13 +586,81 @@ func validateConfig(cfg config.Config) error {
 	if _, err := canonicalBootstrapGrants(cfg); err != nil {
 		return err
 	}
-	if cfg.HTTP.Port < 1 || cfg.HTTP.Port > 65535 {
-		return errors.New("server: http.port must be between 1 and 65535")
+	if withServerSurfaces {
+		if cfg.HTTP.Port < 1 || cfg.HTTP.Port > 65535 {
+			return errors.New("server: http.port must be between 1 and 65535")
+		}
+		if !cfg.HTTP.Enabled {
+			return errors.New("server: http.enabled must be true for HTTP and MCP transports")
+		}
+		if err := validateAllowedOrigins(cfg.HTTP.AllowedOrigins); err != nil {
+			return err
+		}
 	}
-	if !cfg.HTTP.Enabled {
-		return errors.New("server: http.enabled must be true for HTTP and MCP transports")
+	if err := validateBearerToken(cfg.HTTP.Token); err != nil {
+		return err
 	}
-	return validateBearerToken(cfg.HTTP.Token)
+	_, _, err := resolveServerDSNs(cfg)
+	return err
+}
+
+func validateAllowedOrigins(origins []string) error {
+	for _, configured := range origins {
+		origin := strings.TrimSpace(configured)
+		if origin == "*" {
+			return errors.New("server: http.allowed_origins must not contain wildcard")
+		}
+		u, err := url.Parse(origin)
+		if origin == "" || err != nil || u.Opaque != "" || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("server: http.allowed_origins must contain only HTTP(S) origins")
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return errors.New("server: http.allowed_origins must contain only HTTP(S) origins")
+		}
+	}
+	return nil
+}
+
+// resolveServerDSNs validates the database authority boundary before sql.Open
+// or pgxpool.ParseConfig can create a handle. Development bootstrap retains
+// the single-DSN convenience; every other deployment must name a distinct
+// PostgreSQL role for migrations. Errors deliberately omit DSN contents.
+func resolveServerDSNs(cfg config.Config) (string, string, error) {
+	runtimeDSN := cfg.Server.Storage.DSN
+	if strings.TrimSpace(runtimeDSN) == "" {
+		return "", "", errors.New("server: storage DSN is required")
+	}
+	migrationDSN := cfg.Server.Storage.MigrationDSN
+	if strings.TrimSpace(migrationDSN) == "" {
+		if !cfg.Server.BootstrapDevelopment {
+			return "", "", errors.New("server: migration DSN is required outside development bootstrap")
+		}
+		migrationDSN = runtimeDSN
+	}
+	if cfg.Server.BootstrapDevelopment {
+		return runtimeDSN, migrationDSN, nil
+	}
+
+	runtimeRole, err := postgresRole(runtimeDSN)
+	if err != nil {
+		return "", "", errors.New("server: runtime DSN is invalid")
+	}
+	migrationRole, err := postgresRole(migrationDSN)
+	if err != nil {
+		return "", "", errors.New("server: migration DSN is invalid")
+	}
+	if runtimeRole == migrationRole {
+		return "", "", errors.New("server: runtime and migration DSNs must use distinct PostgreSQL roles")
+	}
+	return runtimeDSN, migrationDSN, nil
+}
+
+func postgresRole(dsn string) (string, error) {
+	parsed, err := pgx.ParseConfig(dsn)
+	if err != nil || strings.TrimSpace(parsed.User) == "" {
+		return "", errors.New("invalid PostgreSQL role")
+	}
+	return parsed.User, nil
 }
 
 // validateBearerToken enforces the canonical configured-bearer form shared by
@@ -495,6 +695,39 @@ func embeddingDimensions(provider string) int {
 	default:
 		return 0
 	}
+}
+
+func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
+	provider := strings.TrimSpace(cfg.Search.EmbeddingProvider)
+	if provider == "" || provider == "none" {
+		return nil, nil
+	}
+	baseURL := strings.TrimSpace(cfg.Search.EmbeddingBaseURL)
+	if baseURL == "" {
+		switch provider {
+		case "openai":
+			baseURL = "https://api.openai.com/v1"
+		case "ollama":
+			baseURL = "http://localhost:11434"
+		}
+	}
+	policy := embedding.OutboundPolicy{
+		AllowLoopback:             cfg.Server.BootstrapDevelopment,
+		AllowInsecureLoopbackHTTP: cfg.Server.BootstrapDevelopment,
+		MaxRedirects:              3,
+		MaxResponseBodyBytes:      4 << 20,
+		MaxConcurrent:             4,
+		Timeout:                   30 * time.Second,
+	}
+	if err := policy.ApproveDestination(baseURL); err != nil {
+		return nil, err
+	}
+	return embedding.NewSecure(embedding.Config{
+		Provider: provider,
+		APIKey:   os.Getenv("CORTEX_SEARCH_EMBEDDING_API_KEY"),
+		Model:    cfg.Search.EmbeddingModel,
+		BaseURL:  baseURL,
+	}, policy)
 }
 
 // newConfiguredExtractor builds the production extraction service from

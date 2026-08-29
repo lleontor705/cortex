@@ -55,6 +55,13 @@ var postgresHistoricalChecksums = map[int]string{
 	// REPLACE over 100/106 routines. Still unshipped, so its pin moves
 	// with the reviewed bytes until release.
 	108: "e56bbd81b2adcc175bda72e44ab4895fcbdd4fe8adeca914f0fe2f152bf73ca8",
+	// 109 introduces the first tenant/workspace/project-scoped AST index.
+	// It deliberately leaves legacy project-only rows unbackfilled and
+	// read-denied. The migration is forward-only and its reviewed bytes are
+	// pinned before the server store can depend on the new schema.
+	109: "48850158d3bc8304749ba938d63732580a5658fa3f6b190a5a253d1d36c03227",
+	110: "2161c9e8eb4fe95596ec39a5e6971c34bbc99752b158d4e80ad0ce4ea210a1c2",
+	111: "3cd9c26c32af26c62664ae73e382f3fec91a7204fc64fcd35c495e71074596dd",
 }
 
 // mustPostgresMigrations loads the full PostgreSQL migration line or fails
@@ -91,10 +98,10 @@ func TestPostgresServerMigrationMetadata(t *testing.T) {
 
 func TestPostgresServerMigrationSequence(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
-	if len(migrations) != 9 {
-		t.Fatalf("migration count = %d, want 9", len(migrations))
+	if len(migrations) != 12 {
+		t.Fatalf("migration count = %d, want 12", len(migrations))
 	}
-	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108} {
+	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111} {
 		if migrations[i].Version() != want {
 			t.Fatalf("migration %d version = %d, want %d", i, migrations[i].Version(), want)
 		}
@@ -137,6 +144,69 @@ func TestPostgresServerMigrationSequence(t *testing.T) {
 	for _, token := range []string{"cortex_principal_key", "pg_advisory_xact_lock_shared", "pg_try_advisory_xact_lock"} {
 		if !strings.Contains(migrations[8].SQL(), token) {
 			t.Errorf("migration 108 missing %q", token)
+		}
+	}
+	for _, token := range []string{"scoped_code_symbols", "scoped_code_relations", "scoped_code_index_state"} {
+		if !strings.Contains(migrations[9].SQL(), token) {
+			t.Errorf("migration 109 missing %q", token)
+		}
+	}
+	for _, token := range []string{"cortex_verify_token_principal_v2", "rate_limit_tier", "binding_provenance"} {
+		if !strings.Contains(migrations[10].SQL(), token) {
+			t.Errorf("migration 110 missing %q", token)
+		}
+	}
+	for _, token := range []string{"cortex_verify_token_principal_global", "cortex_verify_token_principal_v2", "Prefix collisions are deliberately fail-closed"} {
+		if !strings.Contains(migrations[11].SQL(), token) {
+			t.Errorf("migration 111 missing %q", token)
+		}
+	}
+}
+
+func TestPostgresServerMigration109ScopedCodeIndex(t *testing.T) {
+	migrations := mustPostgresMigrations(t)
+	var subject *PostgresServerMigration
+	for _, migration := range migrations {
+		if migration.Version() == 109 {
+			subject = migration
+			break
+		}
+	}
+	if subject == nil {
+		t.Fatal("migration 109 (scoped code index) is not registered")
+	}
+	if subject.Name() != "scoped_code_index" || subject.Checksum() == "" {
+		t.Fatalf("migration 109 identity = %q/%q", subject.Name(), subject.Checksum())
+	}
+	for _, token := range []string{
+		"CREATE TABLE scoped_code_symbols",
+		"CREATE TABLE scoped_code_relations",
+		"CREATE TABLE scoped_code_index_state",
+		"tenant_id uuid NOT NULL",
+		"workspace_id bigint NOT NULL",
+		"project_id bigint NOT NULL",
+		"FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, id) ON DELETE RESTRICT",
+		"FOREIGN KEY (tenant_id, workspace_id, project_id)",
+		"REFERENCES projects(tenant_id, workspace_id, id) ON DELETE RESTRICT",
+		"FOREIGN KEY (tenant_id, workspace_id, project_id, source_id)",
+		"REFERENCES scoped_code_symbols(tenant_id, workspace_id, project_id, id) ON DELETE RESTRICT",
+		"CHECK (state IN ('missing', 'indexing', 'ready', 'failed'))",
+		"ENABLE ROW LEVEL SECURITY",
+		"FORCE ROW LEVEL SECURITY",
+		"cortex_current_tenant()",
+		"cortex_current_workspace()",
+		"cortex_current_project()",
+		"REVOKE ALL ON code_symbols, code_relations FROM cortex_app",
+		"('cortex_app', 'cortex_migration', 'postgres', 'cortex_runtime')",
+		"GRANT SELECT, INSERT, UPDATE, DELETE ON scoped_code_symbols, scoped_code_relations TO cortex_app",
+	} {
+		if !strings.Contains(subject.SQL(), token) {
+			t.Errorf("migration 109 missing %q", token)
+		}
+	}
+	for _, banned := range []string{"CREATE TABLE IF NOT EXISTS scoped_code", "DROP TABLE", "TRUNCATE", "INSERT INTO scoped_code_symbols", "INSERT INTO scoped_code_relations"} {
+		if strings.Contains(strings.ToUpper(subject.SQL()), strings.ToUpper(banned)) {
+			t.Errorf("migration 109 contains forbidden rollout SQL %q", banned)
 		}
 	}
 }
@@ -362,15 +432,13 @@ func TestPostgresServerMigration107WorkspaceSync(t *testing.T) {
 	}
 }
 
-// TestPostgresServerMigrationHeadIs108 pins the runtime head: every migration
-// in the line must refuse ledgers recording versions beyond 108 so a head 108
-// binary fails closed (ErrFutureMigration) against a newer database, and a
-// head 107 binary fails closed against a 108 ledger.
-func TestPostgresServerMigrationHeadIs108(t *testing.T) {
+// TestPostgresServerMigrationHeadIs111 pins the runtime head so older
+// binaries fail closed against a database that has applied SaaS token routing.
+func TestPostgresServerMigrationHeadIs111(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.maxKnownVersion != 108 {
-			t.Errorf("migration %d maxKnownVersion = %d, want 108", migration.Version(), migration.maxKnownVersion)
+		if migration.maxKnownVersion != 111 {
+			t.Errorf("migration %d maxKnownVersion = %d, want 111", migration.Version(), migration.maxKnownVersion)
 		}
 		if err := migration.Down(context.Background(), (*sql.DB)(nil)); err == nil || !strings.Contains(err.Error(), "nil") {
 			// Down(nil) must fail on the nil connection before any DDL; the
@@ -1298,26 +1366,16 @@ func TestPostgresPreflightAndVerifyAppliedContract(t *testing.T) {
 }
 
 // TestPostgresPreflightHeadChecksumsMatchPins ties the rollout preflights to
-// the reviewed pins: the checksum a preflight expects for 106, 107, and 108
-// is exactly each version's pinned reviewed-bytes checksum, and no migration
-// beyond the 108 head exists in the runtime line. (The IDP-T05 train
-// originally capped the line at 106; the tools-security-performance-hardening
-// train moved the head to 107; the tools-performance-scalability-r1 train
-// moved it to 108, each with its own reviewed pin.)
+// the reviewed pins through the current SaaS authentication head. This keeps
+// every registered post-baseline migration coupled to its reviewed bytes.
 func TestPostgresPreflightHeadChecksumsMatchPins(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.Version() > 108 {
-			t.Errorf("migration %d registered beyond head 108; 109+ is not part of this train", migration.Version())
+		if migration.Version() > 111 {
+			t.Errorf("migration %d registered beyond head 111", migration.Version())
 		}
-		if migration.Version() == 106 && migration.Checksum() != postgresHistoricalChecksums[106] {
-			t.Errorf("migration 106 checksum %s does not match the reviewed pin %s", migration.Checksum(), postgresHistoricalChecksums[106])
-		}
-		if migration.Version() == 107 && migration.Checksum() != postgresHistoricalChecksums[107] {
-			t.Errorf("migration 107 checksum %s does not match the reviewed pin %s", migration.Checksum(), postgresHistoricalChecksums[107])
-		}
-		if migration.Version() == 108 && migration.Checksum() != postgresHistoricalChecksums[108] {
-			t.Errorf("migration 108 checksum %s does not match the reviewed pin %s", migration.Checksum(), postgresHistoricalChecksums[108])
+		if migration.Version() >= 106 && migration.Checksum() != postgresHistoricalChecksums[migration.Version()] {
+			t.Errorf("migration %d checksum %s does not match the reviewed pin %s", migration.Version(), migration.Checksum(), postgresHistoricalChecksums[migration.Version()])
 		}
 	}
 }

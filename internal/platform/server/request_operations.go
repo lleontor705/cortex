@@ -27,6 +27,14 @@ func operationsFromContext(ctx context.Context) (Operations, error) {
 // principal-scoped AuthorizedStore installed by authentication middleware.
 type requestOperations struct{}
 
+func (requestOperations) AuthorizeAdminManage(ctx context.Context) error {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	return ops.AuthorizeAdminManage(ctx)
+}
+
 func (requestOperations) SaveObservation(ctx context.Context, value *domain.Observation) error {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {
@@ -60,6 +68,13 @@ func (requestOperations) GetObservationByID(ctx context.Context, id int64) (*dom
 		return nil, err
 	}
 	return ops.GetObservationByID(ctx, id)
+}
+func (requestOperations) GetAgentObservationByID(ctx context.Context, projectID, projectLabel string, id int64) (*domain.Observation, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.GetAgentObservationByID(ctx, projectID, projectLabel, id)
 }
 func (requestOperations) GetObservationByPublicID(ctx context.Context, id string) (*domain.Observation, error) {
 	ops, err := operationsFromContext(ctx)
@@ -131,6 +146,13 @@ func (requestOperations) ListProjects(ctx context.Context) ([]string, error) {
 	}
 	return ops.ListProjects(ctx)
 }
+func (requestOperations) ListAgentProjects(ctx context.Context) (map[string]string, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.ListAgentProjects(ctx)
+}
 func (requestOperations) ListObservations(ctx context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error) {
 	ops, err := operationsFromContext(ctx)
 	if err != nil {
@@ -144,6 +166,14 @@ func (requestOperations) SearchObservations(ctx context.Context, query string, o
 		return nil, err
 	}
 	return ops.SearchObservations(ctx, query, options)
+}
+
+func (requestOperations) SearchAgentObservations(ctx context.Context, projectID, projectLabel, query string, options domain.SearchOptions) ([]*domain.SearchResult, error) {
+	ops, err := operationsFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ops.SearchAgentObservations(ctx, projectID, projectLabel, query, options)
 }
 func (requestOperations) CreateGraphEdge(ctx context.Context, value *domain.Edge) error {
 	ops, err := operationsFromContext(ctx)
@@ -327,4 +357,3 @@ func (requestOperations) GetRAGStats(ctx context.Context, project string) (*doma
 	}
 	return ops.GetRAGStats(ctx, project)
 }
-

@@ -773,9 +773,9 @@ $rw$`); err != nil {
 		}
 		// Fail closed on any ledger or checksum drift before a single
 		// assertion runs: the complete 100..head line must be ledgered with
-		// matching checksums and the head must be exactly migration 108.
+		// matching checksums and the head must be exactly migration 110.
 		assertServerMigrationHead(t, sqlDB)
-		if err := migrationHeadIs(t, sqlDB, 108); err != nil {
+		if err := migrationHeadIs(t, sqlDB, 110); err != nil {
 			_ = sqlDB.Close()
 			t.Fatalf("rw-proof migration head: %v", err)
 		}

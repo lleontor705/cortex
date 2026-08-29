@@ -52,6 +52,8 @@ export type Principal = {
   id: string;
   type: string;
   org_id: string;
+  /** Server-confirmed workspace selected for this request session. */
+  workspace_id?: string;
   display_name?: string;
   email?: string;
   workspaces: string[];
@@ -308,6 +310,59 @@ export type SaveProjectArtifactInput = {
   parameters?: Record<string, unknown>;
 };
 
+export type AgentProject = { id: string; label: string };
+export type AgentMessage = { role: "user" | "assistant"; content: string };
+export type AgentSource = {
+  handle: string;
+  type: "memory" | "code";
+  title: string;
+  path?: string;
+  line_start?: number;
+  line_end?: number;
+};
+export type AgentConfidence = { level: "low" | "medium" | "high"; score: number };
+export type AgentRetrievalTier =
+  | "direct_factual"
+  | "semantic_hybrid"
+  | "multi_hop_graph"
+  | "architectural_global";
+export type AgentRetrievalStage = {
+  name:
+    | "lexical"
+    | "dense"
+    | "rrf_maxsim"
+    | "graph_ppr"
+    | "community_summary"
+    | "code"
+    | "crag";
+  status: "ok" | "degraded" | "skipped";
+  count: number;
+};
+export type AgentRetrieval = {
+  tier?: AgentRetrievalTier;
+  stages?: AgentRetrievalStage[];
+  refinement_count?: number;
+  generation?: string;
+  degraded: string[];
+  invalid_citations?: number;
+};
+export type AgentAnswer = {
+  answer: string;
+  sources: AgentSource[];
+  confidence: AgentConfidence;
+  retrieval: AgentRetrieval;
+};
+export type AgentRequest = {
+  project_id: string;
+  question: string;
+  history?: AgentMessage[];
+};
+export type AgentStreamEvent =
+  | { type: "meta"; data: { confidence?: AgentConfidence; retrieval: AgentRetrieval } }
+  | { type: "delta"; data: { text: string } }
+  | { type: "sources"; data: AgentSource[] }
+  | { type: "done"; data: AgentAnswer };
+
 
 export class APIError extends Error {
   constructor(
@@ -321,6 +376,9 @@ export class APIError extends Error {
 
 export class CortexClient {
   private token: string;
+  // A convenience selector only. The server validates it against the
+  // verified principal's grants; this client never sends a tenant id.
+  private workspaceID = "";
   private readonly inflight = new Set<AbortController>();
 
   constructor(
@@ -339,10 +397,19 @@ export class CortexClient {
    */
   invalidate(): void {
     this.token = "";
+    this.workspaceID = "";
     for (const controller of this.inflight) {
       controller.abort();
     }
     this.inflight.clear();
+  }
+
+  /**
+   * Sets the workspace selector for future requests. Authorization remains
+   * server-side: an ungranted value receives a 403 and never widens scope.
+   */
+  setWorkspace(workspaceID: string): void {
+    this.workspaceID = workspaceID.trim();
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -360,8 +427,14 @@ export class CortexClient {
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
+    if (this.workspaceID) {
+      headers["X-Cortex-Workspace"] = this.workspaceID;
+    }
 
     const controller = new AbortController();
+    const abort = () => controller.abort(init?.signal?.reason);
+    if (init?.signal?.aborted) abort();
+    else init?.signal?.addEventListener("abort", abort, { once: true });
     this.inflight.add(controller);
     try {
       const response = await fetch(`${cleanBase}${path}`, {
@@ -389,6 +462,7 @@ export class CortexClient {
       if (response.status === 204) return undefined as T;
       return response.json() as Promise<T>;
     } finally {
+      init?.signal?.removeEventListener("abort", abort);
       this.inflight.delete(controller);
     }
   }
@@ -407,6 +481,79 @@ export class CortexClient {
 
   projects() {
     return this.request<string[]>("/api/projects");
+  }
+
+  async agentProjects(signal?: AbortSignal): Promise<AgentProject[]> {
+    const response = await this.request<{ projects: AgentProject[] }>("/api/agent/projects", {
+      signal,
+    });
+    return response.projects;
+  }
+
+  answerAgent(input: AgentRequest, signal?: AbortSignal): Promise<AgentAnswer> {
+    return this.request<AgentAnswer>("/api/agent/answer", {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    });
+  }
+
+  async streamAgent(
+    input: AgentRequest,
+    onEvent: (event: AgentStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<AgentAnswer> {
+    const cleanBase = this.baseURL.replace(/\/$/, "");
+    if (this.token) validateBearerDestination(cleanBase);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (this.workspaceID) headers["X-Cortex-Workspace"] = this.workspaceID;
+
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    this.inflight.add(controller);
+    try {
+      const response = await fetch(`${cleanBase}/api/agent/stream`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(input),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        if (response.status === 401) {
+          this.invalidate();
+          this.onUnauthorized?.();
+        }
+        throw new APIError(
+          body?.error?.message || `Error ${response.status}: Request failed`,
+          response.status,
+        );
+      }
+      if (!response.body) throw new APIError("Agent stream is unavailable", 503);
+
+      let completed: AgentAnswer | undefined;
+      for await (const event of parseAgentSSE(response.body)) {
+        if (event.type === "error") {
+          throw new APIError(event.data.message || "Agent stream failed", event.data.status || 503);
+        }
+        const typed = event as AgentStreamEvent;
+        onEvent(typed);
+        if (typed.type === "done") completed = typed.data;
+      }
+      if (!completed) throw new APIError("Agent stream ended before completion", 503);
+      return completed;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      this.inflight.delete(controller);
+    }
   }
 
   sessions(project = "") {
@@ -451,9 +598,18 @@ export class CortexClient {
   }
 
   async search(query: string, project = ""): Promise<{ value: Observation[]; Count: number }> {
-    const raw = await this.request<any>(
-      `/api/search?q=${encodeURIComponent(query)}${project ? `&project=${encodeURIComponent(project)}` : ""}`,
-    );
+    const filters = `q=${encodeURIComponent(query)}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
+    let raw: any;
+    try {
+      // Force the semantic tier so Web searches exploit embeddings whenever
+      // the connected Cortex runtime has a healthy vector index.
+      raw = await this.request<any>(`/api/search/hybrid?${filters}&mode=semantic`);
+    } catch (error) {
+      // Older server-mode deployments do not expose the hybrid route yet.
+      // Preserve compatibility without hiding genuine backend failures.
+      if (!(error instanceof APIError) || error.status !== 404) throw error;
+      raw = await this.request<any>(`/api/search?${filters}`);
+    }
     if (Array.isArray(raw)) {
       return { value: raw, Count: raw.length };
     }
@@ -818,5 +974,58 @@ export type CodeAnalyticsReport = {
   communities: CommunityCohesion[];
   generated_at: string;
 };
+
+type ParsedAgentSSEEvent = AgentStreamEvent | {
+  type: "error";
+  data: { status?: number; code?: string; message?: string };
+};
+
+async function* parseAgentSSE(
+  stream: ReadableStream<Uint8Array>,
+): AsyncGenerator<ParsedAgentSSEEvent> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const parseBlock = (block: string): ParsedAgentSSEEvent | undefined => {
+    let eventName = "";
+    const data: string[] = [];
+    for (const line of block.split(/\r\n|\r|\n/)) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    if (!eventName || data.length === 0) return undefined;
+    if (!["meta", "delta", "sources", "done", "error"].includes(eventName)) {
+      return undefined;
+    }
+    try {
+      return { type: eventName, data: JSON.parse(data.join("\n")) } as ParsedAgentSSEEvent;
+    } catch {
+      throw new APIError("Agent stream contained invalid data", 503);
+    }
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let match = /\r\n\r\n|\n\n|\r\r/.exec(buffer);
+      while (match) {
+        const block = buffer.slice(0, match.index);
+        buffer = buffer.slice(match.index + match[0].length);
+        const event = parseBlock(block);
+        if (event) yield event;
+        match = /\r\n\r\n|\n\n|\r\r/.exec(buffer);
+      }
+    }
+    buffer += decoder.decode();
+    const event = parseBlock(buffer);
+    if (event) yield event;
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 

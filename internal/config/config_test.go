@@ -84,6 +84,7 @@ logging:
 			configYAML: "",
 			envVars: map[string]string{
 				"CORTEX_SERVER_NAME":          "env-server",
+				"CORTEX_SERVER_MULTI_TENANT":  "true",
 				"CORTEX_HTTP_PORT":            "3000",
 				"CORTEX_HTTP_TOKEN":           "env-token",
 				"CORTEX_HTTP_ALLOWED_ORIGINS": "http://localhost:5173",
@@ -94,6 +95,9 @@ logging:
 			checkFunc: func(t *testing.T, cfg *Config) {
 				if cfg.Server.Name != "env-server" {
 					t.Errorf("expected server name 'env-server', got '%s'", cfg.Server.Name)
+				}
+				if !cfg.Server.MultiTenant {
+					t.Error("expected server multi_tenant to be true")
 				}
 				if cfg.HTTP.Port != 3000 {
 					t.Errorf("expected HTTP port 3000, got %d", cfg.HTTP.Port)
@@ -185,6 +189,22 @@ database:
 				tt.checkFunc(t, cfg)
 			}
 		})
+	}
+}
+
+func TestLoadDoesNotSynthesizeMigrationDSN(t *testing.T) {
+	clearEnvVars(t)
+	path := filepath.Join(t.TempDir(), "cortex.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  storage:\n    dsn: postgres://cortex_app:runtime-secret@db/cortex\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Storage.MigrationDSN != "" {
+		t.Fatalf("migration_dsn = %q, want empty when it was not configured", redactDSNPassword(cfg.Server.Storage.MigrationDSN))
 	}
 }
 
@@ -1032,6 +1052,7 @@ func clearEnvVars(t *testing.T) {
 	envVars := []string{
 		"CORTEX_SERVER_NAME",
 		"CORTEX_SERVER_VERSION",
+		"CORTEX_SERVER_MULTI_TENANT",
 		"CORTEX_DATABASE_PATH",
 		"CORTEX_DATABASE_IN_MEMORY",
 		"CORTEX_DATABASE_PRAGMA_JOURNAL_MODE",

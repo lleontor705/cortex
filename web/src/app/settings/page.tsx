@@ -45,7 +45,7 @@ interface AIStatusData {
 }
 
 export default function SettingsPage() {
-  const { client, serverUrl, token, resetGeneration, setCredentials, logout, principal } = useAuth();
+  const { client, serverUrl, managedServerEndpoint, token, resetGeneration, setCredentials, logout, principal } = useAuth();
 
   const userRoles = principal?.roles || ["developer"];
   const isAdmin = userRoles.some(
@@ -122,7 +122,7 @@ export default function SettingsPage() {
 
   const handleSaveServer = async (e: React.FormEvent) => {
     e.preventDefault();
-    const success = await setCredentials(inputUrl, inputToken);
+    const success = await setCredentials(managedServerEndpoint ? serverUrl : inputUrl, inputToken);
     if (success) {
       setServerSavedMessage(true);
       setTimeout(() => setServerSavedMessage(false), 3000);
@@ -370,19 +370,27 @@ export default function SettingsPage() {
           </div>
 
           <form onSubmit={handleSaveServer} className="space-y-4 text-xs">
-            <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
-                URL DEL SERVIDOR CORTEX
-              </label>
-              <Input
-                type="text"
-                value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="https://cortex-server-production-cb53.up.railway.app"
-                className="h-9 font-mono"
-                required
-              />
-            </div>
+            {managedServerEndpoint ? (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+                <span className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">Servidor Cortex administrado</span>
+                <span className="mt-1 block break-all font-mono text-xs text-blue-300">{serverUrl}</span>
+                <span className="mt-1 block text-[11px] text-[var(--text-muted)]">La composición Docker administra este endpoint.</span>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                  URL DEL SERVIDOR CORTEX
+                </label>
+                <Input
+                  type="text"
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  placeholder="https://cortex-server-production-cb53.up.railway.app"
+                  className="h-9 font-mono"
+                  required
+                />
+              </div>
+            )}
 
             <div className="space-y-1">
               <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">

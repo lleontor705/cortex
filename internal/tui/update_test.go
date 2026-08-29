@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -477,6 +478,21 @@ func TestHandleSearchInputKeysEsc(t *testing.T) {
 	result := updated.(Model)
 	if result.Screen != ScreenDashboard {
 		t.Fatalf("screen = %v, want %v", result.Screen, ScreenDashboard)
+	}
+}
+
+func TestHandleSearchInputTabSwitchesSource(t *testing.T) {
+	m := New(&Deps{})
+	m.Screen = ScreenSearch
+	m.SearchInput.Focus()
+
+	updated, _ := m.handleSearchInputKeys(tea.KeyMsg{Type: tea.KeyTab})
+	result := updated.(Model)
+	if result.SearchMode != "code" {
+		t.Fatalf("search mode = %q, want code", result.SearchMode)
+	}
+	if !strings.Contains(result.SearchInput.Placeholder, "file path") {
+		t.Fatalf("placeholder = %q", result.SearchInput.Placeholder)
 	}
 }
 

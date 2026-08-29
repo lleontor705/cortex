@@ -40,6 +40,31 @@ func TestProjectGrantIsRequiredEvenForTenantAdmin(t *testing.T) {
 	}
 }
 
+func TestCodeReadRequiresExplicitProjectGrant(t *testing.T) {
+	p := domain.Principal{Subject: "u", OrgID: "t", Roles: []string{string(RoleDeveloper)}, WorkspaceIDs: []string{"w"}}
+	req := Request{Principal: p, Tenant: Tenant{ID: "t", WorkspaceID: "w"}, Resource: ResourceRef{TenantID: "t", WorkspaceID: "w", ProjectID: "p"}, ResourceType: ResourceCode, Action: ActionRead}
+	if got := NewPolicy().Authorize(context.Background(), req); got.Allowed || got.Reason != DenyProject {
+		t.Fatalf("decision=%+v, want project denial without a principal grant", got)
+	}
+	p.ProjectIDs = []string{"p"}
+	req.Principal = p
+	if got := NewPolicy().Authorize(context.Background(), req); !got.Allowed {
+		t.Fatalf("decision=%+v, want explicit project grant", got)
+	}
+}
+
+func TestScopedCodeWriterCannotEscapeProjectGrant(t *testing.T) {
+	p := domain.Principal{Subject: "svc", Type: "service_account", OrgID: "t", Roles: []string{string(RoleServiceAccount)}, WorkspaceIDs: []string{"w"}, Scopes: []string{"code:write", "project:p1"}}
+	req := Request{Principal: p, Tenant: Tenant{ID: "t", WorkspaceID: "w"}, Resource: ResourceRef{TenantID: "t", WorkspaceID: "w", ProjectID: "p2"}, ResourceType: ResourceCode, Action: ActionWrite}
+	if got := NewPolicy().Authorize(context.Background(), req); got.Allowed || got.Reason != DenyProject {
+		t.Fatalf("decision=%+v, want project denial outside explicit service-account scope", got)
+	}
+	req.Resource.ProjectID = "p1"
+	if got := NewPolicy().Authorize(context.Background(), req); !got.Allowed {
+		t.Fatalf("decision=%+v, want write inside explicit service-account scope", got)
+	}
+}
+
 func TestEnforceFailsClosedForNilAuthorizer(t *testing.T) {
 	if err := Enforce(context.Background(), nil, Request{}); err == nil || err.Error() != DenyRole {
 		t.Fatalf("error=%v, want fail-closed role denial", err)

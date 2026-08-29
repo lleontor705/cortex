@@ -6,3 +6,8 @@ coverage/
 *.out
 *.exe
 .git/
+.cache/
+.codex/
+.gocache/
+.tmp/
+.opencode-spike/

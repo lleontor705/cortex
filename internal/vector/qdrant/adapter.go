@@ -418,7 +418,9 @@ func (a *Adapter) ensureCollection(ctx context.Context) error {
 }
 
 // filtersToQdrant maps a domain.VectorQuery filter map to a Qdrant Filter with
-// Must conditions (PreFilter). Recognized keys: project, scope, tenant_id,
+// Must conditions (PreFilter). Recognized keys include tenant_id and
+// workspace_id; scoped server queries provide both so legacy points missing
+// either payload field cannot match.
 // model, model_version, source, type. Unknown string-valued keys are also
 // forwarded as Match conditions (the adapter is filter-transparent).
 func filtersToQdrant(filters map[string]any) *qdrant.Filter {

@@ -316,11 +316,13 @@ func TestAdapter_Upsert_TranslatesPointsToBatch(t *testing.T) {
 			Vector:    []float32{0.1, 0.2, 0.3, 0.4},
 			ModelInfo: domain.ModelInfo{Name: "test-model", Dimension: 4, Version: "v1"},
 			Metadata: map[string]any{
-				"project":   "myproj",
-				"scope":     "project",
-				"tenant_id": "tenant-a",
-				"source":    "manual",
-				"type":      "decision",
+				"project":      "myproj",
+				"project_id":   "10000000-a000-0000-0000-000000000003",
+				"scope":        "project",
+				"tenant_id":    "tenant-a",
+				"workspace_id": "workspace-a",
+				"source":       "manual",
+				"type":         "decision",
 			},
 		},
 		{
@@ -348,8 +350,14 @@ func TestAdapter_Upsert_TranslatesPointsToBatch(t *testing.T) {
 	if v := payloadString(pts[0], "project"); v != "myproj" {
 		t.Errorf("payload project = %q, want myproj", v)
 	}
+	if v := payloadString(pts[0], "project_id"); v != "10000000-a000-0000-0000-000000000003" {
+		t.Errorf("payload project_id = %q", v)
+	}
 	if v := payloadString(pts[0], "tenant_id"); v != "tenant-a" {
 		t.Errorf("payload tenant_id = %q, want tenant-a", v)
+	}
+	if v := payloadString(pts[0], "workspace_id"); v != "workspace-a" {
+		t.Errorf("payload workspace_id = %q, want workspace-a", v)
 	}
 	// Model metadata is stored for traceability.
 	if v := payloadString(pts[0], "model"); v != "test-model" {
@@ -408,10 +416,12 @@ func TestAdapter_Search_TranslatesFilters(t *testing.T) {
 		Limit:     10,
 		Threshold: 0.5,
 		Filters: map[string]any{
-			"project":   "myproj",
-			"scope":     "project",
-			"tenant_id": "tenant-a",
-			"type":      "decision",
+			"project":      "myproj",
+			"project_id":   "10000000-a000-0000-0000-000000000003",
+			"scope":        "project",
+			"tenant_id":    "tenant-a",
+			"workspace_id": "workspace-a",
+			"type":         "decision",
 		},
 	}
 	results, err := a.Search(context.Background(), q)
@@ -429,14 +439,14 @@ func TestAdapter_Search_TranslatesFilters(t *testing.T) {
 	if qp.Filter == nil || len(qp.Filter.Must) == 0 {
 		t.Fatal("expected Must filter conditions; got none")
 	}
-	// All four filter keys should appear as Match conditions.
+	// All scoped filter keys should appear as Match conditions.
 	seen := map[string]bool{}
 	for _, cond := range qp.Filter.Must {
 		if fc := cond.GetField(); fc != nil {
 			seen[fc.GetKey()] = true
 		}
 	}
-	for _, k := range []string{"project", "scope", "tenant_id", "type"} {
+	for _, k := range []string{"project", "project_id", "scope", "tenant_id", "workspace_id", "type"} {
 		if !seen[k] {
 			t.Errorf("filter key %q not forwarded to Qdrant", k)
 		}

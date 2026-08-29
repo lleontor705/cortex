@@ -56,7 +56,7 @@ The local database defaults to `~/.cortex/cortex.db`. Configuration is read from
 docker compose up --build
 ```
 
-The development server listens on `http://localhost:7438`. The Compose token is intentionally for development only. For production, provide separate migration/runtime DSNs and an external secret/identity system; see [SERVER.md](SERVER.md).
+The development server listens on `http://localhost:7438`. On its first Compose start, the container creates random UUIDs for the tenant, workspace and owner subject, plus a random owner Bearer. Copy it immediately from `docker compose logs cortex-server`; it is emitted once and stored in the private `cortex-server-state` volume so restarts retain the same authority. Docker logs may persist the Bearer, so do not share them. To supply a fixed development identity, set all four values (`CORTEX_TENANT_ID`, `CORTEX_WORKSPACE_ID`, `CORTEX_PRINCIPAL_SUBJECT`, and `CORTEX_HTTP_TOKEN`) together; partial input fails closed. For production, provide separate migration/runtime DSNs and an external secret/identity system; see [SERVER.md](SERVER.md).
 
 ## Web Control Room
 

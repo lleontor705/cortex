@@ -386,16 +386,18 @@ func (a *Adapter) validatePoint(p domain.VectorPoint) error {
 // re-upserts keep the row's modification time current.
 func (a *Adapter) upsertSQL() string {
 	return fmt.Sprintf(
-		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, scope, tenant_id, source, type)
-VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, project_id, scope, tenant_id, workspace_id, source, type)
+VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO UPDATE SET
     embedding = EXCLUDED.embedding,
     model = EXCLUDED.model,
     model_version = EXCLUDED.model_version,
     dimension = EXCLUDED.dimension,
     project = EXCLUDED.project,
+	project_id = EXCLUDED.project_id,
     scope = EXCLUDED.scope,
     tenant_id = EXCLUDED.tenant_id,
+	workspace_id = EXCLUDED.workspace_id,
     source = EXCLUDED.source,
     type = EXCLUDED.type,
     updated_at = NOW()`,
@@ -412,8 +414,10 @@ func (a *Adapter) pointArgs(p domain.VectorPoint) []any {
 		p.ModelInfo.Version,
 		len(p.Vector),
 		metaString(p.Metadata, "project"),
+		metaString(p.Metadata, "project_id"),
 		metaString(p.Metadata, "scope"),
 		metaString(p.Metadata, "tenant_id"),
+		metaString(p.Metadata, "workspace_id"),
 		metaString(p.Metadata, "source"),
 		metaString(p.Metadata, "type"),
 	}
@@ -687,13 +691,18 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
     model_version TEXT NOT NULL DEFAULT '',
     dimension INT NOT NULL,
     project TEXT NOT NULL DEFAULT '',
+	project_id TEXT NOT NULL DEFAULT '',
     scope TEXT NOT NULL DEFAULT '',
     tenant_id TEXT NOT NULL DEFAULT '',
+	workspace_id TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
     type TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, qualified, dimension),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`, qualified),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT ''`, qualified),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (tenant_id, workspace_id, project_id)`, table+"_tenant_workspace_project_idx", qualified),
 	}
 
 	// pgvector HNSW and IVFFlat indexes in PostgreSQL have a hard limit of 2000 dimensions.
@@ -748,8 +757,10 @@ func bootstrapSchema(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) err
 // (filter-transparent but safe — no dynamic column names from user input).
 var filterKeyOrder = []string{
 	"project",
+	"project_id",
 	"scope",
 	"tenant_id",
+	"workspace_id",
 	"type",
 	"model",
 	"model_version",

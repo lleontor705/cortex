@@ -16,8 +16,22 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/store/search"
 	"github.com/lleontor705/cortex/v2/internal/store/session"
 	sqlitestore "github.com/lleontor705/cortex/v2/internal/store/sqlite"
+	"github.com/lleontor705/cortex/v2/internal/vector/purego"
 	"github.com/lleontor705/cortex/v2/testutil"
 )
+
+type fixedEmbedding struct {
+	vector []float32
+	calls  int
+}
+
+func (f *fixedEmbedding) Embed(context.Context, string) ([]float32, error) {
+	f.calls++
+	return f.vector, nil
+}
+
+func (f *fixedEmbedding) Dimensions() int { return len(f.vector) }
+func (f *fixedEmbedding) Model() string   { return "fixed-test" }
 
 func setupTestServer(t *testing.T) *Server {
 	return setupTestServerWithOptions(t, Options{})
@@ -330,6 +344,45 @@ func TestHandleSearchHybrid_Success(t *testing.T) {
 
 	if w.Code != 200 {
 		t.Fatalf("hybrid search: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSearchHybrid_UsesVectorResultsInSemanticMode(t *testing.T) {
+	srv := setupTestServer(t)
+	ctx := context.Background()
+
+	srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "demo", Directory: "."}) //nolint:errcheck
+	observation := &domain.Observation{
+		SessionID: "s1", Title: "Database architecture", Content: "PostgreSQL persistence decision",
+		Type: "decision", Project: "demo", Scope: "project",
+	}
+	if err := srv.deps.Observations.Save(ctx, observation); err != nil {
+		t.Fatalf("save observation: %v", err)
+	}
+
+	index := purego.New()
+	if err := index.Upsert(ctx, []domain.VectorPoint{{
+		ID: observation.ID, Vector: []float32{1, 0},
+		ModelInfo: domain.ModelInfo{Name: "fixed-test", Dimension: 2},
+	}}); err != nil {
+		t.Fatalf("upsert vector: %v", err)
+	}
+	embeddings := &fixedEmbedding{vector: []float32{1, 0}}
+	srv.deps.Vectors = index
+	srv.deps.Embeddings = embeddings
+
+	req := httptest.NewRequest("GET", "/api/search/hybrid?q=unrelated-terminology&project=demo&mode=semantic", nil)
+	w := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("hybrid search: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if embeddings.calls != 1 {
+		t.Fatalf("expected one query embedding, got %d", embeddings.calls)
+	}
+	if !strings.Contains(w.Body.String(), "Database architecture") {
+		t.Fatalf("expected vector-only observation in response, got: %s", w.Body.String())
 	}
 }
 
