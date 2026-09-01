@@ -15,6 +15,7 @@ services:
       retries: 12
 
   cortex-server:
+    image: ghcr.io/lleontor705/cortex:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -56,6 +57,7 @@ services:
       retries: 12
 
   cortex-ui:
+    image: ghcr.io/lleontor705/cortex-web:latest
     build:
       context: .
       dockerfile: Dockerfile.web

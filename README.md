@@ -92,24 +92,43 @@ cortex search "decisión de arquitectura"
 cortex tui
 ```
 
-### 2. Modo Servidor con Docker (Recomendado para Equipos & Multi-Tenant)
+### 2. Modo Servidor & Web UI con Docker (GHCR Oficial)
+
+Puedes levantar todo el stack (PostgreSQL + Cortex Server + Cortex Web UI) directamente usando las imágenes oficiales de **GitHub Container Registry (`ghcr.io`)**:
 
 ```bash
-# Iniciar PostgreSQL y Cortex Server
-docker compose up --build -d
+# Iniciar stack completo (PostgreSQL, Cortex Server en :7438 y Web UI en :3000)
+docker compose up -d
 ```
 
-Inicia el servidor autenticado en el puerto `7438` con soporte MCP Streamable HTTP en `/mcp` y API REST en `/api/*`. En el primer arranque, Docker genera un tenant, un workspace, un sujeto `owner` y un Bearer aleatorios; cópialo de inmediato con `docker compose logs cortex-server`. Se muestra una sola vez y queda asociado al volumen `cortex-server-state`, por lo que persiste entre reinicios. No publiques ni compartas esos logs.
+> [!TIP]
+> En el primer arranque, Docker genera automáticamente un tenant, un workspace, un sujeto `owner` y un Bearer token. Obtén tu token ejecutando:
+> ```bash
+> docker compose logs cortex-server
+> ```
 
-### 3. Interfaz Web (Control Room Next.js 15)
+#### Ejecución con Imágenes Individuales de Docker (`ghcr.io`):
 
 ```bash
-cd web
-npm install
-npm run dev
+# 1. Servidor Cortex (Backend en http://localhost:7438)
+docker run -d \
+  --name cortex-server \
+  -p 7438:7438 \
+  -v cortex-state:/home/cortex/.cortex \
+  -e CORTEX_SERVER_AUTO_BOOTSTRAP=true \
+  -e CORTEX_SERVER_STORAGE_DRIVER=postgres \
+  -e CORTEX_SERVER_STORAGE_DSN="postgres://usuario:pass@host:5432/cortex?sslmode=disable" \
+  -e CORTEX_SERVER_STORAGE_MIGRATION_DSN="postgres://admin:pass@host:5432/cortex?sslmode=disable" \
+  ghcr.io/lleontor705/cortex:latest
+
+# 2. Interfaz Web (Control Room en http://localhost:3000)
+docker run -d \
+  --name cortex-web \
+  -p 3000:3000 \
+  ghcr.io/lleontor705/cortex-web:latest
 ```
 
-Abre [http://localhost:3000](http://localhost:3000) e ingresa la URL del servidor y el Bearer Token.
+Abre [http://localhost:3000](http://localhost:3000) e ingresa la URL de Cortex Server (`http://localhost:7438`) y tu Bearer Token.
 
 ---
 

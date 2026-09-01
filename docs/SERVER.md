@@ -2,13 +2,18 @@
 
 Server mode is the PostgreSQL composition selected with `cortex --mode server`.
 
-## Docker Development
+## Docker Deployment (GHCR Official Images)
+
+Cortex publishes official multi-platform images on GitHub Container Registry:
+- Backend Server: `ghcr.io/lleontor705/cortex:latest`
+- Web UI Control Room: `ghcr.io/lleontor705/cortex-web:latest`
 
 ```bash
-docker compose up --build
+# Pull and start PostgreSQL, Cortex Server, and Web UI
+docker compose up -d
 ```
 
-The development Compose file creates PostgreSQL, applies the embedded server schema, bootstraps a development organization/workspace/principal, and starts Cortex on port `7438`. It is not a production secret or identity configuration.
+The Compose file creates PostgreSQL, applies the embedded server schema, bootstraps a development organization/workspace/principal, and starts Cortex Server on port `7438` and Web UI on port `3000`. To rebuild locally from source code, use `docker compose up --build -d`.
 
 ## Production Requirements
 
