@@ -1,4 +1,4 @@
-﻿package server
+package server
 
 import (
 	"context"
@@ -69,9 +69,9 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 	defer rows.Close()
 
 	type unindexedObservation struct {
-		id                                                   int64
-		title, content, projectKey, projectPublicID          string
-		scope, tenantID, workspaceID, source, obsType        string
+		id                                            int64
+		title, content, projectKey, projectPublicID   string
+		scope, tenantID, workspaceID, source, obsType string
 	}
 
 	batch := make([]unindexedObservation, 0, 10)

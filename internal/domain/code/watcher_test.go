@@ -84,3 +84,57 @@ func TestFileWatcher_WatchLoop(t *testing.T) {
 		// Finished timeout
 	}
 }
+
+func TestFileWatcher_IgnoresConfiguredDirectories(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "cortex_watch_ignore_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Valid monitored file
+	validFile := filepath.Join(tempDir, "src", "app.go")
+	if err := os.MkdirAll(filepath.Dir(validFile), 0755); err != nil {
+		t.Fatalf("failed to create src dir: %v", err)
+	}
+	if err := os.WriteFile(validFile, []byte("package main"), 0644); err != nil {
+		t.Fatalf("failed to write valid file: %v", err)
+	}
+
+	// File inside ignored sub-directory "node_modules"
+	ignoredNodeModules := filepath.Join(tempDir, "node_modules", "pkg", "index.js")
+	if err := os.MkdirAll(filepath.Dir(ignoredNodeModules), 0755); err != nil {
+		t.Fatalf("failed to create node_modules dir: %v", err)
+	}
+	if err := os.WriteFile(ignoredNodeModules, []byte("console.log()"), 0644); err != nil {
+		t.Fatalf("failed to write node_modules file: %v", err)
+	}
+
+	// File inside ignored sub-directory "tmp"
+	ignoredSubTmp := filepath.Join(tempDir, "tmp", "cache.go")
+	if err := os.MkdirAll(filepath.Dir(ignoredSubTmp), 0755); err != nil {
+		t.Fatalf("failed to create tmp sub dir: %v", err)
+	}
+	if err := os.WriteFile(ignoredSubTmp, []byte("package cache"), 0644); err != nil {
+		t.Fatalf("failed to write sub tmp file: %v", err)
+	}
+
+	cfg := DefaultWatcherConfig(tempDir, "test-proj")
+	cfg.PollInterval = 30 * time.Millisecond
+	watcher := NewFileWatcher(cfg)
+
+	// Baseline scan
+	_ = watcher.ScanOnce()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Modify all files
+	_ = os.WriteFile(validFile, []byte("package main // modified"), 0644)
+	_ = os.WriteFile(ignoredNodeModules, []byte("console.log('modified')"), 0644)
+	_ = os.WriteFile(ignoredSubTmp, []byte("package cache // modified"), 0644)
+
+	changed := watcher.ScanOnce()
+	if len(changed) != 1 || changed[0] != validFile {
+		t.Fatalf("expected changed only [ %s ], got %v", validFile, changed)
+	}
+}

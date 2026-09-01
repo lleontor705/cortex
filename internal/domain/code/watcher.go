@@ -58,9 +58,17 @@ func NewFileWatcher(cfg WatcherConfig) *FileWatcher {
 
 // isIgnored checks if a directory path matches ignore patterns.
 func (w *FileWatcher) isIgnored(path string) bool {
-	for _, ign := range w.cfg.IgnoreDirs {
-		if strings.Contains(filepath.ToSlash(path), "/"+ign+"/") || strings.HasSuffix(filepath.ToSlash(path), "/"+ign) {
-			return true
+	rel, err := filepath.Rel(w.cfg.Directory, path)
+	if err != nil || rel == "." || rel == "" {
+		return false
+	}
+	relSlash := filepath.ToSlash(rel)
+	parts := strings.Split(relSlash, "/")
+	for _, part := range parts {
+		for _, ign := range w.cfg.IgnoreDirs {
+			if part == ign {
+				return true
+			}
 		}
 	}
 	return false

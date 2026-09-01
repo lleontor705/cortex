@@ -4,9 +4,9 @@
 // SQLiteUnitOfWork save path. It is the quantitative contract referenced by
 // REQ-TX-002's defect-pin scenario:
 //
-//   "A saturation test floods the writer → No save blocks beyond the bounded
-//    duration, p95 save latency stays within the registered envelope, and the
-//    suite pins that the prior unbounded behavior is gone."
+//	"A saturation test floods the writer → No save blocks beyond the bounded
+//	 duration, p95 save latency stays within the registered envelope, and the
+//	 suite pins that the prior unbounded behavior is gone."
 //
 // The envelope is a MEASURED, DEFENSIBLE bound — not a guess. It is asserted
 // by TestP95SaveLatencyEnvelope_Registered (architecture test). The saturation

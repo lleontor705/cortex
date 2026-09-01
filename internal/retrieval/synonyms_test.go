@@ -1,4 +1,4 @@
-﻿package retrieval_test
+package retrieval_test
 
 import (
 	"testing"
