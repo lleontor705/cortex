@@ -245,21 +245,28 @@ func (a *apiHandler) agentStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := agentdomain.WithRequestTimeout(r.Context(), prepared.limits, agentdomain.TransportStream)
 	defer cancel()
+
+	var eventSeq int64
+	writeSSE := func(event string, payload any) bool {
+		eventSeq++
+		return writeAgentSSE(w, flusher, eventSeq, event, payload)
+	}
+
 	answer, outcomeErr = a.agent.Stream(ctx, prepared.request, agentdomain.StreamCallbacks{
 		Meta: func(status agentdomain.RetrievalStatus) error {
-			if !writeAgentSSE(w, flusher, "meta", map[string]any{"retrieval": status}) {
+			if !writeSSE("meta", map[string]any{"retrieval": status}) {
 				return context.Canceled
 			}
 			return nil
 		},
 		Delta: func(text string) error {
-			if !writeAgentSSE(w, flusher, "delta", map[string]string{"text": text}) {
+			if !writeSSE("delta", map[string]string{"text": text}) {
 				return context.Canceled
 			}
 			return nil
 		},
 		Sources: func(sources []agentdomain.Source) error {
-			if !writeAgentSSE(w, flusher, "sources", sources) {
+			if !writeSSE("sources", sources) {
 				return context.Canceled
 			}
 			return nil
@@ -272,33 +279,40 @@ func (a *apiHandler) agentStream(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return
 		}
-		writeAgentStreamError(w, flusher, outcomeErr)
+		eventSeq++
+		writeAgentStreamError(w, flusher, eventSeq, outcomeErr)
 		return
 	}
 	if ctx.Err() != nil {
 		outcomeErr = &agentdomain.Error{Code: agentdomain.ContextErrorCode(ctx.Err()), Err: ctx.Err()}
 		return
 	}
-	if !writeAgentSSE(w, flusher, "done", answer) {
+	if !writeSSE("done", answer) {
 		outcomeErr = &agentdomain.Error{Code: agentdomain.ErrorRequestCancelled, Err: context.Canceled}
 	}
 }
 
-func writeAgentSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload any) bool {
+func writeAgentSSE(w http.ResponseWriter, flusher http.Flusher, id int64, event string, payload any) bool {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return false
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
-		return false
+	if id > 0 {
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, data); err != nil {
+			return false
+		}
+	} else {
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return false
+		}
 	}
 	flusher.Flush()
 	return true
 }
 
-func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, err error) {
+func writeAgentStreamError(w http.ResponseWriter, flusher http.Flusher, id int64, err error) {
 	status, code, message := agentErrorResponse(err)
-	writeAgentSSE(w, flusher, "error", map[string]any{"status": status, "code": code, "message": message})
+	writeAgentSSE(w, flusher, id, "error", map[string]any{"status": status, "code": code, "message": message})
 }
 
 func agentErrorResponse(err error) (int, string, string) {

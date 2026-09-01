@@ -83,13 +83,14 @@ logging:
 			name:       "environment variable override",
 			configYAML: "",
 			envVars: map[string]string{
-				"CORTEX_SERVER_NAME":          "env-server",
-				"CORTEX_SERVER_MULTI_TENANT":  "true",
-				"CORTEX_HTTP_PORT":            "3000",
-				"CORTEX_HTTP_TOKEN":           "env-token",
-				"CORTEX_HTTP_ALLOWED_ORIGINS": "http://localhost:5173",
-				"CORTEX_LOGGING_LEVEL":        "error",
-				"CORTEX_DATABASE_PATH":        "/custom/path.db",
+				"CORTEX_SERVER_NAME":                            "env-server",
+				"CORTEX_SERVER_MULTI_TENANT":                    "true",
+				"CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST": "ollama.railway.internal",
+				"CORTEX_HTTP_PORT":                              "3000",
+				"CORTEX_HTTP_TOKEN":                             "env-token",
+				"CORTEX_HTTP_ALLOWED_ORIGINS":                   "http://localhost:5173",
+				"CORTEX_LOGGING_LEVEL":                          "error",
+				"CORTEX_DATABASE_PATH":                          "/custom/path.db",
 			},
 			wantErr: false,
 			checkFunc: func(t *testing.T, cfg *Config) {
@@ -98,6 +99,9 @@ logging:
 				}
 				if !cfg.Server.MultiTenant {
 					t.Error("expected server multi_tenant to be true")
+				}
+				if cfg.Server.RailwayInternalEmbeddingHost != "ollama.railway.internal" {
+					t.Errorf("expected configured Railway embedding hostname, got %q", cfg.Server.RailwayInternalEmbeddingHost)
 				}
 				if cfg.HTTP.Port != 3000 {
 					t.Errorf("expected HTTP port 3000, got %d", cfg.HTTP.Port)

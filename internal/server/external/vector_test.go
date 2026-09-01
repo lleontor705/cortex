@@ -270,10 +270,14 @@ func TestMapQdrantConfig_FieldsMapped(t *testing.T) {
 // TestMapPgvectorConfig_FieldsMapped is the pgvector analogue.
 func TestMapPgvectorConfig_FieldsMapped(t *testing.T) {
 	in := validPgvectorCfg()
+	in.MigrationDSN = "postgres://vector_migration@db/cortex"
 	m := validModel()
 	out := mapPgvectorConfig(in, m)
 	if out.DSN != in.DSN {
 		t.Errorf("DSN not mapped")
+	}
+	if out.BootstrapDSN != in.MigrationDSN {
+		t.Errorf("BootstrapDSN not mapped")
 	}
 	if out.Schema != in.Schema {
 		t.Errorf("Schema: %q vs %q", out.Schema, in.Schema)

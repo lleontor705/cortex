@@ -204,6 +204,9 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if vectorCfg.Provider == "" {
 		vectorCfg.Provider = "none"
 	}
+	if vectorCfg.Provider == "pgvector" && strings.TrimSpace(vectorCfg.Pgvector.MigrationDSN) == "" {
+		vectorCfg.Pgvector.MigrationDSN = cfg.Server.Storage.MigrationDSN
+	}
 	vec, err := external.NewVectorIndex(ctx, vectorCfg, external.FactoryInput{ModelInfo: model})
 	if err != nil {
 		pool.Close()
@@ -369,6 +372,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if cfg.Lifecycle.EnableAutoArchive {
 		rt.stopLifecycle = rt.Lifecycle.Start(ctx)
 	}
+	startBackgroundEmbeddingWorker(ctx, pool, emb, vec)
 	return rt, nil
 }
 
@@ -712,12 +716,13 @@ func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
 		}
 	}
 	policy := embedding.OutboundPolicy{
-		AllowLoopback:             cfg.Server.BootstrapDevelopment,
-		AllowInsecureLoopbackHTTP: cfg.Server.BootstrapDevelopment,
-		MaxRedirects:              3,
-		MaxResponseBodyBytes:      4 << 20,
-		MaxConcurrent:             4,
-		Timeout:                   30 * time.Second,
+		AllowLoopback:                cfg.Server.BootstrapDevelopment,
+		AllowInsecureLoopbackHTTP:    cfg.Server.BootstrapDevelopment,
+		RailwayInternalEmbeddingHost: cfg.Server.RailwayInternalEmbeddingHost,
+		MaxRedirects:                 3,
+		MaxResponseBodyBytes:         4 << 20,
+		MaxConcurrent:                4,
+		Timeout:                      30 * time.Second,
 	}
 	if err := policy.ApproveDestination(baseURL); err != nil {
 		return nil, err

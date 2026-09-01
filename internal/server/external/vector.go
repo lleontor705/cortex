@@ -155,6 +155,7 @@ func mapQdrantConfig(c config.QdrantConfig, model domain.ModelInfo) qdrant.Adapt
 func mapPgvectorConfig(c config.PGVectorConfig, model domain.ModelInfo) pgvector.AdapterConfig {
 	return pgvector.AdapterConfig{
 		DSN:                c.DSN,
+		BootstrapDSN:       c.MigrationDSN,
 		Schema:             c.Schema,
 		Table:              c.Table,
 		Dimension:          model.Dimension,

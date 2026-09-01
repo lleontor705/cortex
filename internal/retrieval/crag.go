@@ -32,10 +32,10 @@ func DefaultCRAGConfig() CRAGConfig {
 
 // CRAGEvaluation encapsulates the confidence evaluation of retrieved results.
 type CRAGEvaluation struct {
-	Grade           ConfidenceGrade          `json:"grade"`
-	Confidence      float64                  `json:"confidence"`
-	NeedsRefinement bool                     `json:"needs_refinement"`
-	FilteredResults []*domain.SearchResult  `json:"filtered_results"`
+	Grade           ConfidenceGrade        `json:"grade"`
+	Confidence      float64                `json:"confidence"`
+	NeedsRefinement bool                   `json:"needs_refinement"`
+	FilteredResults []*domain.SearchResult `json:"filtered_results"`
 }
 
 // EvaluateCRAG evaluates retrieved search results against CRAG confidence thresholds,

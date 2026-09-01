@@ -11,14 +11,14 @@ import (
 )
 
 var (
-	pyClassDeclRe   = regexp.MustCompile(`^class\s+([a-zA-Z0-9_]+)(?:\(([^)]*)\))?:`)
-	pyFuncDeclRe    = regexp.MustCompile(`^(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:`)
-	pyMethodDeclRe  = regexp.MustCompile(`^\s+(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:`)
-	pyDecoratorRe   = regexp.MustCompile(`^\s*@([a-zA-Z0-9_.]+(?:\([^)]*\))?)`)
-	pyFromImportRe  = regexp.MustCompile(`^from\s+([a-zA-Z0-9_.]+)\s+import\s+(.+)`)
-	pyImportRe      = regexp.MustCompile(`^import\s+(.+)`)
-	pyCallRe        = regexp.MustCompile(`\b([a-zA-Z0-9_]+)\s*\(`)
-	pyMemberCallRe  = regexp.MustCompile(`\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(`)
+	pyClassDeclRe  = regexp.MustCompile(`^class\s+([a-zA-Z0-9_]+)(?:\(([^)]*)\))?:`)
+	pyFuncDeclRe   = regexp.MustCompile(`^(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:`)
+	pyMethodDeclRe = regexp.MustCompile(`^\s+(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:`)
+	pyDecoratorRe  = regexp.MustCompile(`^\s*@([a-zA-Z0-9_.]+(?:\([^)]*\))?)`)
+	pyFromImportRe = regexp.MustCompile(`^from\s+([a-zA-Z0-9_.]+)\s+import\s+(.+)`)
+	pyImportRe     = regexp.MustCompile(`^import\s+(.+)`)
+	pyCallRe       = regexp.MustCompile(`\b([a-zA-Z0-9_]+)\s*\(`)
+	pyMemberCallRe = regexp.MustCompile(`\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*\(`)
 )
 
 func extractPythonFile(fullPath, relPath string) *ExtractionResult {

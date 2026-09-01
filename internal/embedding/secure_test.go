@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,40 @@ func TestNewSecureRejectsUnapprovedPrivateDestination(t *testing.T) {
 	_, err := NewSecure(Config{Provider: "ollama", BaseURL: "https://169.254.169.254"}, policy)
 	if err == nil {
 		t.Fatal("accepted metadata endpoint")
+	}
+}
+
+func TestSecureEmbeddingAllowsOnlyExactRailwayPrivateHost(t *testing.T) {
+	const railwayURL = "http://ollama.railway.internal:11434"
+
+	withoutOptIn := OutboundPolicy{}
+	if err := withoutOptIn.ApproveDestination(railwayURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSecure(Config{Provider: "ollama", BaseURL: railwayURL}, withoutOptIn); err == nil {
+		t.Fatal("Railway private HTTP was accepted without an exact configured host")
+	}
+
+	withOptIn := OutboundPolicy{RailwayInternalEmbeddingHost: "ollama.railway.internal"}
+	if err := withOptIn.ApproveDestination(railwayURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSecure(Config{Provider: "ollama", BaseURL: railwayURL}, withOptIn); err != nil {
+		t.Fatalf("exact Railway private HTTP host rejected: %v", err)
+	}
+	privateIP := net.ParseIP("10.42.0.8")
+	if !withOptIn.allowedIPForHost(privateIP, "ollama.railway.internal") {
+		t.Fatal("exact Railway private hostname did not permit its private address")
+	}
+	if withOptIn.allowedIPForHost(privateIP, "ollama.railway.internal.attacker.test") {
+		t.Fatal("suffix-lookalike hostname allowed")
+	}
+	wrongHost := OutboundPolicy{RailwayInternalEmbeddingHost: "ollama.railway.internal.attacker.test"}
+	if err := wrongHost.ApproveDestination("http://ollama.railway.internal.attacker.test:11434"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSecure(Config{Provider: "ollama", BaseURL: "http://ollama.railway.internal.attacker.test:11434"}, wrongHost); err == nil {
+		t.Fatal("non-Railway hostname was accepted")
 	}
 }
 

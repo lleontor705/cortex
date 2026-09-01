@@ -314,8 +314,8 @@ func (s *AuthorizedStore) SearchAgentObservations(ctx context.Context, projectPu
 			return errors.New(authz.DenyProject)
 		}
 
-		statement := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.workspace_id=$2 AND o.project_id=$3 AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
-		args := []any{opts.Query, workspace, internalProjectID}
+		statement := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.workspace_id=$2 AND (o.project_id=$3 OR (o.project_id IS NULL AND o.project_key=$4)) AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
+		args := []any{opts.Query, workspace, internalProjectID, canonicalLabel}
 		statement, args = s.store.appendObservationVisibilityPredicate(statement, args, true)
 		if opts.Scope != "" {
 			statement += fmt.Sprintf(" AND o.scope=$%d", len(args)+1)
@@ -497,9 +497,22 @@ func (s *AuthorizedStore) ListAgentProjects(ctx context.Context) (map[string]str
 		if err != nil {
 			return err
 		}
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO projects(tenant_id, workspace_id, name)
+			SELECT DISTINCT public.cortex_current_tenant(), $1, sub.pname
+			  FROM (
+			    SELECT project_key AS pname FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND project_key <> ''
+			    UNION
+			    SELECT project_key AS pname FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key <> ''
+			  ) sub
+			 WHERE NOT EXISTS (
+			    SELECT 1 FROM projects p WHERE p.tenant_id=public.cortex_current_tenant() AND p.workspace_id=$1 AND p.name=sub.pname
+			 )`, workspace)
+
 		rows, err := tx.Query(ctx, `
 			SELECT p.public_id::text, p.name,
-			       EXISTS (SELECT 1 FROM sessions se WHERE se.tenant_id=p.tenant_id AND se.workspace_id=p.workspace_id AND se.project_id=p.id)
+			       (EXISTS (SELECT 1 FROM sessions se WHERE se.tenant_id=p.tenant_id AND se.workspace_id=p.workspace_id AND (se.project_id=p.id OR se.project_key=p.name))
+			        OR EXISTS (SELECT 1 FROM observations o WHERE o.tenant_id=p.tenant_id AND (o.project_id=p.id OR o.project_key=p.name) AND o.deleted_at IS NULL))
 			  FROM projects p
 			 WHERE p.tenant_id=public.cortex_current_tenant() AND p.workspace_id=$1
 			 ORDER BY p.name, p.public_id`, workspace)

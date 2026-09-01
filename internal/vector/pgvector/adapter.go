@@ -102,7 +102,8 @@ type pgvectorDB interface {
 // AdapterConfig). Index tuning uses typed validated integers — there is NO raw
 // SQL string surface for index options (prevents injection via DDL).
 type AdapterConfig struct {
-	DSN                string        // PostgreSQL connection string
+	DSN                string        // PostgreSQL runtime connection string
+	BootstrapDSN       string        // optional privileged DDL connection; empty falls back to DSN
 	Schema             string        // schema name (default cortex_vector)
 	Table              string        // table name (default embeddings)
 	Dimension          int           // expected vector dimension
@@ -152,16 +153,25 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	}
 
 	password := extractPassword(cfg.DSN)
+	bootstrapDSN := cfg.BootstrapDSN
+	if strings.TrimSpace(bootstrapDSN) == "" {
+		bootstrapDSN = cfg.DSN
+	}
+	bootstrapPassword := extractPassword(bootstrapDSN)
 
-	// Bootstrap: create extension + schema + table + index via a raw connection.
-	conn, err := pgx.Connect(ctx, cfg.DSN)
+	// Bootstrap DDL uses a distinct, administrator-owned connection when one
+	// is configured. The runtime pool below is always created from cfg.DSN.
+	conn, err := pgx.Connect(ctx, bootstrapDSN)
 	if err != nil {
-		return nil, fmt.Errorf("pgvector: bootstrap connect: %w", redactDSN(err, password))
+		return nil, fmt.Errorf("pgvector: bootstrap connect: %w", redactDSN(err, bootstrapPassword))
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
 	if err := bootstrapSchema(ctx, conn, cfg); err != nil {
-		return nil, fmt.Errorf("pgvector: bootstrap schema: %w", redactDSN(err, password))
+		return nil, fmt.Errorf("pgvector: bootstrap schema: %w", redactDSN(err, bootstrapPassword))
+	}
+	if err := grantRuntimeAccess(ctx, conn, cfg); err != nil {
+		return nil, fmt.Errorf("pgvector: grant runtime access: %w", redactDSN(err, bootstrapPassword))
 	}
 
 	// Create the pool.
@@ -725,6 +735,23 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
 	}
 
 	return stmts
+}
+
+func grantRuntimeAccess(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) error {
+	runtimeCfg, err := pgx.ParseConfig(cfg.DSN)
+	if err != nil || !identifierRe.MatchString(runtimeCfg.User) {
+		return fmt.Errorf("invalid runtime role")
+	}
+	qualified := cfg.Schema + "." + cfg.Table
+	for _, stmt := range []string{
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, cfg.Schema, runtimeCfg.User),
+		fmt.Sprintf(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %s TO %s`, qualified, runtimeCfg.User),
+	} {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // bootstrapSchema runs the schema/table/index DDL on a raw pgx.Conn.

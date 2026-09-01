@@ -82,6 +82,10 @@ type ServerConfig struct {
 	ProjectIDs              []string             `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
 	ClassificationClearance []string             `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
 	BootstrapDevelopment    bool                 `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
+	// RailwayInternalEmbeddingHost is the exact Railway private hostname
+	// allowed to serve embeddings over HTTP. An empty value keeps the default
+	// policy, which rejects every non-loopback HTTP destination.
+	RailwayInternalEmbeddingHost string `yaml:"railway_internal_embedding_host,omitempty" json:"railway_internal_embedding_host,omitempty" toml:"railway_internal_embedding_host,omitempty" mapstructure:"railway_internal_embedding_host"`
 	// MultiTenant enables SaaS request scoping. Tenant and workspace are derived from a verified bearer and an authorized workspace selection.
 	MultiTenant bool `yaml:"multi_tenant,omitempty" json:"multi_tenant,omitempty" toml:"multi_tenant,omitempty" mapstructure:"multi_tenant"`
 }
@@ -215,6 +219,7 @@ type QdrantConfig struct {
 // PGVectorConfig holds connection parameters for the pgvector external vector adapter.
 type PGVectorConfig struct {
 	DSN                string        `yaml:"dsn,omitempty" json:"dsn,omitempty" toml:"dsn,omitempty" mapstructure:"dsn"`
+	MigrationDSN       string        `yaml:"migration_dsn,omitempty" json:"migration_dsn,omitempty" toml:"migration_dsn,omitempty" mapstructure:"migration_dsn"`
 	Schema             string        `yaml:"schema,omitempty" json:"schema,omitempty" toml:"schema,omitempty" mapstructure:"schema"`
 	Table              string        `yaml:"table,omitempty" json:"table,omitempty" toml:"table,omitempty" mapstructure:"table"`
 	Dimension          int           `yaml:"dimension,omitempty" json:"dimension,omitempty" toml:"dimension,omitempty" mapstructure:"dimension"`
@@ -454,6 +459,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.project_ids", []string{})
 	v.SetDefault("server.classification_clearance", []string{})
 	v.SetDefault("server.bootstrap_development", false)
+	v.SetDefault("server.railway_internal_embedding_host", "")
 	v.SetDefault("server.multi_tenant", false)
 	v.SetDefault("server.workspace_id", "")
 	v.SetDefault("server.principal_subject", "")
@@ -523,6 +529,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vector.qdrant.timeout", defaults.Vector.Qdrant.Timeout)
 
 	v.SetDefault("vector.pgvector.dsn", defaults.Vector.Pgvector.DSN)
+	v.SetDefault("vector.pgvector.migration_dsn", defaults.Vector.Pgvector.MigrationDSN)
 	v.SetDefault("vector.pgvector.schema", defaults.Vector.Pgvector.Schema)
 	v.SetDefault("vector.pgvector.table", defaults.Vector.Pgvector.Table)
 	v.SetDefault("vector.pgvector.dimension", defaults.Vector.Pgvector.Dimension)

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useReducer, useRef, useState } from "rea
 import {
   Bot,
   CircleStop,
+  Download,
   MessageCircleQuestion,
   Plus,
   RotateCcw,
@@ -124,15 +125,53 @@ function AgentPageView(props: AgentPageViewProps) {
             El agente combina búsqueda híbrida, vectores, AST y grafos únicamente dentro del proyecto que tienes autorizado.
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={props.onNewConversation}
-          disabled={busy || (!props.messages.length && !props.draftAnswer && !props.error)}
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          Nueva conversación
-        </Button>
+        <div className="flex items-center gap-2">
+          {props.messages.length > 0 ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const projectName = props.projects.find((p) => p.id === props.projectId)?.label || props.projectId;
+                let md = `# Conversación de Investigación - Proyecto: ${projectName}\n\n`;
+                props.messages.forEach((m) => {
+                  if (m.role === "user") {
+                    md += `### 👤 Pregunta\n${m.content}\n\n`;
+                  } else {
+                    md += `### 🤖 Respuesta del Agente\n${m.content}\n\n`;
+                    if (m.sources && m.sources.length > 0) {
+                      md += `**Evidencia Citada:**\n`;
+                      m.sources.forEach((s) => {
+                        md += `- [${s.type.toUpperCase()}] **${s.title}** (\`${s.handle}\`)${s.path ? ` - \`${s.path}\`` : ""}\n`;
+                      });
+                      md += `\n`;
+                    }
+                  }
+                });
+                const blob = new Blob([md], { type: "text/markdown;charset=utf-8;" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.setAttribute("download", `cortex-investigacion-${projectName}-${new Date().toISOString().slice(0, 10)}.md`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+              }}
+              title="Exportar conversación a Markdown"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              Exportar
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={props.onNewConversation}
+            disabled={busy || (!props.messages.length && !props.draftAnswer && !props.error)}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Nueva conversación
+          </Button>
+        </div>
       </header>
 
       <ScopeBar
@@ -283,6 +322,9 @@ export default function AgentPage() {
         if (controller.signal.aborted || projectLoad.current !== controller) return;
         setProjects(eligible);
         dispatch({ type: "sync_projects", projectIds: eligible.map((project) => project.id) });
+        if (eligible.length > 0) {
+          dispatch({ type: "select_project", projectId: eligible[0].id });
+        }
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) setProjectsError(error instanceof Error ? error.message : "No se pudieron cargar los proyectos.");

@@ -870,4 +870,3 @@ func (p *Processor) Run() { ProcessData(10) }
 
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)
-

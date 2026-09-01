@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lleontor705/cortex/v2/internal/config"
@@ -24,6 +26,35 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
+
+var sourceHandleRegex = regexp.MustCompile(`src_[a-f0-9]+_\d+`)
+
+type llmClaim struct {
+	Text            string   `json:"text"`
+	CitationHandles []string `json:"citation_handles"`
+	Sources         []string `json:"sources"`
+	Citations       []string `json:"citations"`
+}
+
+func (c llmClaim) toDomain() agentdomain.CompletionClaim {
+	handles := c.CitationHandles
+	if len(handles) == 0 {
+		handles = c.Sources
+	}
+	if len(handles) == 0 {
+		handles = c.Citations
+	}
+	if len(handles) == 0 {
+		matches := sourceHandleRegex.FindAllString(c.Text, -1)
+		if len(matches) > 0 {
+			handles = matches
+		}
+	}
+	return agentdomain.CompletionClaim{
+		Text:            c.Text,
+		CitationHandles: handles,
+	}
+}
 
 type agentProject struct {
 	ID    string `json:"id"`
@@ -39,8 +70,16 @@ type serverAgentRequest struct {
 
 type serverAgentService struct{ core *agentdomain.Service }
 
+var sharedAgentRetrievalCache = retrieval.NewScopedCache[agentdomain.RetrievalResult](512, 5*time.Minute)
+
 func newServerAgentService(ops agentRetrievalOperations, vectors domain.VectorIndex, embeddings embedding.Service, completion agentdomain.CompletionProvider) *serverAgentService {
-	retriever := scopedAgentRetriever{ops: ops, vectors: vectors, embeddings: embeddings}
+	retriever := scopedAgentRetriever{
+		ops:        ops,
+		vectors:    vectors,
+		embeddings: embeddings,
+		summaries:  sharedAgentSummaryCache,
+		cache:      sharedAgentRetrievalCache,
+	}
 	return &serverAgentService{core: agentdomain.NewScopedService(retriever, completion)}
 }
 
@@ -279,13 +318,30 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 	}
 	raw := strings.TrimSpace(envelope.Choices[0].Message.Content)
 	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "```json"), "```"), "```"))
+	if start := strings.Index(raw, "{"); start >= 0 {
+		if end := strings.LastIndex(raw, "}"); end > start {
+			raw = raw[start : end+1]
+		}
+	}
 	var answer struct {
-		Claims []agentdomain.CompletionClaim `json:"claims"`
+		Claims []llmClaim `json:"claims"`
 	}
-	if json.Unmarshal([]byte(raw), &answer) != nil || len(answer.Claims) == 0 {
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider response invalid")
+	if json.Unmarshal([]byte(raw), &answer) == nil && len(answer.Claims) > 0 {
+		domainClaims := make([]agentdomain.CompletionClaim, len(answer.Claims))
+		for i, c := range answer.Claims {
+			domainClaims[i] = c.toDomain()
+		}
+		return agentdomain.CompletionResult{Claims: domainClaims, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
 	}
-	return agentdomain.CompletionResult{Claims: answer.Claims, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+	var singleClaim llmClaim
+	if json.Unmarshal([]byte(raw), &singleClaim) == nil && strings.TrimSpace(singleClaim.Text) != "" {
+		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{singleClaim.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+	}
+	if raw != "" {
+		c := llmClaim{Text: raw}
+		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{c.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+	}
+	return agentdomain.CompletionResult{}, errors.New("server: agent provider response invalid")
 }
 
 func (p *configuredChatProvider) Stream(ctx context.Context, req agentdomain.CompletionRequest, emit func(agentdomain.CompletionClaim) error) (agentdomain.CompletionUsage, error) {
@@ -372,19 +428,63 @@ Split distinct factual statements into distinct lines. Omit any claim that canno
 			}
 			line = strings.TrimSpace(line)
 			if line != "" {
-				var claim agentdomain.CompletionClaim
-				if json.Unmarshal([]byte(line), &claim) != nil || strings.TrimSpace(claim.Text) == "" {
-					return errors.New("server: agent provider stream invalid")
+				if strings.HasPrefix(line, "```") {
+					if at < 0 {
+						break
+					}
+					continue
 				}
-				if err := emit(claim); err != nil {
-					return err
+				var claim llmClaim
+				if err := json.Unmarshal([]byte(line), &claim); err == nil && strings.TrimSpace(claim.Text) != "" {
+					if err := emit(claim.toDomain()); err != nil {
+						return err
+					}
+					claims++
+				} else if start := strings.Index(line, "{"); start >= 0 {
+					if end := strings.LastIndex(line, "}"); end > start {
+						if err := json.Unmarshal([]byte(line[start:end+1]), &claim); err == nil && strings.TrimSpace(claim.Text) != "" {
+							if err := emit(claim.toDomain()); err != nil {
+								return err
+							}
+							claims++
+						}
+					}
 				}
-				claims++
 			}
 			if at < 0 {
-				return nil
+				break
 			}
 		}
+		if final && claims == 0 {
+			fullText := strings.TrimSpace(content.String())
+			if start := strings.Index(fullText, "{"); start >= 0 {
+				if end := strings.LastIndex(fullText, "}"); end > start {
+					var answer struct {
+						Claims []llmClaim `json:"claims"`
+					}
+					if err := json.Unmarshal([]byte(fullText[start:end+1]), &answer); err == nil && len(answer.Claims) > 0 {
+						for _, cl := range answer.Claims {
+							if strings.TrimSpace(cl.Text) != "" {
+								if err := emit(cl.toDomain()); err != nil {
+									return err
+								}
+								claims++
+							}
+						}
+					}
+				}
+			}
+			if claims == 0 && fullText != "" {
+				raw := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(fullText, "```json"), "```"), "```"))
+				if raw != "" {
+					cl := llmClaim{Text: raw}.toDomain()
+					if err := emit(cl); err == nil {
+						claims++
+					}
+				}
+			}
+		}
+		return nil
 	}
 	consumeEvent := func() (bool, error) {
 		if len(eventData) == 0 {
@@ -452,6 +552,20 @@ Split distinct factual statements into distinct lines. Omit any claim that canno
 		if !done {
 			if err := consumeClaims(true); err != nil {
 				return agentdomain.CompletionUsage{}, err
+			}
+		}
+	}
+	if claims == 0 {
+		if err := consumeClaims(true); err != nil {
+			return agentdomain.CompletionUsage{}, err
+		}
+	}
+	if claims == 0 && content.Len() > 0 {
+		raw := strings.TrimSpace(content.String())
+		raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "```json"), "```"), "```"))
+		if raw != "" {
+			if err := emit(agentdomain.CompletionClaim{Text: raw}); err == nil {
+				claims++
 			}
 		}
 	}

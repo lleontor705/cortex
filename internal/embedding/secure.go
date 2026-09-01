@@ -18,10 +18,14 @@ type OutboundPolicy struct {
 	AllowedPorts              []int
 	AllowLoopback             bool
 	AllowInsecureLoopbackHTTP bool
-	MaxRedirects              int
-	MaxResponseBodyBytes      int64
-	MaxConcurrent             int
-	Timeout                   time.Duration
+	// RailwayInternalEmbeddingHost is one exact, administrator-configured
+	// *.railway.internal hostname permitted to resolve to a private IP for
+	// the embedding provider. All other private HTTP destinations stay denied.
+	RailwayInternalEmbeddingHost string
+	MaxRedirects                 int
+	MaxResponseBodyBytes         int64
+	MaxConcurrent                int
+	Timeout                      time.Duration
 }
 
 func (p *OutboundPolicy) ApproveDestination(raw string) error {
@@ -120,7 +124,8 @@ func (p OutboundPolicy) validateURL(raw string) error {
 	switch strings.ToLower(u.Scheme) {
 	case "https":
 	case "http":
-		if !p.AllowInsecureLoopbackHTTP || !isLoopbackHost(host) {
+		if (!p.AllowInsecureLoopbackHTTP || !isLoopbackHost(host)) &&
+			!p.isAllowedRailwayPrivateEmbeddingHost(host) {
 			return errors.New("embedding: outbound destination rejected")
 		}
 	default:
@@ -142,7 +147,7 @@ func (p OutboundPolicy) dialContext(ctx context.Context, network, address string
 		return nil, errors.New("embedding: outbound resolution failed")
 	}
 	for _, ip := range ips {
-		if p.allowedIP(ip) {
+		if p.allowedIPForHost(ip, host) {
 			return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		}
 	}
@@ -155,9 +160,22 @@ func (p OutboundPolicy) allowedIP(ip net.IP) bool {
 	}
 	return !ip.IsPrivate() && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast()
 }
+func (p OutboundPolicy) allowedIPForHost(ip net.IP, host string) bool {
+	if p.isAllowedRailwayPrivateEmbeddingHost(host) && ip.IsPrivate() {
+		return true
+	}
+	return p.allowedIP(ip)
+}
+
 func isLoopbackHost(host string) bool {
 	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
+func (p OutboundPolicy) isAllowedRailwayPrivateEmbeddingHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	configured := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p.RailwayInternalEmbeddingHost), "."))
+	return configured != "" && configured == host && strings.HasSuffix(host, ".railway.internal")
+}
+
 func containsString(xs []string, want string) bool {
 	for _, x := range xs {
 		if strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(x), "."), want) {

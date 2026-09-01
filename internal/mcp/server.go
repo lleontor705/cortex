@@ -62,7 +62,7 @@ var ProfileAgent = map[string]bool{
 	"cortex_code_analyze":         true,
 	"cortex_get_code_symbols":     true,
 	"cortex_code_symbols":         true,
-	"cortex_get_code_graph":        true,
+	"cortex_get_code_graph":       true,
 	"cortex_code_graph":           true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
 	"cortex_consolidate":   true,

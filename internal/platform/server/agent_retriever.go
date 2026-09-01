@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	agentdomain "github.com/lleontor705/cortex/v2/internal/domain/agent"
@@ -66,9 +68,18 @@ type scopedAgentRetriever struct {
 	vectors    domain.VectorIndex
 	embeddings embedding.Service
 	summaries  *agentSummaryCache
+	cache      *retrieval.ScopedCache[agentdomain.RetrievalResult]
 }
 
 func (r scopedAgentRetriever) RetrieveScoped(ctx context.Context, scope agentdomain.Scope, query string, limit int) (agentdomain.RetrievalResult, error) {
+	projectID, _ := ctx.Value(agentProjectIDKey{}).(string)
+	cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d", scope.TenantID, scope.WorkspaceID, scope.Project, projectID, query, limit)
+	if r.cache != nil && projectID != "" {
+		if cached, ok := r.cache.Get(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
 	first, err := r.retrieveScopedOnce(ctx, scope, query, limit)
 	if err != nil {
 		return agentdomain.RetrievalResult{}, err
@@ -82,6 +93,9 @@ func (r scopedAgentRetriever) RetrieveScoped(ctx context.Context, scope agentdom
 	}
 	if grade != retrieval.ConfidenceGradeLow {
 		first.Trace.Stages = append(first.Trace.Stages, agentdomain.RetrievalStage{Name: "crag", Status: agentStageOK})
+		if r.cache != nil && projectID != "" {
+			r.cache.Set(cacheKey, first)
+		}
 		return first, nil
 	}
 	if err = ctx.Err(); err != nil {
@@ -106,6 +120,9 @@ func (r scopedAgentRetriever) RetrieveScoped(ctx context.Context, scope agentdom
 		second.Trace.Degraded = appendAgentCRAGDegradation(second.Trace.Degraded, agentCRAGInsufficientConfidence)
 	}
 	second.Trace.Stages = append(second.Trace.Stages, agentdomain.RetrievalStage{Name: "crag", Status: status, Count: 1})
+	if r.cache != nil && projectID != "" && status == agentStageOK {
+		r.cache.Set(cacheKey, second)
+	}
 	return second, nil
 }
 
@@ -122,6 +139,16 @@ func (r scopedAgentRetriever) retrieveScopedOnce(ctx context.Context, scope agen
 	})
 	if err != nil {
 		return agentdomain.RetrievalResult{}, err
+	}
+	if len(lexical) == 0 && !strings.Contains(query, " or ") && !strings.Contains(query, " OR ") && !strings.Contains(query, "\"") && !strings.HasPrefix(query, "project-context ") {
+		orQuery := retrieval.ExpandQuerySynonyms(query)
+		if strings.TrimSpace(orQuery) != "" && orQuery != query {
+			if fallback, orErr := r.ops.SearchAgentObservations(ctx, projectID, scope.Project, orQuery, domain.SearchOptions{
+				Query: orQuery, Project: scope.Project, Limit: limit,
+			}); orErr == nil && len(fallback) > 0 {
+				lexical = fallback
+			}
+		}
 	}
 	trace.Stages = append(trace.Stages, agentdomain.RetrievalStage{Name: "lexical", Status: agentStageOK, Count: len(lexical)})
 
@@ -515,7 +542,7 @@ func semanticAgentEvidence(query string, lexical []*domain.SearchResult, dense [
 	}
 
 	candidates := make(map[string]*agentRankCandidate, len(lexicalRanked)+len(denseRanked))
-	addBranch := func(branch []*domain.SearchResult) {
+	addBranch := func(branch []*domain.SearchResult, multiplier float64) {
 		for rank, result := range branch {
 			handle := publicAgentHandle(result)
 			candidate := candidates[handle]
@@ -525,11 +552,17 @@ func semanticAgentEvidence(query string, lexical []*domain.SearchResult, dense [
 			}
 			// Normalize each reciprocal-rank contribution to [0,.5] before
 			// adding branches; a top result in both branches reaches one.
-			candidate.rrf += ((agentRRFConstant + 1) / (agentRRFConstant + float64(rank+1))) / 2
+			candidate.rrf += (((agentRRFConstant + 1) / (agentRRFConstant + float64(rank+1))) / 2) * multiplier
 		}
 	}
-	addBranch(lexicalRanked)
-	addBranch(denseRanked)
+	if len(denseRanked) == 0 {
+		addBranch(lexicalRanked, 2.0)
+	} else if len(lexicalRanked) == 0 {
+		addBranch(denseRanked, 2.0)
+	} else {
+		addBranch(lexicalRanked, 1.0)
+		addBranch(denseRanked, 1.0)
+	}
 
 	maxSimScores := make([]retrieval.AgentScore, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -546,7 +579,14 @@ func semanticAgentEvidence(query string, lexical []*domain.SearchResult, dense [
 	for _, score := range normalizedMaxSim {
 		candidate := candidates[score.PublicHandle]
 		candidate.maxSim = score.Normalized
-		candidate.final = .6*candidate.rrf + .4*candidate.maxSim
+		recencyBonus := 0.0
+		if !candidate.result.CreatedAt.IsZero() {
+			daysOld := time.Since(candidate.result.CreatedAt).Hours() / 24.0
+			if daysOld < 30 {
+				recencyBonus = (1.0 - (daysOld / 30.0)) * 0.05
+			}
+		}
+		candidate.final = .6*candidate.rrf + .4*candidate.maxSim + recencyBonus
 	}
 
 	ranked := make([]*agentRankCandidate, 0, len(candidates))

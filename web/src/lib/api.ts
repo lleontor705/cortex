@@ -502,6 +502,7 @@ export class CortexClient {
     input: AgentRequest,
     onEvent: (event: AgentStreamEvent) => void,
     signal?: AbortSignal,
+    lastEventId?: string,
   ): Promise<AgentAnswer> {
     const cleanBase = this.baseURL.replace(/\/$/, "");
     if (this.token) validateBearerDestination(cleanBase);
@@ -511,6 +512,7 @@ export class CortexClient {
     };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (this.workspaceID) headers["X-Cortex-Workspace"] = this.workspaceID;
+    if (lastEventId) headers["Last-Event-ID"] = lastEventId;
 
     const controller = new AbortController();
     const abort = () => controller.abort(signal?.reason);
@@ -975,8 +977,9 @@ export type CodeAnalyticsReport = {
   generated_at: string;
 };
 
-type ParsedAgentSSEEvent = AgentStreamEvent | {
+type ParsedAgentSSEEvent = (AgentStreamEvent & { id?: string }) | {
   type: "error";
+  id?: string;
   data: { status?: number; code?: string; message?: string };
 };
 
@@ -989,9 +992,11 @@ async function* parseAgentSSE(
 
   const parseBlock = (block: string): ParsedAgentSSEEvent | undefined => {
     let eventName = "";
+    let eventId = "";
     const data: string[] = [];
     for (const line of block.split(/\r\n|\r|\n/)) {
       if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("id:")) eventId = line.slice(3).trim();
       if (line.startsWith("event:")) eventName = line.slice(6).trim();
       if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
     }
@@ -1000,7 +1005,9 @@ async function* parseAgentSSE(
       return undefined;
     }
     try {
-      return { type: eventName, data: JSON.parse(data.join("\n")) } as ParsedAgentSSEEvent;
+      const parsed = { type: eventName, data: JSON.parse(data.join("\n")) } as ParsedAgentSSEEvent;
+      if (eventId) parsed.id = eventId;
+      return parsed;
     } catch {
       throw new APIError("Agent stream contained invalid data", 503);
     }

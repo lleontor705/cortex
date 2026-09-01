@@ -377,4 +377,38 @@ describe("CortexClient project agent", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("passes Last-Event-ID header and parses id in events", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          "id: 1\nevent: meta\ndata: {\"retrieval\":{\"tier\":\"direct_factual\",\"stages\":[],\"degraded\":[]}}\n\n" +
+          "id: 2\nevent: done\ndata: {\"answer\":\"done\",\"sources\":[],\"confidence\":{\"level\":\"high\",\"score\":1},\"retrieval\":{\"tier\":\"direct_factual\",\"stages\":[],\"degraded\":[]}}\n\n",
+        ));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const receivedEvents: ParsedAgentSSEEvent[] = [];
+    await new CortexClient("https://cortex.example", "secret").streamAgent(
+      { project_id: "project-1", question: "test" },
+      (ev) => { receivedEvents.push(ev); },
+      undefined,
+      "event-prev-id",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://cortex.example/api/agent/stream",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Last-Event-ID": "event-prev-id",
+        }),
+      }),
+    );
+    expect(receivedEvents[0].id).toBe("1");
+    expect(receivedEvents[1].id).toBe("2");
+  });
 });

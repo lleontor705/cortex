@@ -54,6 +54,8 @@ func TestRemoteSyncPushesLocalAndPullsServerData(t *testing.T) {
 			pushed.Observations = append(pushed.Observations, request.Observations...)
 			pushed.Prompts = append(pushed.Prompts, request.Prompts...)
 			pushed.Edges = append(pushed.Edges, request.Edges...)
+			pushed.CodeSymbols = append(pushed.CodeSymbols, request.CodeSymbols...)
+			pushed.CodeRelations = append(pushed.CodeRelations, request.CodeRelations...)
 			_ = json.NewEncoder(w).Encode(domain.SyncResult{Accepted: countBatch(&request)})
 		case "/api/sync/changes":
 			_ = json.NewEncoder(w).Encode(domain.SyncPage{SyncBatch: domain.SyncBatch{Sessions: []domain.SyncSession{{SyncID: "server-session", Project: "remote", Directory: "/remote", StartedAt: now, UpdatedAt: now}}}, Cursor: 7})

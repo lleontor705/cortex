@@ -191,6 +191,21 @@ func TestNewServerEmbeddingFailsClosedForUnsafeDestination(t *testing.T) {
 	}
 }
 
+func TestNewServerEmbeddingAllowsExactRailwayPrivateDestination(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Search.EmbeddingProvider = "ollama"
+	cfg.Search.EmbeddingBaseURL = "http://ollama.railway.internal:11434"
+	cfg.Server.RailwayInternalEmbeddingHost = "ollama.railway.internal"
+	service, err := newServerEmbedding(cfg)
+	if err != nil {
+		t.Fatalf("exact Railway private embedding destination rejected: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected embedding service")
+	}
+
+}
+
 func TestResolveServerDSNsPreservesExplicitDevelopmentMigrationDSN(t *testing.T) {
 	cfg := validBootstrapConfig()
 	cfg.Server.BootstrapDevelopment = true

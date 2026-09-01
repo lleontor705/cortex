@@ -295,10 +295,10 @@ TRANSPORT IDENTIFIERS:
 
 ### 1. RULES & DIRECTIVES (Mandatory at session start)
 - Call \`cortex_get_rules(project)\` to retrieve active project and global rules, coding standards, and architectural directives.
-- Call \`cortex_save_rule(title, content, topic_key, scope)\` whenever the user or team establishes a persistent project convention or rule.
+- Call \`cortex_save_rule(title, content, topic_key, scope)\` ONLY for permanent architectural directives or coding invariants. Never save task notes, test outputs, or worktree logs in rules.
 
 ### 2. CODEBASE AST & INTELLIGENCE
-- Call \`cortex_ingest_code(path, project)\` to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
+- Call \`cortex_ingest_code(path, project)\` with the **absolute workspace root path** (e.g. \`d:/cortex-ia\`, never \`.\`) to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
 - \`cortex_get_blast_radius(observation_id, depth)\` traverses related observations only. For code refactors, use filtered symbols, source callers, and cycle detection until Cortex exposes a symbol-aware impact contract.
 - Call \`cortex_detect_cycles(project)\` to find circular dependencies across modules.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.

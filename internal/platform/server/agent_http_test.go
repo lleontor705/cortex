@@ -181,6 +181,9 @@ func TestAgentStreamEmitsEquivalentOrderedSSEEvents(t *testing.T) {
 	if strings.Count(body, "event: delta\n") != 2 || strings.Contains(body, "event: error\n") || !strings.Contains(body, `"text":"Usa "`) || !strings.Contains(body, `"text":"PostgreSQL."`) || !strings.Contains(body, `"handle":"src_1"`) {
 		t.Fatalf("unexpected stream: %s", body)
 	}
+	if !strings.Contains(body, "id: 1\nevent: meta\n") {
+		t.Fatalf("stream missing event id: %s", body)
+	}
 	canonical, err := json.Marshal(answer)
 	if err != nil || !strings.Contains(body, "data: "+string(canonical)+"\n\n") {
 		t.Fatalf("done is not canonical answer: %s err=%v", body, err)
@@ -540,6 +543,44 @@ func TestAgentAnswerEnforcesStableQuotaResponse(t *testing.T) {
 	if len(sink.events) != 4 || sink.events[3].Phase != agentdomain.AuditPhaseOutcome || sink.events[3].ResultClass != string(agentdomain.ErrorQuotaExceeded) {
 		t.Fatalf("quota outcome audit=%#v", sink.events)
 	}
+}
+
+func TestAgentStreamClientDisconnectCancelsContextAndReleasesResources(t *testing.T) {
+	ops := newFakeOperations()
+	ops.agentProjects = map[string]string{agentProjectID: "cortex"}
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	answerer := &cancellationAgentAnswerer{started: started, cancelled: cancelled}
+
+	policy := agentdomain.LimitPolicy{Tiers: map[string]agentdomain.Limits{
+		"standard": {RequestsPerMinute: 10, TokensPerMinute: 1000, MaxTenantConcurrent: 2, DefaultOutputTokens: 10, MaxOutputTokens: 100, JSONTimeout: 5 * time.Second, StreamTimeout: 5 * time.Second},
+	}}
+	h := newAgentTestHandler(t, ops, answerer, policy)
+
+	body := `{"project_id":"` + agentProjectID + `","question":"q"}`
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/stream", strings.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+
+	done := make(chan struct{})
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, req)
+	}()
+
+	<-started
+	cancel() // Simulate client disconnect
+
+	select {
+	case <-cancelled:
+		// Successfully observed context cancellation in answerer
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for answerer cancellation")
+	}
+
+	<-done
 }
 
 func newAgentTestHandler(t *testing.T, ops *fakeOperations, answerer agentAnswerer, policy agentdomain.LimitPolicy) http.Handler {

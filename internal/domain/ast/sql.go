@@ -12,11 +12,11 @@ import (
 )
 
 var (
-	sqlTableRe      = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_."]+)`)
-	sqlViewRe       = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([a-zA-Z0-9_."]+)`)
-	sqlFKTableRe    = regexp.MustCompile(`(?i)FOREIGN\s+KEY\s*\([^)]+\)\s*REFERENCES\s+([a-zA-Z0-9_."]+)`)
-	sqlColFKRe      = regexp.MustCompile(`(?i)\bREFERENCES\s+([a-zA-Z0-9_."]+)\s*(?:\([^)]+\))?`)
-	sqlColumnDefRe  = regexp.MustCompile(`^\s*([a-zA-Z0-9_"]+)\s+([a-zA-Z0-9_()]+)`)
+	sqlTableRe     = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_."]+)`)
+	sqlViewRe      = regexp.MustCompile(`(?i)CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([a-zA-Z0-9_."]+)`)
+	sqlFKTableRe   = regexp.MustCompile(`(?i)FOREIGN\s+KEY\s*\([^)]+\)\s*REFERENCES\s+([a-zA-Z0-9_."]+)`)
+	sqlColFKRe     = regexp.MustCompile(`(?i)\bREFERENCES\s+([a-zA-Z0-9_."]+)\s*(?:\([^)]+\))?`)
+	sqlColumnDefRe = regexp.MustCompile(`^\s*([a-zA-Z0-9_"]+)\s+([a-zA-Z0-9_()]+)`)
 )
 
 func extractSQLFile(fullPath, relPath string) *ExtractionResult {
@@ -183,7 +183,7 @@ func extractSQLFile(fullPath, relPath string) *ExtractionResult {
 
 func cleanSQLName(name string) string {
 	name = strings.TrimSpace(name)
-	name = strings.Trim(name, `"'` + "`")
+	name = strings.Trim(name, `"'`+"`")
 	parts := strings.Split(name, ".")
 	return parts[len(parts)-1]
 }
