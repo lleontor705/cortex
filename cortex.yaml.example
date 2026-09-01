@@ -9,7 +9,8 @@ server:
     driver: postgres
     # Runtime DSN. Keep this login NOSUPERUSER/NOBYPASSRLS.
     dsn: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
-    # Optional privileged DSN used only for server schema migration.
+    # Required outside bootstrap_development. Its PostgreSQL role must differ
+    # from the runtime role; it is used for migration/bootstrap and then closed.
     migration_dsn: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
   tenant_id: "00000000-0000-0000-0000-000000000001"
   workspace_id: "00000000-0000-0000-0000-000000000002"
@@ -20,7 +21,8 @@ server:
   scopes: [workspaces:read]
   project_ids: [demo]
   classification_clearance: [project]
-  # Docker smoke tests set this true to provision their fixed development tenant.
+  # Docker smoke tests may set this true to provision their fixed development
+  # tenant. Only this development mode may omit migration_dsn and reuse dsn.
   bootstrap_development: false
 
 # Database configuration

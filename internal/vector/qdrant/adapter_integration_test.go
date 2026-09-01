@@ -92,12 +92,17 @@ func TestIntegration_Qdrant_RoundTrip(t *testing.T) {
 		{
 			ID: 1, Vector: []float32{1.0, 0.0, 0.0, 0.0},
 			ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4, Version: "v1"},
-			Metadata:  map[string]any{"project": "test", "scope": "project", "tenant_id": "tenant-a"},
+			Metadata:  map[string]any{"project": "test", "scope": "project", "tenant_id": "tenant-a", "workspace_id": "workspace-a"},
 		},
 		{
 			ID: 2, Vector: []float32{0.0, 1.0, 0.0, 0.0},
 			ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4, Version: "v1"},
-			Metadata:  map[string]any{"project": "test", "scope": "project", "tenant_id": "tenant-b"},
+			Metadata:  map[string]any{"project": "test", "scope": "project", "tenant_id": "tenant-a", "workspace_id": "workspace-b"},
+		},
+		{
+			ID: 3, Vector: []float32{0.9, 0.1, 0.0, 0.0},
+			ModelInfo: domain.ModelInfo{Name: "integration-model", Dimension: 4, Version: "v1"},
+			Metadata:  map[string]any{"project": "test", "scope": "project", "tenant_id": "tenant-a"}, // legacy: no workspace
 		},
 	}
 	if err := a.Upsert(ctx, points); err != nil {
@@ -122,23 +127,24 @@ func TestIntegration_Qdrant_RoundTrip(t *testing.T) {
 		t.Errorf("Provenance = %q, want %q", results[0].Provenance, adapterID)
 	}
 
-	// Filtered search: tenant_id=tenant-b should return only point 2.
+	// Scoped search must exclude the sibling workspace and the legacy point.
 	resultsB, err := a.Search(ctx, domain.VectorQuery{
 		Vector: []float32{0.5, 0.5, 0.0, 0.0},
 		Limit:  5,
 		Filters: map[string]any{
-			"tenant_id": "tenant-b",
+			"tenant_id":    "tenant-a",
+			"workspace_id": "workspace-a",
 		},
 	})
 	if err != nil {
 		t.Fatalf("filtered Search: %v", err)
 	}
 	if len(resultsB) == 0 {
-		t.Fatal("filtered Search returned no results; expected point 2")
+		t.Fatal("filtered Search returned no results; expected point 1")
 	}
 	for _, r := range resultsB {
-		if r.ID != 2 {
-			t.Errorf("filtered result ID = %d; PreFilter should exclude tenant-a (point 1)", r.ID)
+		if r.ID != 1 {
+			t.Errorf("filtered result ID = %d; PreFilter should exclude sibling and legacy points", r.ID)
 		}
 	}
 

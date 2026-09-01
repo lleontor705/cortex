@@ -117,7 +117,7 @@ func TestRuntimeCloseIsIdempotentAndConcurrencySafe(t *testing.T) {
 func validBootstrapConfig() config.Config {
 	return config.Config{
 		Server: config.ServerConfig{
-			Storage:                 config.ServerStorageConfig{Driver: "postgres", DSN: "postgres://app@db/cortex"},
+			Storage:                 config.ServerStorageConfig{Driver: "postgres", DSN: "postgres://cortex_app@db/cortex", MigrationDSN: "postgres://cortex_migration@db/cortex"},
 			TenantID:                "00000000-0000-0000-0000-000000000001",
 			WorkspaceID:             "00000000-0000-0000-0000-000000000002",
 			PrincipalSubject:        "00000000-0000-0000-0000-000000000003",
@@ -127,6 +127,97 @@ func validBootstrapConfig() config.Config {
 			ClassificationClearance: []string{"*"},
 		},
 		HTTP: config.HTTPConfig{Enabled: true, Host: "127.0.0.1", Port: 7438, Token: "configured-bootstrap-bearer"},
+	}
+}
+
+func TestValidateConfigEnforcesProductionDatabaseRoleBoundary(t *testing.T) {
+	tests := []struct {
+		name         string
+		runtimeDSN   string
+		migrationDSN string
+		want         string
+	}{
+		{name: "missing migration DSN", runtimeDSN: "postgres://cortex_app:runtime-secret@db/cortex", want: "migration DSN is required"},
+		{name: "same URL role", runtimeDSN: "postgres://shared:runtime-secret@db/cortex", migrationDSN: "postgres://shared:migration-secret@db/cortex", want: "distinct PostgreSQL roles"},
+		{name: "same keyword role", runtimeDSN: "host=db dbname=cortex user=shared password=runtime-secret", migrationDSN: "host=db dbname=cortex user=shared password=migration-secret", want: "distinct PostgreSQL roles"},
+		{name: "invalid runtime DSN", runtimeDSN: "postgres://cortex_app:runtime-secret@%zz/cortex", migrationDSN: "postgres://cortex_migration:migration-secret@db/cortex", want: "runtime DSN is invalid"},
+		{name: "invalid migration DSN", runtimeDSN: "postgres://cortex_app:runtime-secret@db/cortex", migrationDSN: "postgres://cortex_migration:migration-secret@%zz/cortex", want: "migration DSN is invalid"},
+		{name: "distinct roles", runtimeDSN: "postgres://cortex_app:runtime-secret@db/cortex", migrationDSN: "postgres://cortex_migration:migration-secret@db/cortex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBootstrapConfig()
+			cfg.Server.Storage.DSN = tt.runtimeDSN
+			cfg.Server.Storage.MigrationDSN = tt.migrationDSN
+			err := validateConfig(cfg)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validateConfig() = %v, want accepted role boundary", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateConfig() = %v, want %q", err, tt.want)
+			}
+			for _, secret := range []string{"runtime-secret", "migration-secret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("validateConfig() leaked %q: %v", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveServerDSNsAllowsDevelopmentFallback(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Server.BootstrapDevelopment = true
+	cfg.Server.Storage.MigrationDSN = ""
+
+	runtimeDSN, migrationDSN, err := resolveServerDSNs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeDSN != cfg.Server.Storage.DSN || migrationDSN != runtimeDSN {
+		t.Fatalf("resolved DSNs do not preserve development fallback")
+	}
+}
+
+func TestNewServerEmbeddingFailsClosedForUnsafeDestination(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Search.EmbeddingProvider = "ollama"
+	cfg.Search.EmbeddingBaseURL = "http://169.254.169.254"
+	if _, err := newServerEmbedding(cfg); err == nil {
+		t.Fatal("unsafe embedding destination accepted")
+	}
+}
+
+func TestNewServerEmbeddingAllowsExactRailwayPrivateDestination(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Search.EmbeddingProvider = "ollama"
+	cfg.Search.EmbeddingBaseURL = "http://ollama.railway.internal:11434"
+	cfg.Server.RailwayInternalEmbeddingHost = "ollama.railway.internal"
+	service, err := newServerEmbedding(cfg)
+	if err != nil {
+		t.Fatalf("exact Railway private embedding destination rejected: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected embedding service")
+	}
+
+}
+
+func TestResolveServerDSNsPreservesExplicitDevelopmentMigrationDSN(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Server.BootstrapDevelopment = true
+	want := "postgres://development_migration:migration-secret@db/cortex"
+	cfg.Server.Storage.MigrationDSN = want
+
+	_, migrationDSN, err := resolveServerDSNs(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrationDSN != want {
+		t.Fatal("explicit development migration DSN was not preserved")
 	}
 }
 
@@ -147,6 +238,12 @@ func TestValidateConfigRejectsInvalidServerInputs(t *testing.T) {
 		{"empty roles", func(c *config.Config) { c.Server.Roles = nil }, "owner or admin"},
 		{"bearer too short", func(c *config.Config) { c.HTTP.Token = "short" }, "token"},
 		{"bearer missing", func(c *config.Config) { c.HTTP.Token = "" }, "token"},
+		{"cors wildcard", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"*"} }, "allowed_origins"},
+		{"cors path", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"https://console.example/path"} }, "allowed_origins"},
+		{"cors query", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"https://console.example?x=1"} }, "allowed_origins"},
+		{"cors fragment", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"https://console.example#x"} }, "allowed_origins"},
+		{"cors userinfo", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"https://user@console.example"} }, "allowed_origins"},
+		{"cors scheme", func(c *config.Config) { c.HTTP.AllowedOrigins = []string{"file://console.example"} }, "allowed_origins"},
 		{"uppercase workspace uuid accepted", func(c *config.Config) {
 			c.Server.WorkspaceID = strings.ToUpper("10000000-a000-0000-0000-000000000002")
 		}, ""},

@@ -47,6 +47,55 @@ func TestPolicyRoleMatrix(t *testing.T) {
 	}
 }
 
+func TestCodeCapabilityRoleMatrix(t *testing.T) {
+	p := NewPolicy()
+	tests := []struct {
+		name   string
+		actor  domain.Principal
+		action Action
+		want   bool
+	}{
+		{name: "owner reads", actor: principal(RoleOwner), action: ActionRead, want: true},
+		{name: "admin reads", actor: principal(RoleAdmin), action: ActionRead, want: true},
+		{name: "member reads", actor: principal(RoleMember), action: ActionRead, want: true},
+		{name: "developer reads", actor: principal(RoleDeveloper), action: ActionRead, want: true},
+		{name: "agent reads", actor: principal(RoleAgent), action: ActionRead, want: true},
+		{name: "viewer reads", actor: principal(RoleViewer), action: ActionRead, want: true},
+		{name: "owner writes", actor: principal(RoleOwner), action: ActionWrite, want: true},
+		{name: "owner manages", actor: principal(RoleOwner), action: ActionManage, want: true},
+		{name: "admin writes", actor: principal(RoleAdmin), action: ActionWrite, want: true},
+		{name: "admin manages", actor: principal(RoleAdmin), action: ActionManage, want: true},
+		{name: "member cannot write", actor: principal(RoleMember), action: ActionWrite, want: false},
+		{name: "member cannot manage", actor: principal(RoleMember), action: ActionManage, want: false},
+		{name: "developer cannot write", actor: principal(RoleDeveloper), action: ActionWrite, want: false},
+		{name: "developer cannot manage", actor: principal(RoleDeveloper), action: ActionManage, want: false},
+		{name: "agent cannot write", actor: principal(RoleAgent), action: ActionWrite, want: false},
+		{name: "agent cannot manage", actor: principal(RoleAgent), action: ActionManage, want: false},
+		{name: "viewer cannot write", actor: principal(RoleViewer), action: ActionWrite, want: false},
+		{name: "viewer cannot manage", actor: principal(RoleViewer), action: ActionManage, want: false},
+		{name: "unscoped service account cannot read", actor: principal(RoleServiceAccount), action: ActionRead, want: false},
+		{name: "scoped service account reads", actor: principal(RoleServiceAccount, "code:read"), action: ActionRead, want: true},
+		{name: "read scoped service account cannot write", actor: principal(RoleServiceAccount, "code:read"), action: ActionWrite, want: false},
+		{name: "write scoped service account writes", actor: principal(RoleServiceAccount, "code:write"), action: ActionWrite, want: true},
+		{name: "write scoped service account cannot manage", actor: principal(RoleServiceAccount, "code:write"), action: ActionManage, want: false},
+		{name: "manage scoped service account manages", actor: principal(RoleServiceAccount, "code:manage"), action: ActionManage, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := p.Authorize(context.Background(), Request{
+				Principal:    tt.actor,
+				Tenant:       Tenant{ID: "tenant-a", WorkspaceID: "ws-a"},
+				Resource:     ResourceRef{TenantID: "tenant-a", WorkspaceID: "ws-a"},
+				ResourceType: ResourceCode,
+				Action:       tt.action,
+			})
+			if d.Allowed != tt.want {
+				t.Fatalf("allowed=%v reason=%s want %v", d.Allowed, d.Reason, tt.want)
+			}
+		})
+	}
+}
+
 func TestTokenAdminBoundary(t *testing.T) {
 	admin := principal(RoleAdmin)
 	for _, action := range []Action{ActionRead, ActionWrite, ActionManage} {

@@ -39,9 +39,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 )
+
+var ErrReindexCorpusChanged = errors.New("external: reindex corpus changed during run")
+
+// ReindexCorpusDescriptor is a stable identity for the exact visible corpus.
+// Generation is source-defined monotonic/change metadata; Checksum binds the
+// rows and fields that can affect embeddings or vector metadata.
+type ReindexCorpusDescriptor struct {
+	Generation string
+	Checksum   string
+	Count      int
+}
 
 // ReindexSource is the narrow port for the authoritative observation store.
 // It exposes ONLY the two operations the reindex needs:
@@ -61,20 +74,45 @@ import (
 // the server composition root combines both into a single value satisfying
 // this interface; test fakes implement it directly.
 type ReindexSource interface {
+	// DescribeCorpus returns the identity of the active, principal-visible
+	// corpus. Reindex compares it before preflight and after all target writes;
+	// any insert, update, delete, or visibility change fails the run.
+	DescribeCorpus(ctx context.Context, scope ReindexScope) (ReindexCorpusDescriptor, error)
+
 	// List retrieves observations matching the filter, paginated by
 	// Limit/Offset. Used by the reindex to iterate active observations in
 	// deterministic ID-ascending order.
-	List(ctx context.Context, filter domain.ObservationFilter) ([]*domain.Observation, error)
+	List(ctx context.Context, scope ReindexScope, filter domain.ObservationFilter) ([]*domain.Observation, error)
+
+	// Scope returns the immutable authoritative boundary for one observation.
+	// Reindex verifies it before reading or upserting an embedding.
+	Scope(ctx context.Context, observationID int64) (ReindexScope, error)
 
 	// GetEmbedding retrieves an existing embedding for an observation.
 	// Returns ErrNotFound if no embedding exists, or ErrVectorSearchDisabled
 	// if the source's vector backend is unavailable (zero-CGO stub). Both
 	// trigger re-embedding via the EmbeddingProvider.
-	GetEmbedding(ctx context.Context, observationID int64) ([]float32, string, error)
+	GetEmbedding(ctx context.Context, scope ReindexScope, observationID int64) ([]float32, string, error)
+}
+
+// ReindexScope is the trusted corpus boundary resolved by server composition.
+// ProjectID is the public project UUID; Project labels are display-only.
+type ReindexScope struct {
+	TenantID    string
+	WorkspaceID string
+	ProjectID   string
 }
 
 // ReindexOptions configures a Reindex run.
 type ReindexOptions struct {
+	// TenantID and WorkspaceID form the immutable trusted boundary applied to
+	// every vector produced by this run. Both are required.
+	TenantID    string
+	WorkspaceID string
+	// ProjectID is the canonical public UUID resolved by trusted server
+	// composition. Project remains optional display metadata only.
+	ProjectID string
+
 	// BatchSize is the number of observations processed per Upsert call to
 	// the target. Default 64. Larger batches reduce round-trips; smaller
 	// batches reduce memory and per-batch failure blast radius.
@@ -87,19 +125,23 @@ type ReindexOptions struct {
 
 // ReindexProgress is the cumulative state at a progress checkpoint.
 type ReindexProgress struct {
-	Processed  int // observations examined (including skipped)
-	Upserted   int // vectors successfully upserted into the target
-	ReEmbedded int // vectors regenerated via EmbeddingProvider (no source vector)
-	Skipped    int // observations with no vector and no way to produce one
+	TenantID    string
+	WorkspaceID string
+	Processed   int // observations examined (including skipped)
+	Upserted    int // vectors successfully upserted into the target
+	ReEmbedded  int // vectors regenerated via EmbeddingProvider (no source vector)
+	Skipped     int // observations with no vector and no way to produce one
 }
 
 // ReindexResult is the final outcome of a Reindex run.
 type ReindexResult struct {
-	Total      int // total observations examined
-	Upserted   int // vectors successfully upserted
-	ReEmbedded int // vectors regenerated via EmbeddingProvider
-	Skipped    int // observations skipped (no vector available)
-	Batches    int // number of Upsert calls made to the target
+	TenantID    string
+	WorkspaceID string
+	Total       int // total observations examined
+	Upserted    int // vectors successfully upserted
+	ReEmbedded  int // vectors regenerated via EmbeddingProvider
+	Skipped     int // observations skipped (no vector available)
+	Batches     int // number of Upsert calls made to the target
 }
 
 // Reindex replays observations from src into target, copying existing
@@ -119,23 +161,44 @@ func Reindex(ctx context.Context, src ReindexSource, provider domain.EmbeddingPr
 	if target == nil {
 		return nil, errors.New("external: reindex requires a non-nil target VectorIndex")
 	}
+	tenantID := strings.TrimSpace(opts.TenantID)
+	workspaceID := strings.TrimSpace(opts.WorkspaceID)
+	projectID := strings.TrimSpace(opts.ProjectID)
+	if tenantID == "" || workspaceID == "" || projectID == "" {
+		return nil, errors.New("external: reindex requires non-empty tenant_id, workspace_id, and project_id")
+	}
+	parsedProjectID, err := uuid.Parse(projectID)
+	if err != nil || parsedProjectID == uuid.Nil {
+		return nil, errors.New("external: reindex requires project_id to be a public UUID")
+	}
+	projectID = parsedProjectID.String()
+	scope := ReindexScope{TenantID: tenantID, WorkspaceID: workspaceID, ProjectID: projectID}
+	before, err := src.DescribeCorpus(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("external: reindex describe corpus before preflight: %w", err)
+	}
+	if err := validateCorpusDescriptor(before); err != nil {
+		return nil, err
+	}
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 64
 	}
 
-	result := &ReindexResult{}
-	progress := ReindexProgress{}
+	result := &ReindexResult{TenantID: tenantID, WorkspaceID: workspaceID}
+	progress := ReindexProgress{TenantID: tenantID, WorkspaceID: workspaceID}
 
-	// Iterate observations in batches. We use Limit/Offset on the
-	// ObservationFilter to page through the source. OrderAsc=true gives
-	// deterministic ID-ascending order (stable across re-runs, important for
-	// idempotent replay).
+	// Preflight the complete corpus before reading embeddings, invoking the
+	// provider, or mutating the target. Retaining observation metadata in memory
+	// makes the validated corpus the exact corpus processed below and prevents a
+	// foreign observation in a later page from causing partial replica writes.
+	// OrderAsc=true gives deterministic ID-ascending order across pages.
+	var corpus []*domain.Observation
 	offset := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		batch, err := src.List(ctx, domain.ObservationFilter{
+		batch, err := src.List(ctx, scope, domain.ObservationFilter{
 			Limit:           opts.BatchSize,
 			Offset:          offset,
 			OrderAsc:        true,
@@ -147,8 +210,29 @@ func Reindex(ctx context.Context, src ReindexSource, provider domain.EmbeddingPr
 		if len(batch) == 0 {
 			break // source exhausted
 		}
+		if err := validateBatchScope(ctx, src, batch, scope); err != nil {
+			return result, err
+		}
+		corpus = append(corpus, batch...)
+		offset += len(batch)
+		if len(batch) < opts.BatchSize {
+			break // last partial batch - preflight complete
+		}
+	}
+	if before.Count != len(corpus) {
+		return result, fmt.Errorf("%w: descriptor count=%d preflight count=%d", ErrReindexCorpusChanged, before.Count, len(corpus))
+	}
 
-		points, reEmbedded, skipped, err := buildBatchPoints(ctx, src, provider, batch)
+	for offset = 0; offset < len(corpus); offset += opts.BatchSize {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		end := offset + opts.BatchSize
+		if end > len(corpus) {
+			end = len(corpus)
+		}
+		batch := corpus[offset:end]
+		points, reEmbedded, skipped, err := buildBatchPoints(ctx, src, provider, batch, scope)
 		if err != nil {
 			return result, err
 		}
@@ -172,14 +256,51 @@ func Reindex(ctx context.Context, src ReindexSource, provider domain.EmbeddingPr
 		if opts.OnProgress != nil {
 			opts.OnProgress(progress)
 		}
-
-		offset += len(batch)
-		if len(batch) < opts.BatchSize {
-			break // last partial batch — done
-		}
 	}
 
+	after, err := src.DescribeCorpus(ctx, scope)
+	if err != nil {
+		return result, fmt.Errorf("external: reindex describe corpus after run: %w", err)
+	}
+	if err := validateCorpusDescriptor(after); err != nil {
+		return result, err
+	}
+	if after != before {
+		return result, fmt.Errorf("%w: before generation=%q count=%d after generation=%q count=%d", ErrReindexCorpusChanged, before.Generation, before.Count, after.Generation, after.Count)
+	}
 	return result, nil
+}
+
+func validateCorpusDescriptor(value ReindexCorpusDescriptor) error {
+	if strings.TrimSpace(value.Generation) == "" || strings.TrimSpace(value.Checksum) == "" || value.Count < 0 {
+		return errors.New("external: reindex source returned an invalid corpus descriptor")
+	}
+	return nil
+}
+
+func validateBatchScope(ctx context.Context, src ReindexSource, batch []*domain.Observation, expected ReindexScope) error {
+	// Labels are intentionally ignored: only immutable tenant/workspace/public
+	// project identity can establish membership in the requested corpus.
+	for _, obs := range batch {
+		if obs == nil {
+			continue
+		}
+		actual, err := src.Scope(ctx, obs.ID)
+		if err != nil {
+			return fmt.Errorf("external: reindex observation %d has no authoritative scope: %w", obs.ID, err)
+		}
+		parsed, err := uuid.Parse(strings.TrimSpace(actual.ProjectID))
+		if err != nil || parsed == uuid.Nil {
+			return fmt.Errorf("external: reindex observation %d has no public project UUID", obs.ID)
+		}
+		actual.ProjectID = parsed.String()
+		actual.TenantID = strings.TrimSpace(actual.TenantID)
+		actual.WorkspaceID = strings.TrimSpace(actual.WorkspaceID)
+		if actual != expected {
+			return fmt.Errorf("external: reindex observation %d is outside the requested tenant/workspace/project", obs.ID)
+		}
+	}
+	return nil
 }
 
 // buildBatchPoints produces VectorPoints for a batch of observations. For each
@@ -191,7 +312,7 @@ func Reindex(ctx context.Context, src ReindexSource, provider domain.EmbeddingPr
 //
 // Re-embedding is batched: all observations in the batch that need
 // re-embedding are embedded in ONE provider.Embed call (efficiency).
-func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.EmbeddingProvider, batch []*domain.Observation) (points []domain.VectorPoint, reEmbedded, skipped int, err error) {
+func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.EmbeddingProvider, batch []*domain.Observation, scope ReindexScope) (points []domain.VectorPoint, reEmbedded, skipped int, err error) {
 	// First pass: collect existing embeddings and identify which observations
 	// need re-embedding.
 	type needEmbed struct {
@@ -206,7 +327,7 @@ func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.Em
 			skipped++
 			continue
 		}
-		vec, model, err := src.GetEmbedding(ctx, obs.ID)
+		vec, model, err := src.GetEmbedding(ctx, scope, obs.ID)
 		if err == nil && len(vec) > 0 {
 			// Existing embedding: copy with the source's model.
 			points = append(points, domain.VectorPoint{
@@ -216,7 +337,7 @@ func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.Em
 					Name:      model,
 					Dimension: len(vec),
 				},
-				Metadata: observationMetadata(obs),
+				Metadata: observationMetadata(obs, scope.TenantID, scope.WorkspaceID, scope.ProjectID),
 			})
 			continue
 		}
@@ -254,7 +375,7 @@ func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.Em
 				ID:        ne.obs.ID,
 				Vector:    vectors[i],
 				ModelInfo: modelInfo,
-				Metadata:  observationMetadata(ne.obs),
+				Metadata:  observationMetadata(ne.obs, scope.TenantID, scope.WorkspaceID, scope.ProjectID),
 			})
 		}
 		reEmbedded = len(needReembed)
@@ -265,16 +386,20 @@ func buildBatchPoints(ctx context.Context, src ReindexSource, provider domain.Em
 
 // observationMetadata extracts the filter-relevant fields from an observation
 // into a metadata map, so the target adapter can store them for PreFilter /
-// PostFilter search (project, scope, type, source, tenant_id).
-func observationMetadata(obs *domain.Observation) map[string]any {
+// PostFilter search. Tenant/workspace are supplied by trusted composition,
+// never derived from observation or client metadata.
+func observationMetadata(obs *domain.Observation, tenantID, workspaceID, projectID string) map[string]any {
 	if obs == nil {
 		return nil
 	}
 	m := map[string]any{
-		"project": obs.Project,
-		"scope":   obs.Scope,
-		"type":    obs.Type,
-		"source":  obs.Source,
+		"project":      obs.Project,
+		"scope":        obs.Scope,
+		"type":         obs.Type,
+		"source":       obs.Source,
+		"tenant_id":    tenantID,
+		"workspace_id": workspaceID,
+		"project_id":   projectID,
 	}
 	return m
 }

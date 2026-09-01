@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	codeDomain "github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/migration"
 	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
 	"github.com/lleontor705/cortex/v2/internal/store/search"
@@ -150,11 +151,16 @@ DROP TABLE IF EXISTS sessions;
 
 	testDB := testutil.NewTestDBWithMigrations(t, registry)
 	db := testDB.DB()
+	codeStore, err := sqlitestore.NewCodeStore(db)
+	if err != nil {
+		t.Fatalf("NewCodeStore: %v", err)
+	}
 
 	return &Deps{
 		Observations: sqlitestore.NewStore(db),
 		Sessions:     session.NewStore(db),
 		Search:       search.NewStore(db),
+		Code:         codeStore,
 		Graph:        graphstore.NewStore(db),
 		// Scoring, Entities, App, Config intentionally nil.
 	}
@@ -322,6 +328,26 @@ func TestSearchMemoriesRealStoreReturnsMatches(t *testing.T) {
 	}
 	if loaded.results[0].Title != "Golang concurrency" {
 		t.Fatalf("first result title = %q, want %q", loaded.results[0].Title, "Golang concurrency")
+	}
+}
+
+func TestSearchCodeMatchesFilePath(t *testing.T) {
+	deps := newTUIStoreDeps(t)
+	err := deps.Code.SaveSymbols(context.Background(), []codeDomain.Symbol{{
+		ID:         "module:ApplicationDbContext.cs",
+		Project:    "ITC.FacturadorWebPos",
+		FilePath:   "SEE_ITC.DA/Conexion.DA/ApplicationDbContext.cs",
+		LineNumber: 1,
+		Kind:       codeDomain.KindModule,
+		Name:       "ApplicationDbContext.cs",
+	}})
+	if err != nil {
+		t.Fatalf("SaveSymbols: %v", err)
+	}
+
+	loaded := assertMsgType[codeSearchResultsMsg](t, searchCode(deps, "Conexion.DA/ApplicationDbContext.cs", "ITC.FacturadorWebPos"), "searchCode(real)")
+	if loaded.err != nil || len(loaded.results) != 1 {
+		t.Fatalf("searchCode results=%d err=%v", len(loaded.results), loaded.err)
 	}
 }
 

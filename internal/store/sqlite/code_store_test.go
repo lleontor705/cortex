@@ -94,3 +94,31 @@ func TestCodeStore_SaveAndList(t *testing.T) {
 		t.Errorf("unexpected graph size: %d symbols, %d relations", len(graph.Symbols), len(graph.Relations))
 	}
 }
+
+func TestCodeStore_ListSymbolsQueryMatchesFilePath(t *testing.T) {
+	store := newTestCodeStore(t)
+	ctx := context.Background()
+
+	err := store.SaveSymbols(ctx, []code.Symbol{{
+		ID:         "module:SEE_ITC.DA/Conexion.DA/ApplicationDbContext.cs",
+		Project:    "ITC.FacturadorWebPos",
+		FilePath:   "SEE_ITC.DA/Conexion.DA/ApplicationDbContext.cs",
+		LineNumber: 1,
+		Kind:       code.KindModule,
+		Name:       "ApplicationDbContext.cs",
+	}})
+	if err != nil {
+		t.Fatalf("SaveSymbols failed: %v", err)
+	}
+
+	list, err := store.ListSymbols(ctx, code.SymbolFilter{
+		Project: "ITC.FacturadorWebPos",
+		Query:   "Conexion.DA/ApplicationDbContext.cs",
+	})
+	if err != nil {
+		t.Fatalf("ListSymbols failed: %v", err)
+	}
+	if len(list) != 1 || list[0].FilePath != "SEE_ITC.DA/Conexion.DA/ApplicationDbContext.cs" {
+		t.Fatalf("file-path query returned %#v", list)
+	}
+}

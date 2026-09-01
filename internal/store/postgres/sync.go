@@ -90,6 +90,11 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			return nil, err
 		}
 	}
+	if len(batch.CodeSymbols) > 0 || len(batch.CodeRelations) > 0 {
+		if err := s.authorize(ctx, authz.ResourceCode, authz.ActionWrite, "", "", ""); err != nil {
+			return nil, err
+		}
+	}
 	accepted := 0
 	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		workspace, err := pushWorkspace(ctx)
@@ -100,6 +105,9 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 		for _, value := range batch.Sessions {
 			if value.SyncID == "" || value.StartedAt.IsZero() {
 				return domain.ErrInvalidInput
+			}
+			if value.Project != "" {
+				_, _ = tx.Exec(ctx, `INSERT INTO projects(tenant_id,workspace_id,name,created_by,updated_by) SELECT public.cortex_current_tenant(),$1,$2,$3,$3 WHERE NOT EXISTS (SELECT 1 FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND name=$2)`, workspace, value.Project, actor)
 			}
 			updated := value.UpdatedAt
 			if updated.IsZero() {
@@ -114,6 +122,9 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 		for _, value := range batch.Observations {
 			if value.SyncID == "" || value.SessionSyncID == "" || value.Title == "" || value.Content == "" {
 				return domain.ErrInvalidInput
+			}
+			if value.Project != "" {
+				_, _ = tx.Exec(ctx, `INSERT INTO projects(tenant_id,workspace_id,name,created_by,updated_by) SELECT public.cortex_current_tenant(),$1,$2,$3,$3 WHERE NOT EXISTS (SELECT 1 FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND name=$2)`, workspace, value.Project, actor)
 			}
 			sessionID, err := pushResolveSession(ctx, tx, workspace, value.SessionSyncID, value.Project, value.CreatedAt, actor)
 			if err != nil {
@@ -167,6 +178,71 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			}
 			if err != nil {
 				return err
+			}
+			accepted++
+		}
+		for _, sym := range batch.CodeSymbols {
+			if sym.ID == "" || sym.Project == "" || sym.FilePath == "" || sym.Name == "" {
+				continue
+			}
+			_, _ = tx.Exec(ctx, `INSERT INTO projects(tenant_id,workspace_id,name,created_by,updated_by) SELECT public.cortex_current_tenant(),$1,$2,$3,$3 WHERE NOT EXISTS (SELECT 1 FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND name=$2)`, workspace, sym.Project, actor)
+			var projectID int64
+			err := tx.QueryRow(ctx, `SELECT id FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND name=$2`, workspace, sym.Project).Scan(&projectID)
+			if err != nil {
+				continue
+			}
+			paramsJSON, _ := json.Marshal(sym.Parameters)
+			metaJSON, _ := json.Marshal(sym.Metadata)
+			endLine := sym.EndLine
+			if endLine <= 0 {
+				endLine = sym.LineNumber
+			}
+			complexity := sym.Complexity
+			if complexity <= 0 {
+				complexity = 1
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO scoped_code_symbols (tenant_id,workspace_id,project_id,id,project,file_path,line_number,end_line,start_col,end_col,kind,name,package_name,parent_id,visibility,signature,doc_summary,parameters,return_type,complexity,metadata,file_hash,created_at,updated_at)
+				VALUES (public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+				ON CONFLICT (tenant_id,workspace_id,project_id,id) DO UPDATE SET
+				file_path=EXCLUDED.file_path,line_number=EXCLUDED.line_number,end_line=EXCLUDED.end_line,
+				start_col=EXCLUDED.start_col,end_col=EXCLUDED.end_col,kind=EXCLUDED.kind,name=EXCLUDED.name,
+				package_name=EXCLUDED.package_name,parent_id=EXCLUDED.parent_id,visibility=EXCLUDED.visibility,
+				signature=EXCLUDED.signature,doc_summary=EXCLUDED.doc_summary,parameters=EXCLUDED.parameters,
+				return_type=EXCLUDED.return_type,complexity=EXCLUDED.complexity,metadata=EXCLUDED.metadata,
+				file_hash=EXCLUDED.file_hash,updated_at=EXCLUDED.updated_at`,
+				workspace, projectID, sym.ID, sym.Project, sym.FilePath, sym.LineNumber, endLine,
+				sym.StartCol, sym.EndCol, sym.Kind, sym.Name, sym.PackageName, sym.ParentID,
+				sym.Visibility, sym.Signature, sym.DocSummary, paramsJSON, sym.ReturnType,
+				complexity, metaJSON, sym.FileHash, sym.CreatedAt, sym.UpdatedAt)
+			if err != nil {
+				return fmt.Errorf("postgres sync code symbol %q: %w", sym.ID, err)
+			}
+			_, _ = tx.Exec(ctx, `INSERT INTO scoped_code_index_state (tenant_id,workspace_id,project_id,project,state,indexed_symbols,indexed_files,created_at,updated_at)
+				VALUES (public.cortex_current_tenant(),$1,$2,$3,'ready',1,1,now(),now())
+				ON CONFLICT (tenant_id,workspace_id,project_id,project) DO UPDATE SET state='ready',updated_at=now()`,
+				workspace, projectID, sym.Project)
+			accepted++
+		}
+		for _, rel := range batch.CodeRelations {
+			if rel.SourceID == "" || rel.TargetID == "" || rel.Relation == "" || rel.Project == "" {
+				continue
+			}
+			var projectID int64
+			err := tx.QueryRow(ctx, `SELECT id FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND name=$2`, workspace, rel.Project).Scan(&projectID)
+			if err != nil {
+				continue
+			}
+			conf := rel.Confidence
+			if conf <= 0 {
+				conf = 1.0
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO scoped_code_relations (tenant_id,workspace_id,project_id,project,source_id,target_id,relation,confidence,reasoning,created_at)
+				VALUES (public.cortex_current_tenant(),$1,$2,$3,$4,$5,$6,$7,$8,$9)
+				ON CONFLICT (tenant_id,workspace_id,project_id,project,source_id,target_id,relation) DO UPDATE SET
+				confidence=EXCLUDED.confidence,reasoning=EXCLUDED.reasoning`,
+				workspace, projectID, rel.Project, rel.SourceID, rel.TargetID, rel.Relation, conf, rel.Reasoning, rel.CreatedAt)
+			if err != nil {
+				return fmt.Errorf("postgres sync code relation: %w", err)
 			}
 			accepted++
 		}

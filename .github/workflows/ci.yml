@@ -103,6 +103,16 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Enforce web client-core coverage
+        run: npm run test:coverage
+
+      - name: Upload web coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage
+          path: web/coverage
+          if-no-files-found: error
+
       - name: Build production application
         run: npm run build
 
@@ -192,6 +202,16 @@ jobs:
             printf "global coverage %.2f%% meets 70.0%% threshold\n", coverage
           }'
 
+      - name: Upload Go coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: |
+            coverage.out
+            coverage.log
+          if-no-files-found: warn
+
   baseline-contracts:
     name: Offline Retrieval Baseline Contracts
     runs-on: ubuntu-latest
@@ -255,6 +275,9 @@ jobs:
             cat e2e_test.log
             exit 1
           fi
+
+      - name: Run Docker Compose boundary E2E tests
+        run: go test -v -count=1 -tags docker_e2e ./e2e
 
   lint:
     name: Lint

@@ -223,11 +223,13 @@ func validPoints() []domain.VectorPoint {
 				Version:   "v1",
 			},
 			Metadata: map[string]any{
-				"project":   "myproj",
-				"scope":     "project",
-				"tenant_id": "tenant-a",
-				"source":    "manual",
-				"type":      "decision",
+				"project":      "myproj",
+				"project_id":   "10000000-a000-0000-0000-000000000003",
+				"scope":        "project",
+				"tenant_id":    "tenant-a",
+				"workspace_id": "workspace-a",
+				"source":       "manual",
+				"type":         "decision",
 			},
 		},
 		{
@@ -451,10 +453,10 @@ func TestAdapter_Upsert_GeneratesParameterizedSQL(t *testing.T) {
 		t.Errorf("SQL should use qualified table name: %s", upsertExecs[0].sql)
 	}
 
-	// Verify first point's args: [id, vector, model, model_version, dimension, project, scope, tenant_id, source, type]
+	// Verify first point's args include tenant and workspace boundaries.
 	args := upsertExecs[0].args
-	if len(args) != 10 {
-		t.Fatalf("expected 10 args, got %d", len(args))
+	if len(args) != 12 {
+		t.Fatalf("expected 12 args, got %d", len(args))
 	}
 	if args[0] != int64(1) {
 		t.Errorf("arg[0] (id) = %v, want 1", args[0])
@@ -472,11 +474,17 @@ func TestAdapter_Upsert_GeneratesParameterizedSQL(t *testing.T) {
 	if args[5] != "myproj" {
 		t.Errorf("arg[5] (project) = %v, want myproj", args[5])
 	}
-	if args[7] != "tenant-a" {
-		t.Errorf("arg[7] (tenant_id) = %v, want tenant-a", args[7])
+	if args[6] != "10000000-a000-0000-0000-000000000003" {
+		t.Errorf("arg[6] (project_id) = %v", args[6])
 	}
-	if args[9] != "decision" {
-		t.Errorf("arg[9] (type) = %v, want decision", args[9])
+	if args[8] != "tenant-a" {
+		t.Errorf("arg[8] (tenant_id) = %v, want tenant-a", args[8])
+	}
+	if args[9] != "workspace-a" {
+		t.Errorf("arg[9] (workspace_id) = %v, want workspace-a", args[9])
+	}
+	if args[11] != "decision" {
+		t.Errorf("arg[11] (type) = %v, want decision", args[11])
 	}
 }
 
@@ -540,10 +548,12 @@ func TestAdapter_Search_TranslatesFilters(t *testing.T) {
 		Limit:     10,
 		Threshold: 0.5,
 		Filters: map[string]any{
-			"project":   "myproj",
-			"scope":     "project",
-			"tenant_id": "tenant-a",
-			"type":      "decision",
+			"project":      "myproj",
+			"project_id":   "10000000-a000-0000-0000-000000000003",
+			"scope":        "project",
+			"tenant_id":    "tenant-a",
+			"workspace_id": "workspace-a",
+			"type":         "decision",
 		},
 	}
 	results, err := a.Search(context.Background(), q)
@@ -568,15 +578,15 @@ func TestAdapter_Search_TranslatesFilters(t *testing.T) {
 	if !strings.Contains(qc.sql, "LIMIT") {
 		t.Errorf("SQL should contain LIMIT: %s", qc.sql)
 	}
-	// Verify WHERE clauses for all 4 filter keys.
-	for _, key := range []string{"project", "scope", "tenant_id", "type"} {
+	// Verify WHERE clauses for all scoped filter keys.
+	for _, key := range []string{"project", "project_id", "scope", "tenant_id", "workspace_id", "type"} {
 		if !strings.Contains(qc.sql, key) {
 			t.Errorf("SQL should contain filter column %q: %s", key, qc.sql)
 		}
 	}
 	// Verify all filter values appear in args.
 	argStr := fmt.Sprintf("%v", qc.args)
-	for _, val := range []string{"myproj", "project", "tenant-a", "decision"} {
+	for _, val := range []string{"myproj", "10000000-a000-0000-0000-000000000003", "project", "tenant-a", "workspace-a", "decision"} {
 		if !strings.Contains(argStr, val) {
 			t.Errorf("filter value %q not found in args: %v", val, qc.args)
 		}
@@ -935,8 +945,8 @@ func TestSchemaStatements_ContainsExtensionAndTable(t *testing.T) {
 		HNSWM:              16,
 		HNSWEfConstruction: 64,
 	})
-	if len(stmts) != 4 {
-		t.Fatalf("expected 4 statements, got %d", len(stmts))
+	if len(stmts) != 7 {
+		t.Fatalf("expected 7 statements, got %d", len(stmts))
 	}
 	if !strings.Contains(stmts[0], "CREATE EXTENSION IF NOT EXISTS vector") {
 		t.Errorf("stmt[0] should create extension: %s", stmts[0])
@@ -950,14 +960,20 @@ func TestSchemaStatements_ContainsExtensionAndTable(t *testing.T) {
 	if !strings.Contains(stmts[2], "vector(384)") {
 		t.Errorf("stmt[2] should specify vector(384): %s", stmts[2])
 	}
-	if !strings.Contains(stmts[3], "CREATE INDEX IF NOT EXISTS") {
-		t.Errorf("stmt[3] should create index: %s", stmts[3])
+	if !strings.Contains(stmts[2], "workspace_id TEXT NOT NULL DEFAULT ''") {
+		t.Errorf("stmt[2] should define workspace_id: %s", stmts[2])
 	}
-	if !strings.Contains(stmts[3], "USING hnsw") {
-		t.Errorf("stmt[3] should use hnsw: %s", stmts[3])
+	if !strings.Contains(stmts[3], "ADD COLUMN IF NOT EXISTS workspace_id") {
+		t.Errorf("stmt[3] should evolve legacy tables: %s", stmts[3])
 	}
-	if !strings.Contains(stmts[3], "vector_cosine_ops") {
-		t.Errorf("stmt[3] should use vector_cosine_ops: %s", stmts[3])
+	if !strings.Contains(stmts[4], "ADD COLUMN IF NOT EXISTS project_id") {
+		t.Errorf("stmt[4] should evolve legacy project identity: %s", stmts[4])
+	}
+	if !strings.Contains(stmts[5], "tenant_id, workspace_id, project_id") {
+		t.Errorf("stmt[5] should index tenant/workspace/project: %s", stmts[5])
+	}
+	if !strings.Contains(stmts[6], "USING hnsw") || !strings.Contains(stmts[6], "vector_cosine_ops") {
+		t.Errorf("stmt[6] should create HNSW cosine index: %s", stmts[6])
 	}
 }
 
@@ -969,7 +985,7 @@ func TestSchemaStatements_HNSWEmitsTypedOptions(t *testing.T) {
 		HNSWM:              32,
 		HNSWEfConstruction: 128,
 	})
-	idx := stmts[3]
+	idx := stmts[6]
 	if !strings.Contains(idx, "WITH (m = 32, ef_construction = 128)") {
 		t.Errorf("HNSW DDL should emit typed WITH options, got: %s", idx)
 	}
@@ -986,7 +1002,7 @@ func TestSchemaStatements_IVFFlatEmitsTypedOptions(t *testing.T) {
 		IndexType:    "ivfflat",
 		IVFFlatLists: 200,
 	})
-	idx := stmts[3]
+	idx := stmts[6]
 	if !strings.Contains(idx, "USING ivfflat") {
 		t.Errorf("stmt[3] should use ivfflat: %s", idx)
 	}
@@ -1012,7 +1028,7 @@ func TestSchemaStatements_NoRawSQLSurface(t *testing.T) {
 		IVFFlatLists:       100,
 	}
 	stmts := schemaStatements("s", "t", 4, tuning)
-	idx := stmts[3]
+	idx := stmts[5]
 	// The only string content in the index DDL is the validated op class and
 	// the integer options. Verify no semicolon (no statement injection vector).
 	if strings.Contains(idx, ";") {

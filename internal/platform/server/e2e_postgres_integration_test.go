@@ -1953,3 +1953,144 @@ func TestE2EPrincipalRWConcurrentAuthAndRevocationSafety(t *testing.T) {
 		}
 	}
 }
+
+// TestE2EAgentProjectBoundaryAndReadOnlyUnavailablePaths proves the public
+// agent routes consume only server-resolved project grants and do not mutate
+// any corpus when generation is disabled. Full provider answer parity is
+// covered by the deterministic HTTP contract tests; this PostgreSQL oracle
+// focuses on verified-principal, workspace/project and RLS composition.
+func TestE2EAgentProjectBoundaryAndReadOnlyUnavailablePaths(t *testing.T) {
+	port := reserveLoopbackPort(t)
+	fixture := newPostgresE2EFixture(t, port)
+	server := startE2EServer(t, fixture.config)
+	baseURL := "http://" + server.runtime.Address()
+	if err := waitForHTTPStatus(baseURL+"/health", http.StatusOK, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+	grantedProject, deniedProject := uuid.New(), uuid.New()
+	siblingWorkspace, siblingProject := uuid.New(), uuid.New()
+	foreignTenant, foreignWorkspace, foreignProject := uuid.New(), uuid.New(), uuid.New()
+	if _, err := fixture.admin.Exec(ctx, `
+		INSERT INTO projects(tenant_id,workspace_id,public_id,name)
+		VALUES
+		 ($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'agent-granted'),
+		 ($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$4,'agent-denied')`,
+		fixture.tenant, fixture.workspace, grantedProject, deniedProject); err != nil {
+		t.Fatalf("seed primary workspace projects: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,project_id,public_id,project_key) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),(SELECT id FROM projects WHERE tenant_id=$1 AND public_id=$3),$4,'agent-granted')`, fixture.tenant, fixture.workspace, grantedProject, uuid.New()); err != nil {
+		t.Fatalf("seed granted memory corpus: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO sessions(tenant_id,workspace_id,project_id,public_id,project_key) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),(SELECT id FROM projects WHERE tenant_id=$1 AND public_id=$3),$4,'agent-denied')`, fixture.tenant, fixture.workspace, deniedProject, uuid.New()); err != nil {
+		t.Fatalf("seed denied memory corpus: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'agent-sibling')`, fixture.tenant, siblingWorkspace); err != nil {
+		t.Fatalf("seed sibling workspace: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO projects(tenant_id,workspace_id,public_id,name) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'agent-sibling')`, fixture.tenant, siblingWorkspace, siblingProject); err != nil {
+		t.Fatalf("seed sibling workspace project: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO organizations(tenant_id,name) VALUES($1,'agent-foreign')`, foreignTenant); err != nil {
+		t.Fatalf("seed foreign tenant: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO workspaces(tenant_id,organization_id,public_id,name) VALUES($1,(SELECT id FROM organizations WHERE tenant_id=$1),$2,'agent-foreign')`, foreignTenant, foreignWorkspace); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	if _, err := fixture.admin.Exec(ctx, `INSERT INTO projects(tenant_id,workspace_id,public_id,name) VALUES($1,(SELECT id FROM workspaces WHERE tenant_id=$1 AND public_id=$2),$3,'agent-foreign')`, foreignTenant, foreignWorkspace, foreignProject); err != nil {
+		t.Fatalf("seed foreign tenant project: %v", err)
+	}
+
+	grants := []string{"workspaces:read", "search:search", "memory:read", "code:read", "project:" + grantedProject.String()}
+	created := postJSON(t, baseURL, "/api/admin/users", fixture.token, map[string]any{
+		"email": "agent-bound-" + uuid.NewString() + "@e2e.test", "display_name": "agent-bound",
+		"roles": []string{"service-account"}, "workspaces": []string{fixture.workspace.String()},
+		"scopes": grants, "projects": []string{grantedProject.String()},
+	}, http.StatusCreated)
+	userID, _ := created["id"].(string)
+	if userID == "" {
+		t.Fatal("agent scoped user response omitted id")
+	}
+	secret := issueTokenOverHTTP(t, baseURL, fixture.token, userID, "agent-bound", grants)
+	appPool, err := pgxpool.New(ctx, os.Getenv("CORTEX_TEST_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatalf("open agent verifier pool: %v", err)
+	}
+	t.Cleanup(appPool.Close)
+	verified := verifyPrincipal(t, appPool, fixture.tenant, secret)
+	if _, err := postgresstore.NewAuthorizedStore(appPool, authz.AuthorizedContext{
+		Principal:   verified,
+		Tenant:      domain.TenantContext{TenantID: fixture.tenant.String(), WorkspaceID: fixture.workspace.String()},
+		GrantDigest: verified.GrantDigest,
+	}); err != nil {
+		t.Fatalf("construct agent scoped store from verified principal: %v", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/agent/projects", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+secret)
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("GET agent projects: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read/close agent projects: read=%v close=%v", readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET agent projects status=%d body=%s", response.StatusCode, body)
+	}
+	var listed struct {
+		Projects []struct {
+			ID string `json:"id"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Projects) != 1 || listed.Projects[0].ID != grantedProject.String() {
+		t.Fatalf("agent projects=%#v; want only explicitly granted project %s", listed.Projects, grantedProject)
+	}
+
+	var before string
+	if err := fixture.admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM sessions WHERE tenant_id=$1)::text || '/' || (SELECT count(*) FROM observations WHERE tenant_id=$1)::text || '/' || (SELECT count(*) FROM scoped_code_index_state WHERE tenant_id=$1)::text`, fixture.tenant).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	answer := postJSON(t, baseURL, "/api/agent/answer", secret, map[string]any{"project_id": grantedProject.String(), "question": "What was developed?"}, http.StatusOK)
+	if text, _ := answer["answer"].(string); strings.TrimSpace(text) == "" {
+		t.Fatalf("agent insufficient-evidence answer is empty: %#v", answer)
+	}
+	streamPayload, err := json.Marshal(map[string]any{"project_id": grantedProject.String(), "question": "What was developed?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/agent/stream", bytes.NewReader(streamPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamRequest.Header.Set("Authorization", "Bearer "+secret)
+	streamRequest.Header.Set("Content-Type", "application/json")
+	streamResponse, err := (&http.Client{Timeout: 10 * time.Second}).Do(streamRequest)
+	if err != nil {
+		t.Fatalf("POST agent stream: %v", err)
+	}
+	streamBody, readErr := io.ReadAll(streamResponse.Body)
+	closeErr = streamResponse.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read/close agent stream: read=%v close=%v", readErr, closeErr)
+	}
+	if streamResponse.StatusCode != http.StatusOK || !bytes.Contains(streamBody, []byte("event: done\n")) || bytes.Contains(streamBody, []byte("event: error\n")) {
+		t.Fatalf("agent stream status=%d body=%s", streamResponse.StatusCode, streamBody)
+	}
+	var after string
+	if err := fixture.admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM sessions WHERE tenant_id=$1)::text || '/' || (SELECT count(*) FROM observations WHERE tenant_id=$1)::text || '/' || (SELECT count(*) FROM scoped_code_index_state WHERE tenant_id=$1)::text`, fixture.tenant).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("read-only agent paths mutated corpus: before=%s after=%s", before, after)
+	}
+}

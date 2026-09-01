@@ -165,3 +165,24 @@ var ServerWorkspaceSyncSQL string
 //
 //go:embed 108_principal_rw_gating.sql
 var ServerPrincipalRWGatingSQL string
+
+// ServerScopedCodeIndexSQL is PostgreSQL migration 109. It introduces new
+// tenant/workspace/project-scoped AST tables with forced RLS and leaves any
+// legacy project-only index read-denied and unmodified for recovery.
+//
+//go:embed 109_scoped_code_index.sql
+var ServerScopedCodeIndexSQL string
+
+// ServerVerifiedRateLimitTierSQL is PostgreSQL migration 110. It exposes the
+// api_tokens rate_limit_tier only as part of the already-verified principal;
+// request metadata cannot influence the selected quota tier.
+//
+//go:embed 110_verified_rate_limit_tier.sql
+var ServerVerifiedRateLimitTierSQL string
+
+// ServerMultiTenantVerifierSQL is PostgreSQL migration 111. It adds the
+// SaaS data-plane token verifier which derives the tenant from a validated
+// bearer instead of accepting a client-selected tenant identifier.
+//
+//go:embed 111_multi_tenant_verifier.sql
+var ServerMultiTenantVerifierSQL string

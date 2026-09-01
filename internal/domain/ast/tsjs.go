@@ -13,9 +13,9 @@ import (
 
 var (
 	// TS/JS Imports
-	tsImportNamedRe    = regexp.MustCompile(`(?m)import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
-	tsImportDefaultRe  = regexp.MustCompile(`(?m)import\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"]`)
-	tsImportStarRe     = regexp.MustCompile(`(?m)import\s+\*\s+as\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"]`)
+	tsImportNamedRe   = regexp.MustCompile(`(?m)import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+	tsImportDefaultRe = regexp.MustCompile(`(?m)import\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"]`)
+	tsImportStarRe    = regexp.MustCompile(`(?m)import\s+\*\s+as\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"]`)
 
 	// TS/JS Classes & Interfaces
 	tsClassRe     = regexp.MustCompile(`(?m)(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_$]+)(?:\s+extends\s+([a-zA-Z0-9_$.]+))?(?:\s+implements\s+([a-zA-Z0-9_$,\s]+))?`)
@@ -24,12 +24,12 @@ var (
 	tsEnumRe      = regexp.MustCompile(`(?m)(?:export\s+)?(?:const\s+)?enum\s+([a-zA-Z0-9_$]+)`)
 
 	// TS/JS Functions & Methods
-	tsFuncDeclRe  = regexp.MustCompile(`(?m)(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*([a-zA-Z0-9_$]*)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?`)
-	tsArrowFnRe   = regexp.MustCompile(`(?m)(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)(?:\s*:\s*([a-zA-Z0-9_$<>[\]\s|&]+))?\s*=>`)
-	tsMethodRe    = regexp.MustCompile(`(?m)^\s*(?:public|private|protected|static|async|override|\s)*(?:get|set\s+)?([a-zA-Z0-9_$]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?\s*[{;]`)
+	tsFuncDeclRe = regexp.MustCompile(`(?m)(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*([a-zA-Z0-9_$]*)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?`)
+	tsArrowFnRe  = regexp.MustCompile(`(?m)(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*(?::\s*[^=]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)(?:\s*:\s*([a-zA-Z0-9_$<>[\]\s|&]+))?\s*=>`)
+	tsMethodRe   = regexp.MustCompile(`(?m)^\s*(?:public|private|protected|static|async|override|\s)*(?:get|set\s+)?([a-zA-Z0-9_$]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?\s*[{;]`)
 
 	// Call sites
-	tsCallRe      = regexp.MustCompile(`\b([a-zA-Z0-9_$]+)\s*\(`)
+	tsCallRe = regexp.MustCompile(`\b([a-zA-Z0-9_$]+)\s*\(`)
 )
 
 var tsKeywords = map[string]bool{

@@ -817,4 +817,3 @@ export function runApp() {
 		t.Errorf("expected 2-pass resolver to connect runApp -> computeHash with 'calls' relation")
 	}
 }
-

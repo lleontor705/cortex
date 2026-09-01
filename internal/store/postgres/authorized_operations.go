@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -23,6 +24,12 @@ func (s *AuthorizedStore) authorize(ctx context.Context, typ authz.Resource, act
 	}
 	t := authz.Tenant{ID: s.store.tenant.TenantID, WorkspaceID: s.store.tenant.WorkspaceID, ProjectID: project}
 	return authz.Enforce(ctx, s.store.authorizer, authz.Request{Principal: s.store.principal, Tenant: t, Resource: authz.ResourceRef{TenantID: t.ID, WorkspaceID: t.WorkspaceID, ProjectID: project, OwnerSubject: owner, Classification: classification}, ResourceType: typ, Action: action})
+}
+
+// AuthorizeAdminManage exposes a narrow, audited capability gate for server
+// administration endpoints without leaking repositories or policy internals.
+func (s *AuthorizedStore) AuthorizeAdminManage(ctx context.Context) error {
+	return s.authorize(ctx, authz.ResourceAdmin, authz.ActionManage, "", "", "")
 }
 
 func (s *AuthorizedStore) observationResource(ctx context.Context, id int64) (authz.ResourceRef, error) {
@@ -175,6 +182,49 @@ func (s *AuthorizedStore) GetObservationByID(ctx context.Context, id int64) (*do
 	}
 	return s.store.observations().GetByID(ctx, id)
 }
+
+// GetAgentObservationByID hydrates a vector candidate only when the candidate
+// still belongs to the exact public project UUID selected and authorized for
+// the request. The label is checked solely as canonical display metadata.
+func (s *AuthorizedStore) GetAgentObservationByID(ctx context.Context, projectPublicID, projectLabel string, id int64) (*domain.Observation, error) {
+	if s == nil || s.store == nil || id <= 0 || strings.TrimSpace(projectLabel) == "" {
+		return nil, domain.ErrInvalidInput
+	}
+	projectID, err := uuid.Parse(strings.TrimSpace(projectPublicID))
+	if err != nil || projectID == uuid.Nil {
+		return nil, domain.ErrInvalidInput
+	}
+	projectPublicID = projectID.String()
+	if err := s.authorize(ctx, authz.ResourceSearch, authz.ActionSearch, projectPublicID, "", ""); err != nil {
+		return nil, err
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, projectPublicID, "", ""); err != nil {
+		return nil, err
+	}
+	var observation domain.Observation
+	err = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		workspace, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		statement := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,COALESCE(o.owner_subject,'')
+			 FROM observations o
+			 JOIN projects p ON p.tenant_id=o.tenant_id AND p.workspace_id=o.workspace_id AND p.id=o.project_id
+			 WHERE o.tenant_id=public.cortex_current_tenant()
+			   AND o.workspace_id=$1 AND o.id=$2
+			   AND o.deleted_at IS NULL AND p.public_id=$3::uuid AND p.name=$4`
+		args := []any{workspace, id, projectPublicID, projectLabel}
+		statement, args = s.store.appendObservationVisibilityPredicate(statement, args, true)
+		return tx.QueryRow(ctx, statement, args...).Scan(&observation.PublicID, &observation.ID, &observation.SessionID, &observation.Project, &observation.Scope, &observation.Source, &observation.Type, &observation.Title, &observation.Content, &observation.TopicKey, &observation.CreatedAt, &observation.UpdatedAt, &observation.OwnerSubject)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, authz.ErrResourceNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &observation, nil
+}
 func (s *AuthorizedStore) GetObservationByPublicID(ctx context.Context, publicID string) (*domain.Observation, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New(authz.DenyRole)
@@ -216,6 +266,82 @@ func (s *AuthorizedStore) SearchObservations(ctx context.Context, query string, 
 		return nil, err
 	}
 	return s.store.search().Search(ctx, query, opts)
+}
+
+// SearchAgentObservations separates authority identity from corpus labeling.
+// Grants and authorization use the immutable projects.public_id; only after
+// resolving and matching that ID inside the bound tenant/workspace transaction
+// is its internal projects.id used to filter observations.project_id. The
+// label remains display metadata and can never select the corpus.
+func (s *AuthorizedStore) SearchAgentObservations(ctx context.Context, projectPublicID, projectLabel, query string, opts domain.SearchOptions) ([]*domain.SearchResult, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(projectLabel) == "" || strings.TrimSpace(query) == "" {
+		return nil, domain.ErrInvalidInput
+	}
+	projectID, err := uuid.Parse(strings.TrimSpace(projectPublicID))
+	if err != nil || projectID == uuid.Nil {
+		return nil, domain.ErrInvalidInput
+	}
+	projectPublicID = projectID.String()
+	if err := s.authorize(ctx, authz.ResourceSearch, authz.ActionSearch, projectPublicID, "", ""); err != nil {
+		return nil, err
+	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, projectPublicID, "", ""); err != nil {
+		return nil, err
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	} else if opts.Limit > 100 {
+		opts.Limit = 100
+	}
+	opts.Query = query
+
+	results := make([]*domain.SearchResult, 0)
+	err = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		workspace, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		var internalProjectID int64
+		var canonicalLabel string
+		err = tx.QueryRow(ctx, `SELECT id,name FROM projects WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND public_id=$2::uuid`, workspace, projectPublicID).Scan(&internalProjectID, &canonicalLabel)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errors.New(authz.DenyProject)
+			}
+			return err
+		}
+		if canonicalLabel != projectLabel {
+			return errors.New(authz.DenyProject)
+		}
+
+		statement := `SELECT o.public_id::text,o.id,o.session_id::text,COALESCE(o.project_key,''),COALESCE(o.scope,''),COALESCE(o.source,''),o.type,o.title,o.content,COALESCE(o.topic_key,''),o.created_at,o.updated_at,ts_rank_cd(o.search_vector,websearch_to_tsquery('simple',$1)) FROM observations o WHERE o.tenant_id=public.cortex_current_tenant() AND o.deleted_at IS NULL AND o.workspace_id=$2 AND (o.project_id=$3 OR (o.project_id IS NULL AND o.project_key=$4)) AND o.search_vector @@ websearch_to_tsquery('simple',$1)`
+		args := []any{opts.Query, workspace, internalProjectID, canonicalLabel}
+		statement, args = s.store.appendObservationVisibilityPredicate(statement, args, true)
+		if opts.Scope != "" {
+			statement += fmt.Sprintf(" AND o.scope=$%d", len(args)+1)
+			args = append(args, opts.Scope)
+		}
+		if opts.Type != "" {
+			statement += fmt.Sprintf(" AND o.type=$%d", len(args)+1)
+			args = append(args, opts.Type)
+		}
+		statement += fmt.Sprintf(" ORDER BY 13 DESC,o.created_at DESC LIMIT $%d", len(args)+1)
+		args = append(args, opts.Limit)
+		rows, err := tx.Query(ctx, statement, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			item := new(domain.SearchResult)
+			if err := rows.Scan(&item.PublicID, &item.ID, &item.SessionID, &item.Project, &item.Scope, &item.Source, &item.Type, &item.Title, &item.Content, &item.TopicKey, &item.CreatedAt, &item.UpdatedAt, &item.Rank); err != nil {
+				return err
+			}
+			results = append(results, item)
+		}
+		return rows.Err()
+	})
+	return results, err
 }
 func (s *AuthorizedStore) BulkSaveObservations(ctx context.Context, observations []*domain.Observation) error {
 	if len(observations) == 0 {
@@ -349,6 +475,108 @@ func (s *AuthorizedStore) ListProjects(ctx context.Context) ([]string, error) {
 		return rows.Err()
 	})
 	return projects, err
+}
+
+// ListAgentProjects resolves public IDs and labels inside the principal-bound
+// tenant/workspace transaction. It returns only projects granted for search
+// and with at least one corpus the same principal may read.
+func (s *AuthorizedStore) ListAgentProjects(ctx context.Context) (map[string]string, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New(authz.DenyRole)
+	}
+	if err := s.authorize(ctx, authz.ResourceSearch, authz.ActionSearch, "", "", ""); err != nil {
+		return nil, err
+	}
+	type candidate struct {
+		id, label string
+		hasMemory bool
+	}
+	candidates := make([]candidate, 0)
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		workspace, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO projects(tenant_id, workspace_id, name)
+			SELECT DISTINCT public.cortex_current_tenant(), $1, sub.pname
+			  FROM (
+			    SELECT project_key AS pname FROM sessions WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1 AND project_key <> ''
+			    UNION
+			    SELECT project_key AS pname FROM observations WHERE tenant_id=public.cortex_current_tenant() AND project_key <> ''
+			  ) sub
+			 WHERE NOT EXISTS (
+			    SELECT 1 FROM projects p WHERE p.tenant_id=public.cortex_current_tenant() AND p.workspace_id=$1 AND p.name=sub.pname
+			 )`, workspace)
+
+		rows, err := tx.Query(ctx, `
+			SELECT p.public_id::text, p.name,
+			       (EXISTS (SELECT 1 FROM sessions se WHERE se.tenant_id=p.tenant_id AND se.workspace_id=p.workspace_id AND (se.project_id=p.id OR se.project_key=p.name))
+			        OR EXISTS (SELECT 1 FROM observations o WHERE o.tenant_id=p.tenant_id AND (o.project_id=p.id OR o.project_key=p.name) AND o.deleted_at IS NULL))
+			  FROM projects p
+			 WHERE p.tenant_id=public.cortex_current_tenant() AND p.workspace_id=$1
+			 ORDER BY p.name, p.public_id`, workspace)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item candidate
+			if err := rows.Scan(&item.id, &item.label, &item.hasMemory); err != nil {
+				return err
+			}
+			candidates = append(candidates, item)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	projects := make(map[string]string)
+	for _, item := range candidates {
+		if err := s.authorize(ctx, authz.ResourceSearch, authz.ActionSearch, item.id, "", ""); err != nil {
+			continue
+		}
+		if item.hasMemory && s.authorize(ctx, authz.ResourceMemory, authz.ActionRead, item.id, "", "") == nil {
+			projects[item.id] = item.label
+			continue
+		}
+		if err := s.authorize(ctx, authz.ResourceCode, authz.ActionRead, item.id, "", ""); err != nil {
+			continue
+		}
+		ready, err := s.agentCodeProjectReady(ctx, item.id)
+		if err != nil {
+			return nil, err
+		}
+		if ready {
+			projects[item.id] = item.label
+		}
+	}
+	return projects, nil
+}
+
+// agentCodeProjectReady checks readiness only after the transaction has been
+// bound to the authorized project. An unbound RLS query would make every
+// code-only project appear absent and must never be used as an availability
+// signal.
+func (s *AuthorizedStore) agentCodeProjectReady(ctx context.Context, project string) (bool, error) {
+	ready := false
+	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		codeStore, err := newPostgresCodeStore(ctx, tx, s.store.tenant.WorkspaceID, project)
+		if err != nil {
+			return err
+		}
+		if err := codeStore.requireReady(ctx); err != nil {
+			if errors.Is(err, ErrCodeIndexUnavailable) {
+				return nil
+			}
+			return err
+		}
+		ready = true
+		return nil
+	})
+	return ready, err
 }
 
 func (s *AuthorizedStore) CreateGraphEdge(ctx context.Context, e *domain.Edge) error {
@@ -693,22 +921,48 @@ func (s *AuthorizedStore) ListCodeSymbols(ctx context.Context, filter code.Symbo
 	if s == nil || s.store == nil {
 		return nil, errors.New(authz.DenyRole)
 	}
-	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	project, err := normalizeCodeProject(filter.Project)
 	if err != nil {
 		return nil, err
 	}
-	return codeStore.ListSymbols(ctx, filter)
+	filter.Project = project.String()
+	if err := s.authorize(ctx, authz.ResourceCode, authz.ActionRead, filter.Project, "", ""); err != nil {
+		return nil, err
+	}
+	var symbols []code.Symbol
+	err = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		codeStore, err := newPostgresCodeStore(ctx, tx, s.store.tenant.WorkspaceID, filter.Project)
+		if err != nil {
+			return err
+		}
+		symbols, err = codeStore.ListSymbols(ctx, filter)
+		return err
+	})
+	return symbols, err
 }
 
 func (s *AuthorizedStore) GetCodeGraph(ctx context.Context, project string) (*code.CodeGraph, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New(authz.DenyRole)
 	}
-	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	projectID, err := normalizeCodeProject(project)
 	if err != nil {
 		return nil, err
 	}
-	return codeStore.GetGraph(ctx, project)
+	project = projectID.String()
+	if err := s.authorize(ctx, authz.ResourceCode, authz.ActionRead, project, "", ""); err != nil {
+		return nil, err
+	}
+	var graph *code.CodeGraph
+	err = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		codeStore, err := newPostgresCodeStore(ctx, tx, s.store.tenant.WorkspaceID, project)
+		if err != nil {
+			return err
+		}
+		graph, err = codeStore.GetGraph(ctx, project)
+		return err
+	})
+	return graph, err
 }
 
 func (s *AuthorizedStore) SaveCodeGraph(ctx context.Context, graph *code.CodeGraph) error {
@@ -716,16 +970,23 @@ func (s *AuthorizedStore) SaveCodeGraph(ctx context.Context, graph *code.CodeGra
 		return errors.New(authz.DenyRole)
 	}
 	if graph == nil {
-		return nil
+		return domain.ErrInvalidInput
 	}
-	codeStore, err := NewPostgresCodeStore(s.store.pool)
+	projectID, err := normalizeCodeProject(graph.Project)
 	if err != nil {
 		return err
 	}
-	if err := codeStore.SaveSymbols(ctx, graph.Symbols); err != nil {
+	graph.Project = projectID.String()
+	if err := s.authorize(ctx, authz.ResourceCode, authz.ActionWrite, graph.Project, "", ""); err != nil {
 		return err
 	}
-	return codeStore.SaveRelations(ctx, graph.Relations)
+	return s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		codeStore, err := newPostgresCodeStore(ctx, tx, s.store.tenant.WorkspaceID, graph.Project)
+		if err != nil {
+			return err
+		}
+		return codeStore.replaceGraph(ctx, graph)
+	})
 }
 
 func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*domain.RAGStats, error) {
@@ -766,4 +1027,3 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 		VectorProvider:      "pgvector/hnsw",
 	}, nil
 }
-

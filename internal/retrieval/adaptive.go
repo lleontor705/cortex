@@ -78,23 +78,23 @@ func ClassifyQueryComplexity(query string) QueryTier {
 
 // AdaptiveSearchOptions controls the adaptive retrieval engine.
 type AdaptiveSearchOptions struct {
-	Mode         string // "auto", "direct", "semantic", "multi_hop"
-	Project      string
-	Scope        string
-	Types        []string
-	Limit        int
-	GraphNodes   []graph.GraphAnalyticsNode
-	GraphEdges   []graph.GraphAnalyticsEdge
-	CRAGConfig   *CRAGConfig
+	Mode       string // "auto", "direct", "semantic", "multi_hop"
+	Project    string
+	Scope      string
+	Types      []string
+	Limit      int
+	GraphNodes []graph.GraphAnalyticsNode
+	GraphEdges []graph.GraphAnalyticsEdge
+	CRAGConfig *CRAGConfig
 }
 
 // AdaptiveSearchResult represents the enriched search output with RAG metadata.
 type AdaptiveSearchResult struct {
-	Tier            QueryTier                `json:"tier"`
-	Confidence      ConfidenceGrade          `json:"confidence"`
-	ConfidenceScore float64                  `json:"confidence_score"`
-	NeedsRefinement bool                     `json:"needs_refinement"`
-	Results         []*domain.SearchResult  `json:"results"`
+	Tier            QueryTier              `json:"tier"`
+	Confidence      ConfidenceGrade        `json:"confidence"`
+	ConfidenceScore float64                `json:"confidence_score"`
+	NeedsRefinement bool                   `json:"needs_refinement"`
+	Results         []*domain.SearchResult `json:"results"`
 }
 
 // ExecuteAdaptiveSearch runs the adaptive RAG pipeline, dynamically selecting

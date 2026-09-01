@@ -209,6 +209,26 @@ func TestGrantFiltersAndSystemConstruction(t *testing.T) {
 	}
 }
 
+func TestObservationVisibilityPredicateMatchesPrincipalSemantics(t *testing.T) {
+	service := &Store{principal: domain.Principal{Subject: "svc", Type: "service_account"}}
+	query, args := service.appendObservationVisibilityPredicate("SELECT 1 WHERE TRUE", nil, true)
+	if !strings.Contains(query, "o.classification NOT IN ('restricted','confidential')") {
+		t.Fatalf("service account without clearance predicate = %q", query)
+	}
+	if !strings.Contains(query, "o.classification <> 'personal' OR o.owner_subject=$1") || len(args) != 1 || args[0] != "svc" {
+		t.Fatalf("service personal predicate/args = %q / %#v", query, args)
+	}
+
+	admin := &Store{principal: domain.Principal{Subject: "admin", Type: "user", Roles: []string{"admin"}}}
+	query, args = admin.appendObservationVisibilityPredicate("SELECT 1 WHERE TRUE", nil, true)
+	if !strings.Contains(query, "o.classification NOT IN ('restricted','confidential')") {
+		t.Fatalf("admin without clearance predicate = %q", query)
+	}
+	if !strings.Contains(query, "o.classification <> 'personal' OR o.owner_subject=$1") || len(args) != 1 || args[0] != "admin" {
+		t.Fatalf("admin personal predicate/args = %q / %#v", query, args)
+	}
+}
+
 func TestAuthorizedOperationInputGuards(t *testing.T) {
 	var s AuthorizedStore
 	ctx := context.Background()

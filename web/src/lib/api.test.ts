@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { APIError, CortexClient } from "./api";
+import { APIError, CortexClient, type AgentRetrieval } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -33,6 +33,21 @@ describe("CortexClient request plumbing", () => {
     );
   });
 
+  it("sends the selected workspace as a server-validated request selector", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ observations: 0, sessions: 0, active_sessions: 0, edges: 0, projects: 0 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CortexClient("https://cortex.example", "secret");
+    client.setWorkspace("00000000-0000-0000-0000-0000000000a1");
+    await client.stats();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Cortex-Workspace"]).toBe(
+      "00000000-0000-0000-0000-0000000000a1",
+    );
+  });
   it("omits the Authorization header when no token is configured", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: "ok" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -89,7 +104,38 @@ describe("CortexClient request plumbing", () => {
 
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(
-      "https://cortex.example/api/search?q=a%20b%26c&project=proj%20x",
+      "https://cortex.example/api/search/hybrid?q=a%20b%26c&project=proj%20x&mode=semantic",
+    );
+  });
+
+  it("falls back to lexical search when the server has no hybrid route", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "not found" } }, 404))
+      .mockResolvedValueOnce(jsonResponse({ results: [], count: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CortexClient("https://cortex.example", "t").search("semantic memory");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://cortex.example/api/search?q=semantic%20memory",
+      expect.any(Object),
+    );
+  });
+
+  it("URL-encodes code symbol queries including file names", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new CortexClient("https://cortex.example", "t").getCodeSymbols({
+      project: "ITC.FacturadorWebPos",
+      q: "Conexion.DA/ApplicationDbContext.cs",
+      limit: 50,
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://cortex.example/api/code/symbols?project=ITC.FacturadorWebPos&q=Conexion.DA%2FApplicationDbContext.cs&limit=50",
     );
   });
 });
@@ -209,5 +255,160 @@ describe("CortexClient session invalidation", () => {
     await client.health();
     const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+});
+
+describe("CortexClient project agent", () => {
+  it("uses the server-filtered project list and typed JSON answer contract", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ projects: [{ id: "project-1", label: "Cortex" }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        answer: "Usa PostgreSQL.",
+        sources: [],
+        confidence: { level: "high", score: 0.9 },
+        retrieval: { degraded: [] },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CortexClient("https://cortex.example", "secret");
+    await expect(client.agentProjects()).resolves.toEqual([
+      { id: "project-1", label: "Cortex" },
+    ]);
+    await expect(client.answerAgent({
+      project_id: "project-1",
+      question: "¿Qué base usa?",
+      history: [{ role: "user", content: "Contexto" }],
+    })).resolves.toMatchObject({ answer: "Usa PostgreSQL." });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://cortex.example/api/agent/answer",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          project_id: "project-1",
+          question: "¿Qué base usa?",
+          history: [{ role: "user", content: "Contexto" }],
+        }),
+      }),
+    );
+  });
+
+  it("parses fragmented CRLF SSE, multiline data, and returns canonical done", async () => {
+    const encoder = new TextEncoder();
+    const chunks = [
+      ": keepalive\r\nevent: meta\r\ndata: {\"confidence\":{\"level\":\"high\",\"score\":0.9},\r",
+      "\ndata: \"retrieval\":{\"tier\":\"multi_hop_graph\",\"stages\":[{\"name\":\"graph_ppr\",\"status\":\"ok\",\"count\":4}],\"refinement_count\":1,\"degraded\":[]}}\r\n\r\nevent: delta\r\ndata: {\"text\":\"Usa \"}\r\n\r\n",
+      "event: delta\r\ndata: {\"text\":\"PostgreSQL.\"}\r\n\r\nevent: sources\r\ndata: [{\"handle\":\"src_1\",\"type\":\"code\",\"title\":\"store\"}]\r\n\r\n",
+      "event: done\r\ndata: {\"answer\":\"Usa PostgreSQL.\",\"sources\":[{\"handle\":\"src_1\",\"type\":\"code\",\"title\":\"store\"}],\"confidence\":{\"level\":\"high\",\"score\":0.9},\"retrieval\":{\"tier\":\"multi_hop_graph\",\"stages\":[{\"name\":\"graph_ppr\",\"status\":\"ok\",\"count\":4}],\"refinement_count\":1,\"degraded\":[]}}\r\n\r\n",
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    })));
+    const events: string[] = [];
+    let metadata: AgentRetrieval | undefined;
+
+    const answer = await new CortexClient("https://cortex.example", "secret").streamAgent(
+      { project_id: "project-1", question: "¿Qué base usa?" },
+      (event) => {
+        events.push(event.type);
+        if (event.type === "meta") metadata = event.data.retrieval;
+      },
+    );
+
+    expect(events).toEqual(["meta", "delta", "delta", "sources", "done"]);
+    expect(answer).toMatchObject({
+      answer: "Usa PostgreSQL.",
+      sources: [{ handle: "src_1" }],
+      confidence: { level: "high", score: 0.9 },
+      retrieval: {
+        tier: "multi_hop_graph",
+        stages: [{ name: "graph_ppr", status: "ok", count: 4 }],
+        refinement_count: 1,
+      },
+    });
+    expect(metadata).toEqual(answer.retrieval);
+  });
+
+  it("surfaces sanitized SSE errors and never accepts an incomplete stream", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          "event: error\ndata: {\"status\":503,\"code\":\"provider_unavailable\",\"message\":\"agent provider is unavailable\"}\n\n",
+        ));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, { status: 200 })));
+
+    await expect(new CortexClient("https://cortex.example", "secret").streamAgent(
+      { project_id: "project-1", question: "q" },
+      () => undefined,
+    )).rejects.toMatchObject({
+      name: "APIError",
+      status: 503,
+      message: "agent provider is unavailable",
+    });
+  });
+
+  it("propagates Stop through AbortSignal", async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("stopped", "AbortError")));
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const stop = new AbortController();
+    const pending = new CortexClient("https://cortex.example", "secret").streamAgent(
+      { project_id: "project-1", question: "q" },
+      () => undefined,
+      stop.signal,
+    );
+
+    stop.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("passes Last-Event-ID header and parses id in events", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          "id: 1\nevent: meta\ndata: {\"retrieval\":{\"tier\":\"direct_factual\",\"stages\":[],\"degraded\":[]}}\n\n" +
+          "id: 2\nevent: done\ndata: {\"answer\":\"done\",\"sources\":[],\"confidence\":{\"level\":\"high\",\"score\":1},\"retrieval\":{\"tier\":\"direct_factual\",\"stages\":[],\"degraded\":[]}}\n\n",
+        ));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(stream, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const receivedEvents: ParsedAgentSSEEvent[] = [];
+    await new CortexClient("https://cortex.example", "secret").streamAgent(
+      { project_id: "project-1", question: "test" },
+      (ev) => { receivedEvents.push(ev); },
+      undefined,
+      "event-prev-id",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://cortex.example/api/agent/stream",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "Last-Event-ID": "event-prev-id",
+        }),
+      }),
+    );
+    expect(receivedEvents[0].id).toBe("1");
+    expect(receivedEvents[1].id).toBe("2");
   });
 });

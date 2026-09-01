@@ -35,12 +35,12 @@ var (
 	rbDefRe     = regexp.MustCompile(`(?m)^\s*def\s+(?:self\.)?([a-zA-Z0-9_!?=]+)`)
 
 	// Swift Regexes
-	swiftImportRe    = regexp.MustCompile(`(?m)^\s*import\s+([a-zA-Z0-9_]+)`)
-	swiftClassRe     = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|final|\s)*class\s+([a-zA-Z0-9_]+)`)
-	swiftStructRe    = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*struct\s+([a-zA-Z0-9_]+)`)
-	swiftProtocolRe  = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*protocol\s+([a-zA-Z0-9_]+)`)
-	swiftEnumRe      = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*enum\s+([a-zA-Z0-9_]+)`)
-	swiftFuncRe      = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|override|static|class|mutating|\s)*func\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(`)
+	swiftImportRe   = regexp.MustCompile(`(?m)^\s*import\s+([a-zA-Z0-9_]+)`)
+	swiftClassRe    = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|final|\s)*class\s+([a-zA-Z0-9_]+)`)
+	swiftStructRe   = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*struct\s+([a-zA-Z0-9_]+)`)
+	swiftProtocolRe = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*protocol\s+([a-zA-Z0-9_]+)`)
+	swiftEnumRe     = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|\s)*enum\s+([a-zA-Z0-9_]+)`)
+	swiftFuncRe     = regexp.MustCompile(`(?m)^\s*(?:public|private|internal|open|override|static|class|mutating|\s)*func\s+([a-zA-Z0-9_]+)\s*(?:<[^>]+>)?\s*\(`)
 )
 
 func extractCppFile(fullPath, relPath string) *ExtractionResult {

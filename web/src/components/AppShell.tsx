@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
@@ -38,15 +38,19 @@ import {
   User,
   Menu,
   X,
+  MessageCircleQuestion,
 } from "lucide-react";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const {
     serverUrl,
+    managedServerEndpoint,
     token,
     resetGeneration,
     principal,
+    workspaceId,
+    setWorkspace,
     isConnected,
     isLoading,
     error,
@@ -65,6 +69,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [isLightMode, setIsLightMode] = useState<boolean>(false);
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileDrawerRef = useRef<HTMLElement | null>(null);
+  const mobileCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -73,6 +80,39 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setSecretInput((state) => observeResetGeneration(state, resetGeneration));
   }, [resetGeneration]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    mobileCloseButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileMenuOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !mobileDrawerRef.current) return;
+      const focusable = Array.from(
+        mobileDrawerRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+        ),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      mobileMenuButtonRef.current?.focus();
+    };
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("cortex_theme");
@@ -101,7 +141,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     e.preventDefault();
     setIsSubmitting(true);
     setConnectError(null);
-    const success = await setCredentials(inputUrl, inputToken);
+    const success = await setCredentials(managedServerEndpoint ? serverUrl : inputUrl, inputToken);
     if (!success) {
       setConnectError("No se pudo autenticar. Verifique la URL y el Bearer Token.");
     }
@@ -125,23 +165,42 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     (principal?.id ? `ID: ${principal.id.slice(0, 8)}...` : "Usuario Cortex");
   const userEmail = principal?.email || "";
   const primaryRole = userRoles[0] || (isAdmin ? "admin" : isDeveloper ? "developer" : "member");
+  const grantedWorkspaces = principal?.workspaces || [];
+  const selectedWorkspace = workspaceId || grantedWorkspaces[0] || "";
+  const changeWorkspace = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    void setWorkspace(event.target.value);
+  };
 
-  const allNavItems = [
-    { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: "Live", minRole: "all" },
-    { href: "/projects", label: "Proyectos & Skills", icon: FolderKanban, badge: "MCP", minRole: "all" },
-    { href: "/memory", label: "Memoria & Notas", icon: BrainCircuit, minRole: "all" },
-    { href: "/code", label: "Código & AST", icon: Terminal, badge: "Graphify", minRole: "all" },
-    { href: "/graph", label: "Grafo de Conocimiento", icon: Share2, badge: "2D Force", minRole: "all" },
-    { href: "/search", label: "Retrieval Playground", icon: Search, minRole: "all" },
-    { href: "/extract", label: "Extracción LLM", icon: Sparkles, badge: "AI", minRole: "all" },
-    { href: "/admin", label: "Agentes & Tokens", icon: ShieldCheck, minRole: "admin" },
-    { href: "/settings", label: "Configuración Servidor", icon: Settings, minRole: "admin" },
-  ];
-
-  const navItems = allNavItems.filter((item) => {
-    if (item.minRole === "admin" && !isAdmin) return false;
-    return true;
-  });
+  const navGroups = [
+    {
+      label: "Conocimiento",
+      items: [
+        { href: "/agent", label: "Preguntar", icon: MessageCircleQuestion, badge: "RAG", minRole: "all" },
+        { href: "/search", label: "Explorar", icon: Search, minRole: "all" },
+        { href: "/memory", label: "Memoria", icon: BrainCircuit, minRole: "all" },
+        { href: "/code", label: "Código", icon: Terminal, minRole: "all" },
+        { href: "/graph", label: "Grafo", icon: Share2, minRole: "all" },
+      ],
+    },
+    {
+      label: "Operaciones",
+      items: [
+        { href: "/", label: "Inicio", icon: LayoutDashboard, badge: "Live", minRole: "all" },
+        { href: "/projects", label: "Proyectos", icon: FolderKanban, badge: "MCP", minRole: "all" },
+        { href: "/extract", label: "Extracción", icon: Sparkles, badge: "AI", minRole: "all" },
+      ],
+    },
+    {
+      label: "Administración",
+      items: [
+        { href: "/admin", label: "Agentes y tokens", icon: ShieldCheck, minRole: "admin" },
+        { href: "/settings", label: "Servidor", icon: Settings, minRole: "admin" },
+      ],
+    },
+  ].map((group) => ({
+    ...group,
+    items: group.items.filter((item) => item.minRole !== "admin" || isAdmin),
+  })).filter((group) => group.items.length > 0);
 
   if (!isConnected && !isLoading) {
     return (
@@ -169,19 +228,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           )}
 
           <form onSubmit={handleConnect} className="space-y-4 text-xs">
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
-                CORTEX SERVER ENDPOINT
-              </label>
-              <Input
-                type="text"
-                value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="http://localhost:7438"
-                required
-                className="h-10 text-xs bg-slate-950/80"
-              />
-            </div>
+            {managedServerEndpoint ? (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2.5">
+                <p className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Servidor Cortex</p>
+                <p className="mt-1 font-mono text-xs text-blue-300 break-all">{serverUrl}</p>
+                <p className="mt-1 text-[11px] text-slate-400">Configurado automáticamente por Docker Compose.</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
+                  CORTEX SERVER ENDPOINT
+                </label>
+                <Input
+                  type="text"
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  placeholder="http://localhost:7438"
+                  required
+                  className="h-10 text-xs bg-slate-950/80"
+                />
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
@@ -258,10 +325,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           {/* Close button inside mobile drawer */}
           <Button
+            ref={mobileCloseButtonRef}
             onClick={() => setMobileMenuOpen(false)}
             variant="ghost"
             size="sm"
             className="h-8 w-8 p-0 md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            aria-label="Cerrar navegación"
           >
             <X className="h-5 w-5" />
           </Button>
@@ -290,39 +359,43 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Navigation List */}
-      <nav className="flex-1 py-3 px-3 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = pathname === item.href;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={() => setMobileMenuOpen(false)}
-              className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-medium transition-all duration-150 ${
-                isActive
-                  ? "bg-[var(--accent-primary)] text-white shadow-md shadow-blue-600/20 font-semibold"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-[var(--text-secondary)]"}`} />
-                <span>{item.label}</span>
-              </div>
-              {item.badge && (
-                <span
-                  className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-semibold shrink-0 ${
-                    isActive
-                      ? "bg-white/20 text-white"
-                      : "bg-[var(--bg-surface)] text-[var(--text-muted)] border border-[var(--border-subtle)]"
-                  }`}
-                >
-                  {item.badge}
-                </span>
-              )}
-            </Link>
-          );
-        })}
+      <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Navegación principal">
+        {navGroups.map((group) => (
+          <section key={group.label} className="mb-4 last:mb-0" aria-labelledby={`nav-${group.label}`}>
+            <h2 id={`nav-${group.label}`} className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+              {group.label}
+            </h2>
+            <div className="space-y-1">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = pathname === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={isActive ? "page" : undefined}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`flex items-center justify-between rounded-lg px-3.5 py-2.5 text-xs font-medium transition-all duration-150 ${
+                      isActive
+                        ? "bg-[var(--accent-primary)] font-semibold text-white shadow-md shadow-blue-600/20"
+                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-[var(--text-secondary)]"}`} aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </span>
+                    {item.badge ? (
+                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold ${
+                        isActive ? "bg-white/20 text-white" : "border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)]"
+                      }`}>{item.badge}</span>
+                    ) : null}
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </nav>
 
       {/* Sidebar Footer / System Status */}
@@ -399,6 +472,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Mobile Slide-over Drawer */}
       <aside
+        id="mobile-navigation"
+        ref={mobileDrawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navegación móvil"
+        inert={!mobileMenuOpen}
         className={`fixed top-0 bottom-0 left-0 w-72 max-w-[85vw] bg-[var(--bg-secondary)] border-r border-[var(--border-subtle)] flex flex-col z-50 md:hidden transition-transform duration-300 ease-in-out ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         }`}
@@ -418,11 +497,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             {/* Mobile Hamburger Toggle */}
             <Button
+              ref={mobileMenuButtonRef}
               onClick={() => setMobileMenuOpen(true)}
               variant="ghost"
               size="sm"
               className="h-8 w-8 p-0 md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
               title="Abrir Menú"
+              aria-label="Abrir navegación"
+              aria-controls="mobile-navigation"
+              aria-expanded={mobileMenuOpen}
             >
               <Menu className="h-5 w-5" />
             </Button>
@@ -432,10 +515,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <span className="font-mono text-[11px] truncate">{serverUrl}</span>
             </Badge>
 
-            {principal?.workspaces?.length ? (
-              <Badge variant="default" className="text-[11px] hidden sm:inline-flex">
-                WS: {principal.workspaces.join(", ")}
-              </Badge>
+            {grantedWorkspaces.length ? (
+              <label className="hidden sm:flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">
+                <span className="font-semibold uppercase tracking-wide">Workspace</span>
+                <select
+                  value={selectedWorkspace}
+                  onChange={changeWorkspace}
+                  className="max-w-36 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                  aria-label="Workspace activo"
+                >
+                  {grantedWorkspaces.map((id) => (
+                    <option key={id} value={id}>
+                      {`WS ${id.slice(0, 8)}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
             ) : null}
 
             <Badge

@@ -102,7 +102,8 @@ type pgvectorDB interface {
 // AdapterConfig). Index tuning uses typed validated integers — there is NO raw
 // SQL string surface for index options (prevents injection via DDL).
 type AdapterConfig struct {
-	DSN                string        // PostgreSQL connection string
+	DSN                string        // PostgreSQL runtime connection string
+	BootstrapDSN       string        // optional privileged DDL connection; empty falls back to DSN
 	Schema             string        // schema name (default cortex_vector)
 	Table              string        // table name (default embeddings)
 	Dimension          int           // expected vector dimension
@@ -152,16 +153,25 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	}
 
 	password := extractPassword(cfg.DSN)
+	bootstrapDSN := cfg.BootstrapDSN
+	if strings.TrimSpace(bootstrapDSN) == "" {
+		bootstrapDSN = cfg.DSN
+	}
+	bootstrapPassword := extractPassword(bootstrapDSN)
 
-	// Bootstrap: create extension + schema + table + index via a raw connection.
-	conn, err := pgx.Connect(ctx, cfg.DSN)
+	// Bootstrap DDL uses a distinct, administrator-owned connection when one
+	// is configured. The runtime pool below is always created from cfg.DSN.
+	conn, err := pgx.Connect(ctx, bootstrapDSN)
 	if err != nil {
-		return nil, fmt.Errorf("pgvector: bootstrap connect: %w", redactDSN(err, password))
+		return nil, fmt.Errorf("pgvector: bootstrap connect: %w", redactDSN(err, bootstrapPassword))
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
 	if err := bootstrapSchema(ctx, conn, cfg); err != nil {
-		return nil, fmt.Errorf("pgvector: bootstrap schema: %w", redactDSN(err, password))
+		return nil, fmt.Errorf("pgvector: bootstrap schema: %w", redactDSN(err, bootstrapPassword))
+	}
+	if err := grantRuntimeAccess(ctx, conn, cfg); err != nil {
+		return nil, fmt.Errorf("pgvector: grant runtime access: %w", redactDSN(err, bootstrapPassword))
 	}
 
 	// Create the pool.
@@ -386,16 +396,18 @@ func (a *Adapter) validatePoint(p domain.VectorPoint) error {
 // re-upserts keep the row's modification time current.
 func (a *Adapter) upsertSQL() string {
 	return fmt.Sprintf(
-		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, scope, tenant_id, source, type)
-VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, project_id, scope, tenant_id, workspace_id, source, type)
+VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO UPDATE SET
     embedding = EXCLUDED.embedding,
     model = EXCLUDED.model,
     model_version = EXCLUDED.model_version,
     dimension = EXCLUDED.dimension,
     project = EXCLUDED.project,
+	project_id = EXCLUDED.project_id,
     scope = EXCLUDED.scope,
     tenant_id = EXCLUDED.tenant_id,
+	workspace_id = EXCLUDED.workspace_id,
     source = EXCLUDED.source,
     type = EXCLUDED.type,
     updated_at = NOW()`,
@@ -412,8 +424,10 @@ func (a *Adapter) pointArgs(p domain.VectorPoint) []any {
 		p.ModelInfo.Version,
 		len(p.Vector),
 		metaString(p.Metadata, "project"),
+		metaString(p.Metadata, "project_id"),
 		metaString(p.Metadata, "scope"),
 		metaString(p.Metadata, "tenant_id"),
+		metaString(p.Metadata, "workspace_id"),
 		metaString(p.Metadata, "source"),
 		metaString(p.Metadata, "type"),
 	}
@@ -687,13 +701,18 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
     model_version TEXT NOT NULL DEFAULT '',
     dimension INT NOT NULL,
     project TEXT NOT NULL DEFAULT '',
+	project_id TEXT NOT NULL DEFAULT '',
     scope TEXT NOT NULL DEFAULT '',
     tenant_id TEXT NOT NULL DEFAULT '',
+	workspace_id TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
     type TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, qualified, dimension),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`, qualified),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT ''`, qualified),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (tenant_id, workspace_id, project_id)`, table+"_tenant_workspace_project_idx", qualified),
 	}
 
 	// pgvector HNSW and IVFFlat indexes in PostgreSQL have a hard limit of 2000 dimensions.
@@ -716,6 +735,23 @@ func schemaStatements(schema, table string, dimension int, t indexTuning) []stri
 	}
 
 	return stmts
+}
+
+func grantRuntimeAccess(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) error {
+	runtimeCfg, err := pgx.ParseConfig(cfg.DSN)
+	if err != nil || !identifierRe.MatchString(runtimeCfg.User) {
+		return fmt.Errorf("invalid runtime role")
+	}
+	qualified := cfg.Schema + "." + cfg.Table
+	for _, stmt := range []string{
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, cfg.Schema, runtimeCfg.User),
+		fmt.Sprintf(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %s TO %s`, qualified, runtimeCfg.User),
+	} {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // bootstrapSchema runs the schema/table/index DDL on a raw pgx.Conn.
@@ -748,8 +784,10 @@ func bootstrapSchema(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) err
 // (filter-transparent but safe — no dynamic column names from user input).
 var filterKeyOrder = []string{
 	"project",
+	"project_id",
 	"scope",
 	"tenant_id",
+	"workspace_id",
 	"type",
 	"model",
 	"model_version",

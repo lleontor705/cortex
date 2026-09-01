@@ -220,9 +220,9 @@ func (s *CodeStore) ListSymbols(ctx context.Context, filter code.SymbolFilter) (
 		args = append(args, filter.PackageName)
 	}
 	if filter.Query != "" {
-		sb.WriteString(" AND (name LIKE ? OR signature LIKE ? OR doc_summary LIKE ?)")
+		sb.WriteString(" AND (name LIKE ? OR file_path LIKE ? OR signature LIKE ? OR doc_summary LIKE ?)")
 		pattern := "%" + filter.Query + "%"
-		args = append(args, pattern, pattern, pattern)
+		args = append(args, pattern, pattern, pattern, pattern)
 	}
 
 	sb.WriteString(" ORDER BY file_path ASC, line_number ASC")

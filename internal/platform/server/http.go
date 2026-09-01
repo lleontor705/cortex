@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,12 +17,15 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	agentdomain "github.com/lleontor705/cortex/v2/internal/domain/agent"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 	"github.com/lleontor705/cortex/v2/internal/domain/graph"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/mark3labs/mcp-go/util"
@@ -40,10 +41,12 @@ const (
 // Operations is the operation-only server boundary implemented by
 // postgres.AuthorizedStore. It deliberately contains no repository accessors.
 type Operations interface {
+	AuthorizeAdminManage(context.Context) error
 	SaveObservation(context.Context, *domain.Observation) error
 	SaveObservationWithEffect(context.Context, *domain.Observation) (domain.SaveEffect, error)
 	ExecuteHandoff(context.Context, domain.HandoffRequest) (domain.ObservationWriteResult, error)
 	GetObservationByID(context.Context, int64) (*domain.Observation, error)
+	GetAgentObservationByID(context.Context, string, string, int64) (*domain.Observation, error)
 	GetObservationByPublicID(context.Context, string) (*domain.Observation, error)
 	UpdateObservation(context.Context, *domain.Observation) error
 	DeleteObservation(context.Context, int64) error
@@ -52,8 +55,12 @@ type Operations interface {
 	GetServerStats(context.Context) (*domain.ServerStats, error)
 	ListAuditEvents(context.Context, int) ([]*domain.AuditEntry, error)
 	ListProjects(context.Context) ([]string, error)
+	// ListAgentProjects returns public project IDs mapped to server-owned
+	// labels after capability and corpus filtering.
+	ListAgentProjects(context.Context) (map[string]string, error)
 	ListObservations(context.Context, domain.ObservationFilter) ([]*domain.Observation, error)
 	SearchObservations(context.Context, string, domain.SearchOptions) ([]*domain.SearchResult, error)
+	SearchAgentObservations(context.Context, string, string, string, domain.SearchOptions) ([]*domain.SearchResult, error)
 	CreateGraphEdge(context.Context, *domain.Edge) error
 	GetGraphEdgeByPublicID(context.Context, string) (*domain.Edge, error)
 	GetRelatedObservations(context.Context, int64, int) ([]*domain.Observation, error)
@@ -86,6 +93,97 @@ type Operations interface {
 
 type healthCheck func(context.Context) error
 
+type hybridSearchDependencies struct {
+	vectors      domain.VectorIndex
+	embeddings   embedding.Service
+	adminAI      adminAIProbes
+	agent        agentAnswerer
+	agentLimits  agentdomain.LimitPolicy
+	agentAuditor agentAuditorFactory
+}
+
+type adminAIStatus struct {
+	Provider   string
+	Model      string
+	Configured bool
+	Dimensions int
+}
+
+type adminAIProbeResult struct {
+	Status     string `json:"status"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	LatencyMS  int64  `json:"latency_ms"`
+	Dimensions int    `json:"dimensions,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
+type adminAIProbes interface {
+	LLMStatus() adminAIStatus
+	EmbeddingStatus() adminAIStatus
+	ProbeLLM(context.Context) adminAIProbeResult
+	ProbeEmbedding(context.Context) adminAIProbeResult
+}
+
+type composedAdminAIProbes struct {
+	llmStatus       adminAIStatus
+	embeddingStatus adminAIStatus
+	extractor       *extraction.Service
+	embeddings      embedding.Service
+}
+
+func (p composedAdminAIProbes) LLMStatus() adminAIStatus       { return p.llmStatus }
+func (p composedAdminAIProbes) EmbeddingStatus() adminAIStatus { return p.embeddingStatus }
+
+func (p composedAdminAIProbes) ProbeLLM(ctx context.Context) adminAIProbeResult {
+	result := adminAIProbeResult{Status: "not_configured", Provider: normalizedProvider(p.llmStatus.Provider), Model: normalizedModel(p.llmStatus.Model)}
+	if !p.llmStatus.Configured || p.extractor == nil {
+		return result
+	}
+	start := time.Now()
+	extracted, err := p.extractor.Extract(ctx, extraction.ExtractionRequest{Text: "Cortex provider readiness probe.", Project: "system", Source: "admin_probe"})
+	result.LatencyMS = time.Since(start).Milliseconds()
+	if err != nil || extracted == nil || extracted.SourceMethod != "llm" {
+		result.Status = "error"
+		result.Message = "provider probe failed"
+		return result
+	}
+	result.Status = "ok"
+	return result
+}
+
+func (p composedAdminAIProbes) ProbeEmbedding(ctx context.Context) adminAIProbeResult {
+	result := adminAIProbeResult{Status: "not_configured", Provider: normalizedProvider(p.embeddingStatus.Provider), Model: normalizedModel(p.embeddingStatus.Model)}
+	if !p.embeddingStatus.Configured || p.embeddings == nil {
+		return result
+	}
+	start := time.Now()
+	vector, err := p.embeddings.Embed(ctx, "cortex architectural memory embedding test")
+	result.LatencyMS = time.Since(start).Milliseconds()
+	if err != nil || len(vector) == 0 {
+		result.Status = "error"
+		result.Message = "provider probe failed"
+		return result
+	}
+	result.Status = "ok"
+	result.Dimensions = len(vector)
+	return result
+}
+
+func normalizedProvider(provider string) string {
+	if strings.TrimSpace(provider) == "" {
+		return "none"
+	}
+	return provider
+}
+
+func normalizedModel(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return "none"
+	}
+	return model
+}
+
 // Every authenticated route is wired through newHTTPHandlerWithAuth with a
 // verifier-backed middleware (requestAuthenticator in production). There is
 // deliberately no static-compare constructor: the configured bearer is a
@@ -97,6 +195,10 @@ type healthCheck func(context.Context) error
 // omitted, the default service is heuristic-only: its strict policy approves
 // no outbound destination.
 func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler, extractors ...*extraction.Service) (http.Handler, *mcpserver.StreamableHTTPServer) {
+	return newHTTPHandlerWithHybridSearch(cfg, ops, health, protect, hybridSearchDependencies{}, extractors...)
+}
+
+func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler, hybrid hybridSearchDependencies, extractors ...*extraction.Service) (http.Handler, *mcpserver.StreamableHTTPServer) {
 	mcpCore := newServerMCP(ops)
 	sessions := newMCPSessionRegistry(mcpSessionLimits{
 		IdleTTL:      mcpSessionIdleTTLDefault,
@@ -136,6 +238,24 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 		maxLimit:     boundedMax(cfg.Search.MaxLimit),
 		extractor:    extractor,
 		cfg:          cfg,
+		hybrid:       hybrid,
+		adminAI:      hybrid.adminAI,
+		agent:        hybrid.agent,
+		agentLimits:  hybrid.agentLimits,
+		agentAuditor: hybrid.agentAuditor,
+	}
+	if api.agent != nil {
+		if _, err := api.agentLimits.ForTier(agentdomain.TierStandard); err != nil {
+			api.agentLimits = agentdomain.DefaultLimitPolicy()
+		}
+		api.agentQuota = newAgentQuotaLimiter(api.agentLimits, 8)
+	}
+	if api.adminAI == nil {
+		api.adminAI = composedAdminAIProbes{
+			llmStatus:       adminAIStatus{Provider: cfg.AI.Provider, Model: cfg.AI.Model, Configured: cfg.AI.Provider != "" && cfg.AI.Provider != "none"},
+			embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none", Dimensions: embeddingDimensions(cfg.Search.EmbeddingProvider)},
+			extractor:       extractor, embeddings: hybrid.embeddings,
+		}
 	}
 	mux.Handle("/api/", protect(api.routes()))
 	mux.Handle("/mcp", protect(guard.wrap(transport)))
@@ -143,29 +263,26 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 }
 
 func corsHandler(allowed []string, next http.Handler) http.Handler {
-	allowAll := len(allowed) == 0
 	allow := make(map[string]struct{}, len(allowed))
 	for _, origin := range allowed {
 		if origin = strings.TrimSpace(origin); origin != "" {
-			if origin == "*" {
-				allowAll = true
-			}
 			allow[origin] = struct{}{}
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if allowAll {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			} else if _, ok := allow[origin]; ok {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-			}
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
+			if _, ok := allow[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, X-Cortex-Workspace")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			} else if r.Method == http.MethodOptions {
+				writeError(w, http.StatusForbidden, "forbidden", "cross-origin request is not allowed")
 				return
 			}
 		}
@@ -179,6 +296,12 @@ type apiHandler struct {
 	maxLimit     int
 	extractor    *extraction.Service
 	cfg          config.Config
+	hybrid       hybridSearchDependencies
+	adminAI      adminAIProbes
+	agent        agentAnswerer
+	agentLimits  agentdomain.LimitPolicy
+	agentQuota   *agentQuotaLimiter
+	agentAuditor agentAuditorFactory
 }
 
 func (a *apiHandler) routes() http.Handler {
@@ -207,6 +330,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("PUT /api/observations/{id}", a.updateObservation)
 	mux.HandleFunc("DELETE /api/observations/{id}", a.deleteObservation)
 	mux.HandleFunc("GET /api/search", a.search)
+	mux.HandleFunc("GET /api/search/hybrid", a.searchHybrid)
 	mux.HandleFunc("POST /api/graph/edges", a.createEdge)
 	mux.HandleFunc("DELETE /api/graph/edges/{id}", a.deleteEdge)
 	mux.HandleFunc("GET /api/graph/analytics", a.graphAnalytics)
@@ -231,6 +355,9 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("GET /api/code/graph", a.getCodeGraph)
 	mux.HandleFunc("GET /api/code/analytics", a.getCodeAnalytics)
 	mux.HandleFunc("POST /api/code/ingest", a.ingestCodeAST)
+	mux.HandleFunc("GET /api/agent/projects", a.agentProjects)
+	mux.HandleFunc("POST /api/agent/answer", a.agentAnswer)
+	mux.HandleFunc("POST /api/agent/stream", a.agentStream)
 	return mux
 }
 
@@ -269,6 +396,9 @@ func (a *apiHandler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := principalResponse(principal)
+	if workspaceID, ok := workspaceFromContext(r.Context()); ok {
+		resp["workspace_id"] = workspaceID
+	}
 	if principal.Type == "user" && principal.Subject != "" {
 		if u, err := a.ops.GetUserProfile(r.Context(), principal.Subject); err == nil && u != nil {
 			if u.DisplayName != "" {
@@ -573,6 +703,67 @@ func (a *apiHandler) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, searchResponse(result))
+}
+
+type operationObservationLookup struct {
+	ops Operations
+}
+
+func (l operationObservationLookup) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
+	return l.ops.GetObservationByID(ctx, id)
+}
+
+func (a *apiHandler) searchHybrid(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	query := strings.TrimSpace(q.Get("q"))
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "q is required")
+		return
+	}
+	limit := queryInt(q.Get("limit"), a.defaultLimit, 1, a.maxLimit)
+	opts := domain.SearchOptions{Query: query, Type: q.Get("type"), Project: q.Get("project"), Scope: q.Get("scope"), Limit: limit}
+	lexical, err := a.ops.SearchObservations(r.Context(), query, opts)
+	if err != nil {
+		respondOperationError(w, err)
+		return
+	}
+
+	workspaceID, workspaceSelected := workspaceFromContext(r.Context())
+	if !workspaceSelected {
+		if a.cfg.Server.MultiTenant {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "verified workspace is required")
+			return
+		}
+		workspaceID = strings.TrimSpace(a.cfg.Server.WorkspaceID)
+	}
+	if workspaceID == "" || a.hybrid.embeddings == nil || !domain.IsVectorIndexHealthy(r.Context(), a.hybrid.vectors) {
+		writeJSON(w, http.StatusOK, searchResponse(lexical))
+		return
+	}
+	queryVector, err := a.hybrid.embeddings.Embed(r.Context(), query)
+	if err != nil || len(queryVector) == 0 {
+		writeJSON(w, http.StatusOK, searchResponse(lexical))
+		return
+	}
+	principal, ok := principalFromContext(r.Context())
+	if !ok || principal.OrgID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "verified principal is required")
+		return
+	}
+	filters := map[string]any{
+		"tenant_id":    principal.OrgID,
+		"workspace_id": workspaceID,
+		"project":      opts.Project,
+		"scope":        opts.Scope,
+		"type":         opts.Type,
+	}
+	vectorResults, vectorErr := retrieval.SearchVectors(r.Context(), a.hybrid.vectors, domain.VectorQuery{
+		Vector: queryVector, Limit: limit, Threshold: 0.3, Filters: filters,
+	}, operationObservationLookup{ops: a.ops})
+	if vectorErr == nil && len(vectorResults) > 0 {
+		lexical = retrieval.FuseResults(lexical, vectorResults, limit)
+	}
+	writeJSON(w, http.StatusOK, searchResponse(lexical))
 }
 
 func (a *apiHandler) createEdge(w http.ResponseWriter, r *http.Request) {
@@ -1189,7 +1380,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
@@ -1227,7 +1418,7 @@ func observationResponse(observation *domain.Observation) map[string]any {
 		"owner_subject": observation.OwnerSubject,
 		"topic_key":     observation.TopicKey, "confidence": observation.Confidence,
 		"source": observation.Source, "created_at": observation.CreatedAt,
-		"updated_at": observation.UpdatedAt,
+		"updated_at":    observation.UpdatedAt,
 		"has_embedding": observation.HasEmbedding || (observation.RAGStatus == "" || observation.RAGStatus == "indexed"),
 		"rag_status": func() string {
 			if observation.RAGStatus != "" {
@@ -1235,7 +1426,7 @@ func observationResponse(observation *domain.Observation) map[string]any {
 			}
 			return "indexed"
 		}(),
-		"embedding_model": observation.EmbeddingModel,
+		"embedding_model":      observation.EmbeddingModel,
 		"embedding_dimensions": observation.EmbeddingDim,
 	}
 	if _, err := uuid.Parse(observation.SessionID); err == nil {
@@ -2240,307 +2431,42 @@ func (a *apiHandler) mergeProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {
-	llmProvider := a.cfg.AI.Provider
-	if llmProvider == "" {
-		llmProvider = "none"
+	if err := a.ops.AuthorizeAdminManage(r.Context()); err != nil {
+		respondOperationError(w, err)
+		return
 	}
-	llmModel := a.cfg.AI.Model
-	if llmModel == "" {
-		llmModel = "default"
-	}
-	llmBaseURL := a.cfg.AI.BaseURL
-
-	embProvider := a.cfg.Search.EmbeddingProvider
-	if embProvider == "" {
-		embProvider = "none"
-	}
-	embModel := a.cfg.Search.EmbeddingModel
-	if embModel == "" {
-		embModel = "bge-m3"
-	}
-	embBaseURL := a.cfg.Search.EmbeddingBaseURL
-	embDim := 1024
-	if strings.Contains(embModel, "qwen3-embedding:4b") {
-		embDim = 2560
-	} else if strings.Contains(embModel, "qwen3-embedding:8b") {
-		embDim = 4096
-	} else if strings.Contains(embModel, "nomic-embed-text") || strings.Contains(embModel, "text-embedding-004") {
-		embDim = 768
-	} else if strings.Contains(embModel, "text-embedding-3-small") || strings.Contains(embModel, "text-embedding-ada") {
-		embDim = 1536
-	}
-
+	llm := a.adminAI.LLMStatus()
+	emb := a.adminAI.EmbeddingStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"llm": map[string]any{
-			"provider":   llmProvider,
-			"model":      llmModel,
-			"base_url":   llmBaseURL,
-			"configured": llmProvider != "" && llmProvider != "none",
+			"provider": normalizedProvider(llm.Provider), "model": normalizedModel(llm.Model),
+			"configured": llm.Configured,
 		},
 		"embedding": map[string]any{
-			"provider":   embProvider,
-			"model":      embModel,
-			"base_url":   embBaseURL,
-			"dimensions": embDim,
-			"configured": embProvider != "" && embProvider != "none",
+			"provider": normalizedProvider(emb.Provider), "model": normalizedModel(emb.Model),
+			"dimensions": emb.Dimensions, "configured": emb.Configured,
 		},
 	})
 }
 
 func (a *apiHandler) testLLM(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	provider := a.cfg.AI.Provider
-	model := a.cfg.AI.Model
-	baseURL := a.cfg.AI.BaseURL
-	apiKey := os.Getenv("CORTEX_AI_API_KEY")
-
-	if provider == "" || provider == "none" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "not_configured",
-			"provider":   "none",
-			"model":      "none",
-			"latency_ms": 0,
-			"message":    "El motor LLM del servidor no está configurado (define CORTEX_AI_PROVIDER y CORTEX_AI_MODEL en el servidor)",
-		})
+	if err := a.ops.AuthorizeAdminManage(r.Context()); err != nil {
+		respondOperationError(w, err)
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-
-	var promptResponse string
-	var err error
-
-	if provider == "ollama" {
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		endpoint := strings.TrimRight(baseURL, "/") + "/api/generate"
-		reqBody, _ := json.Marshal(map[string]any{
-			"model":  model,
-			"prompt": "Respond with 'Cortex LLM Online and Ready' in 10 words or less.",
-			"stream": false,
-		})
-		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-		if httpErr != nil {
-			err = httpErr
-		} else {
-			httpReq.Header.Set("Content-Type", "application/json")
-			resp, doErr := http.DefaultClient.Do(httpReq)
-			if doErr != nil {
-				err = doErr
-			} else {
-				defer func() { _ = resp.Body.Close() }()
-				var oResp struct {
-					Response string `json:"response"`
-					Error    string `json:"error"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&oResp) == nil {
-					if oResp.Error != "" {
-						err = fmt.Errorf("%s", oResp.Error)
-					} else {
-						promptResponse = strings.TrimSpace(oResp.Response)
-					}
-				}
-			}
-		}
-	} else {
-		// Generic OpenAI-compatible endpoint
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
-		reqBody, _ := json.Marshal(map[string]any{
-			"model": model,
-			"messages": []map[string]string{
-				{"role": "user", "content": "Respond with 'Cortex LLM Online and Ready' in 10 words or less."},
-			},
-			"max_tokens": 30,
-		})
-		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-		if httpErr != nil {
-			err = httpErr
-		} else {
-			httpReq.Header.Set("Content-Type", "application/json")
-			if apiKey != "" {
-				httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-			}
-			resp, doErr := http.DefaultClient.Do(httpReq)
-			if doErr != nil {
-				err = doErr
-			} else {
-				defer func() { _ = resp.Body.Close() }()
-				var cResp struct {
-					Choices []struct {
-						Message struct {
-							Content string `json:"content"`
-						} `json:"message"`
-					} `json:"choices"`
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&cResp) == nil {
-					if cResp.Error.Message != "" {
-						err = fmt.Errorf("%s", cResp.Error.Message)
-					} else if len(cResp.Choices) > 0 {
-						promptResponse = strings.TrimSpace(cResp.Choices[0].Message.Content)
-					}
-				}
-			}
-		}
-	}
-
-	latency := time.Since(start).Milliseconds()
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "error",
-			"provider":   provider,
-			"model":      model,
-			"latency_ms": latency,
-			"error":      err.Error(),
-		})
-		return
-	}
-
-	if promptResponse == "" {
-		promptResponse = "Cortex LLM Online and Ready"
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"provider":   provider,
-		"model":      model,
-		"latency_ms": latency,
-		"response":   promptResponse,
-	})
+	writeJSON(w, http.StatusOK, a.adminAI.ProbeLLM(ctx))
 }
 
 func (a *apiHandler) testEmbedding(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	provider := a.cfg.Search.EmbeddingProvider
-	model := a.cfg.Search.EmbeddingModel
-	baseURL := a.cfg.Search.EmbeddingBaseURL
-	apiKey := os.Getenv("CORTEX_SEARCH_EMBEDDING_API_KEY")
-
-	if provider == "" || provider == "none" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "not_configured",
-			"provider":   "none",
-			"model":      "none",
-			"latency_ms": 0,
-			"message":    "El motor de embeddings no está configurado (define CORTEX_SEARCH_EMBEDDING_PROVIDER y CORTEX_SEARCH_EMBEDDING_MODEL en el servidor)",
-		})
+	if err := a.ops.AuthorizeAdminManage(r.Context()); err != nil {
+		respondOperationError(w, err)
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-
-	var vector []float64
-	var err error
-
-	if provider == "ollama" {
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		endpoint := strings.TrimRight(baseURL, "/") + "/api/embeddings"
-		reqBody, _ := json.Marshal(map[string]any{
-			"model":  model,
-			"prompt": "cortex architectural memory embedding test",
-		})
-		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-		if httpErr != nil {
-			err = httpErr
-		} else {
-			httpReq.Header.Set("Content-Type", "application/json")
-			resp, doErr := http.DefaultClient.Do(httpReq)
-			if doErr != nil {
-				err = doErr
-			} else {
-				defer func() { _ = resp.Body.Close() }()
-				var oResp struct {
-					Embedding []float64 `json:"embedding"`
-					Error     string    `json:"error"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&oResp) == nil {
-					if oResp.Error != "" {
-						err = fmt.Errorf("%s", oResp.Error)
-					} else {
-						vector = oResp.Embedding
-					}
-				}
-			}
-		}
-	} else {
-		// Generic OpenAI-compatible embeddings
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		endpoint := strings.TrimRight(baseURL, "/") + "/embeddings"
-		reqBody, _ := json.Marshal(map[string]any{
-			"model": model,
-			"input": "cortex architectural memory embedding test",
-		})
-		httpReq, httpErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
-		if httpErr != nil {
-			err = httpErr
-		} else {
-			httpReq.Header.Set("Content-Type", "application/json")
-			if apiKey != "" {
-				httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-			}
-			resp, doErr := http.DefaultClient.Do(httpReq)
-			if doErr != nil {
-				err = doErr
-			} else {
-				defer func() { _ = resp.Body.Close() }()
-				var cResp struct {
-					Data []struct {
-						Embedding []float64 `json:"embedding"`
-					} `json:"data"`
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&cResp) == nil {
-					if cResp.Error.Message != "" {
-						err = fmt.Errorf("%s", cResp.Error.Message)
-					} else if len(cResp.Data) > 0 {
-						vector = cResp.Data[0].Embedding
-					}
-				}
-			}
-		}
-	}
-
-	latency := time.Since(start).Milliseconds()
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "error",
-			"provider":   provider,
-			"model":      model,
-			"latency_ms": latency,
-			"error":      err.Error(),
-		})
-		return
-	}
-
-	var sample []float64
-	if len(vector) > 5 {
-		sample = vector[:5]
-	} else {
-		sample = vector
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":        "ok",
-		"provider":      provider,
-		"model":         model,
-		"dimensions":    len(vector),
-		"latency_ms":    latency,
-		"sample_vector": sample,
-	})
+	writeJSON(w, http.StatusOK, a.adminAI.ProbeEmbedding(ctx))
 }
 
 func (a *apiHandler) listCodeSymbols(w http.ResponseWriter, r *http.Request) {
@@ -2636,4 +2562,3 @@ func (a *apiHandler) ingestCodeAST(w http.ResponseWriter, r *http.Request) {
 	report := code.ComputeAnalytics(codeGraph)
 	writeJSON(w, http.StatusOK, report)
 }
-

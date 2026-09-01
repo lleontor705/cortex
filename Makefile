@@ -1,4 +1,4 @@
-.PHONY: build run test test-integration test-postgres-integration test-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
+.PHONY: build run test test-e2e-docker test-integration test-postgres-integration test-coverage test-web-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
 
 # Binary name
 BINARY_NAME=cortex
@@ -40,10 +40,12 @@ help:
 	@echo "  build          Build the binary"
 	@echo "  run            Run the server"
 	@echo "  test           Run all tests"
+	@echo "  test-e2e-docker Run isolated Docker Compose E2E tests"
 	@echo "  test-integration Run generic and PostgreSQL integration tests (requires CORTEX_TEST_POSTGRES_DSN)"
 	@echo "  test-postgres-integration Run PostgreSQL integration tests (requires CORTEX_TEST_POSTGRES_DSN)"
 	@echo "  test-baseline  Validate offline retrieval baseline contracts"
-	@echo "  test-coverage  Run tests with coverage report"
+	@echo "  test-coverage  Run Go tests with coverage report"
+	@echo "  test-web-coverage Run web client-core V8 coverage gate"
 	@echo "  test-postgres-coverage Run PostgreSQL-backed coverage (requires CORTEX_TEST_POSTGRES_DSN)"
 	@echo "  lint           Run golangci-lint"
 	@echo "  fmt            Format code"
@@ -69,6 +71,10 @@ run:
 test:
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
+
+# Run the Docker Compose E2E stack. Requires a working local Docker daemon.
+test-e2e-docker:
+	$(GOTEST) -v -count=1 -tags docker_e2e ./e2e
 
 # Run the complete explicitly tagged integration suite.
 test-integration:
@@ -97,6 +103,10 @@ test-coverage:
 	$(GOCMD) tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
 	@echo "Coverage report generated: $(COVERAGE_HTML)"
 	@$(GOCMD) tool cover -func=$(COVERAGE_FILE)
+
+# Run the mandatory web client-core V8 coverage gate.
+test-web-coverage:
+	npm --prefix web run test:coverage
 
 # Run whole-project coverage with PostgreSQL integration coverage included.
 test-postgres-coverage:

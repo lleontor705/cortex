@@ -54,3 +54,30 @@ func TestRunServerReportsBootstrapFailureWithoutClaimingReadiness(t *testing.T) 
 		t.Fatalf("runContext() claimed readiness on bootstrap failure: %q", stdout.String())
 	}
 }
+
+func TestParseServerInvocationRecognizesSynchronousReindex(t *testing.T) {
+	project := "10000000-a000-0000-0000-000000000003"
+	inv, err := parseServerInvocation([]string{"cortex", "--config", "server.yaml", "reindex", "--project-id", project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.configPath != "server.yaml" || !inv.reindex || inv.projectID != project {
+		t.Fatalf("invocation = %+v", inv)
+	}
+	if _, err := parseServerInvocation([]string{"cortex", "reindex", "--project-id", project, "--tenant-id", "forged"}); err == nil {
+		t.Fatal("server reindex accepted a tenant override")
+	}
+	if _, err := parseServerInvocation([]string{"cortex", "reindex"}); err == nil {
+		t.Fatal("server reindex accepted a missing project UUID")
+	}
+	if _, err := parseServerInvocation([]string{"cortex", "reindex", "--project-id", "label"}); err == nil {
+		t.Fatal("server reindex accepted a project label")
+	}
+}
+
+func TestParseServerInvocationPreservesServeMode(t *testing.T) {
+	inv, err := parseServerInvocation([]string{"cortex", "--config=server.yaml"})
+	if err != nil || inv.reindex || inv.configPath != "server.yaml" {
+		t.Fatalf("invocation = %+v, error = %v", inv, err)
+	}
+}

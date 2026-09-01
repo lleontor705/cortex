@@ -21,6 +21,8 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
 	"github.com/lleontor705/cortex/v2/internal/store/prompt"
 	scoringstore "github.com/lleontor705/cortex/v2/internal/store/scoring"
@@ -45,6 +47,8 @@ type Deps struct {
 	Graph             *graphstore.Store
 	Scoring           *scoringstore.Store
 	TemporalSnapshots *sqlitestore.TemporalSnapshotRepository
+	Vectors           domain.VectorIndex
+	Embeddings        embedding.Service
 }
 
 // Options configures optional HTTP hardening behavior.
@@ -411,6 +415,41 @@ func (s *Server) handleSearchHybrid(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+
+	mode := r.URL.Query().Get("mode")
+	tier := retrieval.ClassifyQueryComplexity(query)
+	switch mode {
+	case "direct":
+		tier = retrieval.TierDirectFactual
+	case "semantic":
+		tier = retrieval.TierSemanticHybrid
+	case "multi_hop":
+		tier = retrieval.TierMultiHopGraph
+	}
+
+	// Keep the endpoint useful in zero-embedding builds while taking the real
+	// semantic path whenever both optional capabilities are available.
+	if tier != retrieval.TierDirectFactual && s.deps.Embeddings != nil && domain.IsVectorIndexHealthy(r.Context(), s.deps.Vectors) {
+		queryVector, embedErr := s.deps.Embeddings.Embed(r.Context(), query)
+		if embedErr != nil {
+			log.Printf("warning: HTTP hybrid search embed failed, falling back to FTS5: %v", embedErr)
+		} else if len(queryVector) > 0 {
+			vectorResults, vectorErr := retrieval.SearchVectors(r.Context(), s.deps.Vectors, domain.VectorQuery{
+				Vector:    queryVector,
+				Limit:     limit,
+				Threshold: 0.3,
+				Filters: map[string]any{
+					"project": opts.Project,
+					"scope":   opts.Scope,
+				},
+			}, s.deps.Observations)
+			if vectorErr != nil {
+				log.Printf("warning: HTTP hybrid vector search failed, falling back to FTS5: %v", vectorErr)
+			} else if len(vectorResults) > 0 {
+				results = retrieval.FuseResults(results, vectorResults, limit)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, results)
 }

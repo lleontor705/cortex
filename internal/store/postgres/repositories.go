@@ -470,18 +470,8 @@ func (r *ObservationRepository) List(ctx context.Context, f domain.ObservationFi
 			}
 		}
 		if r.authorized {
-			if classes, wildcard := r.classificationGrantFilter(); !wildcard {
-				if len(classes) == 0 {
-					q += ` AND classification NOT IN ('restricted','confidential')`
-				} else {
-					q += fmt.Sprintf(" AND (classification = ANY($%d) OR classification NOT IN ('restricted','confidential'))", n)
-					args = append(args, classes)
-					n++
-				}
-			}
-			q += fmt.Sprintf(" AND (classification <> 'personal' OR owner_subject=$%d)", n)
-			args = append(args, r.principal.Subject)
-			n++
+			q, args = r.appendObservationVisibilityPredicate(q, args, false)
+			n = len(args) + 1
 		}
 		if f.OwnerSubject != "" {
 			q += fmt.Sprintf(" AND owner_subject=$%d", n)

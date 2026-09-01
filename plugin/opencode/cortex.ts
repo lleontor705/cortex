@@ -265,7 +265,7 @@ Format for \`cortex_save\`:
 - **content**: What was done, Why it was done, Affected files, and Lessons learned.
 
 ### 3. CODEBASE INTELLIGENCE & BLAST RADIUS
-- Before refactoring or renaming symbols, call \`cortex_get_blast_radius(node_id)\` to calculate all impacted downstream callers, files, and dependencies.
+- Before refactoring or renaming symbols, use filtered \`cortex_get_code_symbols(project, kind, file_path)\` plus bounded source reads. \`cortex_get_blast_radius\` accepts a numeric observation ID and is a cognitive graph tool, not a code-symbol impact oracle.
 - Call \`cortex_detect_cycles(project)\` to ensure no circular import dependencies or architectural violations.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
 - Use \`cortex_relate\` to link related observations (references, relates_to, follows, supersedes, contradicts).
@@ -275,14 +275,14 @@ Format for \`cortex_save\`:
 - Call \`cortex_search\` for keyword/FTS search, or \`cortex_context\` for recent session history.
 - If you find an observation match, call \`cortex_get_observation(id)\` to read its complete full text.
 
-### 5. SESSION CLOSE PROTOCOL (Mandatory before ending)
-Before saying "done" or finishing a session:
+### 5. SESSION CLOSE PROTOCOL (Orchestrator only)
+If and only if the current role is the root orchestrator, before saying "done" or finishing a session:
 1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
-This is NOT optional. Without this, the next session or agent starts blind.
+Subagents and external leaves must never call session lifecycle or session summary tools.
 
 ### 6. AFTER COMPACTION
-1. IMMEDIATELY call \`cortex_session_summary\` with the compacted summary content.
-2. Then call \`cortex_context\` to recover context from previous sessions before continuing.`
+1. The root orchestrator may call \`cortex_session_summary\` with compacted context.
+2. Subagents only call \`cortex_context\` when needed and never take session ownership.`
   }
 
   return `## Cortex Persistent Memory — Protocol (Mode: LOCAL / HYBRID Zero-CGO)
@@ -295,11 +295,11 @@ TRANSPORT IDENTIFIERS:
 
 ### 1. RULES & DIRECTIVES (Mandatory at session start)
 - Call \`cortex_get_rules(project)\` to retrieve active project and global rules, coding standards, and architectural directives.
-- Call \`cortex_save_rule(title, content, topic_key, scope)\` whenever the user or team establishes a persistent project convention or rule.
+- Call \`cortex_save_rule(title, content, topic_key, scope)\` ONLY for permanent architectural directives or coding invariants. Never save task notes, test outputs, or worktree logs in rules.
 
 ### 2. CODEBASE AST & INTELLIGENCE
-- Call \`cortex_ingest_code(path, project)\` to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
-- Before refactoring, call \`cortex_get_blast_radius(observation_id, depth)\` to calculate impacted callers, dependents, and downstream files.
+- Call \`cortex_ingest_code(path, project)\` with the **absolute workspace root path** (e.g. \`d:/cortex-ia\`, never \`.\`) to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
+- \`cortex_get_blast_radius(observation_id, depth)\` traverses related observations only. For code refactors, use filtered symbols, source callers, and cycle detection until Cortex exposes a symbol-aware impact contract.
 - Call \`cortex_detect_cycles(project)\` to find circular dependencies across modules.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
 
@@ -332,17 +332,16 @@ Format for \`cortex_save\`:
 
 ### 6. REVISION HISTORY & HYGIENE
 - \`cortex_revision_history(id)\`: View evolution across upserts.
-- \`cortex_timeline(id)\`: Chronological context.
-- \`cortex_archive(id)\`: Archive obsolete observations.
-- \`cortex_delete(id, hard_delete: true)\`: Permanently delete.
+- Administrative timeline, archive, and delete tools are not available in the agent profile. Never invent them; an operator must use an admin profile explicitly.
 
-### 7. SESSION CLOSE PROTOCOL (Mandatory before ending)
-Before saying "done" or finishing a session:
+### 7. SESSION CLOSE PROTOCOL (Orchestrator only)
+If and only if the current role is the root orchestrator, before saying "done" or finishing a session:
 1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
+Subagents and external leaves must never call session lifecycle or summary tools.
 
 ### 8. AFTER COMPACTION
-1. Call \`cortex_session_summary\` with the compacted summary content.
-2. Call \`cortex_context\` to recover context before resuming work.`
+1. The root orchestrator may call \`cortex_session_summary\` with compacted context.
+2. Subagents only call \`cortex_context\` when needed and never take session ownership.`
 }
 
 const MEMORY_INSTRUCTIONS = buildMemoryInstructions("server")
@@ -708,7 +707,7 @@ export const Cortex: Plugin = async (ctx) => {
   // Try to start cortex server if not running. Never attempted without a
   // configured credential: an unauthenticated plugin sends nothing.
   if (CORTEX_HTTP_TOKEN) {
-    let running = await isCortexRunning()
+    const running = await isCortexRunning()
     if (!running) {
       try {
         Bun.spawn([CORTEX_BIN, "serve"], {
@@ -716,11 +715,7 @@ export const Cortex: Plugin = async (ctx) => {
           stderr: "ignore",
           stdin: "ignore",
         })
-        for (let i = 0; i < 6; i++) {
-          await new Promise((r) => setTimeout(r, 200))
-          running = await isCortexRunning()
-          if (running) break
-        }
+        await new Promise((r) => setTimeout(r, 500))
       } catch {}
     }
   }
@@ -900,10 +895,9 @@ export const Cortex: Plugin = async (ctx) => {
         output.context.push(
           `CRITICAL INSTRUCTION FOR COMPACTED SUMMARY:\n` +
           `The agent has access to Cortex persistent memory via MCP tools.\n` +
-          `You MUST include the following instruction at the TOP of the compacted summary:\n\n` +
-          `"FIRST ACTION REQUIRED: Call cortex_session_summary with the content of this compacted summary. ` +
-          `Use project: '${project}'. This preserves what was accomplished before compaction. Do this BEFORE any other work."\n\n` +
-          `This is NOT optional. Without this, everything done before compaction is lost from memory.`
+          `Include this role-aware instruction at the TOP of the compacted summary:\n\n` +
+          `"If the current role is the root orchestrator, summarize compacted context with cortex_session_summary for project '${project}'. ` +
+          `If the current role is a subagent or external leaf, do not call session lifecycle or summary tools; use cortex_context only when needed."`
         )
       } catch {
         // Non-blocking: a hook failure must never break the host compaction.
@@ -911,3 +905,6 @@ export const Cortex: Plugin = async (ctx) => {
     },
   }
 }
+
+export default Cortex;
+

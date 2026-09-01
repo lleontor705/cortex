@@ -2,14 +2,14 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: cortex_bootstrap
-      POSTGRES_PASSWORD: cortex_bootstrap
-      POSTGRES_DB: cortex_test
+      POSTGRES_USER: ${POSTGRES_USER:-cortex_bootstrap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_bootstrap}
+      POSTGRES_DB: ${POSTGRES_DB:-cortex_test}
     volumes:
       - cortex-postgres:/var/lib/postgresql/data
       - ./scripts/postgres/bootstrap-authz.sql:/docker-entrypoint-initdb.d/001-bootstrap-authz.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cortex_bootstrap -d cortex_test"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cortex_bootstrap} -d ${POSTGRES_DB:-cortex_test}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -18,35 +18,65 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["--mode", "server"]
+    command: ["/usr/local/bin/cortex", "--mode", "server"]
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       CORTEX_SERVER_STORAGE_DRIVER: postgres
-      CORTEX_SERVER_STORAGE_DSN: postgres://cortex_test:cortex_test@postgres:5432/cortex_test?sslmode=disable
-      CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@postgres:5432/cortex_test?sslmode=disable
-      CORTEX_SERVER_TENANT_ID: "00000000-0000-0000-0000-000000000001"
-      CORTEX_SERVER_WORKSPACE_ID: "00000000-0000-0000-0000-000000000002"
-      CORTEX_SERVER_PRINCIPAL_SUBJECT: "00000000-0000-0000-0000-000000000003"
-      CORTEX_SERVER_GRANT_DIGEST: docker-development-grant
-      CORTEX_SERVER_GRANT_VERSION: "1"
+      CORTEX_SERVER_STORAGE_DSN: postgres://${POSTGRES_APP_USER:-cortex_test}:${POSTGRES_APP_PASSWORD:-cortex_test}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
+      CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://${POSTGRES_USER:-cortex_bootstrap}:${POSTGRES_PASSWORD:-cortex_bootstrap}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
+      # When all four values below are empty, the entrypoint creates a stable
+      # default tenant, workspace, owner subject and bearer once in the
+      # cortex-server-state volume, then emits the bearer once in Docker logs.
+      CORTEX_SERVER_AUTO_BOOTSTRAP: "true"
+      CORTEX_SERVER_TENANT_ID: "${CORTEX_TENANT_ID:-}"
+      CORTEX_SERVER_WORKSPACE_ID: "${CORTEX_WORKSPACE_ID:-}"
+      CORTEX_SERVER_PRINCIPAL_SUBJECT: "${CORTEX_PRINCIPAL_SUBJECT:-}"
       CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "true"
+      # Opt in only after validating two tenant tokens. False preserves the
+      # single-tenant Docker development behavior.
+      CORTEX_SERVER_MULTI_TENANT: "${CORTEX_SERVER_MULTI_TENANT:-false}"
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: 0.0.0.0
       CORTEX_HTTP_PORT: "7438"
-      CORTEX_HTTP_TOKEN: docker-development-token
-      CORTEX_HTTP_ALLOWED_ORIGINS: http://localhost:5173
-      CORTEX_SERVER_PROVIDER_VECTOR: none
-      CORTEX_SEARCH_EMBEDDING_PROVIDER: none
+      CORTEX_HTTP_TOKEN: "${CORTEX_HTTP_TOKEN:-}"
+      CORTEX_HTTP_ALLOWED_ORIGINS: "${CORTEX_HTTP_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:80,http://localhost:5173,http://127.0.0.1:3000}"
+      CORTEX_SERVER_PROVIDER_VECTOR: "${CORTEX_SERVER_PROVIDER_VECTOR:-none}"
+      CORTEX_SEARCH_EMBEDDING_PROVIDER: "${CORTEX_SEARCH_EMBEDDING_PROVIDER:-none}"
       CORTEX_LIFECYCLE_ENABLE_AUTO_ARCHIVE: "false"
     ports:
       - "7438:7438"
+    volumes:
+      - cortex-server-state:/home/cortex/.cortex
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7438/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12
 
+  cortex-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT: "true"
+        NEXT_PUBLIC_CORTEX_SERVER_URL: "http://localhost:7438"
+    depends_on:
+      cortex-server:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
 volumes:
   cortex-postgres:
+  cortex-server-state:

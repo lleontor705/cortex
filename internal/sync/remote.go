@@ -121,6 +121,18 @@ func (s *RemoteSyncer) Sync(ctx context.Context) (*RemoteResult, error) {
 			return nil, err
 		}
 	}
+	for start := 0; start < len(batch.CodeSymbols); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(batch.CodeSymbols))
+		if err = s.push(ctx, &domain.SyncBatch{CodeSymbols: batch.CodeSymbols[start:end]}, result); err != nil {
+			return nil, err
+		}
+	}
+	for start := 0; start < len(batch.CodeRelations); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(batch.CodeRelations))
+		if err = s.push(ctx, &domain.SyncBatch{CodeRelations: batch.CodeRelations[start:end]}, result); err != nil {
+			return nil, err
+		}
+	}
 	return result, nil
 }
 
@@ -137,7 +149,7 @@ func countBatch(b *domain.SyncBatch) int {
 	if b == nil {
 		return 0
 	}
-	return len(b.Sessions) + len(b.Observations) + len(b.Prompts) + len(b.Edges)
+	return len(b.Sessions) + len(b.Observations) + len(b.Prompts) + len(b.Edges) + len(b.CodeSymbols) + len(b.CodeRelations)
 }
 
 func (s *RemoteSyncer) request(ctx context.Context, method, path string, input, output any) error {
@@ -305,6 +317,44 @@ func (s *RemoteSyncer) export(ctx context.Context) (*domain.SyncBatch, error) {
 		b.Edges = append(b.Edges, v)
 	}
 	_ = rows.Close()
+
+	var symTableCount int
+	_ = s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='code_symbols'`).Scan(&symTableCount)
+	if symTableCount > 0 {
+		rows, err = s.db.QueryContext(ctx, `SELECT id, project, file_path, line_number, COALESCE(end_line, line_number), COALESCE(start_col, 0), COALESCE(end_col, 0), kind, name, COALESCE(package_name, ''), COALESCE(parent_id, ''), COALESCE(visibility, ''), COALESCE(signature, ''), COALESCE(doc_summary, ''), COALESCE(parameters, '{}'), COALESCE(return_type, ''), COALESCE(complexity, 1), COALESCE(metadata, '{}'), COALESCE(file_hash, ''), created_at, updated_at FROM code_symbols`)
+		if err == nil {
+			for rows.Next() {
+				var sym domain.SyncCodeSymbol
+				var paramsStr, metaStr, createdStr, updatedStr string
+				if err = rows.Scan(&sym.ID, &sym.Project, &sym.FilePath, &sym.LineNumber, &sym.EndLine, &sym.StartCol, &sym.EndCol, &sym.Kind, &sym.Name, &sym.PackageName, &sym.ParentID, &sym.Visibility, &sym.Signature, &sym.DocSummary, &paramsStr, &sym.ReturnType, &sym.Complexity, &metaStr, &sym.FileHash, &createdStr, &updatedStr); err == nil {
+					_ = json.Unmarshal([]byte(paramsStr), &sym.Parameters)
+					_ = json.Unmarshal([]byte(metaStr), &sym.Metadata)
+					sym.CreatedAt = parseSyncTime(createdStr)
+					sym.UpdatedAt = parseSyncTime(updatedStr)
+					b.CodeSymbols = append(b.CodeSymbols, sym)
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
+	var relTableCount int
+	_ = s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='code_relations'`).Scan(&relTableCount)
+	if relTableCount > 0 {
+		rows, err = s.db.QueryContext(ctx, `SELECT id, project, source_id, target_id, relation, confidence, COALESCE(reasoning, ''), created_at FROM code_relations`)
+		if err == nil {
+			for rows.Next() {
+				var rel domain.SyncCodeRelation
+				var createdStr string
+				if err = rows.Scan(&rel.ID, &rel.Project, &rel.SourceID, &rel.TargetID, &rel.Relation, &rel.Confidence, &rel.Reasoning, &createdStr); err == nil {
+					rel.CreatedAt = parseSyncTime(createdStr)
+					b.CodeRelations = append(b.CodeRelations, rel)
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
 	return b, nil
 }
 

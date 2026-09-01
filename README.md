@@ -99,7 +99,7 @@ cortex tui
 docker compose up --build -d
 ```
 
-Inicia el servidor autenticado en el puerto `7438` con soporte MCP Streamable HTTP en `/mcp` y API REST en `/api/*`.
+Inicia el servidor autenticado en el puerto `7438` con soporte MCP Streamable HTTP en `/mcp` y API REST en `/api/*`. En el primer arranque, Docker genera un tenant, un workspace, un sujeto `owner` y un Bearer aleatorios; cópialo de inmediato con `docker compose logs cortex-server`. Se muestra una sola vez y queda asociado al volumen `cortex-server-state`, por lo que persiste entre reinicios. No publiques ni compartas esos logs.
 
 ### 3. Interfaz Web (Control Room Next.js 15)
 

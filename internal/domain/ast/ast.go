@@ -16,23 +16,23 @@ import (
 
 // CodeEntity represents a structural symbol discovered in source code with rich semantic metadata.
 type CodeEntity struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Kind        string                 `json:"kind"` // "func", "method", "struct", "interface", "class", "module", "table", "enum", "type"
-	File        string                 `json:"file"`
-	Line        int                    `json:"line"`
-	EndLine     int                    `json:"end_line,omitempty"`
-	StartCol    int                    `json:"start_col,omitempty"`
-	EndCol      int                    `json:"end_col,omitempty"`
-	Package     string                 `json:"package,omitempty"`
-	ParentID    string                 `json:"parent_id,omitempty"`
-	Visibility  string                 `json:"visibility,omitempty"` // "public", "private", "protected", "internal"
-	Signature   string                 `json:"signature,omitempty"`
-	DocSummary  string                 `json:"doc_summary,omitempty"`
-	Parameters  []code.Parameter       `json:"parameters,omitempty"`
-	ReturnType  string                 `json:"return_type,omitempty"`
-	Complexity  int                    `json:"complexity,omitempty"`
-	Metadata    map[string]any         `json:"metadata,omitempty"`
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	Kind       string           `json:"kind"` // "func", "method", "struct", "interface", "class", "module", "table", "enum", "type"
+	File       string           `json:"file"`
+	Line       int              `json:"line"`
+	EndLine    int              `json:"end_line,omitempty"`
+	StartCol   int              `json:"start_col,omitempty"`
+	EndCol     int              `json:"end_col,omitempty"`
+	Package    string           `json:"package,omitempty"`
+	ParentID   string           `json:"parent_id,omitempty"`
+	Visibility string           `json:"visibility,omitempty"` // "public", "private", "protected", "internal"
+	Signature  string           `json:"signature,omitempty"`
+	DocSummary string           `json:"doc_summary,omitempty"`
+	Parameters []code.Parameter `json:"parameters,omitempty"`
+	ReturnType string           `json:"return_type,omitempty"`
+	Complexity int              `json:"complexity,omitempty"`
+	Metadata   map[string]any   `json:"metadata,omitempty"`
 }
 
 // CodeRelationship represents a directed architectural edge between two code entities.

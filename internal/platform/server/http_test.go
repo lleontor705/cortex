@@ -23,25 +23,94 @@ import (
 )
 
 type fakeOperations struct {
-	observations     map[int64]*domain.Observation
-	nextID           int64
-	subgraph         *domain.GraphSubgraph
-	subgraphID       string
-	subgraphDepth    int
-	subgraphMax      int
-	createdEdge      *domain.Edge
-	issuedToken      identity.TokenIssue
-	issueTokenErr    error
-	saveEffectErr    error
-	saveEffectStatus domain.WriteStatus
-	handoffRequest   domain.HandoffRequest
-	handoffResult    domain.ObservationWriteResult
-	handoffErr       error
-	searchErr        error
+	observations            map[int64]*domain.Observation
+	nextID                  int64
+	subgraph                *domain.GraphSubgraph
+	subgraphID              string
+	subgraphDepth           int
+	subgraphMax             int
+	createdEdge             *domain.Edge
+	issuedToken             identity.TokenIssue
+	issueTokenErr           error
+	saveEffectErr           error
+	saveEffectStatus        domain.WriteStatus
+	handoffRequest          domain.HandoffRequest
+	handoffResult           domain.ObservationWriteResult
+	handoffErr              error
+	searchErr               error
+	authorizeAdminErr       error
+	authorizeAdminCalls     int
+	agentProjects           map[string]string
+	agentSearchProjectID    string
+	agentSearchProjectLabel string
+	agentSearchResults      []*domain.SearchResult
 }
+
+type serverFixedEmbedding struct {
+	calls int
+}
+
+func (f *serverFixedEmbedding) Embed(context.Context, string) ([]float32, error) {
+	f.calls++
+	return []float32{1, 0}, nil
+}
+func (*serverFixedEmbedding) Dimensions() int { return 2 }
+func (*serverFixedEmbedding) Model() string   { return "fixed-test" }
+
+type failingServerEmbedding struct{ err error }
+
+func (f failingServerEmbedding) Embed(context.Context, string) ([]float32, error) {
+	return nil, f.err
+}
+func (failingServerEmbedding) Dimensions() int { return 2 }
+func (failingServerEmbedding) Model() string   { return "safe-model" }
+
+type recordingVectorIndex struct {
+	query domain.VectorQuery
+}
+
+type recordingAdminAIProbes struct {
+	llmCalls       int
+	embeddingCalls int
+}
+
+func (*recordingAdminAIProbes) LLMStatus() adminAIStatus {
+	return adminAIStatus{Provider: "configured", Model: "model", Configured: true}
+}
+func (*recordingAdminAIProbes) EmbeddingStatus() adminAIStatus {
+	return adminAIStatus{Provider: "configured", Model: "model", Configured: true, Dimensions: 2}
+}
+func (p *recordingAdminAIProbes) ProbeLLM(context.Context) adminAIProbeResult {
+	p.llmCalls++
+	return adminAIProbeResult{Status: "ok", Provider: "configured", Model: "model"}
+}
+func (p *recordingAdminAIProbes) ProbeEmbedding(context.Context) adminAIProbeResult {
+	p.embeddingCalls++
+	return adminAIProbeResult{Status: "ok", Provider: "configured", Model: "model", Dimensions: 2}
+}
+
+func (*recordingVectorIndex) ID() string                                         { return "recording" }
+func (*recordingVectorIndex) Upsert(context.Context, []domain.VectorPoint) error { return nil }
+func (v *recordingVectorIndex) Search(_ context.Context, query domain.VectorQuery) ([]domain.VectorCandidate, error) {
+	v.query = query
+	return []domain.VectorCandidate{{ID: 1, Score: 0.95, Provenance: "recording"}}, nil
+}
+func (*recordingVectorIndex) Delete(context.Context, []int64) error { return nil }
+func (*recordingVectorIndex) Health(context.Context) domain.Health {
+	return domain.Health{Status: domain.StatusHealthy}
+}
+func (*recordingVectorIndex) Capabilities(context.Context) (domain.Capabilities, error) {
+	return domain.Capabilities{Filters: "PreFilter"}, nil
+}
+func (*recordingVectorIndex) Close() error { return nil }
 
 func newFakeOperations() *fakeOperations {
 	return &fakeOperations{observations: make(map[int64]*domain.Observation), nextID: 1}
+}
+
+func (f *fakeOperations) AuthorizeAdminManage(context.Context) error {
+	f.authorizeAdminCalls++
+	return f.authorizeAdminErr
 }
 
 func (f *fakeOperations) SaveObservation(_ context.Context, o *domain.Observation) error {
@@ -73,6 +142,12 @@ func (f *fakeOperations) GetObservationByID(_ context.Context, id int64) (*domai
 	}
 	copy := *o
 	return &copy, nil
+}
+
+func (f *fakeOperations) GetAgentObservationByID(_ context.Context, projectID, projectLabel string, id int64) (*domain.Observation, error) {
+	f.agentSearchProjectID = projectID
+	f.agentSearchProjectLabel = projectLabel
+	return f.GetObservationByID(context.Background(), id)
 }
 
 func (f *fakeOperations) UpdateObservation(_ context.Context, o *domain.Observation) error {
@@ -109,6 +184,9 @@ func (f *fakeOperations) ListAuditEvents(context.Context, int) ([]*domain.AuditE
 	return []*domain.AuditEntry{}, nil
 }
 func (f *fakeOperations) ListProjects(context.Context) ([]string, error) { return []string{}, nil }
+func (f *fakeOperations) ListAgentProjects(context.Context) (map[string]string, error) {
+	return f.agentProjects, nil
+}
 
 func (f *fakeOperations) ListObservations(context.Context, domain.ObservationFilter) ([]*domain.Observation, error) {
 	result := make([]*domain.Observation, 0, len(f.observations))
@@ -124,6 +202,11 @@ func (f *fakeOperations) SearchObservations(context.Context, string, domain.Sear
 		return nil, f.searchErr
 	}
 	return []*domain.SearchResult{}, nil
+}
+func (f *fakeOperations) SearchAgentObservations(_ context.Context, projectID, projectLabel, _ string, _ domain.SearchOptions) ([]*domain.SearchResult, error) {
+	f.agentSearchProjectID = projectID
+	f.agentSearchProjectLabel = projectLabel
+	return f.agentSearchResults, f.searchErr
 }
 
 func (f *fakeOperations) CreateGraphEdge(_ context.Context, edge *domain.Edge) error {
@@ -293,10 +376,89 @@ func (f *fakeOperations) GetRAGStats(_ context.Context, project string) (*domain
 	}, nil
 }
 
-
 func testHandler(health healthCheck) http.Handler {
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}, newFakeOperations(), health)
 	return h
+}
+
+func TestAdminAIRoutesFailClosedBeforeConfigurationOrProbe(t *testing.T) {
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/admin/ai/status"},
+		{http.MethodPost, "/api/admin/ai/test-llm"},
+		{http.MethodPost, "/api/admin/ai/test-embedding"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			ops := newFakeOperations()
+			ops.authorizeAdminErr = errors.New(authz.DenyRole)
+			probes := &recordingAdminAIProbes{}
+			cfg := config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, AI: config.AIConfig{Provider: "secret-provider", BaseURL: "https://internal.example"}}
+			auth := requestAuthenticator{
+				verifier: verifierFunc(func(context.Context, string, string) (domain.Principal, error) {
+					return domain.Principal{Subject: "member", OrgID: "tenant"}, nil
+				}),
+				factory: operationsFactoryFunc(func(context.Context, domain.Principal) (Operations, error) { return ops, nil }),
+			}
+			h, _ := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, func(context.Context) error { return nil }, auth.middleware, hybridSearchDependencies{adminAI: probes})
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"forbidden"`) {
+				t.Fatalf("status=%d body=%s, want sanitized forbidden", rec.Code, rec.Body.String())
+			}
+			if ops.authorizeAdminCalls != 1 || probes.llmCalls != 0 || probes.embeddingCalls != 0 {
+				t.Fatalf("authorization=%d llm=%d embedding=%d, want gate before probes", ops.authorizeAdminCalls, probes.llmCalls, probes.embeddingCalls)
+			}
+			if strings.Contains(rec.Body.String(), "secret-provider") || strings.Contains(rec.Body.String(), "internal.example") {
+				t.Fatalf("denied response leaked configuration: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminAIEmbeddingProbeRedactsUpstreamFailure(t *testing.T) {
+	ops := newFakeOperations()
+	probes := composedAdminAIProbes{
+		embeddingStatus: adminAIStatus{Provider: "safe-provider", Model: "safe-model", Configured: true},
+		embeddings:      failingServerEmbedding{err: errors.New("dial https://internal.example with token secret-canary")},
+	}
+	cfg := config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}
+	auth := requestAuthenticator{
+		verifier: verifierFunc(func(context.Context, string, string) (domain.Principal, error) {
+			return domain.Principal{Subject: "admin", OrgID: "tenant"}, nil
+		}),
+		factory: operationsFactoryFunc(func(context.Context, domain.Principal) (Operations, error) { return ops, nil }),
+	}
+	h, _ := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, func(context.Context) error { return nil }, auth.middleware, hybridSearchDependencies{adminAI: probes})
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/ai/test-embedding", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"error"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "internal.example") || strings.Contains(rec.Body.String(), "secret-canary") {
+		t.Fatalf("probe response leaked upstream details: %s", rec.Body.String())
+	}
+}
+
+func TestAdminAIStatusOmitsProviderDestinations(t *testing.T) {
+	ops := newFakeOperations()
+	cfg := config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, AI: config.AIConfig{Provider: "provider", Model: "model", BaseURL: "https://internal.example"}, Search: config.SearchConfig{EmbeddingProvider: "provider", EmbeddingModel: "embedding", EmbeddingBaseURL: "https://vector.internal"}}
+	h, _ := newVerifiedHTTPHandler(cfg, ops, func(context.Context) error { return nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/ai/status", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "base_url") || strings.Contains(rec.Body.String(), "internal.example") || strings.Contains(rec.Body.String(), "vector.internal") {
+		t.Fatalf("status leaked provider destination: %s", rec.Body.String())
+	}
 }
 
 // newVerifiedHTTPHandler mirrors Open's production wiring: every request
@@ -317,6 +479,44 @@ func newVerifiedHTTPHandler(cfg config.Config, ops Operations, health healthChec
 		}),
 	}
 	return newHTTPHandlerWithAuth(cfg, requestOperations{}, health, auth.middleware)
+}
+
+func TestSearchHybridUsesVerifiedTenantAndAuthorizedHydration(t *testing.T) {
+	ops := newFakeOperations()
+	ops.observations[1] = &domain.Observation{ID: 1, PublicID: "00000000-0000-0000-0000-000000000001", Title: "Semantic result", Content: "database choice", Project: "demo", Scope: "project"}
+	vectors := &recordingVectorIndex{}
+	embeddings := &serverFixedEmbedding{}
+	cfg := config.Config{HTTP: config.HTTPConfig{Token: "test-token"}, Server: config.ServerConfig{WorkspaceID: "workspace-verified"}, Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20}}
+	auth := requestAuthenticator{
+		verifier: verifierFunc(func(_ context.Context, secret, _ string) (domain.Principal, error) {
+			if secret != cfg.HTTP.Token {
+				return domain.Principal{}, errors.New("unknown credential")
+			}
+			return domain.Principal{Subject: "user-1", OrgID: "tenant-verified"}, nil
+		}),
+		factory: operationsFactoryFunc(func(context.Context, domain.Principal) (Operations, error) { return ops, nil }),
+	}
+	handler, _ := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, func(context.Context) error { return nil }, auth.middleware, hybridSearchDependencies{
+		vectors: vectors, embeddings: embeddings,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search/hybrid?q=conceptual&project=demo&mode=semantic", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Semantic result") {
+		t.Fatalf("hybrid response status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if embeddings.calls != 1 {
+		t.Fatalf("embedding calls = %d, want 1", embeddings.calls)
+	}
+	if got := vectors.query.Filters["tenant_id"]; got != "tenant-verified" {
+		t.Fatalf("vector tenant filter = %v, want verified tenant", got)
+	}
+	if got := vectors.query.Filters["workspace_id"]; got != "workspace-verified" {
+		t.Fatalf("vector workspace filter = %v, want configured authority", got)
+	}
 }
 
 // TestConfiguredBearerHasNoStaticBypassAtHTTPWiring pins the IDP-T03B
@@ -476,6 +676,36 @@ func TestHTTPCORSAllowsConfiguredOrigin(t *testing.T) {
 	}
 }
 
+func TestHTTPCORSDeniesUnlistedAndEmptyPreflight(t *testing.T) {
+	for _, allowed := range [][]string{nil, {"https://console.example"}} {
+		h := corsHandler(allowed, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTeapot)
+		}))
+		req := httptest.NewRequest(http.MethodOptions, "/api/observations", nil)
+		req.Header.Set("Origin", "https://console.example.evil")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("allowed=%v status=%d, want 403", allowed, rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("allowed=%v emitted CORS approval %q", allowed, got)
+		}
+	}
+}
+
+func TestHTTPCORSRequestWithoutOriginIsUntouched(t *testing.T) {
+	h := corsHandler(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Next", "yes")
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/observations", nil))
+	if rec.Code != http.StatusTeapot || rec.Header().Get("X-Next") != "yes" || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("request without Origin was modified: status=%d headers=%v", rec.Code, rec.Header())
+	}
+}
+
 func TestMCPInitializeAndListServerTools(t *testing.T) {
 	h := testHandler(func(context.Context) error { return nil })
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`
@@ -581,7 +811,7 @@ func TestRespondOperationErrorMapsAuthorizationDenialToForbidden(t *testing.T) {
 func TestValidateConfigRequiresToken(t *testing.T) {
 	cfg := config.Config{
 		Server: config.ServerConfig{
-			Storage:          config.ServerStorageConfig{Driver: "postgres", DSN: "postgres://db/cortex"},
+			Storage:          config.ServerStorageConfig{Driver: "postgres", DSN: "postgres://cortex_app@db/cortex", MigrationDSN: "postgres://cortex_migration@db/cortex"},
 			TenantID:         "00000000-0000-0000-0000-000000000001",
 			WorkspaceID:      "00000000-0000-0000-0000-000000000002",
 			PrincipalSubject: "00000000-0000-0000-0000-000000000003",
@@ -1144,4 +1374,3 @@ func TestServerMCP_CodeTools(t *testing.T) {
 		}
 	}
 }
-

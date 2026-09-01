@@ -33,14 +33,14 @@ func NewResolver(rootPath, project string) *Resolver {
 func (r *Resolver) Resolve(raw *ExtractionResult) *code.CodeGraph {
 	fileHashes := make(map[string]string)
 	symbols := make([]code.Symbol, 0, len(raw.Entities))
-	
+
 	// Lookup indexes
-	symbolIDMap := make(map[string]string)               // rawEntityID -> canonicalSymbolID
-	byName := make(map[string][]string)                  // name -> []canonicalSymbolID
-	byFileAndName := make(map[string]map[string]string)  // file -> (name -> canonicalSymbolID)
-	byPkgAndName := make(map[string]map[string]string)   // pkg -> (name -> canonicalSymbolID)
-	exportsByFile := make(map[string]map[string]string)  // file -> (exportedName -> canonicalSymbolID)
-	importsByFile := make(map[string][]ImportFact)       // file -> []ImportFact
+	symbolIDMap := make(map[string]string)              // rawEntityID -> canonicalSymbolID
+	byName := make(map[string][]string)                 // name -> []canonicalSymbolID
+	byFileAndName := make(map[string]map[string]string) // file -> (name -> canonicalSymbolID)
+	byPkgAndName := make(map[string]map[string]string)  // pkg -> (name -> canonicalSymbolID)
+	exportsByFile := make(map[string]map[string]string) // file -> (exportedName -> canonicalSymbolID)
+	importsByFile := make(map[string][]ImportFact)      // file -> []ImportFact
 
 	now := time.Now().UTC()
 

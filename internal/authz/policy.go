@@ -29,6 +29,7 @@ type Resource string
 
 const (
 	ResourceMemory     Resource = "memory"
+	ResourceCode       Resource = "code"
 	ResourceSearch     Resource = "search"
 	ResourceGraph      Resource = "graph"
 	ResourceTokens     Resource = "tokens"
@@ -96,15 +97,15 @@ func NewPolicy() *Policy { return &Policy{} }
 var rolePermissions = map[Role]map[Resource]map[Action]bool{
 	RoleOwner:     allPermissions(),
 	RoleAdmin:     allPermissions(),
-	RoleMember:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
-	RoleDeveloper: {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
-	RoleAgent:     {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}},
-	RoleViewer:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
+	RoleMember:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceCode: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleDeveloper: {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceCode: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceTokens: {ActionRead: true}},
+	RoleAgent:     {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true, ActionWrite: true, ActionDelete: true}, ResourceCode: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true, ActionWrite: true, ActionDelete: true}},
+	RoleViewer:    {ResourceWorkspaces: {ActionRead: true}, ResourceMemory: {ActionRead: true}, ResourceCode: {ActionRead: true}, ResourceSearch: {ActionRead: true, ActionSearch: true}, ResourceGraph: {ActionRead: true}},
 }
 
 func allPermissions() map[Resource]map[Action]bool {
 	m := map[Resource]map[Action]bool{}
-	for _, r := range []Resource{ResourceMemory, ResourceSearch, ResourceGraph, ResourceTokens, ResourceUsers, ResourceWorkspaces, ResourceAdmin} {
+	for _, r := range []Resource{ResourceMemory, ResourceCode, ResourceSearch, ResourceGraph, ResourceTokens, ResourceUsers, ResourceWorkspaces, ResourceAdmin} {
 		m[r] = map[Action]bool{ActionRead: true, ActionWrite: true, ActionDelete: true, ActionManage: true, ActionSearch: true}
 	}
 	return m

@@ -21,9 +21,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,6 +51,46 @@ type Config struct {
 	BaseURL  string // Base URL override (Ollama: default http://localhost:11434)
 }
 
+func newWithClient(cfg Config, client *http.Client, maxBody int64, maxConcurrent int) Service {
+	if maxBody <= 0 {
+		maxBody = defaultMaxEmbeddingResponse
+	}
+	if maxConcurrent <= 0 {
+		maxConcurrent = 4
+	}
+	sem := make(chan struct{}, maxConcurrent)
+	switch cfg.Provider {
+	case "ollama":
+		baseURL, model := cfg.BaseURL, cfg.Model
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		if model == "" {
+			model = "nomic-embed-text"
+		}
+		return &ollamaService{baseURL: strings.TrimRight(baseURL, "/"), model: model, client: client, maxResponseBody: maxBody, sem: sem}
+	case "openai":
+		key := cfg.APIKey
+		if key == "" {
+			key = os.Getenv("OPENAI_API_KEY")
+		}
+		if key == "" {
+			return nil
+		}
+		model := cfg.Model
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		return &openAIService{apiKey: key, model: model, baseURL: strings.TrimRight(baseURL, "/"), client: client, maxResponseBody: maxBody, sem: sem}
+	default:
+		return nil
+	}
+}
+
 // defaultHTTPClient returns a shared *http.Client configured for embedding
 // API calls with a generous timeout and keepalive. One client per service
 // instance means HTTP connections are pooled and reused across Embed calls
@@ -70,56 +113,30 @@ func defaultHTTPClient(timeout time.Duration) *http.Client {
 // New creates an embedding service from config.
 // Returns nil if provider is "none" or empty.
 func New(cfg Config) Service {
-	switch cfg.Provider {
-	case "ollama":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = "http://localhost:11434"
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "nomic-embed-text"
-		}
-		return &ollamaService{
-			baseURL: baseURL,
-			model:   model,
-			client:  defaultHTTPClient(60 * time.Second),
-		}
-
-	case "openai":
-		key := cfg.APIKey
-		if key == "" {
-			key = os.Getenv("OPENAI_API_KEY")
-		}
-		if key == "" {
-			return nil
-		}
-		model := cfg.Model
-		if model == "" {
-			model = "text-embedding-3-small"
-		}
-		return &openAIService{
-			apiKey: key,
-			model:  model,
-			client: defaultHTTPClient(30 * time.Second),
-		}
-
-	default:
-		return nil
+	timeout := 30 * time.Second
+	if cfg.Provider == "ollama" {
+		timeout = 60 * time.Second
 	}
+	return newWithClient(cfg, defaultHTTPClient(timeout), defaultMaxEmbeddingResponse, 4)
 }
 
 // --- Ollama Backend ----------------------------------------------------------
 
 type ollamaService struct {
-	baseURL string
-	model   string
-	dims    int // cached after first call
-	client  *http.Client
-	mu      sync.Mutex
+	baseURL         string
+	model           string
+	dims            int // cached after first call
+	client          *http.Client
+	mu              sync.Mutex
+	maxResponseBody int64
+	sem             chan struct{}
 }
 
 func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, error) {
+	if err := acquire(ctx, s.sem); err != nil {
+		return nil, err
+	}
+	defer func() { <-s.sem }()
 	body := map[string]any{
 		"model": s.model,
 		"input": text,
@@ -146,7 +163,7 @@ func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, erro
 	var result struct {
 		Embeddings [][]float64 `json:"embeddings"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeBounded(resp.Body, s.maxResponseBody, &result); err != nil {
 		return nil, fmt.Errorf("ollama: decode: %w", err)
 	}
 	if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
@@ -196,21 +213,28 @@ func (s *ollamaService) Close() error {
 // --- OpenAI Backend ----------------------------------------------------------
 
 type openAIService struct {
-	apiKey string
-	model  string
-	dims   int
-	client *http.Client
-	mu     sync.Mutex
+	apiKey          string
+	model           string
+	baseURL         string
+	dims            int
+	client          *http.Client
+	mu              sync.Mutex
+	maxResponseBody int64
+	sem             chan struct{}
 }
 
 func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, error) {
+	if err := acquire(ctx, s.sem); err != nil {
+		return nil, err
+	}
+	defer func() { <-s.sem }()
 	body := map[string]any{
 		"model": s.model,
 		"input": text,
 	}
 	data, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.baseURL+"/embeddings", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("openai: create request: %w", err)
 	}
@@ -232,7 +256,7 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeBounded(resp.Body, s.maxResponseBody, &result); err != nil {
 		return nil, fmt.Errorf("openai: decode: %w", err)
 	}
 	if len(result.Data) == 0 {
@@ -249,6 +273,25 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 	s.mu.Unlock()
 
 	return vec, nil
+}
+
+func acquire(ctx context.Context, sem chan struct{}) error {
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func decodeBounded(r io.Reader, max int64, dst any) error {
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) > max {
+		return errors.New("embedding: response exceeded size limit")
+	}
+	return json.Unmarshal(b, dst)
 }
 
 func (s *openAIService) Dimensions() int {
