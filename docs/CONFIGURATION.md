@@ -1,143 +1,208 @@
-# Configuration
+# Configuration Guide & Reference
 
-Cortex supports multi-format configuration (**YAML**, **JSON**, **TOML**) and applies `CORTEX_*` environment overrides. The default configuration file is `~/.cortex/cortex.yaml` (or `cortex.json` / `cortex.toml`); the default SQLite database is `~/.cortex/cortex.db`.
+Cortex provides a unified, multi-format configuration architecture supporting **YAML**, **JSON**, **TOML**, and **Environment Variables (`CORTEX_*`)**. 
 
-## Choose A Configuration Method
+---
 
-| Method | Best for | How |
-|---|---|---|
-| CLI Direct | Instant programmatic & scriptable updates | `cortex config set <key> <value>` / `cortex config get <key>` |
-| TUI Visual Center | Interactive navigation & theme switching | Run `cortex tui`, press `t` for themes, `L` for auth, or choose **Local settings** |
-| Multi-Format File | Reviewable, version-controlled config | Edit `cortex.yaml`, `cortex.json`, or `cortex.toml` using minimal clean schema |
-| Environment | Containers, CI, temporary overrides | Set the corresponding `CORTEX_*` variable |
+## 1. Precedence Model
 
-Precedence is **defaults → config file → environment**. An environment variable always wins over the value shown in the file or saved by the TUI. The configuration loader automatically trims default/empty sections to guarantee a **Zero-Bloat configuration file** (under 15 lines for typical local setups).
+Configuration values are resolved strictly in the following order (highest precedence wins):
 
-## Zero-Bloat Local Setup
-
-```yaml
-ai:
-  provider: ollama
-  model: qwen3-embedding:8b
-  base_url: http://localhost:11434
-
-database:
-  path: ~/.cortex/cortex-v2.db
-
-http:
-  enabled: true
-  port: 7438
+```text
+┌───────────────────────────────────────────────────────────┐
+│ 1. Explicit CLI Flags (e.g. --config, --mode, --token)    │
+├───────────────────────────────────────────────────────────┤
+│ 2. Environment Variables (CORTEX_* / Process Environment) │
+├───────────────────────────────────────────────────────────┤
+│ 3. Active Configuration File (cortex.yaml, .json, .toml) │
+├───────────────────────────────────────────────────────────┤
+│ 4. Built-in Compiled Defaults (Zero-Bloat Baseline)      │
+└───────────────────────────────────────────────────────────┘
 ```
 
-## CLI Configuration Management
+* **Environment Variable Matching**: Viper automatically translates dot-notated paths to uppercase snake_case prefixed by `CORTEX_` (e.g. `ai.provider` $\rightarrow$ `CORTEX_AI_PROVIDER`, `http.port` $\rightarrow$ `CORTEX_HTTP_PORT`).
+* **Environment Overrides**: An environment variable always overrides the corresponding value in the configuration file or TUI state.
+* **Zero-Bloat Model**: The configuration manager automatically trims default and empty sections when writing to disk, keeping local configuration files clean (typically under 15 lines) and preventing serialization of internal SQLite pragmas or server-specific multi-tenant parameters.
+
+---
+
+## 2. Configuration Methods
+
+### A. Environment Files (`.env` / Docker)
+
+Copy the provided template to configure containers, CI/CD, or local deployments:
 
 ```bash
-# Initialize a minimal clean configuration
+cp .env.example .env
+```
+
+### B. CLI Configuration Commands
+
+Programmatically inspect and update configuration keys:
+
+```bash
+# Initialize a clean configuration file
 cortex config init --format=yaml --force
 
-# Get / Set properties instantly
+# Inspect active configuration values
 cortex config get ai.provider
+cortex config get http.port
+
+# Update configuration properties
 cortex config set ai.provider ollama
 cortex config set ai.model qwen3-embedding:8b
-cortex config set http.port 8080
+cortex config set http.port 7438
 
-# Interactive CLI Wizard & Path lookup
+# Interactive setup wizard and file path lookup
 cortex config wizard
 cortex config path
 ```
 
-## CLI Authentication Management
+### C. CLI Authentication Management
 
 ```bash
 # Authenticate session with Bearer Token
 cortex auth login --token=ctx_secret_token_123456
 
-# Inspect current authentication status and active role
+# Inspect active authentication status and subject identity
 cortex auth status
 
-# End session / logout
+# Logout and clear credentials
 cortex auth logout
 ```
 
-## Common Keys
+### D. TUI Visual Center
 
-| Key | Environment | Notes |
-|---|---|---|
-| `ai.provider` | `CORTEX_AI_PROVIDER` | Unified AI provider (`none`, `ollama`, `openai`, `anthropic`, `openrouter`, `groq`, `deepseek`, `custom`) |
-| `ai.model` | `CORTEX_AI_MODEL` | Unified embedding/LLM model name |
-| `ai.base_url` | `CORTEX_AI_BASE_URL` | Endpoint URL for Ollama or custom providers |
-| `database.path` | `CORTEX_DATABASE_PATH` | Local SQLite path |
-| `http.enabled` | `CORTEX_HTTP_ENABLED` | Enable local/server HTTP composition |
-| `http.host` | `CORTEX_HTTP_HOST` | Bind address |
-| `http.port` | `CORTEX_HTTP_PORT` | Default `7438` |
-| `http.token` | `CORTEX_HTTP_TOKEN` | Required for protected/non-loopback HTTP |
-| `http.allowed_origins` | `CORTEX_HTTP_ALLOWED_ORIGINS` | Comma-separated browser origins |
-| `mcp.remote.enabled` | `CORTEX_MCP_REMOTE_ENABLED` | Proxy `cortex mcp` to a remote Streamable HTTP server |
-| `mcp.remote.url` | `CORTEX_MCP_REMOTE_URL` | Remote MCP endpoint, including `/mcp` |
-| `mcp.remote.token_env` | `CORTEX_MCP_REMOTE_TOKEN_ENV` | Environment variable holding the bearer token |
-| `sync.enabled` | `CORTEX_SYNC_ENABLED` | Enable bidirectional server replication |
-| `sync.url` | `CORTEX_SYNC_URL` | Cortex Server base URL, without `/mcp` |
-| `sync.token_env` | `CORTEX_SYNC_TOKEN_ENV` | Environment variable containing the bearer token |
-| `sync.interval` | `CORTEX_SYNC_INTERVAL` | Background replication interval, default `30s` |
+Launch the interactive Terminal User Interface:
 
-`CORTEX_PORT` is not a Cortex configuration key. Use `CORTEX_HTTP_PORT`.
+```bash
+cortex tui
+```
+* Press `t` to cycle dynamic themes (Dark, Light, High Contrast).
+* Press `L` to open the authentication modal.
+* Navigate to **Local settings** to configure database, HTTP, MCP, and replication parameters interactively.
 
-With `sync.enabled`, local HTTP, MCP, CLI, and plugin writes continue to use SQLite. Cortex retries idempotent pushes and incrementally pulls server changes in the background; `cortex sync --remote` forces an immediate cycle. Set `mcp.remote.enabled: false` for local-first MCP operation.
+---
 
-## Bearer transport policy
+## 3. Comprehensive Configuration Reference
 
-`mcp.remote.url` and `sync.url` are Bearer destinations and share one transport policy (implemented in `internal/transportpolicy`):
+### Infrastructure & Server Storage
 
-- HTTPS is required for every non-loopback destination.
-- Plain HTTP is accepted only on strict loopback: an IPv4 literal in `127.0.0.0/8`, the IPv6 literal `[::1]`, or the exact dotless name `localhost`. Any other plain-HTTP URL is rejected at configuration load time and by the sync client before any credential is attached. Hostnames are never resolved to decide this.
-- Redirects are followed only when they keep the scheme — an HTTPS-to-HTTP downgrade is always rejected, even towards loopback — and keep the exact origin (scheme + host + port). Otherwise the request fails before the token is forwarded.
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `server.storage.driver` | `CORTEX_SERVER_STORAGE_DRIVER` | `postgres` | Persistence driver: `postgres` (server) or `sqlite` (local). |
+| `server.storage.dsn` | `CORTEX_SERVER_STORAGE_DSN` | *(None)* | Non-privileged runtime PostgreSQL DSN (`NOSUPERUSER`, `NOBYPASSRLS`). Falls back to `DATABASE_URL` / `POSTGRES_URL`. |
+| `server.storage.migration_dsn` | `CORTEX_SERVER_STORAGE_MIGRATION_DSN` | *(None)* | Privileged migration DSN. Applied during startup preflight and closed immediately. |
+| `server.storage.max_conns` | `CORTEX_SERVER_STORAGE_MAX_CONNS` | `10` | Maximum open database pool connections. |
 
-## TUI Fields
+### Multi-Tenancy & Identity Privileges
 
-The **Local settings** screen manages the most common local runtime keys:
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `server.auto_bootstrap` | `CORTEX_SERVER_AUTO_BOOTSTRAP` | `false` | When `true`, auto-generates tenant, workspace, owner subject, and Bearer token on first boot. |
+| `server.bootstrap_development` | `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | `false` | Allows development tenant provisioning without dedicated migration role separation. |
+| `server.multi_tenant` | `CORTEX_SERVER_MULTI_TENANT` | `false` | Enables SaaS multi-tenant isolation. When `true`, tenant and workspace come from verified Bearer grants. |
+| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` / `CORTEX_TENANT_ID` | *(None)* | Configured tenant UUID (UUIDv4). |
+| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` / `CORTEX_WORKSPACE_ID` | *(None)* | Configured workspace UUID (UUIDv4). |
+| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` / `CORTEX_PRINCIPAL_SUBJECT` | *(None)* | Verified service account subject UUID. |
+| `server.roles` | `CORTEX_SERVER_ROLES` | `[]` | Comma-separated roles granted to the principal (e.g. `owner,admin`). |
+| `server.scopes` | `CORTEX_SERVER_SCOPES` | `[]` | Comma-separated authorized scopes (e.g. `workspaces:read,workspaces:write`). |
 
-| Group | Fields |
-|---|---|
-| Local database | `database.path` |
-| Local HTTP | `http.enabled`, `http.host`, `http.port` |
-| MCP transport | `mcp.remote.enabled`, `mcp.remote.url`, `mcp.remote.token_env` |
-| Replication | `sync.enabled`, `sync.url`, `sync.token_env`, `sync.interval` |
+### HTTP API, MCP Transport & Logging
 
-The screen is organized as **Local → HTTP → MCP → Sync → Review**. It shows the resulting mode (`LOCAL ONLY`, `LOCAL-FIRST + SYNC`, or `REMOTE MCP`) before anything is written.
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `http.enabled` | `CORTEX_HTTP_ENABLED` | `true` | Enables HTTP REST API (`/api/*`) and Streamable HTTP MCP (`/mcp`). |
+| `http.host` | `CORTEX_HTTP_HOST` | `localhost` | Network interface to bind (`0.0.0.0` for containers/all interfaces). |
+| `http.port` | `CORTEX_HTTP_PORT` | `7438` | Port to listen on. *(Note: `CORTEX_PORT` is intentionally rejected).* |
+| `http.token` | `CORTEX_HTTP_TOKEN` | `""` | Authentication Bearer token. Required for non-loopback bindings. |
+| `http.allowed_origins` | `CORTEX_HTTP_ALLOWED_ORIGINS` | `[]` | Comma-separated list of allowed CORS browser origins. |
+| `logging.level` | `CORTEX_LOGGING_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
+| `logging.format` | `CORTEX_LOGGING_FORMAT` | `json` | Log output format: `json`, `text`, `plain`. |
 
-Keyboard controls: `h/l`, `tab`, or left/right move between sections; `j/k` or up/down move between fields; `space` toggles; `enter` edits; `s` validates and saves from any section; `r` resets staged changes; and `esc` returns. URLs and token environment names may remain empty while their feature is disabled.
+### Embeddings (Semantic Search & Vector Indexing)
 
-## Troubleshooting
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `search.embedding_provider` | `CORTEX_EMBEDDING_PROVIDER` / `CORTEX_SEARCH_EMBEDDING_PROVIDER` | `none` | Embedding model provider: `none` (native BM25), `openai`, `ollama`, `gemini`. |
+| `search.embedding_model` | `CORTEX_EMBEDDING_MODEL` / `CORTEX_SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model identifier. |
+| `search.embedding_base_url` | `CORTEX_EMBEDDING_BASE_URL` / `CORTEX_SEARCH_EMBEDDING_BASE_URL` | `""` | Custom or Ollama base endpoint URL. |
+| `search.ollama_auto_start` | `CORTEX_SEARCH_OLLAMA_AUTO_START` | `false` | Automatically starts local Ollama daemon when needed. |
+| `search.fusion_k` | `CORTEX_SEARCH_FUSION_K` | `60` | Reciprocal Rank Fusion (RRF) rank constant. |
 
-- A TUI value appears unchanged after restart: check for a matching `CORTEX_*` environment override.
-- Local memories do not appear remotely: run `cortex sync --remote` and inspect the reported cursor/error.
-- MCP does not use local SQLite: ensure `mcp.remote.enabled` is `false`.
-- Sync authentication fails: verify that the variable named by `sync.token_env` exists in the environment of the Cortex process.
-- A `sync.url` or `mcp.remote.url` using plain HTTP towards a non-loopback host is rejected at startup: switch the destination to HTTPS. A local development server on `127.0.0.1` (any `127.x` address), `[::1]`, or `localhost` may keep plain HTTP.
-- A database path points to a Cortex v1 file: Cortex v2 refuses it without mutation; use an explicit migration/import rather than replacing it automatically.
+### LLM (Agent Reasoning, Extraction & Synthesis)
 
-## Server-only Keys
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `llm.provider` | `CORTEX_LLM_PROVIDER` | `openai` | Generative provider: `openai`, `anthropic`, `gemini`, `ollama`, `groq`, `deepseek`. |
+| `llm.model` | `CORTEX_LLM_MODEL` | `gpt-4o-mini` | LLM model identifier. |
+| `llm.base_url` | `CORTEX_LLM_BASE_URL` | `""` | Custom provider base URL. |
+| `llm.api_key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | *(Secret)* | Outbound provider API credentials (read from environment only). |
 
-| Key | Purpose |
-|---|---|
-| `server.storage.dsn` | Non-privileged runtime PostgreSQL connection |
-| `server.storage.migration_dsn` | Privileged migration/bootstrap connection |
-| `server.tenant_id` | Configured organization UUID |
-| `server.workspace_id` | Configured workspace UUID |
-| `server.principal_subject` | Verified service-account subject |
-| `server.roles` | Granted roles |
-| `server.scopes` | Granted scopes |
-| `server.project_ids` | Granted project UUIDs/keys |
-| `server.classification_clearance` | Classification clearance |
+### Outbound Network & Security Bounds (SEC-02)
 
-Tenant and workspace authority come from the verified server principal, not request JSON.
+| Environment Variable | Default | Constraint / Description |
+| :--- | :--- | :--- |
+| `CORTEX_LLM_PROVIDER` | `""` | Preset: `openai`, `anthropic`, `google`, `gemini`, `ollama`, `generic`. |
+| `CORTEX_LLM_MODEL` | `""` | Model identifier override. |
+| `CORTEX_LLM_API_KEY` | `""` | Outbound authentication key (falls back to `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). |
+| `CORTEX_LLM_BASE_URL` | `""` | Destination endpoint. Must be HTTPS unless loopback HTTP switch is enabled. |
+| `CORTEX_LLM_ALLOWED_HOSTS` | `[]` | Comma-separated list of approved destination hostnames (max 64). |
+| `CORTEX_LLM_ALLOWED_PORTS` | `[443]` | Comma-separated list of approved TCP ports (max 16). |
+| `CORTEX_LLM_ALLOW_LOOPBACK` | `false` | Explicit switch permitting loopback HTTPS destinations. |
+| `CORTEX_LLM_ALLOW_LOOPBACK_HTTP` | `false` | Explicit switch permitting plain HTTP to strict loopback (`127.0.0.1`, `localhost`). |
+| `CORTEX_LLM_MAX_CONCURRENT` | `4` | Maximum concurrent outbound provider requests (1–64). |
+| `CORTEX_LLM_MAX_REDIRECTS` | `3` | Maximum allowed HTTP redirect hops (1–10). |
+| `CORTEX_LLM_MAX_RESPONSE_BODY_BYTES` | `4194304` (4MB) | Maximum accepted response payload size (up to 64MB). |
+| `CORTEX_LLM_MAX_ERROR_BODY_BYTES` | `4096` (4KB) | Maximum error response payload retained for diagnostics. |
+| `CORTEX_LLM_TIMEOUT` | `45s` | Outbound request timeout (max 5m). |
+| `CORTEX_LLM_CA_FILE` | `""` | Path to custom PEM CA root certificates for enterprise TLS proxies. |
 
-## Vector Availability
+### External Vector Adapters (Server-Only)
 
-| Build | Local vector search |
-|---|---|
-| `make build` | Degraded stub |
-| `go build` | Degraded stub |
-| `go build -tags cortex_vectors` | SQLite BLOB cosine scan |
-| Release artifacts | Functional tag enabled |
-| Qdrant/pgvector | Server-only, opt-in adapter suites |
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `server.provider.vector` | `CORTEX_SERVER_PROVIDER_VECTOR` | `none` | Vector provider: `none` (FTS5/BM25 only), `pgvector`, `qdrant`. |
+| `vector.pgvector.dsn` | `CORTEX_VECTOR_PGVECTOR_DSN` | *(None)* | Runtime connection string for pgvector table. |
+| `vector.pgvector.schema` | `CORTEX_VECTOR_PGVECTOR_SCHEMA` | `cortex_vector` | PostgreSQL schema name for vector storage. |
+| `vector.pgvector.table` | `CORTEX_VECTOR_PGVECTOR_TABLE` | `embeddings` | Table storing dense vector embeddings. |
+| `vector.pgvector.index_type`| `CORTEX_VECTOR_PGVECTOR_INDEX_TYPE` | `hnsw` | Vector index type: `hnsw` or `ivfflat`. |
+| `vector.qdrant.host` | `CORTEX_VECTOR_QDRANT_HOST` | `localhost` | Qdrant gRPC/HTTP host address. |
+| `vector.qdrant.port` | `CORTEX_VECTOR_QDRANT_PORT` | `6334` | Qdrant port. |
+| `vector.qdrant.collection` | `CORTEX_VECTOR_QDRANT_COLLECTION` | `cortex` | Target Qdrant collection name. |
+| `vector.qdrant.api_key` | `CORTEX_VECTOR_QDRANT_API_KEY` | `""` | Qdrant API key for authenticated cloud/cluster deployments. |
+
+### Local Client, Sync Replication & Remote MCP
+
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `database.path` | `CORTEX_DATABASE_PATH` | `~/.cortex/cortex.db` | Local SQLite database file path. |
+| `sync.enabled` | `CORTEX_SYNC_ENABLED` | `false` | Enables background bidirectional SQLite-to-Server replication. |
+| `sync.url` | `CORTEX_SYNC_URL` | `""` | Cortex Server base URL (strictly HTTPS off-loopback). |
+| `sync.token_env` | `CORTEX_SYNC_TOKEN_ENV` | `CORTEX_REMOTE_TOKEN` | Name of environment variable holding the replication Bearer token. |
+| `sync.interval` | `CORTEX_SYNC_INTERVAL` | `30s` | Background replication synchronization frequency. |
+| `mcp.remote.enabled` | `CORTEX_MCP_REMOTE_ENABLED` | `false` | Proxies local stdio MCP commands to a remote Streamable HTTP server. |
+| `mcp.remote.url` | `CORTEX_MCP_REMOTE_URL` | `""` | Remote MCP endpoint URL (including `/mcp`). |
+| `mcp.remote.token_env` | `CORTEX_MCP_REMOTE_TOKEN_ENV` | `CORTEX_REMOTE_TOKEN` | Name of environment variable containing the remote MCP Bearer token. |
+
+---
+
+## 4. Bearer Transport Policy
+
+Every remote destination transmitting credentials (`sync.url`, `mcp.remote.url`, `server.llm.base_url`) enforces strict transport security (`internal/transportpolicy`):
+
+1. **HTTPS Required Off-Loopback**: Non-loopback endpoints must use HTTPS. Any plain HTTP connection to a public/remote address is rejected at startup before credentials can be sent.
+2. **Strict Loopback Exceptions**: Plain HTTP is permitted only for:
+   * IPv4 loopback literal (`127.0.0.0/8`)
+   * IPv6 loopback literal (`[::1]`)
+   * Exact hostname `localhost`
+3. **Downgrade Rejection**: HTTP redirects are never followed if they downgrade an HTTPS connection to plain HTTP or change the origin (scheme + host + port).
+
+---
+
+## 5. Troubleshooting & Diagnostics
+
+* **Configuration validation**: Run `cortex doctor` to inspect configuration health, database compatibility, and vector indexing status.
+* **Inspect loaded path**: Run `cortex config path` to identify which configuration file is currently being read.
+* **Overrides not reflected**: Remember that `CORTEX_*` environment variables take precedence over settings saved in `cortex.yaml`. Check running process environment variables.
+* **Port binding issues**: Ensure you use `CORTEX_HTTP_PORT` (e.g. `7438`). Legacy `CORTEX_PORT` is rejected to prevent configuration ambiguity.

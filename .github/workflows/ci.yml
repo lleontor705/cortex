@@ -357,3 +357,38 @@ jobs:
 
       - name: Run hooks contract harness
         run: bash plugin/claude-code/scripts/hooks_test.sh
+
+  docker-compose-smoke-test:
+    name: Docker Compose Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start stack with Docker Compose
+        run: docker compose up --build -d
+
+      - name: Wait for services to be healthy
+        timeout-minutes: 3
+        run: |
+          echo "Waiting for services to become healthy..."
+          for i in $(seq 1 30); do
+            SERVER_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-server-1 2>/dev/null || echo "starting")
+            UI_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-ui-1 2>/dev/null || echo "starting")
+            DB_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-postgres-1 2>/dev/null || echo "starting")
+            echo "Status [db=$DB_STATUS, server=$SERVER_STATUS, ui=$UI_STATUS]"
+            if [ "$SERVER_STATUS" = "healthy" ] && [ "$UI_STATUS" = "healthy" ] && [ "$DB_STATUS" = "healthy" ]; then
+              echo "All services are healthy!"
+              break
+            fi
+            sleep 3
+          done
+
+      - name: Verify health endpoints
+        run: |
+          curl -fsS http://localhost:7438/health || exit 1
+          curl -fsS http://localhost:3000/health || exit 1
+
+      - name: Teardown stack
+        if: always()
+        run: docker compose down -v

@@ -364,29 +364,29 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	if cfg.Search.EmbeddingProvider == "" {
-		if p := os.Getenv("CORTEX_SEARCH_EMBEDDING_PROVIDER"); p != "" {
+		if p := os.Getenv("CORTEX_EMBEDDING_PROVIDER"); p != "" {
+			cfg.Search.EmbeddingProvider = p
+		} else if p := os.Getenv("CORTEX_SEARCH_EMBEDDING_PROVIDER"); p != "" {
 			cfg.Search.EmbeddingProvider = p
 		} else if p := os.Getenv("CORTEX_AI_PROVIDER"); p != "" {
-			cfg.Search.EmbeddingProvider = p
-		} else if p := os.Getenv("AI_PROVIDER"); p != "" {
 			cfg.Search.EmbeddingProvider = p
 		}
 	}
 	if cfg.Search.EmbeddingModel == "" {
-		if m := os.Getenv("CORTEX_SEARCH_EMBEDDING_MODEL"); m != "" {
+		if m := os.Getenv("CORTEX_EMBEDDING_MODEL"); m != "" {
+			cfg.Search.EmbeddingModel = m
+		} else if m := os.Getenv("CORTEX_SEARCH_EMBEDDING_MODEL"); m != "" {
 			cfg.Search.EmbeddingModel = m
 		} else if m := os.Getenv("CORTEX_AI_MODEL"); m != "" {
-			cfg.Search.EmbeddingModel = m
-		} else if m := os.Getenv("AI_MODEL"); m != "" {
 			cfg.Search.EmbeddingModel = m
 		}
 	}
 	if cfg.Search.EmbeddingBaseURL == "" {
-		if u := os.Getenv("CORTEX_SEARCH_EMBEDDING_BASE_URL"); u != "" {
+		if u := os.Getenv("CORTEX_EMBEDDING_BASE_URL"); u != "" {
+			cfg.Search.EmbeddingBaseURL = u
+		} else if u := os.Getenv("CORTEX_SEARCH_EMBEDDING_BASE_URL"); u != "" {
 			cfg.Search.EmbeddingBaseURL = u
 		} else if u := os.Getenv("CORTEX_AI_BASE_URL"); u != "" {
-			cfg.Search.EmbeddingBaseURL = u
-		} else if u := os.Getenv("AI_BASE_URL"); u != "" {
 			cfg.Search.EmbeddingBaseURL = u
 		}
 	}

@@ -110,14 +110,18 @@ func defaultHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// New creates an embedding service from config.
+// New creates an embedding service from config with a transparent in-memory LRU cache.
 // Returns nil if provider is "none" or empty.
 func New(cfg Config) Service {
 	timeout := 30 * time.Second
 	if cfg.Provider == "ollama" {
 		timeout = 60 * time.Second
 	}
-	return newWithClient(cfg, defaultHTTPClient(timeout), defaultMaxEmbeddingResponse, 4)
+	svc := newWithClient(cfg, defaultHTTPClient(timeout), defaultMaxEmbeddingResponse, 4)
+	if svc == nil {
+		return nil
+	}
+	return NewCachedService(svc, DefaultCacheCapacity)
 }
 
 // --- Ollama Backend ----------------------------------------------------------

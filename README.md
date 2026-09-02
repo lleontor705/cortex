@@ -97,7 +97,10 @@ cortex tui
 Puedes levantar todo el stack (PostgreSQL + Cortex Server + Cortex Web UI) directamente usando las imágenes oficiales de **GitHub Container Registry (`ghcr.io`)**:
 
 ```bash
-# Iniciar stack completo (PostgreSQL, Cortex Server en :7438 y Web UI en :3000)
+# 1. Configurar variables de entorno (opcional)
+cp .env.example .env
+
+# 2. Iniciar stack completo (PostgreSQL, Cortex Server en :7438 y Web UI en :3000)
 docker compose up -d
 ```
 

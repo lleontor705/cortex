@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -97,7 +98,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "reindex":
 		exitCode = runReindex(args[2:], stdout, stderr)
 	case "doctor":
-		exitCode = runDoctor(stdout, stderr)
+		exitCode = runDoctor(args[2:], stdout, stderr)
 	case "gc":
 		exitCode = runGC(args[2:], stdout, stderr)
 	case "config":
@@ -1260,7 +1261,23 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 
 // --- doctor -----------------------------------------------------------------
 
-func runDoctor(stdout, stderr io.Writer) int {
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	serverMode := false
+	serverURL := "http://localhost:7438"
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--server" {
+			serverMode = true
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				serverURL = args[i+1]
+				i++
+			}
+		}
+	}
+
+	if serverMode {
+		return runDoctorServer(serverURL, stdout, stderr)
+	}
+
 	a, err := openApp()
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -1271,7 +1288,7 @@ func runDoctor(stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	issues := 0
 
-	writeln(stdout, "Cortex Doctor — Health Check\n")
+	writeln(stdout, "Cortex Doctor — Local Health Check\n")
 
 	// 1. Database
 	stats, err := a.Stores.Observations.Stats(ctx)
@@ -1336,6 +1353,80 @@ func runDoctor(stdout, stderr io.Writer) int {
 		return 1
 	}
 	writeln(stdout, "All checks passed.")
+	return 0
+}
+
+func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
+	writeln(stdout, "Cortex Doctor — Server Health Check")
+	writef(stdout, "Target: %s\n\n", serverURL)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	issues := 0
+
+	// 1. Health endpoint
+	start := time.Now()
+	resp, err := client.Get(strings.TrimRight(serverURL, "/") + "/health")
+	duration := time.Since(start)
+
+	if err != nil {
+		writef(stdout, "  [FAIL] Server Connectivity: %v\n", err)
+		issues++
+	} else {
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusOK {
+			writef(stdout, "  [OK]   Server Health: operational (HTTP 200, %dms)\n", duration.Milliseconds())
+		} else {
+			writef(stdout, "  [FAIL] Server Health: returned status %d\n", resp.StatusCode)
+			issues++
+		}
+	}
+
+	// 2. Authentication token check if provided
+	token := os.Getenv("CORTEX_HTTP_TOKEN")
+	if token == "" {
+		token = os.Getenv("CORTEX_REMOTE_TOKEN")
+	}
+
+	if token != "" {
+		req, reqErr := http.NewRequest("GET", strings.TrimRight(serverURL, "/")+"/mcp", nil)
+		if reqErr == nil {
+			req.Header.Set("Authorization", "Bearer "+token)
+			authResp, authErr := client.Do(req)
+			if authErr != nil {
+				writef(stdout, "  [FAIL] Authenticated Endpoint: %v\n", authErr)
+				issues++
+			} else {
+				defer func() { _ = authResp.Body.Close() }()
+				if authResp.StatusCode == http.StatusOK || authResp.StatusCode == http.StatusMethodNotAllowed || authResp.StatusCode == http.StatusNoContent {
+					writef(stdout, "  [OK]   Bearer Authentication: verified\n")
+				} else if authResp.StatusCode == http.StatusUnauthorized || authResp.StatusCode == http.StatusForbidden {
+					writef(stdout, "  [FAIL] Bearer Authentication: invalid or rejected token\n")
+					issues++
+				} else {
+					writef(stdout, "  [OK]   Bearer Authentication: responded (status %d)\n", authResp.StatusCode)
+				}
+			}
+		}
+	} else {
+		writef(stdout, "  [INFO] Bearer Token: not configured in environment (set CORTEX_HTTP_TOKEN)\n")
+	}
+
+	// 3. Web UI check on standard port 3000
+	uiURL := "http://localhost:3000"
+	uiResp, uiErr := client.Get(uiURL)
+	if uiErr == nil {
+		_ = uiResp.Body.Close()
+		writef(stdout, "  [OK]   Web UI Control Room: running on %s\n", uiURL)
+	} else {
+		writef(stdout, "  [INFO] Web UI Control Room: not detected on %s (optional)\n", uiURL)
+	}
+
+	writeln(stdout, "")
+	if issues > 0 {
+		writef(stdout, "%d issue(s) found.\n", issues)
+		return 1
+	}
+	writeln(stdout, "Server health check passed.")
 	return 0
 }
 

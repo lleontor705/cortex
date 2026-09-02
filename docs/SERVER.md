@@ -9,11 +9,16 @@ Cortex publishes official multi-platform images on GitHub Container Registry:
 - Web UI Control Room: `ghcr.io/lleontor705/cortex-web:latest`
 
 ```bash
-# Pull and start PostgreSQL, Cortex Server, and Web UI
+# 1. Configure environment variables (optional overrides)
+cp .env.example .env
+
+# 2. Pull and start PostgreSQL, Cortex Server, and Web UI
 docker compose up -d
 ```
 
 The Compose file creates PostgreSQL, applies the embedded server schema, bootstraps a development organization/workspace/principal, and starts Cortex Server on port `7438` and Web UI on port `3000`. To rebuild locally from source code, use `docker compose up --build -d`.
+
+For a full reference of all supported environment variables, see [.env.example](../.env.example) and [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Production Requirements
 

@@ -60,7 +60,10 @@ Cortex provides official, multi-architecture (`linux/amd64`, `linux/arm64`) cont
 ### Running with Docker Compose
 
 ```bash
-# Pull and start PostgreSQL, Cortex Server, and Web UI
+# 1. Configure environment variables (optional overrides)
+cp .env.example .env
+
+# 2. Pull and start PostgreSQL, Cortex Server, and Web UI
 docker compose up -d
 ```
 

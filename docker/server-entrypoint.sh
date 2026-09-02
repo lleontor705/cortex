@@ -55,11 +55,6 @@ random_bearer() {
   printf 'cortex_admin_%s' "$random"
 }
 
-configured_count=0
-for value in "${CORTEX_SERVER_TENANT_ID:-}" "${CORTEX_SERVER_WORKSPACE_ID:-}" "${CORTEX_SERVER_PRINCIPAL_SUBJECT:-}" "${CORTEX_HTTP_TOKEN:-}"; do
-  [ -n "$value" ] && configured_count=$((configured_count + 1))
-done
-
 if [ -f "$state_file" ]; then
   saved_tenant=$(read_state_value CORTEX_SERVER_TENANT_ID)
   saved_workspace=$(read_state_value CORTEX_SERVER_WORKSPACE_ID)

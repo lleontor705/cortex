@@ -1,6 +1,17 @@
+# =============================================================================
+# 🧠 CORTEX - PRODUCTION DOCKER COMPOSE STACK (docker-compose.prod.yml)
+# =============================================================================
+# This file pulls official multi-arch images directly from GitHub Container Registry (ghcr.io).
+# No local source code, compilers, or Node.js runtime required.
+#
+# QUICK START:
+#   cp .env.example .env
+#   docker compose -f docker/docker-compose.prod.yml up -d
+# =============================================================================
+
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cortex_bootstrap}
@@ -8,7 +19,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-cortex_test}
     volumes:
       - cortex-postgres:/var/lib/postgresql/data
-      - ./scripts/postgres/bootstrap-authz.sql:/docker-entrypoint-initdb.d/001-bootstrap-authz.sql:ro
+      - ../scripts/postgres/bootstrap-authz.sql:/docker-entrypoint-initdb.d/001-bootstrap-authz.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cortex_bootstrap} -d ${POSTGRES_DB:-cortex_test}"]
       interval: 5s
@@ -18,9 +29,6 @@ services:
   cortex-server:
     image: ghcr.io/lleontor705/cortex:latest
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
     command: ["/usr/local/bin/cortex", "--mode", "server"]
     depends_on:
       postgres:
@@ -64,12 +72,6 @@ services:
   cortex-ui:
     image: ghcr.io/lleontor705/cortex-web:latest
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.web
-      args:
-        NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT: "true"
-        NEXT_PUBLIC_CORTEX_SERVER_URL: "http://localhost:7438"
     depends_on:
       cortex-server:
         condition: service_healthy

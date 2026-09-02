@@ -109,7 +109,31 @@ func ServerLLMFromEnv() (ServerLLMConfig, error) {
 		apiKey = os.Getenv("CORTEX_AI_API_KEY")
 	}
 	if apiKey == "" {
-		apiKey = os.Getenv("GEMINI_API_KEY")
+		switch strings.ToLower(provider) {
+		case "openai":
+			apiKey = os.Getenv("OPENAI_API_KEY")
+		case "anthropic":
+			apiKey = os.Getenv("ANTHROPIC_API_KEY")
+		case "google", "gemini":
+			apiKey = os.Getenv("GEMINI_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("GOOGLE_API_KEY")
+			}
+		case "groq":
+			apiKey = os.Getenv("GROQ_API_KEY")
+		case "deepseek":
+			apiKey = os.Getenv("DEEPSEEK_API_KEY")
+		case "openrouter":
+			apiKey = os.Getenv("OPENROUTER_API_KEY")
+		default:
+			if k := os.Getenv("OPENAI_API_KEY"); k != "" {
+				apiKey = k
+			} else if k := os.Getenv("GEMINI_API_KEY"); k != "" {
+				apiKey = k
+			} else if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+				apiKey = k
+			}
+		}
 	}
 
 	cfg := ServerLLMConfig{

@@ -69,9 +69,38 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [isLightMode, setIsLightMode] = useState<boolean>(false);
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileDrawerRef = useRef<HTMLElement | null>(null);
   const mobileCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!isConnected || !serverUrl) return;
+
+    let isMounted = true;
+    const checkLatency = async () => {
+      try {
+        const start = performance.now();
+        const res = await fetch(`${serverUrl.replace(/\/$/, '')}/health`, {
+          method: 'GET',
+          cache: 'no-store',
+        });
+        const duration = Math.round(performance.now() - start);
+        if (isMounted && res.ok) {
+          setLatencyMs(duration);
+        }
+      } catch {
+        if (isMounted) setLatencyMs(null);
+      }
+    };
+
+    checkLatency();
+    const interval = setInterval(checkLatency, 15000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [isConnected, serverUrl]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -510,9 +539,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <Menu className="h-5 w-5" />
             </Button>
 
-            <Badge variant="secondary" className="gap-1.5 bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] max-w-[200px] sm:max-w-xs truncate">
+            <Badge variant="secondary" className="gap-1.5 bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] max-w-[260px] sm:max-w-sm truncate">
               <Server className="h-3 w-3 text-blue-400 shrink-0" />
               <span className="font-mono text-[11px] truncate">{serverUrl}</span>
+              {latencyMs !== null ? (
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-400 pl-1.5 border-l border-[var(--border-subtle)]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  {latencyMs}ms
+                </span>
+              ) : null}
             </Badge>
 
             {grantedWorkspaces.length ? (
