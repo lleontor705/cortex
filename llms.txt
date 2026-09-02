@@ -37,6 +37,6 @@ Cortex stores observations (decisions, bugfixes, patterns, discoveries) across c
 ## Optional
 
 - [Migrations](https://github.com/lleontor705/cortex/tree/master/migrations): SQL migrations
-- [Dockerfile](https://github.com/lleontor705/cortex/blob/master/Dockerfile): Multi-stage Alpine build
+- [Dockerfile](https://github.com/lleontor705/cortex/blob/master/docker/Dockerfile): Multi-stage Alpine build
 - [CI/CD](https://github.com/lleontor705/cortex/tree/master/.github/workflows): GitHub Actions for test, lint, release
 - [GoReleaser](https://github.com/lleontor705/cortex/blob/master/.goreleaser.yml): Cross-platform binary builds + Homebrew tap

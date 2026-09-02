@@ -66,23 +66,20 @@ if [ -f "$state_file" ]; then
   saved_subject=$(read_state_value CORTEX_SERVER_PRINCIPAL_SUBJECT)
   saved_token=$(read_state_value CORTEX_HTTP_TOKEN)
 
-  [ "$configured_count" -eq 0 ] || {
-    [ "${CORTEX_SERVER_TENANT_ID:-}" = "$saved_tenant" ] &&
-      [ "${CORTEX_SERVER_WORKSPACE_ID:-}" = "$saved_workspace" ] &&
-      [ "${CORTEX_SERVER_PRINCIPAL_SUBJECT:-}" = "$saved_subject" ] &&
-      [ "${CORTEX_HTTP_TOKEN:-}" = "$saved_token" ] ||
-      fail "explicit bootstrap values conflict with the persisted state"
-  }
+  [ -z "${CORTEX_SERVER_TENANT_ID:-}" ] || [ "${CORTEX_SERVER_TENANT_ID:-}" = "$saved_tenant" ] || fail "explicit tenant ID conflicts with persisted state"
+  [ -z "${CORTEX_SERVER_WORKSPACE_ID:-}" ] || [ "${CORTEX_SERVER_WORKSPACE_ID:-}" = "$saved_workspace" ] || fail "explicit workspace ID conflicts with persisted state"
+  [ -z "${CORTEX_SERVER_PRINCIPAL_SUBJECT:-}" ] || [ "${CORTEX_SERVER_PRINCIPAL_SUBJECT:-}" = "$saved_subject" ] || fail "explicit principal subject conflicts with persisted state"
+  [ -z "${CORTEX_HTTP_TOKEN:-}" ] || [ "${CORTEX_HTTP_TOKEN:-}" = "$saved_token" ] || fail "explicit HTTP token conflicts with persisted state"
 
   CORTEX_SERVER_TENANT_ID="$saved_tenant"
   CORTEX_SERVER_WORKSPACE_ID="$saved_workspace"
   CORTEX_SERVER_PRINCIPAL_SUBJECT="$saved_subject"
   CORTEX_HTTP_TOKEN="$saved_token"
-elif [ "$configured_count" -eq 0 ]; then
-  CORTEX_SERVER_TENANT_ID=$(random_uuid)
-  CORTEX_SERVER_WORKSPACE_ID=$(random_uuid)
-  CORTEX_SERVER_PRINCIPAL_SUBJECT=$(random_uuid)
-  CORTEX_HTTP_TOKEN=$(random_bearer)
+else
+  [ -n "${CORTEX_SERVER_TENANT_ID:-}" ] || CORTEX_SERVER_TENANT_ID=$(random_uuid)
+  [ -n "${CORTEX_SERVER_WORKSPACE_ID:-}" ] || CORTEX_SERVER_WORKSPACE_ID=$(random_uuid)
+  [ -n "${CORTEX_SERVER_PRINCIPAL_SUBJECT:-}" ] || CORTEX_SERVER_PRINCIPAL_SUBJECT=$(random_uuid)
+  [ -n "${CORTEX_HTTP_TOKEN:-}" ] || CORTEX_HTTP_TOKEN=$(random_bearer)
   write_state
 
   echo "cortex: Docker bootstrap created the default tenant and owner credential; copy it now."
@@ -90,8 +87,6 @@ elif [ "$configured_count" -eq 0 ]; then
   echo "cortex: tenant_owner_bearer=$CORTEX_HTTP_TOKEN"
   echo "cortex: this bearer is scoped to the default tenant; it is not a global SaaS administrator token."
   echo "cortex: the bearer is shown only for this initial Docker bootstrap; Docker logs may retain it."
-elif [ "$configured_count" -ne 4 ]; then
-  fail "configure all of tenant ID, workspace ID, principal subject, and HTTP token, or none"
 fi
 
 export CORTEX_SERVER_TENANT_ID CORTEX_SERVER_WORKSPACE_ID CORTEX_SERVER_PRINCIPAL_SUBJECT CORTEX_HTTP_TOKEN

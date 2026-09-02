@@ -45,7 +45,7 @@ func TestGoToolchainContract(t *testing.T) {
 		}
 	}
 
-	dockerfile := readContractFile(t, filepath.Join(root, "Dockerfile"))
+	dockerfile := readContractFile(t, filepath.Join(root, "docker", "Dockerfile"))
 	if !strings.Contains(dockerfile, "FROM golang:1.26.5-alpine AS builder") {
 		t.Error("Docker builder must use Go 1.26.5")
 	}

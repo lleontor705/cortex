@@ -52,4 +52,5 @@ plugin/*/node_modules/
 !.gitignore
 !.dockerignore
 !.goreleaser.yaml
+!.env.example
 !web/.env.example

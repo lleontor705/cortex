@@ -18,7 +18,7 @@ services:
     image: ghcr.io/lleontor705/cortex:latest
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     command: ["/usr/local/bin/cortex", "--mode", "server"]
     depends_on:
       postgres:
@@ -60,7 +60,7 @@ services:
     image: ghcr.io/lleontor705/cortex-web:latest
     build:
       context: .
-      dockerfile: Dockerfile.web
+      dockerfile: docker/Dockerfile.web
       args:
         NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT: "true"
         NEXT_PUBLIC_CORTEX_SERVER_URL: "http://localhost:7438"

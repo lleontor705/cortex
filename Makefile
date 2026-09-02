@@ -163,11 +163,11 @@ migrate-down:
 # Build Docker image
 docker-build:
 	@echo "Building Docker image..."
-	@if [ ! -f "Dockerfile" ]; then \
-		echo "Error: Dockerfile not found"; \
+	@if [ ! -f "docker/Dockerfile" ]; then \
+		echo "Error: docker/Dockerfile not found"; \
 		exit 1; \
 	fi
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 	@echo "Docker image built: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 # Install binary to GOPATH/bin
