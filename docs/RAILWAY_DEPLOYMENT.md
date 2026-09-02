@@ -1,6 +1,6 @@
 # Despliegue de Cortex Server en Railway
 
-Esta guía detalla el despliegue de **Cortex Server (Modo PostgreSQL Multi-Tenant + Streamable MCP + Next.js Web Dashboard)** en [Railway.app](https://railway.app).
+Esta guía detalla el despliegue de **Cortex Server (Modo PostgreSQL Multi-Tenant + Streamable MCP + Next.js Web Dashboard)** en [Railway.app](https://railway.app) utilizando las imágenes Docker públicas de GitHub Container Registry (`ghcr.io`).
 
 ---
 
@@ -10,65 +10,85 @@ Esta guía detalla el despliegue de **Cortex Server (Modo PostgreSQL Multi-Tenan
 ┌────────────────────────────────────────────────────────┐
 │                   PROYECTO EN RAILWAY                  │
 ├────────────────────────────────────────────────────────┤
-│ 1. Servicio PostgreSQL (Database Postgres 16)         │
+│ 1. Servicio PostgreSQL (Postgres 16)                   │
 │    • Base de datos relacional con RLS activado.        │
 │                                                        │
-│ 2. Servicio Cortex Server (Backend Go Zero-CGO)        │
+│ 2. Servicio Cortex Server (ghcr.io/lleontor705/cortex) │
 │    • HippoRAG + Adaptive-RAG + LightRAG + CRAG.        │
 │    • Endpoints: REST /api/* y MCP Streamable /mcp.     │
 │                                                        │
-│ 3. Servicio Cortex Web (Next.js Dashboard - Opcional) │
-│    • Control Room, Visualizador Sigma.js, Pipeline RAG │
+│ 3. Servicio Cortex Web (ghcr.io/lleontor705/cortex-web)│
+│    • Control Room Next.js 15, Visualizador Sigma.js.   │
+│                                                        │
+│ 4. Servicio Ollama (Opcional - Servicio Interno)       │
+│    • Embeddings locales privados vía *.railway.internal│
 └────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Variables de Entorno Requeridas en Railway
+## 2. Despliegue con Railway CLI
 
-Configura las siguientes variables en el panel de **Cortex Server**:
+Puedes conectar tus servicios directamente a las imágenes publicadas en GHCR:
 
-| Variable | Valor Recomendado / Descripción | Ejemplo |
-|---|---|---|
-| `PORT` | Puerto HTTP asignado por Railway | `7438` |
-| `CORTEX_HTTP_HOST` | Host para escuchar peticiones | `0.0.0.0` |
-| `CORTEX_HTTP_PORT` | Puerto de Cortex | `${{PORT}}` o `7438` |
-| `CORTEX_HTTP_TOKEN` | Token secreto de autenticación API/MCP | `cortex_live_sec_...` |
-| `CORTEX_SERVER_STORAGE_DRIVER` | Driver de persistencia | `postgres` |
-| `CORTEX_SERVER_STORAGE_DSN` | DSN del rol runtime sin privilegios (`cortex_app`, sin `BYPASSRLS`) | Secret Reference con el DSN de `cortex_app` |
-| `CORTEX_SERVER_STORAGE_MIGRATION_DSN`| DSN del rol privilegiado y distinto (`cortex_migration`) | Secret Reference con el DSN de `cortex_migration` |
-| `CORTEX_VECTOR_PGVECTOR_MIGRATION_DSN` | DSN privilegiado exclusivo para DDL de pgvector | Secret Reference con el DSN de migración |
-| `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | Fallback de DSN exclusivamente local | `false` |
-| `CORTEX_SERVER_TENANT_ID` | UUID del tenant principal | `00000000-0000-0000-0000-000000000001` |
-| `CORTEX_SERVER_WORKSPACE_ID` | UUID del workspace por defecto | `00000000-0000-0000-0000-000000000002` |
-| `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Subject del token administrador | `00000000-0000-0000-0000-000000000003` |
-| `CORTEX_SERVER_GRANT_DIGEST` | Firma de autorización | `railway-prod-grant` |
-| `CORTEX_SERVER_GRANT_VERSION` | Versión de esquema de permisos | `1` |
-| `CORTEX_AI_PROVIDER` | Proveedor de embeddings (opcional) | `ollama` / `openai` / `openrouter` |
-| `CORTEX_AI_BASE_URL` | URL del proveedor de AI | `https://api.openai.com/v1` |
-| `CORTEX_AI_API_KEY` | API Key de OpenAI / OpenRouter | `sk-...` |
-| `CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST` | Hostname privado exacto de Ollama autorizado para HTTP | `ollama.railway.internal` |
+```bash
+# 1. Conectar Cortex Server a la imagen pública
+railway service source connect --image ghcr.io/lleontor705/cortex:latest --service cortex-server-clean
 
-No asignes `${{Postgres.DATABASE_URL}}` a ambas variables: Cortex rechaza en producción dos DSNs que resuelvan al mismo rol, antes de conectarse o migrar. Aprovisiona `cortex_app` y `cortex_migration` con `scripts/postgres/bootstrap-authz.sql`, guarda cada DSN como un secreto independiente de Railway y permite que ambos apunten al mismo host/base de datos. El proceso usa el DSN de migración solo durante migraciones y reconciliación de bootstrap, cierra ese handle y mantiene el pool de servicio con `cortex_app`.
-
-`CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true` permite omitir el DSN de migración y reutilizar el runtime únicamente para entornos efímeros de desarrollo. No lo uses en un despliegue público. Separar la migración en un job one-shot todavía es una mejora pendiente y no forma parte de este flujo.
-
-Si Ollama vive como servicio interno de Railway, configura `CORTEX_AI_BASE_URL` con su DNS privada y fija `CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST` al hostname exacto (por ejemplo, `ollama.railway.internal`). Cortex mantiene la lista de destino y el puerto de la URL, rechaza redirecciones fuera de ella y sólo permite IP privada cuando la resolución corresponde exactamente a ese hostname bajo `.railway.internal`. No uses este ajuste con proveedores públicos: deben usar HTTPS.
+# 2. Conectar Cortex Web Control Room a la imagen pública
+railway service source connect --image ghcr.io/lleontor705/cortex-web:latest --service cortex-web-clean
+```
 
 ---
 
-## 3. Conexión de Agentes de IA a Cortex en Railway
+## 3. Variables de Entorno en Railway
 
-Una vez desplegado tu servicio en `https://cortex-production.up.railway.app`, puedes conectar tus asistentes de IA:
+### A. Variables de Cortex Server (`cortex-server-clean`)
+
+| Variable | Descripción / Recomendación | Ejemplo |
+|---|---|---|
+| `PORT` / `CORTEX_HTTP_PORT` | Puerto HTTP asignado por Railway | `7438` |
+| `CORTEX_HTTP_HOST` | Host para escuchar peticiones | `0.0.0.0` |
+| `CORTEX_HTTP_TOKEN` | Token secreto de autenticación API/MCP | `cortex_admin_...` |
+| `CORTEX_HTTP_ALLOWED_ORIGINS` | Orígenes CORS permitidos | `https://cortex-web-clean-production.up.railway.app` |
+| `CORTEX_SERVER_STORAGE_DRIVER` | Driver de persistencia | `postgres` |
+| `CORTEX_SERVER_STORAGE_DSN` | DSN del rol runtime sin privilegios (`cortex_runtime`, con RLS) | `postgresql://cortex_runtime:...@postgres-ygek.railway.internal:5432/railway?sslmode=require` |
+| `CORTEX_SERVER_STORAGE_MIGRATION_DSN`| DSN del rol privilegiado para migraciones (`postgres`) | `postgresql://postgres:...@postgres-ygek.railway.internal:5432/railway` |
+| `CORTEX_SERVER_MULTI_TENANT` | Activa aislamiento multi-tenant | `true` |
+| `CORTEX_SERVER_TENANT_ID` | UUID del tenant principal | `1e6b5778-c113-462d-9697-f84348665f9c` |
+| `CORTEX_SERVER_WORKSPACE_ID` | UUID del workspace por defecto | `20df6613-f69b-4e37-bdc3-d21a85ef2046` |
+| `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Subject del token administrador | `186e99b0-b568-4450-916c-a021d782c1e5` |
+| `CORTEX_EMBEDDING_PROVIDER` | Proveedor de embeddings | `ollama` / `openai` / `gemini` / `none` |
+| `CORTEX_EMBEDDING_MODEL` | Modelo de embeddings | `qwen3-embedding:4b` |
+| `CORTEX_EMBEDDING_BASE_URL` | URL del proveedor de embeddings | `http://ollama.railway.internal:11434` |
+| `CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST` | Hostname privado autorizado para HTTP interno | `ollama.railway.internal` |
+| `CORTEX_LLM_PROVIDER` | Proveedor de LLM del servidor | `google` / `openai` / `anthropic` |
+| `CORTEX_LLM_MODEL` | Modelo de LLM | `gemini-3.1-flash-lite` |
+| `GEMINI_API_KEY` / `OPENAI_API_KEY` | Llave de API del proveedor | `AIzaSy...` |
+
+### B. Variables de Cortex Web (`cortex-web-clean`)
+
+| Variable | Descripción | Ejemplo |
+|---|---|---|
+| `PORT` | Puerto HTTP | `3000` |
+| `HOSTNAME` | Host de enlace | `0.0.0.0` |
+| `NEXT_PUBLIC_CORTEX_SERVER_URL` | URL pública del servidor Cortex | `https://cortex-server-clean-production.up.railway.app` |
+| `NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT` | Bloquea la URL al endpoint administrado | `true` |
+
+---
+
+## 4. Conexión de Asistentes de IA a Cortex en Railway
+
+Una vez desplegado tu servicio en Railway, puedes conectar tus asistentes de IA:
 
 ### A. Claude Desktop / Claude Code (`claude.json` / `config.json`)
 ```json
 {
   "mcpServers": {
     "cortex-remote": {
-      "url": "https://cortex-production.up.railway.app/mcp",
+      "url": "https://cortex-server-clean-production.up.railway.app/mcp",
       "headers": {
-        "Authorization": "Bearer cortex_live_sec_..."
+        "Authorization": "Bearer cortex_admin_..."
       }
     }
   }
@@ -82,9 +102,9 @@ Una vez desplegado tu servicio en `https://cortex-production.up.railway.app`, pu
   "mcp": {
     "cortex": {
       "type": "remote",
-      "url": "https://cortex-production.up.railway.app/mcp",
+      "url": "https://cortex-server-clean-production.up.railway.app/mcp",
       "headers": {
-        "Authorization": "Bearer cortex_live_sec_..."
+        "Authorization": "Bearer cortex_admin_..."
       }
     }
   }
@@ -93,8 +113,14 @@ Una vez desplegado tu servicio en `https://cortex-production.up.railway.app`, pu
 
 ---
 
-## 4. Healthcheck y Monitoreo en Railway
+## 5. Diagnóstico y Monitoreo
 
-- **Healthcheck URL**: `GET /health` (Retorna `{"status":"ok"}` en $< 1\text{ms}$).
-- **Diagnóstico RAG**: `GET /api/rag/stats` (Requiere `Authorization: Bearer <TOKEN>`).
-- **Analítica de Grafos**: `GET /api/graph/analytics` (Retorna métricas de modularidad, god nodes y HippoRAG).
+### Diagnóstico con CLI
+```bash
+# Diagnosticar el servidor de Railway en vivo
+CORTEX_HTTP_TOKEN="cortex_admin_..." cortex doctor --server https://cortex-server-clean-production.up.railway.app
+```
+
+### Healthcheck URL
+- `GET https://cortex-server-clean-production.up.railway.app/health` (Retorna `{"status":"ok"}`).
+- `GET https://cortex-web-clean-production.up.railway.app/health` (Retorna `{"status":"ok"}`).
