@@ -130,9 +130,9 @@ export default function ProjectsPage() {
         pending_observations: 0,
         failed_observations: 0,
         coverage_pct: 100.0,
-        embedding_model: "text-embedding-3-small",
-        embedding_dimensions: 1536,
-        vector_provider: "pgvector/hnsw",
+        embedding_model: "Auto-detectado",
+        embedding_dimensions: 0,
+        vector_provider: "Servidor Cortex",
       });
     } finally {
       setRagLoading(false);
@@ -1159,7 +1159,7 @@ export default function ProjectsPage() {
                 {ragStats?.vector_provider || "pgvector/hnsw"}
               </div>
               <p className="text-[10px] text-[var(--text-muted)] font-mono">
-                {ragStats?.embedding_model || "text-embedding-3-small"} ({ragStats?.embedding_dimensions || 1536}d)
+                {ragStats?.embedding_model || "Configurado en Servidor"} {ragStats?.embedding_dimensions ? `(${ragStats.embedding_dimensions}d)` : ""}
               </p>
             </Card>
           </div>

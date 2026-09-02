@@ -436,13 +436,13 @@ export default function MemoryPage() {
                   <div>
                     <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Modelo de Embeddings</span>
                     <span className="font-mono text-[var(--text-primary)] font-medium">
-                      {selectedObservation.embedding_model || "text-embedding-3-small"}
+                      {selectedObservation.embedding_model || "Configurado en Servidor"}
                     </span>
                   </div>
                   <div>
                     <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Dimensiones Vectoriales</span>
                     <span className="font-mono text-[var(--text-primary)] font-medium">
-                      {selectedObservation.embedding_dimensions ? `${selectedObservation.embedding_dimensions}d` : "1536d"}
+                      {selectedObservation.embedding_dimensions ? `${selectedObservation.embedding_dimensions}d` : "Auto-detectado"}
                     </span>
                   </div>
                   <div>
