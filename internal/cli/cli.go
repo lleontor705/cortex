@@ -1397,12 +1397,13 @@ func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
 				issues++
 			} else {
 				defer func() { _ = authResp.Body.Close() }()
-				if authResp.StatusCode == http.StatusOK || authResp.StatusCode == http.StatusMethodNotAllowed || authResp.StatusCode == http.StatusNoContent {
+				switch authResp.StatusCode {
+				case http.StatusOK, http.StatusMethodNotAllowed, http.StatusNoContent:
 					writef(stdout, "  [OK]   Bearer Authentication: verified\n")
-				} else if authResp.StatusCode == http.StatusUnauthorized || authResp.StatusCode == http.StatusForbidden {
+				case http.StatusUnauthorized, http.StatusForbidden:
 					writef(stdout, "  [FAIL] Bearer Authentication: invalid or rejected token\n")
 					issues++
-				} else {
+				default:
 					writef(stdout, "  [OK]   Bearer Authentication: responded (status %d)\n", authResp.StatusCode)
 				}
 			}
