@@ -8,10 +8,10 @@ import (
 )
 
 type mockService struct {
-	model      string
-	dims       int
-	calls      int32
-	embedFunc  func(text string) []float32
+	model     string
+	dims      int
+	calls     int32
+	embedFunc func(text string) []float32
 }
 
 func (m *mockService) Embed(ctx context.Context, text string) ([]float32, error) {

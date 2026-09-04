@@ -192,8 +192,6 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if vectorCfg.Provider == "" {
 		if p := os.Getenv("CORTEX_VECTOR_PROVIDER"); p != "" {
 			vectorCfg.Provider = p
-		} else if p := os.Getenv("VECTOR_PROVIDER"); p != "" {
-			vectorCfg.Provider = p
 		} else {
 			vectorCfg.Provider = cfg.Server.Provider.Vector
 		}
@@ -729,7 +727,7 @@ func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
 	}
 	return embedding.NewSecure(embedding.Config{
 		Provider: provider,
-		APIKey:   os.Getenv("CORTEX_SEARCH_EMBEDDING_API_KEY"),
+		APIKey:   config.ResolveEmbeddingAPIKey(provider),
 		Model:    cfg.Search.EmbeddingModel,
 		BaseURL:  baseURL,
 	}, policy)

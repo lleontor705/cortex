@@ -352,42 +352,38 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
-	// Default search embedding config from AI section only if search embedding is unset
-	if cfg.Search.EmbeddingProvider == "" && cfg.AI.Provider != "" {
-		cfg.Search.EmbeddingProvider = cfg.AI.Provider
-	}
-	if cfg.Search.EmbeddingModel == "" && cfg.AI.Model != "" {
-		cfg.Search.EmbeddingModel = cfg.AI.Model
-	}
-	if cfg.Search.EmbeddingBaseURL == "" && cfg.AI.BaseURL != "" {
-		cfg.Search.EmbeddingBaseURL = cfg.AI.BaseURL
-	}
-
+	// Strict separation of Embedding and LLM:
+	// 1. Resolve embedding settings: config file search.embedding_* -> CORTEX_EMBEDDING_*
 	if cfg.Search.EmbeddingProvider == "" {
 		if p := os.Getenv("CORTEX_EMBEDDING_PROVIDER"); p != "" {
-			cfg.Search.EmbeddingProvider = p
-		} else if p := os.Getenv("CORTEX_SEARCH_EMBEDDING_PROVIDER"); p != "" {
-			cfg.Search.EmbeddingProvider = p
-		} else if p := os.Getenv("CORTEX_AI_PROVIDER"); p != "" {
 			cfg.Search.EmbeddingProvider = p
 		}
 	}
 	if cfg.Search.EmbeddingModel == "" {
 		if m := os.Getenv("CORTEX_EMBEDDING_MODEL"); m != "" {
 			cfg.Search.EmbeddingModel = m
-		} else if m := os.Getenv("CORTEX_SEARCH_EMBEDDING_MODEL"); m != "" {
-			cfg.Search.EmbeddingModel = m
-		} else if m := os.Getenv("CORTEX_AI_MODEL"); m != "" {
-			cfg.Search.EmbeddingModel = m
 		}
 	}
 	if cfg.Search.EmbeddingBaseURL == "" {
 		if u := os.Getenv("CORTEX_EMBEDDING_BASE_URL"); u != "" {
 			cfg.Search.EmbeddingBaseURL = u
-		} else if u := os.Getenv("CORTEX_SEARCH_EMBEDDING_BASE_URL"); u != "" {
-			cfg.Search.EmbeddingBaseURL = u
-		} else if u := os.Getenv("CORTEX_AI_BASE_URL"); u != "" {
-			cfg.Search.EmbeddingBaseURL = u
+		}
+	}
+
+	// 2. Resolve LLM settings: config file ai.* / llm.* -> CORTEX_LLM_*
+	if cfg.AI.Provider == "" {
+		if p := os.Getenv("CORTEX_LLM_PROVIDER"); p != "" {
+			cfg.AI.Provider = p
+		}
+	}
+	if cfg.AI.Model == "" {
+		if m := os.Getenv("CORTEX_LLM_MODEL"); m != "" {
+			cfg.AI.Model = m
+		}
+	}
+	if cfg.AI.BaseURL == "" {
+		if u := os.Getenv("CORTEX_LLM_BASE_URL"); u != "" {
+			cfg.AI.BaseURL = u
 		}
 	}
 
@@ -401,10 +397,6 @@ func Load(configPath string) (*Config, error) {
 
 	if cfg.Server.Storage.DSN == "" {
 		if dsn := os.Getenv("CORTEX_SERVER_STORAGE_DSN"); dsn != "" {
-			cfg.Server.Storage.DSN = dsn
-		} else if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
-			cfg.Server.Storage.DSN = dsn
-		} else if dsn := os.Getenv("POSTGRES_URL"); dsn != "" {
 			cfg.Server.Storage.DSN = dsn
 		}
 	}
@@ -439,6 +431,20 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// ResolveEmbeddingAPIKey resolves the API key for embedding services.
+// Strictly uses CORTEX_EMBEDDING_API_KEY.
+func ResolveEmbeddingAPIKey(provider string) string {
+	return strings.TrimSpace(os.Getenv("CORTEX_EMBEDDING_API_KEY"))
+}
+
+// ResolveLLMAPIKey resolves the API key for LLM services.
+// Strictly uses CORTEX_LLM_API_KEY.
+// Vendor-specific environment variables (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY) are
+// intentionally ignored to enforce strict decoupling and prevent cross-subsystem credential leaks.
+func ResolveLLMAPIKey(provider string) string {
+	return strings.TrimSpace(os.Getenv("CORTEX_LLM_API_KEY"))
 }
 
 // setDefaults configures all default values in viper
@@ -703,11 +709,11 @@ func (cfg *Config) GetProperty(key string) (string, error) {
 		return cfg.Logging.Level, nil
 	case "logging.format":
 		return cfg.Logging.Format, nil
-	case "search.embedding_provider":
+	case "search.embedding_provider", "embedding.provider":
 		return cfg.Search.EmbeddingProvider, nil
-	case "search.embedding_model":
+	case "search.embedding_model", "embedding.model":
 		return cfg.Search.EmbeddingModel, nil
-	case "search.embedding_base_url":
+	case "search.embedding_base_url", "embedding.base_url":
 		return cfg.Search.EmbeddingBaseURL, nil
 	case "search.vector":
 		return fmt.Sprintf("%t", cfg.Search.Vector), nil
@@ -739,11 +745,11 @@ func (cfg *Config) GetProperty(key string) (string, error) {
 		return fmt.Sprintf("%.2f", cfg.Memory.MinArchiveScore), nil
 	case "vector.provider":
 		return cfg.Vector.Provider, nil
-	case "ai.provider":
+	case "ai.provider", "llm.provider":
 		return cfg.AI.Provider, nil
-	case "ai.model":
+	case "ai.model", "llm.model":
 		return cfg.AI.Model, nil
-	case "ai.base_url":
+	case "ai.base_url", "llm.base_url":
 		return cfg.AI.BaseURL, nil
 	default:
 		return "", fmt.Errorf("unknown configuration key: %q", key)
@@ -755,15 +761,12 @@ func (cfg *Config) SetProperty(key, value string) error {
 	key = strings.ToLower(strings.TrimSpace(key))
 	value = strings.TrimSpace(value)
 	switch key {
-	case "ai.provider":
+	case "ai.provider", "llm.provider":
 		cfg.AI.Provider = strings.ToLower(value)
-		cfg.Search.EmbeddingProvider = strings.ToLower(value)
-	case "ai.model":
+	case "ai.model", "llm.model":
 		cfg.AI.Model = value
-		cfg.Search.EmbeddingModel = value
-	case "ai.base_url":
+	case "ai.base_url", "llm.base_url":
 		cfg.AI.BaseURL = value
-		cfg.Search.EmbeddingBaseURL = value
 	case "database.path":
 		cfg.Database.Path = value
 	case "database.in_memory":
@@ -784,15 +787,12 @@ func (cfg *Config) SetProperty(key, value string) error {
 		cfg.Logging.Level = strings.ToLower(value)
 	case "logging.format":
 		cfg.Logging.Format = strings.ToLower(value)
-	case "search.embedding_provider":
+	case "search.embedding_provider", "embedding.provider":
 		cfg.Search.EmbeddingProvider = strings.ToLower(value)
-		cfg.AI.Provider = strings.ToLower(value)
-	case "search.embedding_model":
+	case "search.embedding_model", "embedding.model":
 		cfg.Search.EmbeddingModel = value
-		cfg.AI.Model = value
-	case "search.embedding_base_url":
+	case "search.embedding_base_url", "embedding.base_url":
 		cfg.Search.EmbeddingBaseURL = value
-		cfg.AI.BaseURL = value
 	case "search.vector":
 		cfg.Search.Vector = parseBool(value)
 	case "search.fts5":
@@ -1150,20 +1150,6 @@ func redactDSNPassword(dsn string) string {
 func Save(cfg *Config, path string) error {
 	if cfg == nil {
 		return fmt.Errorf("save config: configuration is nil")
-	}
-
-	// Synchronize AI section before saving
-	if cfg.Search.EmbeddingProvider != "" && cfg.AI.Provider == "" {
-		cfg.AI.Provider = cfg.Search.EmbeddingProvider
-	}
-	if cfg.Search.EmbeddingModel != "" && cfg.AI.Model == "" {
-		cfg.AI.Model = cfg.Search.EmbeddingModel
-	}
-	if cfg.Search.EmbeddingBaseURL != "" && cfg.AI.BaseURL == "" {
-		cfg.AI.BaseURL = cfg.Search.EmbeddingBaseURL
-	}
-	if cfg.AI.Provider != "" && cfg.Search.EmbeddingProvider == "" {
-		cfg.Search.EmbeddingProvider = cfg.AI.Provider
 	}
 
 	if path == "" {

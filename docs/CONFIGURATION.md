@@ -20,7 +20,7 @@ Configuration values are resolved strictly in the following order (highest prece
 └───────────────────────────────────────────────────────────┘
 ```
 
-* **Environment Variable Matching**: Viper automatically translates dot-notated paths to uppercase snake_case prefixed by `CORTEX_` (e.g. `ai.provider` $\rightarrow$ `CORTEX_AI_PROVIDER`, `http.port` $\rightarrow$ `CORTEX_HTTP_PORT`).
+* **Environment Variable Matching**: Viper automatically translates dot-notated paths to uppercase snake_case prefixed by `CORTEX_` (e.g. `llm.provider` $\rightarrow$ `CORTEX_LLM_PROVIDER`, `http.port` $\rightarrow$ `CORTEX_HTTP_PORT`).
 * **Environment Overrides**: An environment variable always overrides the corresponding value in the configuration file or TUI state.
 * **Zero-Bloat Model**: The configuration manager automatically trims default and empty sections when writing to disk, keeping local configuration files clean (typically under 15 lines) and preventing serialization of internal SQLite pragmas or server-specific multi-tenant parameters.
 
@@ -91,7 +91,7 @@ cortex tui
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `server.storage.driver` | `CORTEX_SERVER_STORAGE_DRIVER` | `postgres` | Persistence driver: `postgres` (server) or `sqlite` (local). |
-| `server.storage.dsn` | `CORTEX_SERVER_STORAGE_DSN` | *(None)* | Non-privileged runtime PostgreSQL DSN (`NOSUPERUSER`, `NOBYPASSRLS`). Falls back to `DATABASE_URL` / `POSTGRES_URL`. |
+| `server.storage.dsn` | `CORTEX_SERVER_STORAGE_DSN` | *(None)* | Non-privileged runtime PostgreSQL DSN (`NOSUPERUSER`, `NOBYPASSRLS`). |
 | `server.storage.migration_dsn` | `CORTEX_SERVER_STORAGE_MIGRATION_DSN` | *(None)* | Privileged migration DSN. Applied during startup preflight and closed immediately. |
 | `server.storage.max_conns` | `CORTEX_SERVER_STORAGE_MAX_CONNS` | `10` | Maximum open database pool connections. |
 
@@ -102,9 +102,9 @@ cortex tui
 | `server.auto_bootstrap` | `CORTEX_SERVER_AUTO_BOOTSTRAP` | `false` | When `true`, auto-generates tenant, workspace, owner subject, and Bearer token on first boot. |
 | `server.bootstrap_development` | `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | `false` | Allows development tenant provisioning without dedicated migration role separation. |
 | `server.multi_tenant` | `CORTEX_SERVER_MULTI_TENANT` | `false` | Enables SaaS multi-tenant isolation. When `true`, tenant and workspace come from verified Bearer grants. |
-| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` / `CORTEX_TENANT_ID` | *(None)* | Configured tenant UUID (UUIDv4). |
-| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` / `CORTEX_WORKSPACE_ID` | *(None)* | Configured workspace UUID (UUIDv4). |
-| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` / `CORTEX_PRINCIPAL_SUBJECT` | *(None)* | Verified service account subject UUID. |
+| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` | *(None)* | Configured tenant UUID (UUIDv4). |
+| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` | *(None)* | Configured workspace UUID (UUIDv4). |
+| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | *(None)* | Verified service account subject UUID. |
 | `server.roles` | `CORTEX_SERVER_ROLES` | `[]` | Comma-separated roles granted to the principal (e.g. `owner,admin`). |
 | `server.scopes` | `CORTEX_SERVER_SCOPES` | `[]` | Comma-separated authorized scopes (e.g. `workspaces:read,workspaces:write`). |
 
@@ -120,13 +120,21 @@ cortex tui
 | `logging.level` | `CORTEX_LOGGING_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
 | `logging.format` | `CORTEX_LOGGING_FORMAT` | `json` | Log output format: `json`, `text`, `plain`. |
 
+### Standardized AI Configuration (Strict Separation)
+
+Cortex strictly separates configuration and API credentials between **Embeddings** and **LLM** so they never unintentionally cross-pollinate or override each other:
+1. **Embedding Tier**: `CORTEX_EMBEDDING_*` / `CORTEX_EMBEDDING_API_KEY` for semantic search and vector indexing.
+2. **LLM Tier**: `CORTEX_LLM_*` / `CORTEX_LLM_API_KEY` for agent reasoning, synthesis, and extraction.
+3. **Strict Decoupling**: Third-party vendor variables (such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), legacy variables (such as `CORTEX_SEARCH_EMBEDDING_*`), and unified `CORTEX_AI_*` variables are **not accepted**. Each subsystem requires its own explicit Cortex credential.
+
 ### Embeddings (Semantic Search & Vector Indexing)
 
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `search.embedding_provider` | `CORTEX_EMBEDDING_PROVIDER` / `CORTEX_SEARCH_EMBEDDING_PROVIDER` | `none` | Embedding model provider: `none` (native BM25), `openai`, `ollama`, `gemini`. |
-| `search.embedding_model` | `CORTEX_EMBEDDING_MODEL` / `CORTEX_SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model identifier. |
-| `search.embedding_base_url` | `CORTEX_EMBEDDING_BASE_URL` / `CORTEX_SEARCH_EMBEDDING_BASE_URL` | `""` | Custom or Ollama base endpoint URL. |
+| `embedding.provider` / `search.embedding_provider` | `CORTEX_EMBEDDING_PROVIDER` | `none` | Embedding model provider: `none` (native BM25), `openai`, `ollama`, `gemini`. |
+| `embedding.model` / `search.embedding_model` | `CORTEX_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model identifier. |
+| `embedding.base_url` / `search.embedding_base_url` | `CORTEX_EMBEDDING_BASE_URL` | `""` | Custom or Ollama base endpoint URL. |
+| *(Credential)* | `CORTEX_EMBEDDING_API_KEY` | `""` | **Standard embedding API credential**. |
 | `search.ollama_auto_start` | `CORTEX_SEARCH_OLLAMA_AUTO_START` | `false` | Automatically starts local Ollama daemon when needed. |
 | `search.fusion_k` | `CORTEX_SEARCH_FUSION_K` | `60` | Reciprocal Rank Fusion (RRF) rank constant. |
 
@@ -137,7 +145,7 @@ cortex tui
 | `llm.provider` | `CORTEX_LLM_PROVIDER` | `openai` | Generative provider: `openai`, `anthropic`, `gemini`, `ollama`, `groq`, `deepseek`. |
 | `llm.model` | `CORTEX_LLM_MODEL` | `gpt-4o-mini` | LLM model identifier. |
 | `llm.base_url` | `CORTEX_LLM_BASE_URL` | `""` | Custom provider base URL. |
-| `llm.api_key` | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | *(Secret)* | Outbound provider API credentials (read from environment only). |
+| *(Credential)* | `CORTEX_LLM_API_KEY` | *(Secret)* | **Standard LLM API credential** (strictly isolated; vendor keys like `OPENAI_API_KEY` are ignored). |
 
 ### Outbound Network & Security Bounds (SEC-02)
 
@@ -145,7 +153,7 @@ cortex tui
 | :--- | :--- | :--- |
 | `CORTEX_LLM_PROVIDER` | `""` | Preset: `openai`, `anthropic`, `google`, `gemini`, `ollama`, `generic`. |
 | `CORTEX_LLM_MODEL` | `""` | Model identifier override. |
-| `CORTEX_LLM_API_KEY` | `""` | Outbound authentication key (falls back to `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`). |
+| `CORTEX_LLM_API_KEY` | `""` | Outbound authentication key. Must be explicitly provided. |
 | `CORTEX_LLM_BASE_URL` | `""` | Destination endpoint. Must be HTTPS unless loopback HTTP switch is enabled. |
 | `CORTEX_LLM_ALLOWED_HOSTS` | `[]` | Comma-separated list of approved destination hostnames (max 64). |
 | `CORTEX_LLM_ALLOWED_PORTS` | `[443]` | Comma-separated list of approved TCP ports (max 16). |

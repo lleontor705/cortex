@@ -120,8 +120,10 @@ func TestEvidence(t *testing.T) {
 		}{
 			{name: "Ollama endpoint", env: "OLLAMA_ENDPOINT"},
 			{name: "OpenAI API", env: "OPENAI_API_KEY"},
-			{name: "Anthropic API", env: "ANTHROPIC_API_KEY"},
 			{name: "embedding provider", env: "CORTEX_EMBEDDING_PROVIDER"},
+			{name: "embedding api key", env: "CORTEX_EMBEDDING_API_KEY"},
+			{name: "llm provider", env: "CORTEX_LLM_PROVIDER"},
+			{name: "llm api key", env: "CORTEX_LLM_API_KEY"},
 			{name: "judge provider", env: "CORTEX_JUDGE_PROVIDER"},
 			{name: "network mode", env: "CORTEX_BENCH_NETWORK"},
 		}
@@ -286,6 +288,9 @@ func clearExternalProviderEnvironment(t *testing.T) {
 		"OPENAI_API_KEY",
 		"ANTHROPIC_API_KEY",
 		"CORTEX_EMBEDDING_PROVIDER",
+		"CORTEX_EMBEDDING_API_KEY",
+		"CORTEX_LLM_PROVIDER",
+		"CORTEX_LLM_API_KEY",
 		"CORTEX_JUDGE_PROVIDER",
 		"CORTEX_BENCH_NETWORK",
 	} {

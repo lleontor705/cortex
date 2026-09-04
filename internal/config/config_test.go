@@ -1306,3 +1306,136 @@ func TestInitConfigAndSaveMultiFormat(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveEmbeddingAPIKey_Hierarchy(t *testing.T) {
+	clearAll := func() {
+		t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
+		t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "")
+		t.Setenv("CORTEX_AI_API_KEY", "")
+		t.Setenv("OPENAI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		t.Setenv("GOOGLE_API_KEY", "")
+	}
+
+	t.Run("Tier 1 CORTEX_EMBEDDING_API_KEY takes highest precedence", func(t *testing.T) {
+		clearAll()
+		t.Setenv("CORTEX_EMBEDDING_API_KEY", "emb-key-1")
+		t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "legacy-key")
+		t.Setenv("CORTEX_AI_API_KEY", "ai-key")
+		t.Setenv("OPENAI_API_KEY", "openai-key")
+		if got := ResolveEmbeddingAPIKey("openai"); got != "emb-key-1" {
+			t.Errorf("expected emb-key-1, got %q", got)
+		}
+	})
+
+	t.Run("Legacy CORTEX_SEARCH_EMBEDDING_API_KEY is ignored", func(t *testing.T) {
+		clearAll()
+		t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "search-emb-key")
+		if got := ResolveEmbeddingAPIKey("openai"); got != "" {
+			t.Errorf("expected empty key (legacy key must be ignored), got %q", got)
+		}
+	})
+
+	t.Run("Vendor keys like OPENAI_API_KEY and GEMINI_API_KEY are ignored for embeddings", func(t *testing.T) {
+		clearAll()
+		t.Setenv("OPENAI_API_KEY", "direct-openai-key")
+		t.Setenv("GEMINI_API_KEY", "gemini-key")
+		if got := ResolveEmbeddingAPIKey("openai"); got != "" {
+			t.Errorf("expected empty key (vendor keys must be ignored), got %q", got)
+		}
+		if got := ResolveEmbeddingAPIKey("gemini"); got != "" {
+			t.Errorf("expected empty key (vendor keys must be ignored), got %q", got)
+		}
+	})
+}
+
+func TestResolveLLMAPIKey_Hierarchy(t *testing.T) {
+	clearAll := func() {
+		t.Setenv("CORTEX_LLM_API_KEY", "")
+		t.Setenv("CORTEX_AI_API_KEY", "")
+		t.Setenv("OPENAI_API_KEY", "")
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
+		t.Setenv("GROQ_API_KEY", "")
+	}
+
+	t.Run("Tier 1 CORTEX_LLM_API_KEY takes precedence", func(t *testing.T) {
+		clearAll()
+		t.Setenv("CORTEX_LLM_API_KEY", "llm-key-1")
+		t.Setenv("CORTEX_AI_API_KEY", "ai-key")
+		t.Setenv("OPENAI_API_KEY", "openai-key")
+		if got := ResolveLLMAPIKey("openai"); got != "llm-key-1" {
+			t.Errorf("expected llm-key-1, got %q", got)
+		}
+	})
+
+	t.Run("Vendor keys like ANTHROPIC_API_KEY and OPENAI_API_KEY are ignored for LLM", func(t *testing.T) {
+		clearAll()
+		t.Setenv("CORTEX_LLM_API_KEY", "")
+		t.Setenv("OPENAI_API_KEY", "direct-openai-key")
+		t.Setenv("ANTHROPIC_API_KEY", "direct-anthropic-key")
+		if got := ResolveLLMAPIKey("openai"); got != "" {
+			t.Errorf("expected empty key (vendor keys must be ignored), got %q", got)
+		}
+		if got := ResolveLLMAPIKey("anthropic"); got != "" {
+			t.Errorf("expected empty key (vendor keys must be ignored), got %q", got)
+		}
+	})
+}
+
+func TestGetSetProperty_StandardizedAliases(t *testing.T) {
+	cfg := defaults
+	cfg.Database.InMemory = true
+
+	// 1. Setting llm.provider sets LLM/AI independently from Embedding
+	if err := cfg.SetProperty("llm.provider", "ollama"); err != nil {
+		t.Fatalf("SetProperty(llm.provider) error: %v", err)
+	}
+	if v, err := cfg.GetProperty("llm.provider"); err != nil || v != "ollama" {
+		t.Errorf("GetProperty(llm.provider) = %q, err = %v", v, err)
+	}
+	// Embedding provider must remain empty (""), not affected by llm.provider ("ollama")
+	if v, err := cfg.GetProperty("embedding.provider"); err != nil || v != "" {
+		t.Errorf("GetProperty(embedding.provider) = %q, want empty", v)
+	}
+	if v, err := cfg.GetProperty("search.embedding_provider"); err != nil || v != "" {
+		t.Errorf("GetProperty(search.embedding_provider) = %q, want empty", v)
+	}
+
+	// 2. Setting embedding.provider sets search.embedding_provider independently
+	if err := cfg.SetProperty("embedding.provider", "cohere"); err != nil {
+		t.Fatalf("SetProperty(embedding.provider) error: %v", err)
+	}
+	if v, err := cfg.GetProperty("embedding.provider"); err != nil || v != "cohere" {
+		t.Errorf("GetProperty(embedding.provider) = %q, want cohere", v)
+	}
+	if v, err := cfg.GetProperty("search.embedding_provider"); err != nil || v != "cohere" {
+		t.Errorf("GetProperty(search.embedding_provider) = %q, want cohere", v)
+	}
+	// LLM provider remains "ollama"
+	if v, err := cfg.GetProperty("llm.provider"); err != nil || v != "ollama" {
+		t.Errorf("GetProperty(llm.provider) = %q, want ollama", v)
+	}
+
+	// 3. Setting embedding.model alias
+	if err := cfg.SetProperty("embedding.model", "nomic-embed-text"); err != nil {
+		t.Fatalf("SetProperty(embedding.model) error: %v", err)
+	}
+	if v, err := cfg.GetProperty("embedding.model"); err != nil || v != "nomic-embed-text" {
+		t.Errorf("GetProperty(embedding.model) = %q, want nomic-embed-text", v)
+	}
+	if v, err := cfg.GetProperty("search.embedding_model"); err != nil || v != "nomic-embed-text" {
+		t.Errorf("GetProperty(search.embedding_model) = %q, want nomic-embed-text", v)
+	}
+
+	// 4. Setting llm.model
+	if err := cfg.SetProperty("llm.model", "claude-3-5-sonnet"); err != nil {
+		t.Fatalf("SetProperty(llm.model) error: %v", err)
+	}
+	if v, err := cfg.GetProperty("llm.model"); err != nil || v != "claude-3-5-sonnet" {
+		t.Errorf("GetProperty(llm.model) = %q, want claude-3-5-sonnet", v)
+	}
+	if v, err := cfg.GetProperty("embedding.model"); err != nil || v != "nomic-embed-text" {
+		t.Errorf("GetProperty(embedding.model) = %q, want nomic-embed-text", v)
+	}
+}

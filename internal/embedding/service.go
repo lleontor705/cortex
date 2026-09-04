@@ -72,7 +72,7 @@ func newWithClient(cfg Config, client *http.Client, maxBody int64, maxConcurrent
 	case "openai":
 		key := cfg.APIKey
 		if key == "" {
-			key = os.Getenv("OPENAI_API_KEY")
+			key = os.Getenv("CORTEX_EMBEDDING_API_KEY")
 		}
 		if key == "" {
 			return nil

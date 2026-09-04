@@ -275,7 +275,7 @@ go test ./bench/locomo/ -run TestRunFullDataset -v -timeout 30m
 go test -tags cortex_vectors ./bench/locomo/ -run TestRunWithOllamaEmbeddings -v -timeout 30m
 
 # LOCOMO — with OpenAI embeddings (requires API key)
-OPENAI_API_KEY=sk-... go test -tags cortex_vectors ./bench/locomo/ -run TestRunWithOpenAIEmbeddings -v -timeout 30m
+CORTEX_EMBEDDING_API_KEY=sk-... go test -tags cortex_vectors ./bench/locomo/ -run TestRunWithOpenAIEmbeddings -v -timeout 30m
 
 # DMR
 go test ./bench/dmr/ -run TestRunFullDataset -v -timeout 30m

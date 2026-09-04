@@ -1328,7 +1328,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if a.Stores.Embeddings != nil {
 		writef(stdout, "  [OK]   Embeddings: %s (%d dims)\n", a.Stores.Embeddings.Model(), a.Stores.Embeddings.Dimensions())
 	} else {
-		writef(stdout, "  [WARN] Embeddings: not configured (set search.embedding_provider)\n")
+		writef(stdout, "  [WARN] Embeddings: not configured (set search.embedding_provider or ai.provider)\n")
 	}
 
 	// 6. Orphan count
@@ -1696,6 +1696,7 @@ func runConfigWizard(stdout, stderr io.Writer) int {
 	writef(stdout, "Storage: %s\n", cfg.Database.Path)
 	writef(stdout, "HTTP Port: %d (enabled: %t)\n", cfg.HTTP.Port, cfg.HTTP.Enabled)
 	writef(stdout, "Embedding Provider: %s\n", cfg.Search.EmbeddingProvider)
+	writef(stdout, "LLM / AI Provider: %s\n", cfg.AI.Provider)
 	writef(stdout, "\nTip: Use 'cortex config set <key> <value>' for instant CLI updates, or 'cortex tui' for full visual navigation.\n\n")
 	return 0
 }

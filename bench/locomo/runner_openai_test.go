@@ -15,9 +15,9 @@ func TestRunWithOpenAIEmbeddings(t *testing.T) {
 		t.Skip("LOCOMO dataset not downloaded")
 	}
 
-	key := os.Getenv("OPENAI_API_KEY")
+	key := os.Getenv("CORTEX_EMBEDDING_API_KEY")
 	if key == "" {
-		t.Skip("OPENAI_API_KEY not set")
+		t.Skip("CORTEX_EMBEDDING_API_KEY not set")
 	}
 
 	result, err := Run(Config{

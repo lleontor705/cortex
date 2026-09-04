@@ -29,9 +29,51 @@ func TestNewReturnsNilForEmpty(t *testing.T) {
 
 func TestNewReturnsNilForOpenAIWithoutKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
+	t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "")
+	t.Setenv("CORTEX_AI_API_KEY", "")
 	svc := New(Config{Provider: "openai"})
 	if svc != nil {
 		t.Fatal("expected nil when no API key available")
+	}
+}
+
+func TestNewReturnsServiceForOpenAIWithCortexEmbeddingKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "cortex-emb-key")
+	svc := New(Config{Provider: "openai"})
+	if svc == nil {
+		t.Fatal("expected non-nil service with CORTEX_EMBEDDING_API_KEY")
+	}
+}
+
+func TestNewRejectsCortexAIKeyForEmbedding(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
+	t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "")
+	t.Setenv("CORTEX_AI_API_KEY", "cortex-ai-key")
+	svc := New(Config{Provider: "openai"})
+	if svc != nil {
+		t.Fatal("expected nil service: CORTEX_AI_API_KEY must not configure embeddings")
+	}
+}
+
+func TestNewRejectsOpenAIKeyForEmbedding(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "direct-openai-key")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
+	t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "")
+	svc := New(Config{Provider: "openai"})
+	if svc != nil {
+		t.Fatal("expected nil service: OPENAI_API_KEY must not configure embeddings")
+	}
+}
+
+func TestNewRejectsCortexSearchEmbeddingKeyForEmbedding(t *testing.T) {
+	t.Setenv("CORTEX_SEARCH_EMBEDDING_API_KEY", "legacy-search-key")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
+	svc := New(Config{Provider: "openai"})
+	if svc != nil {
+		t.Fatal("expected nil service: CORTEX_SEARCH_EMBEDDING_API_KEY must not configure embeddings")
 	}
 }
 

@@ -64,7 +64,9 @@ railway service source connect --image ghcr.io/lleontor705/cortex-web:latest --s
 | `CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST` | Hostname privado autorizado para HTTP interno | `ollama.railway.internal` |
 | `CORTEX_LLM_PROVIDER` | Proveedor de LLM del servidor | `openai` / `anthropic` / `google` |
 | `CORTEX_LLM_MODEL` | Modelo de LLM | `gpt-4o-mini` / `claude-3-5-sonnet` |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Llave de API del proveedor | `sk-...` |
+| `CORTEX_EMBEDDING_API_KEY` | Credencial para el proveedor de embeddings | `sk-...` |
+| `CORTEX_LLM_BASE_URL` | URL base del proveedor LLM (opcional) | `https://api.openai.com/v1` |
+| `CORTEX_LLM_API_KEY` | Credencial para el proveedor de LLM | `sk-...` |
 
 ### B. Variables de Cortex Web
 

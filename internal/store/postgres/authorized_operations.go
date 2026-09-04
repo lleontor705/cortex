@@ -1019,12 +1019,6 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 	}
 	embModel := os.Getenv("CORTEX_EMBEDDING_MODEL")
 	if embModel == "" {
-		embModel = os.Getenv("CORTEX_SEARCH_EMBEDDING_MODEL")
-	}
-	if embModel == "" {
-		embModel = os.Getenv("CORTEX_AI_MODEL")
-	}
-	if embModel == "" {
 		embModel = "text-embedding-3-small"
 	}
 
