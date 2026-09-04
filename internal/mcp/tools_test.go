@@ -866,6 +866,28 @@ func (p *Processor) Run() { ProcessData(10) }
 	if !strings.Contains(cycleTxt, "total_cycles_detected") {
 		t.Fatalf("expected total_cycles_detected: %s", cycleTxt)
 	}
+
+	// 6. Test Blast Radius for Code Symbol and File
+	blastHandler := handleGetBlastRadius(stores)
+	blastRes := callTool(t, blastHandler, map[string]interface{}{
+		"project": "test-proj",
+		"target":  "ProcessData",
+		"depth":   float64(3),
+	})
+	blastTxt := resultText(blastRes)
+	if !strings.Contains(blastTxt, "ProcessData") {
+		t.Fatalf("expected ProcessData in code blast radius: %s", blastTxt)
+	}
+
+	// Also test passing target as string via observation_id
+	blastResStr := callTool(t, blastHandler, map[string]interface{}{
+		"project":        "test-proj",
+		"observation_id": "engine.go",
+	})
+	blastTxtStr := resultText(blastResStr)
+	if !strings.Contains(blastTxtStr, "engine.go") {
+		t.Fatalf("expected engine.go in code blast radius: %s", blastTxtStr)
+	}
 }
 
 // Ensure unused imports don't cause issues.

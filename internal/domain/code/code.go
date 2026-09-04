@@ -156,6 +156,19 @@ type AnalyticsReport struct {
 	GeneratedAt     time.Time           `json:"generated_at"`
 }
 
+// CodeBlastRadius represents the impacted symbols, callers, and files when a code entity changes.
+type CodeBlastRadius struct {
+	Target         string        `json:"target"`
+	TargetKind     string        `json:"target_kind"` // "symbol", "file", "git_diff"
+	RootNode       string        `json:"root_node,omitempty"`
+	ChangedFiles   []string      `json:"changed_files,omitempty"`
+	DirectCallers  []string      `json:"direct_callers"`
+	ImpactedFiles  []string      `json:"impacted_files"`
+	TotalImpacted  []string      `json:"total_impacted"`
+	BlastRadiusPct float64       `json:"blast_radius_pct"`
+	AffectedCycles []ImportCycle `json:"affected_cycles,omitempty"`
+}
+
 // Store defines storage operations for code symbols and relations.
 type Store interface {
 	SaveSymbols(ctx context.Context, symbols []Symbol) error

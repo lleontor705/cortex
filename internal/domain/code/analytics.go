@@ -2,6 +2,7 @@ package code
 
 import (
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -252,4 +253,272 @@ func calculateCommunities(symbols []Symbol, relations []Relation) ([]CommunityCo
 	}
 
 	return communities, avg
+}
+
+// CalculateCodeBlastRadius computes callers and impacted files when a symbol or file is modified.
+func CalculateCodeBlastRadius(graph *CodeGraph, target string, maxHops int) *CodeBlastRadius {
+	if graph == nil || len(graph.Symbols) == 0 {
+		return &CodeBlastRadius{
+			Target:         target,
+			TargetKind:     "unknown",
+			DirectCallers:  []string{},
+			ImpactedFiles:  []string{},
+			TotalImpacted:  []string{},
+			BlastRadiusPct: 0,
+		}
+	}
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+
+	normTarget := strings.TrimSpace(target)
+	normTargetSlash := filepath.ToSlash(normTarget)
+
+	symMap := make(map[string]Symbol, len(graph.Symbols))
+	fileMap := make(map[string][]string) // slashFilePath -> symbolIDs
+	nameMap := make(map[string][]string) // name -> symbolIDs
+
+	for _, s := range graph.Symbols {
+		symMap[s.ID] = s
+		fSlash := filepath.ToSlash(s.FilePath)
+		if fSlash != "" {
+			fileMap[fSlash] = append(fileMap[fSlash], s.ID)
+		}
+		nameMap[s.Name] = append(nameMap[s.Name], s.ID)
+	}
+
+	targetKind := "symbol"
+	var rootIDs []string
+
+	// Check if target is a file path
+	if ids, ok := fileMap[normTargetSlash]; ok {
+		targetKind = "file"
+		rootIDs = append(rootIDs, ids...)
+	} else {
+		// Check suffix match on file path (e.g. "service.go" matching "internal/domain/service.go")
+		for fSlash, ids := range fileMap {
+			if strings.HasSuffix(fSlash, "/"+normTargetSlash) || fSlash == normTargetSlash {
+				targetKind = "file"
+				rootIDs = append(rootIDs, ids...)
+			}
+		}
+	}
+
+	// If not a file, check if target is an exact symbol ID
+	if len(rootIDs) == 0 {
+		if _, ok := symMap[normTarget]; ok {
+			targetKind = "symbol"
+			rootIDs = append(rootIDs, normTarget)
+		}
+	}
+
+	// Check by symbol Name
+	if len(rootIDs) == 0 {
+		if ids, ok := nameMap[normTarget]; ok {
+			targetKind = "symbol"
+			rootIDs = append(rootIDs, ids...)
+		}
+	}
+
+	// If still empty, try case-insensitive symbol match
+	if len(rootIDs) == 0 {
+		for _, s := range graph.Symbols {
+			if strings.EqualFold(s.Name, normTarget) || strings.EqualFold(s.ID, normTarget) {
+				rootIDs = append(rootIDs, s.ID)
+			}
+		}
+	}
+
+	if len(rootIDs) == 0 {
+		return &CodeBlastRadius{
+			Target:         target,
+			TargetKind:     "unknown",
+			DirectCallers:  []string{},
+			ImpactedFiles:  []string{},
+			TotalImpacted:  []string{},
+			BlastRadiusPct: 0,
+		}
+	}
+
+	return computeBlastFromRoots(graph, target, targetKind, nil, rootIDs, maxHops, symMap)
+}
+
+// CalculateDiffBlastRadius computes the aggregate impact of a list of changed files.
+func CalculateDiffBlastRadius(graph *CodeGraph, modifiedFiles []string, maxHops int) *CodeBlastRadius {
+	if graph == nil || len(graph.Symbols) == 0 || len(modifiedFiles) == 0 {
+		return &CodeBlastRadius{
+			Target:         "git_diff",
+			TargetKind:     "git_diff",
+			ChangedFiles:   modifiedFiles,
+			DirectCallers:  []string{},
+			ImpactedFiles:  []string{},
+			TotalImpacted:  []string{},
+			BlastRadiusPct: 0,
+		}
+	}
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+
+	symMap := make(map[string]Symbol, len(graph.Symbols))
+	fileMap := make(map[string][]string)
+
+	for _, s := range graph.Symbols {
+		symMap[s.ID] = s
+		fSlash := filepath.ToSlash(s.FilePath)
+		if fSlash != "" {
+			fileMap[fSlash] = append(fileMap[fSlash], s.ID)
+		}
+	}
+
+	var rootIDs []string
+	matchedFilesSet := make(map[string]bool)
+
+	for _, rawFile := range modifiedFiles {
+		fSlash := filepath.ToSlash(strings.TrimSpace(rawFile))
+		if ids, ok := fileMap[fSlash]; ok {
+			rootIDs = append(rootIDs, ids...)
+			matchedFilesSet[fSlash] = true
+			continue
+		}
+		// Match suffix
+		for indexedFile, ids := range fileMap {
+			if strings.HasSuffix(indexedFile, "/"+fSlash) || strings.HasSuffix(fSlash, "/"+indexedFile) {
+				rootIDs = append(rootIDs, ids...)
+				matchedFilesSet[indexedFile] = true
+			}
+		}
+	}
+
+	var matchedFiles []string
+	for f := range matchedFilesSet {
+		matchedFiles = append(matchedFiles, f)
+	}
+	sort.Strings(matchedFiles)
+
+	return computeBlastFromRoots(graph, "git_diff", "git_diff", modifiedFiles, rootIDs, maxHops, symMap)
+}
+
+func computeBlastFromRoots(
+	graph *CodeGraph,
+	target string,
+	targetKind string,
+	changedFiles []string,
+	rootIDs []string,
+	maxHops int,
+	symMap map[string]Symbol,
+) *CodeBlastRadius {
+	// Reverse adjacency: caller/source -> callee/target.
+	// When target is modified, caller/source is impacted!
+	reverseAdj := make(map[string][]string)
+	forwardAdj := make(map[string][]string) // For cycle detection
+
+	for _, r := range graph.Relations {
+		// r.SourceID calls or depends on r.TargetID
+		reverseAdj[r.TargetID] = append(reverseAdj[r.TargetID], r.SourceID)
+		forwardAdj[r.SourceID] = append(forwardAdj[r.SourceID], r.TargetID)
+	}
+
+	visited := make(map[string]bool)
+	isRoot := make(map[string]bool)
+	for _, id := range rootIDs {
+		visited[id] = true
+		isRoot[id] = true
+	}
+
+	queue := make([]struct {
+		id  string
+		hop int
+	}, 0, len(rootIDs))
+
+	for _, id := range rootIDs {
+		queue = append(queue, struct {
+			id  string
+			hop int
+		}{id: id, hop: 0})
+	}
+
+	var directCallers []string
+	var totalImpacted []string
+	impactedFileSet := make(map[string]bool)
+	directCallerSet := make(map[string]bool)
+	totalImpactedSet := make(map[string]bool)
+
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+
+		if !isRoot[curr.id] {
+			if !totalImpactedSet[curr.id] {
+				totalImpactedSet[curr.id] = true
+				totalImpacted = append(totalImpacted, curr.id)
+			}
+			if curr.hop == 1 && !directCallerSet[curr.id] {
+				directCallerSet[curr.id] = true
+				directCallers = append(directCallers, curr.id)
+			}
+			if s, ok := symMap[curr.id]; ok && s.FilePath != "" {
+				impactedFileSet[s.FilePath] = true
+			}
+		}
+
+		if curr.hop < maxHops {
+			for _, caller := range reverseAdj[curr.id] {
+				if !visited[caller] {
+					visited[caller] = true
+					queue = append(queue, struct {
+						id  string
+						hop int
+					}{id: caller, hop: curr.hop + 1})
+				}
+			}
+		}
+	}
+
+	var impactedFiles []string
+	for f := range impactedFileSet {
+		impactedFiles = append(impactedFiles, f)
+	}
+	sort.Strings(impactedFiles)
+	sort.Strings(directCallers)
+	sort.Strings(totalImpacted)
+
+	pct := 0.0
+	if len(graph.Symbols) > 0 {
+		pct = math.Round((float64(len(totalImpacted))/float64(len(graph.Symbols)))*10000) / 100.0
+	}
+
+	// Check if any root or impacted symbols are in cycles
+	allCycles := detectCycles(graph.Symbols, forwardAdj, symMap)
+	var affectedCycles []ImportCycle
+	for _, c := range allCycles {
+		hasCycleImpact := false
+		for _, f := range c.Files {
+			if impactedFileSet[f] {
+				hasCycleImpact = true
+				break
+			}
+			for _, id := range rootIDs {
+				if sym, ok := symMap[id]; ok && sym.FilePath == f {
+					hasCycleImpact = true
+					break
+				}
+			}
+		}
+		if hasCycleImpact {
+			affectedCycles = append(affectedCycles, c)
+		}
+	}
+
+	return &CodeBlastRadius{
+		Target:         target,
+		TargetKind:     targetKind,
+		RootNode:       target,
+		ChangedFiles:   changedFiles,
+		DirectCallers:  directCallers,
+		ImpactedFiles:  impactedFiles,
+		TotalImpacted:  totalImpacted,
+		BlastRadiusPct: pct,
+		AffectedCycles: affectedCycles,
+	}
 }

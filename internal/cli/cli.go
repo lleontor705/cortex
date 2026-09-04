@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -148,6 +150,7 @@ Commands:
   doctor                 Run health checks on the database
   gc [--days N]          Garbage collect archived observations (default: 90 days)
   config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard)
+  code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph)
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
@@ -1941,6 +1944,9 @@ func runCode(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "  scan [path] [--project=<name>] [--max-files=N]  Scan repository and index code AST\n")
 		writef(stdout, "  symbols [--project=<name>] [--kind=<kind>]      List indexed code symbols\n")
 		writef(stdout, "  analyze [--project=<name>]                      Run Graphify architectural analytics\n")
+		writef(stdout, "  impact <target> [--project=<name>] [--hops=N]   Calculate blast radius for a symbol or file\n")
+		writef(stdout, "  diff [--staged] [--project=<name>] [--hops=N]   Analyze blast radius of uncommitted Git changes\n")
+		writef(stdout, "  graph [--project=<name>] [--format=mermaid]     Export or visualize code dependency graph\n")
 		return 0
 	}
 
@@ -2020,8 +2026,421 @@ func runCode(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 
+	case "impact", "blast-radius":
+		var target string
+		project := "default"
+		hops := 3
+		jsonOutput := false
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--hops=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--hops=")); err == nil {
+					hops = n
+				}
+			} else if arg == "--json" {
+				jsonOutput = true
+			} else if !strings.HasPrefix(arg, "-") && target == "" {
+				target = arg
+			}
+		}
+
+		if target == "" {
+			writef(stderr, "error: target symbol or file path is required (e.g. cortex code impact CalculateBlastRadius)\n")
+			return 1
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		blast := code.CalculateCodeBlastRadius(graph, target, hops)
+		if jsonOutput {
+			b, err := json.MarshalIndent(blast, "", "  ")
+			if err != nil {
+				writef(stderr, "error serializing json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(b))
+			return 0
+		}
+
+		writef(stdout, "\n=== 💥 Code Blast Radius: %q (%s) ===\n", blast.Target, blast.TargetKind)
+		writef(stdout, "  • Project:          %s\n", project)
+		writef(stdout, "  • Direct Callers:   %d\n", len(blast.DirectCallers))
+		writef(stdout, "  • Impacted Files:   %d\n", len(blast.ImpactedFiles))
+		writef(stdout, "  • Total Impacted:   %d symbols\n", len(blast.TotalImpacted))
+		writef(stdout, "  • Blast Radius:     %.2f%% of codebase\n", blast.BlastRadiusPct)
+
+		if len(blast.DirectCallers) > 0 {
+			writef(stdout, "\n📞 Direct Callers:\n")
+			for _, c := range blast.DirectCallers {
+				writef(stdout, "     • %s\n", c)
+			}
+		}
+		if len(blast.ImpactedFiles) > 0 {
+			writef(stdout, "\n📂 Impacted Files:\n")
+			for _, f := range blast.ImpactedFiles {
+				writef(stdout, "     • %s\n", f)
+			}
+		}
+		if len(blast.AffectedCycles) > 0 {
+			writef(stdout, "\n⚠️  Affected Circular Dependencies (%d):\n", len(blast.AffectedCycles))
+			for _, c := range blast.AffectedCycles {
+				writef(stdout, "     • %s\n", c.ID)
+			}
+		}
+		writef(stdout, "\n")
+		return 0
+
+	case "diff":
+		project := "default"
+		hops := 3
+		staged := false
+		jsonOutput := false
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--hops=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--hops=")); err == nil {
+					hops = n
+				}
+			} else if arg == "--staged" || arg == "--cached" {
+				staged = true
+			} else if arg == "--json" {
+				jsonOutput = true
+			}
+		}
+
+		modifiedFiles, err := getGitModifiedFiles(staged)
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+
+		if len(modifiedFiles) == 0 {
+			modeStr := "working tree"
+			if staged {
+				modeStr = "staging area (--staged)"
+			}
+			writef(stdout, "✔ No modified files detected in Git %s.\n", modeStr)
+			return 0
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		blast := code.CalculateDiffBlastRadius(graph, modifiedFiles, hops)
+		if jsonOutput {
+			b, err := json.MarshalIndent(blast, "", "  ")
+			if err != nil {
+				writef(stderr, "error serializing json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(b))
+			return 0
+		}
+
+		writef(stdout, "\n=== 🔄 Git Pre-Commit Impact Analysis ===\n")
+		writef(stdout, "  • Project:          %s\n", project)
+		writef(stdout, "  • Modified Files:   %d\n", len(modifiedFiles))
+		for _, mf := range modifiedFiles {
+			writef(stdout, "       ↳ %s\n", mf)
+		}
+		writef(stdout, "  • Direct Callers:   %d\n", len(blast.DirectCallers))
+		writef(stdout, "  • Impacted Files:   %d\n", len(blast.ImpactedFiles))
+		writef(stdout, "  • Total Impacted:   %d symbols\n", len(blast.TotalImpacted))
+		writef(stdout, "  • Blast Radius:     %.2f%% of codebase\n", blast.BlastRadiusPct)
+
+		if len(blast.DirectCallers) > 0 {
+			writef(stdout, "\n📞 Direct Dependent Callers:\n")
+			for _, c := range blast.DirectCallers {
+				writef(stdout, "     • %s\n", c)
+			}
+		}
+		if len(blast.ImpactedFiles) > 0 {
+			writef(stdout, "\n📂 Impacted Downstream Files:\n")
+			for _, f := range blast.ImpactedFiles {
+				writef(stdout, "     • %s\n", f)
+			}
+		}
+		if len(blast.AffectedCycles) > 0 {
+			writef(stdout, "\n⚠️  Affected Circular Dependencies (%d):\n", len(blast.AffectedCycles))
+			for _, c := range blast.AffectedCycles {
+				writef(stdout, "     • %s\n", c.ID)
+			}
+		}
+		writef(stdout, "\n")
+		return 0
+
+	case "graph":
+		project := "default"
+		format := "mermaid"
+		symbol := ""
+		hops := 2
+		maxNodes := 50
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--format=") {
+				format = strings.ToLower(strings.TrimPrefix(arg, "--format="))
+			} else if strings.HasPrefix(arg, "--symbol=") {
+				symbol = strings.TrimPrefix(arg, "--symbol=")
+			} else if strings.HasPrefix(arg, "--hops=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--hops=")); err == nil {
+					hops = n
+				}
+			} else if strings.HasPrefix(arg, "--max-nodes=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--max-nodes=")); err == nil {
+					maxNodes = n
+				}
+			}
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		switch format {
+		case "mermaid":
+			writef(stdout, "%s\n", renderMermaidGraph(graph, symbol, hops, maxNodes))
+			return 0
+		case "ascii", "tree":
+			writef(stdout, "%s\n", renderAsciiGraph(graph, symbol, hops, maxNodes))
+			return 0
+		case "json":
+			b, err := json.MarshalIndent(graph, "", "  ")
+			if err != nil {
+				writef(stderr, "error serializing json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(b))
+			return 0
+		default:
+			writef(stderr, "unknown format: %s (valid: mermaid, ascii, json)\n", format)
+			return 1
+		}
+
 	default:
 		writef(stderr, "unknown code subcommand: %s\n", args[0])
 		return 1
 	}
+}
+
+func getGitModifiedFiles(staged bool) ([]string, error) {
+	var cmd *exec.Cmd
+	if staged {
+		cmd = exec.Command("git", "diff", "--name-only", "--cached")
+	} else {
+		cmd = exec.Command("git", "diff", "--name-only")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff failed (ensure git is installed and you are in a git repository): %w", err)
+	}
+
+	var files []string
+	for _, l := range strings.Split(string(out), "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			files = append(files, filepath.ToSlash(l))
+		}
+	}
+
+	if !staged {
+		cmdCached := exec.Command("git", "diff", "--name-only", "--cached")
+		if outCached, errCached := cmdCached.Output(); errCached == nil {
+			for _, l := range strings.Split(string(outCached), "\n") {
+				l = strings.TrimSpace(l)
+				if l != "" {
+					files = append(files, filepath.ToSlash(l))
+				}
+			}
+		}
+	}
+
+	seen := make(map[string]bool)
+	var unique []string
+	for _, f := range files {
+		if !seen[f] {
+			seen[f] = true
+			unique = append(unique, f)
+		}
+	}
+	sort.Strings(unique)
+	return unique, nil
+}
+
+func sanitizeMermaidID(id string) string {
+	r := strings.NewReplacer(":", "_", ".", "_", "/", "_", "-", "_", "\\", "_", "@", "_")
+	return "n_" + r.Replace(id)
+}
+
+func renderMermaidGraph(graph *code.CodeGraph, rootSymbol string, hops int, maxNodes int) string {
+	if graph == nil || len(graph.Symbols) == 0 {
+		return "flowchart TD\n  empty[\"Empty Code Graph\"]\n"
+	}
+	if maxNodes <= 0 {
+		maxNodes = 60
+	}
+
+	var sb strings.Builder
+	sb.WriteString("flowchart TD\n")
+	sb.WriteString("  %% Styles\n")
+	sb.WriteString("  classDef default fill:#1e293b,stroke:#475569,stroke-width:1px,color:#f8fafc;\n")
+	sb.WriteString("  classDef root fill:#b45309,stroke:#f59e0b,stroke-width:2px,color:#fef3c7;\n\n")
+
+	includedNodes := make(map[string]bool)
+	if rootSymbol != "" {
+		blast := code.CalculateCodeBlastRadius(graph, rootSymbol, hops)
+		for _, s := range blast.TotalImpacted {
+			includedNodes[s] = true
+		}
+		for _, s := range graph.Symbols {
+			if s.Name == rootSymbol || s.ID == rootSymbol || s.FilePath == rootSymbol {
+				includedNodes[s.ID] = true
+			}
+		}
+	} else {
+		for i, s := range graph.Symbols {
+			if i >= maxNodes {
+				break
+			}
+			includedNodes[s.ID] = true
+		}
+	}
+
+	symMap := make(map[string]code.Symbol)
+	for _, s := range graph.Symbols {
+		symMap[s.ID] = s
+	}
+
+	sb.WriteString("  %% Nodes\n")
+	var sortedIDs []string
+	for id := range includedNodes {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
+	for _, id := range sortedIDs {
+		s := symMap[id]
+		name := s.Name
+		if name == "" {
+			name = id
+		}
+		mID := sanitizeMermaidID(id)
+		label := fmt.Sprintf("%s (%s)", name, s.Kind)
+		if s.FilePath != "" {
+			label += fmt.Sprintf("<br/><i>%s</i>", filepath.Base(s.FilePath))
+		}
+		fmt.Fprintf(&sb, "  %s[\"%s\"]\n", mID, label)
+		if s.Name == rootSymbol || s.ID == rootSymbol {
+			fmt.Fprintf(&sb, "  class %s root;\n", mID)
+		}
+	}
+
+	sb.WriteString("\n  %% Relations\n")
+	edgeCount := 0
+	for _, r := range graph.Relations {
+		if includedNodes[r.SourceID] && includedNodes[r.TargetID] {
+			edgeCount++
+			if edgeCount > maxNodes*2 {
+				break
+			}
+			srcMID := sanitizeMermaidID(r.SourceID)
+			tgtMID := sanitizeMermaidID(r.TargetID)
+			rel := r.Relation
+			if rel == "" {
+				rel = "calls"
+			}
+			fmt.Fprintf(&sb, "  %s -->|%s| %s\n", srcMID, rel, tgtMID)
+		}
+	}
+
+	return sb.String()
+}
+
+func renderAsciiGraph(graph *code.CodeGraph, rootSymbol string, hops int, maxNodes int) string {
+	if graph == nil || len(graph.Symbols) == 0 {
+		return "(Empty Code Graph)\n"
+	}
+	var sb strings.Builder
+
+	outMap := make(map[string][]code.Relation)
+	symMap := make(map[string]code.Symbol)
+	for _, s := range graph.Symbols {
+		symMap[s.ID] = s
+	}
+	for _, r := range graph.Relations {
+		outMap[r.SourceID] = append(outMap[r.SourceID], r)
+	}
+
+	var rootList []string
+	if rootSymbol != "" {
+		for _, s := range graph.Symbols {
+			if s.Name == rootSymbol || s.ID == rootSymbol || s.FilePath == rootSymbol {
+				rootList = append(rootList, s.ID)
+			}
+		}
+	} else {
+		report := code.ComputeAnalytics(graph)
+		for _, gn := range report.GodNodes {
+			rootList = append(rootList, gn.ID)
+			if len(rootList) >= 10 {
+				break
+			}
+		}
+		if len(rootList) == 0 {
+			for i, s := range graph.Symbols {
+				if i >= 10 {
+					break
+				}
+				rootList = append(rootList, s.ID)
+			}
+		}
+	}
+
+	for _, rootID := range rootList {
+		sym := symMap[rootID]
+		fmt.Fprintf(&sb, "📦 [%s] %s (%s)\n", sym.Kind, sym.Name, sym.FilePath)
+		for _, r := range outMap[rootID] {
+			targetSym := symMap[r.TargetID]
+			tgtName := targetSym.Name
+			if tgtName == "" {
+				tgtName = r.TargetID
+			}
+			fmt.Fprintf(&sb, "   └── %s ➔ [%s] %s (%s)\n", r.Relation, targetSym.Kind, tgtName, targetSym.FilePath)
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }

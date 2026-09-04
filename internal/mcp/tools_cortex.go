@@ -340,8 +340,14 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Get Code Impact & Blast Radius"),
 			mcp.WithReadOnlyHintAnnotation(true),
-			mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol or observation."),
-			withIntegerID("observation_id", "Observation ID or symbol reference to analyze"),
+			mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol, file, or observation."),
+			mcp.WithString("target",
+				mcp.Description("Code symbol name (e.g. CalculateTax), file path (e.g. main.go), or node ID"),
+			),
+			withIntegerID("observation_id", "Legacy argument: Observation ID or symbol reference to analyze"),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
 			mcp.WithNumber("depth",
 				mcp.Description("Traversal depth (default: 3)"),
 			),
@@ -1176,60 +1182,95 @@ func handleIngestCode(stores *Stores) server.ToolHandlerFunc {
 
 func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		obsID, ok := positiveIDArg(req, "observation_id")
-		if !ok {
-			return errorResult("observation_id must be a positive integer")
-		}
 		depth := intArg(req, "depth", 3)
 		if depth <= 0 || depth > 10 {
 			depth = 3
 		}
-
-		obs, err := stores.Observations.GetByID(ctx, obsID)
-		if err != nil {
-			return errorResult("observation not found: %v", err)
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
 		}
 
-		allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: obs.Project, Limit: 500})
-		if err != nil {
-			return errorResult("list observations: %v", err)
+		target := stringArg(req, "target")
+		if target == "" {
+			target = stringArg(req, "node_id")
 		}
 
-		var nodes []graphdomain.GraphAnalyticsNode
-		var edges []graphdomain.GraphAnalyticsEdge
+		// Check if observation_id is provided as a positive integer
+		obsID, isPositiveInt := positiveIDArg(req, "observation_id")
+		if isPositiveInt {
+			obs, err := stores.Observations.GetByID(ctx, obsID)
+			if err != nil {
+				return errorResult("observation not found: %v", err)
+			}
 
-		for _, o := range allObs {
-			nid := fmt.Sprintf("%d", o.ID)
-			nodes = append(nodes, graphdomain.GraphAnalyticsNode{
-				ID:         nid,
-				Label:      o.Title,
-				Kind:       "observation",
-				Subtype:    o.Type,
-				SourceFile: o.Source,
-			})
+			allObs, err := stores.Observations.List(ctx, domain.ObservationFilter{Project: obs.Project, Limit: 500})
+			if err != nil {
+				return errorResult("list observations: %v", err)
+			}
 
-			subEdges, err := stores.Graph.GetEdgesForObservation(ctx, o.ID)
-			if err == nil {
-				for _, e := range subEdges {
-					edges = append(edges, graphdomain.GraphAnalyticsEdge{
-						ID:         fmt.Sprintf("%d->%d", e.FromObsID, e.ToObsID),
-						Source:     fmt.Sprintf("%d", e.FromObsID),
-						Target:     fmt.Sprintf("%d", e.ToObsID),
-						Type:       e.RelationType,
-						Weight:     e.Weight,
-						Confidence: e.Confidence,
-					})
+			var nodes []graphdomain.GraphAnalyticsNode
+			var edges []graphdomain.GraphAnalyticsEdge
+
+			for _, o := range allObs {
+				nid := fmt.Sprintf("%d", o.ID)
+				nodes = append(nodes, graphdomain.GraphAnalyticsNode{
+					ID:         nid,
+					Label:      o.Title,
+					Kind:       "observation",
+					Subtype:    o.Type,
+					SourceFile: o.Source,
+				})
+
+				subEdges, err := stores.Graph.GetEdgesForObservation(ctx, o.ID)
+				if err == nil {
+					for _, e := range subEdges {
+						edges = append(edges, graphdomain.GraphAnalyticsEdge{
+							ID:         fmt.Sprintf("%d->%d", e.FromObsID, e.ToObsID),
+							Source:     fmt.Sprintf("%d", e.FromObsID),
+							Target:     fmt.Sprintf("%d", e.ToObsID),
+							Type:       e.RelationType,
+							Weight:     e.Weight,
+							Confidence: e.Confidence,
+						})
+					}
 				}
+			}
+
+			targetNodeID := fmt.Sprintf("%d", obsID)
+			blast := graphdomain.CalculateBlastRadius(targetNodeID, nodes, edges, depth)
+			b, err := json.MarshalIndent(blast, "", "  ")
+			if err != nil {
+				return errorResult("serialize blast radius: %v", err)
+			}
+			return mcp.NewToolResultText(string(b)), nil
+		}
+
+		// If target was passed inside observation_id as a string (e.g. "CalculateTax" or "main.go")
+		if target == "" {
+			if s, ok := req.GetArguments()["observation_id"].(string); ok && strings.TrimSpace(s) != "" {
+				target = strings.TrimSpace(s)
 			}
 		}
 
-		targetNodeID := fmt.Sprintf("%d", obsID)
-		blast := graphdomain.CalculateBlastRadius(targetNodeID, nodes, edges, depth)
-		b, err := json.MarshalIndent(blast, "", "  ")
-		if err != nil {
-			return errorResult("serialize blast radius: %v", err)
+		if target == "" {
+			return errorResult("target symbol, file path, or observation_id is required")
 		}
-		return mcp.NewToolResultText(string(b)), nil
+
+		// Code Graph mode
+		if stores.Code != nil {
+			graph, err := stores.Code.GetGraph(ctx, project)
+			if err == nil && graph != nil && len(graph.Symbols) > 0 {
+				blast := code.CalculateCodeBlastRadius(graph, target, depth)
+				b, err := json.MarshalIndent(blast, "", "  ")
+				if err != nil {
+					return errorResult("serialize blast radius: %v", err)
+				}
+				return mcp.NewToolResultText(string(b)), nil
+			}
+		}
+
+		return errorResult("no code graph found for project %q (run 'cortex code scan' or 'cortex ingest' first)", project)
 	}
 }
 
