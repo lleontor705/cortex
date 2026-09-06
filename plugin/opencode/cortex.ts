@@ -12,7 +12,8 @@
  *   even if the plugin was loaded after the session started.
  *
  * Delivery contract (REM-PLUGIN-001):
- *   - Credentials come only from CORTEX_HTTP_TOKEN; without it nothing is sent.
+ *   - Credentials come only from CORTEX_HTTP_TOKEN; a tokenless exception is
+ *     limited to local mode with a parsed loopback destination.
  *   - Success is only a 2xx response with the exact persisted body expected
  *     for the endpoint; every other outcome is classified (unauthorized,
  *     forbidden, conflict, validation, unavailable, timeout,
@@ -148,6 +149,13 @@ export async function detectCortexMode(): Promise<CortexMode> {
     return "hybrid"
   }
 
+  // A tokenless destination is eligible only after local loopback URL
+  // classification. Never probe a protected remote endpoint to infer its mode.
+  if (!CORTEX_HTTP_TOKEN) {
+    cachedMode = "local"
+    return "local"
+  }
+
   // 2. Server Mode: Direct remote URL probe
   if (CORTEX_URL.startsWith("https://") || (CORTEX_HTTP_TOKEN && !CORTEX_URL.includes("127.0.0.1") && !CORTEX_URL.includes("localhost"))) {
     try {
@@ -163,6 +171,34 @@ export async function detectCortexMode(): Promise<CortexMode> {
 
   cachedMode = "local"
   return "local"
+}
+
+export function isTokenlessEligible(mode: CortexMode, rawUrl: string = CORTEX_URL): boolean {
+  if (mode !== "local") return false
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false
+    }
+    const host = parsed.hostname.toLowerCase()
+    if (host === "localhost" || host === "[::1]" || host === "::1") {
+      return true
+    }
+    const parts = host.split(".")
+    if (parts.length === 4) {
+      const octets = parts.map((p) => {
+        if (!/^\d+$/.test(p)) return -1
+        const n = Number(p)
+        return n >= 0 && n <= 255 ? n : -1
+      })
+      if (octets.every((o) => o >= 0)) {
+        return octets[0] === 127
+      }
+    }
+    return false
+  } catch {
+    return false
+  }
 }
 
 // Cortex's own MCP tools — don't count these as "tool calls" for session stats.
@@ -421,6 +457,10 @@ async function request(path: string, body?: unknown): Promise<HttpResult> {
     // Every request carries the credential when one is configured, including
     // protected GETs. /health is the only unauthenticated route and is probed
     // through boundedFetch directly, never here.
+    const tokenless = !CORTEX_HTTP_TOKEN && isTokenlessEligible(await detectCortexMode())
+    if (!CORTEX_HTTP_TOKEN && !tokenless) {
+      return { ok: false, classification: "config" }
+    }
     const headers: Record<string, string> = {}
     if (CORTEX_HTTP_TOKEN) headers.Authorization = `Bearer ${CORTEX_HTTP_TOKEN}`
     const init: RequestInit =
@@ -434,7 +474,7 @@ async function request(path: string, body?: unknown): Promise<HttpResult> {
             },
             body: JSON.stringify(body),
           }
-    const res = await boundedFetch(path, init)
+    const res = await boundedFetch(path, tokenless ? { ...init, redirect: "manual" } : init)
     if (res.status < 200 || res.status >= 300) {
       return { ok: false, classification: classifyStatus(res.status) }
     }
@@ -456,7 +496,7 @@ async function deliver(
   payload: unknown,
   expected: (body: unknown) => boolean
 ): Promise<void> {
-  if (!CORTEX_HTTP_TOKEN) {
+  if (!CORTEX_HTTP_TOKEN && !isTokenlessEligible(await detectCortexMode())) {
     report(kind, "config", "missing CORTEX_HTTP_TOKEN")
     return
   }
@@ -674,7 +714,7 @@ export const Cortex: Plugin = async (ctx) => {
     if (knownSessions.has(sessionId)) {
       return { confirmed: true, classification: "success" }
     }
-    if (!CORTEX_HTTP_TOKEN) {
+    if (!CORTEX_HTTP_TOKEN && !isTokenlessEligible(await detectCortexMode())) {
       report("session", "config", "missing CORTEX_HTTP_TOKEN")
       return { confirmed: false, classification: "config" }
     }
@@ -907,4 +947,3 @@ export const Cortex: Plugin = async (ctx) => {
 }
 
 export default Cortex;
-
