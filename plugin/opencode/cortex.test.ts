@@ -70,10 +70,15 @@ async function createHarness(
   endFixture?: FetchFixture,
   getFixture?: FetchFixture,
   sessionGetFixture?: FetchFixture,
+  url?: string,
+  mode?: string,
 ) {
   vi.resetModules()
   vi.stubEnv("CORTEX_HTTP_TOKEN", token)
   vi.stubEnv("CORTEX_HTTP_PORT", "7438")
+  if (url !== undefined) vi.stubEnv("CORTEX_URL", url)
+  if (mode !== undefined) vi.stubEnv("CORTEX_MODE", mode)
+  else vi.stubEnv("CORTEX_MODE", undefined)
 
   const requests: RecordedRequest[] = []
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -250,7 +255,6 @@ afterEach(() => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
 })
-
 describe("ORACLE-PLUGIN-001 OpenCode credentials, redaction, and continuity", () => {
   it("uses the installed CORTEX_HTTP_TOKEN environment credential without exposing it", async () => {
     const harness = await createHarness({
@@ -275,6 +279,12 @@ describe("ORACLE-PLUGIN-001 OpenCode credentials, redaction, and continuity", ()
         body: JSON.stringify({ status: "created", observation_ref: { local_id: 1 } }),
       },
       "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://remote.example.com:7438",
+      "server",
     )
 
     await harness.deliver()
@@ -1183,3 +1193,250 @@ describe("Cortex Mode Detection & Memory Instructions", () => {
   })
 })
 
+describe("REQ-PLUGIN-AUTH-001..003 Tokenless local loopback delivery and containment", () => {
+  const promptEcho = {
+    kind: "response" as const,
+    status: 201,
+    body: JSON.stringify({
+      id: 42,
+      content: `safe prompt ${PAYLOAD_CANARY}`,
+      project: "project",
+      session_id: "session-1",
+      created_at: "2026-08-12T00:00:00Z",
+    }),
+  }
+
+  it("permits tokenless protected requests on local loopback without Authorization header", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+
+    await harness.deliver()
+
+    const request = harness.promptRequest()
+    expect(request).toBeDefined()
+    expect(new Headers(request?.init?.headers).get("Authorization")).toBeNull()
+    const posts = harness.sessionPosts()
+    expect(posts).toHaveLength(1)
+    expect(new Headers(posts[0]?.init?.headers).get("Authorization")).toBeNull()
+    expect(harness.output()).toContain("success")
+  })
+
+  for (const loopbackUrl of ["http://localhost:7438", "http://127.0.0.2:7438", "http://[::1]:7438"]) {
+    it(`accepts loopback form ${loopbackUrl} for tokenless delivery`, async () => {
+      const harness = await createHarness(
+        promptEcho,
+        "",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        loopbackUrl,
+        "local",
+      )
+
+      await harness.deliver()
+
+      const request = harness.promptRequest()
+      expect(request).toBeDefined()
+      expect(new Headers(request?.init?.headers).get("Authorization")).toBeNull()
+      expect(harness.output()).toContain("success")
+    })
+  }
+
+  for (const hostileUrl of [
+    "http://localhost.evil:7438",
+    "http://127.0.0.1.evil:7438",
+    "http://127.0.0.1@evil.com:7438",
+    "http://192.168.1.1:7438",
+    "http://8.8.8.8:7438",
+    "http://[::2]:7438",
+    "ftp://127.0.0.1:7438",
+    "not-a-url",
+  ]) {
+    it(`denies tokenless delivery for hostile or invalid URL ${hostileUrl}`, async () => {
+      const harness = await createHarness(
+        promptEcho,
+        "",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        hostileUrl,
+        "local",
+      )
+
+      await harness.deliver()
+
+      expect(harness.promptRequest()).toBeUndefined()
+      expect(harness.sessionPosts()).toHaveLength(0)
+      expect(harness.output()).toContain("config")
+      expect(harness.output()).not.toContain("success")
+    })
+  }
+
+  for (const [mode, url] of [
+    ["server", "http://127.0.0.1:7438"],
+    ["hybrid", "http://127.0.0.1:7438"],
+    ["local", "http://example.com:7438"],
+  ] as const) {
+    it(`denies tokenless delivery for mode=${mode} url=${url}`, async () => {
+      const harness = await createHarness(
+        promptEcho,
+        "",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        url,
+        mode,
+      )
+
+      await harness.deliver()
+
+      expect(harness.promptRequest()).toBeUndefined()
+      expect(harness.sessionPosts()).toHaveLength(0)
+      expect(harness.output()).toContain("config")
+      expect(harness.output()).not.toContain("success")
+    })
+  }
+
+  it("does not probe a remote URL when mode and token are unset", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "https://remote.example",
+    )
+
+    await harness.deliver()
+
+    expect(harness.requests).toHaveLength(0)
+    expect(harness.sessionPosts()).toHaveLength(0)
+    expect(harness.output()).toContain("config")
+    expect(harness.output()).not.toContain("success")
+  })
+
+  it("honors configured token on protected request even on local loopback", async () => {
+    const harness = await createHarness(
+      promptEcho,
+      TOKEN_CANARY,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+
+    await harness.deliver()
+
+    const request = harness.promptRequest()
+    expect(request).toBeDefined()
+    expect(new Headers(request?.init?.headers).get("Authorization")).toBe(`Bearer ${TOKEN_CANARY}`)
+    expect(harness.output()).not.toContain(TOKEN_CANARY)
+    expect(harness.output()).toContain("success")
+  })
+
+  it("contains redirects manually and does not leak requests remotely", async () => {
+    const harness = await createHarness(
+      { kind: "response", status: 302, body: JSON.stringify({ error: "redirect" }) },
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+
+    await harness.deliver()
+
+    const request = harness.promptRequest()
+    expect(request).toBeDefined()
+    expect(request?.init?.redirect).toBe("manual")
+    expect(harness.output()).toContain("unavailable")
+    expect(harness.output()).not.toContain("success")
+  })
+
+  it("preserves retained timeout, transport, and invalid-response classification on tokenless loopback", async () => {
+    const timeoutHarness = await createHarness(
+      { kind: "timeout" },
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+    await timeoutHarness.deliver()
+    expect(timeoutHarness.output()).toContain("timeout")
+
+    const transportHarness = await createHarness(
+      { kind: "transport" },
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+    await transportHarness.deliver()
+    expect(transportHarness.output()).toContain("unavailable")
+
+    const invalidHarness = await createHarness(
+      { kind: "response", status: 200, body: "not-json" },
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+    await invalidHarness.deliver()
+    expect(invalidHarness.output()).toContain("invalid_response")
+  })
+
+  it("preserves retry-after-failure semantics on tokenless loopback", async () => {
+    const failedHarness = await createHarness(
+      promptEcho,
+      "",
+      { kind: "transport" },
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+    await failedHarness.deliver()
+    expect(failedHarness.promptRequest()).toBeUndefined()
+    expect(failedHarness.output()).toContain("unavailable")
+
+    const retriedHarness = await createHarness(
+      promptEcho,
+      "",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "http://127.0.0.1:7438",
+      "local",
+    )
+    await retriedHarness.deliver()
+    expect(retriedHarness.promptRequest()).toBeDefined()
+    expect(retriedHarness.output()).toContain("success")
+  })
+})
