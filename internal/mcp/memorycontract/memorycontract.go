@@ -107,7 +107,8 @@ var WriteOutputSchemaJSON = json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"code": {"type": "string"},
-				"message": {"type": "string"}
+				"message": {"type": "string"},
+				"retryable": {"type": "boolean"}
 			},
 			"required": ["code", "message"],
 			"additionalProperties": false
