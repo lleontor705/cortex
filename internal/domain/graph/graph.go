@@ -25,6 +25,16 @@ var ValidRelationTypes = map[string]bool{
 	domain.RelationContradicts: true,
 }
 
+// Heterogeneous node kinds and edge types for HippoRAG 2 knowledge & code graphs
+const (
+	NodeKindSymbol      = "symbol"
+	NodeKindObservation = "observation"
+	NodeKindPassage     = "passage"
+
+	EdgeTypeMentions  = "mentions"
+	EdgeTypeDocuments = "documents"
+)
+
 // Business rule constants
 const (
 	DefaultWeight     = 1.0

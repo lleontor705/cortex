@@ -24,7 +24,9 @@ package retrieval
 
 import (
 	"context"
+	"math"
 	"sort"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 )
@@ -147,27 +149,29 @@ func revalidateCandidatesBatch(ctx context.Context, batch BatchObservationLookup
 	return results, true
 }
 
+// FuseOptions configures Reciprocal Rank Fusion and optional temporal decay.
+type FuseOptions struct {
+	// Limit is the maximum number of fused search results to return.
+	Limit int
+	// DecayHalfLifeDays specifies the half-life in days for exponential recency decay.
+	// When <= 0, no temporal decay is applied (standard RRF).
+	DecayHalfLifeDays float64
+	// ReferenceTime is the anchor time for decay calculation. If zero, time.Now() is used.
+	ReferenceTime time.Time
+}
+
 // FuseResults combines FTS5 full-text search results with vector similarity
 // search results using Reciprocal Rank Fusion (k=60).
 //
-// Each input list is treated as a TRUE ranked list: only the 1-based POSITION
-// (rank) contributes to the RRF score — a raw relevance score (BM25, cosine
-// similarity) is NEVER fed into RRF as a rank input. The RRF formula is:
-//
-//	score(id) = 1/(k + rank_fts) + 1/(k + rank_vec)
-//
-// where rank is the 1-based position in the respective list. An ID appearing
-// in BOTH lists accumulates RRF credit from each (additive). An ID appearing
-// in only one list gets credit only from that list.
-//
-// The output is sorted by descending RRF score, truncated to limit. When
-// scores are tied, sort.Slice (NOT stable) is used — matching the original
-// behavior in every consumer. Callers must not depend on tie-breaking order.
-//
-// For vector-only results (no FTS5 match), the VectorSearchResult.Similarity
-// score is carried onto the SearchResult.Rank field so downstream consumers
-// can inspect it.
+// Preserves byte-for-byte behavior for all callers by delegating to FuseResultsWithOptions.
 func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, limit int) []*domain.SearchResult {
+	return FuseResultsWithOptions(ftsResults, vecResults, FuseOptions{Limit: limit})
+}
+
+// FuseResultsWithOptions combines FTS5 full-text search results with vector similarity
+// search results using Reciprocal Rank Fusion (k=60) with support for configurable
+// exponential temporal decay (Time-Decayed RRF).
+func FuseResultsWithOptions(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, opts FuseOptions) []*domain.SearchResult {
 	type scored struct {
 		result *domain.SearchResult
 		score  float64
@@ -200,6 +204,27 @@ func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 		}
 	}
 
+	// Apply exponential temporal decay if DecayHalfLifeDays > 0.
+	if opts.DecayHalfLifeDays > 0 {
+		refTime := opts.ReferenceTime
+		if refTime.IsZero() {
+			refTime = time.Now()
+		}
+		decayLambda := math.Ln2 / (opts.DecayHalfLifeDays * 86400.0)
+
+		for _, s := range scoreMap {
+			obsTime := s.result.UpdatedAt
+			if obsTime.IsZero() {
+				obsTime = s.result.CreatedAt
+			}
+			if !obsTime.IsZero() && refTime.After(obsTime) {
+				deltaSeconds := refTime.Sub(obsTime).Seconds()
+				decayFactor := math.Exp(-decayLambda * deltaSeconds)
+				s.score *= decayFactor
+			}
+		}
+	}
+
 	// Sort by descending RRF score. sort.Slice (NOT stable) preserves the
 	// original consumer behavior; ties are broken non-deterministically.
 	sorted := make([]*scored, 0, len(scoreMap))
@@ -209,6 +234,11 @@ func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].score > sorted[j].score
 	})
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = len(sorted)
+	}
 
 	// Truncate to limit.
 	results := make([]*domain.SearchResult, 0, limit)

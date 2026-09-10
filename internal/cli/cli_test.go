@@ -493,3 +493,188 @@ func TestRunUpdateCheck(t *testing.T) {
 		t.Fatalf("expected checking message, got: %s", stdout.String())
 	}
 }
+
+func TestRunBackup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	backupPath := filepath.Join(t.TempDir(), "backup.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	// Save data first
+	if code := Run([]string{"cortex", "save", "Backup Test", "Content for backup", "--project", "demo"}, stdout, stderr); code != 0 {
+		t.Fatalf("save code = %d, stderr = %q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+
+	if code := Run([]string{"cortex", "backup", backupPath}, stdout, stderr); code != 0 {
+		t.Fatalf("backup code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Backup created successfully") {
+		t.Fatalf("expected success message, got: %s", stdout.String())
+	}
+
+	fi, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("backup file stat error: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Fatalf("backup file is empty")
+	}
+}
+
+func TestRunCodeMap(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	if code := Run([]string{"cortex", "code", "map", "--project=demo", "--budget=1024"}, stdout, stderr); code != 0 {
+		t.Fatalf("code map code = %d, stderr = %q", code, stderr.String())
+	}
+	if len(stdout.String()) == 0 {
+		t.Fatalf("expected non-empty output from cortex code map")
+	}
+}
+
+func TestRunCodeTestsAndFind(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	if code := Run([]string{"cortex", "code", "tests", "MyService", "--project=demo"}, stdout, stderr); code != 0 {
+		t.Fatalf("code tests code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Impacted Tests for \"MyService\"") {
+		t.Fatalf("expected impacted tests output, got: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "code", "find", "MyService", "--project=demo"}, stdout, stderr); code != 0 {
+		t.Fatalf("code find code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Found 0 symbol(s) matching") {
+		t.Fatalf("expected matching output, got: %s", stdout.String())
+	}
+}
+
+func TestRunContextFormat(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DATABASE_PATH", dbPath)
+	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
+
+	// 1. XML format
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	if code := Run([]string{"cortex", "context", "demo", "--format=xml"}, stdout, stderr); code != 0 {
+		t.Fatalf("context xml code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "<cortex-context project=\"demo\">") {
+		t.Fatalf("expected xml format, got: %s", stdout.String())
+	}
+
+	// 2. Markdown format
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "context", "demo", "--format=markdown"}, stdout, stderr); code != 0 {
+		t.Fatalf("context md code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "# Cortex Context — demo") {
+		t.Fatalf("expected md format, got: %s", stdout.String())
+	}
+
+	// 3. JSON format
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "context", "demo", "--format=json"}, stdout, stderr); code != 0 {
+		t.Fatalf("context json code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "\"project\": \"demo\"") {
+		t.Fatalf("expected json format, got: %s", stdout.String())
+	}
+}
+
+func TestRunSetupOllama(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CORTEX_HOME", tmpDir)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	if code := Run([]string{"cortex", "setup", "ollama", "--base-url=http://127.0.0.1:54321"}, stdout, stderr); code != 0 {
+		t.Fatalf("setup ollama code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Configuring Ollama local embeddings") ||
+		!strings.Contains(stdout.String(), "Configuration saved") {
+		t.Fatalf("expected configuration output, got: %s", stdout.String())
+	}
+}
+
+func TestRunStatusAndMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CORTEX_HOME", tmpDir)
+	t.Setenv("CORTEX_DATABASE_PATH", filepath.Join(tmpDir, "cortex.db"))
+	t.Setenv("CORTEX_MODE", "")
+
+	// 1. Text output for cortex status
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	if code := Run([]string{"cortex", "status"}, stdout, stderr); code != 0 {
+		t.Fatalf("status code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Operating Mode: local") {
+		t.Fatalf("expected mode local, got: %s", out)
+	}
+
+	// 2. Text output for cortex mode (alias)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "mode"}, stdout, stderr); code != 0 {
+		t.Fatalf("mode code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Operating Mode: local") {
+		t.Fatalf("expected mode local, got: %s", stdout.String())
+	}
+
+	// 3. JSON output
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "status", "--json"}, stdout, stderr); code != 0 {
+		t.Fatalf("status json code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"mode": "local"`) {
+		t.Fatalf("expected json mode local, got: %s", stdout.String())
+	}
+
+	// 4. Hybrid mode via env
+	t.Setenv("CORTEX_MODE", "hybrid")
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "status"}, stdout, stderr); code != 0 {
+		t.Fatalf("status code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Operating Mode: hybrid") {
+		t.Fatalf("expected hybrid mode, got: %s", stdout.String())
+	}
+
+	// 5. Server mode via env
+	t.Setenv("CORTEX_MODE", "server")
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "status"}, stdout, stderr); code != 0 {
+		t.Fatalf("status code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Operating Mode: server") {
+		t.Fatalf("expected server mode, got: %s", stdout.String())
+	}
+}

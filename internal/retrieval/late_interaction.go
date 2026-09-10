@@ -75,17 +75,56 @@ func TokenSimilarity(a, b string) float64 {
 	return 0.0
 }
 
-// ComputeMaxSimScore computes the ColBERT-style Late-Interaction MaxSim score between query and document.
-//
-// MaxSim(Q, D) = sum_{q in Q} max_{d in D} sim(q, d)
-func ComputeMaxSimScore(queryTokens, docTokens []string) float64 {
+var commonStopWords = map[string]bool{
+	"the": true, "a": true, "an": true, "and": true, "or": true, "in": true, "on": true, "at": true,
+	"to": true, "for": true, "with": true, "is": true, "it": true, "of": true, "as": true, "by": true,
+	"that": true, "this": true, "from": true, "how": true, "what": true, "why": true, "who": true,
+	"where": true, "when": true, "does": true, "do": true, "can": true, "be": true, "are": true,
+	"que": true, "de": true, "la": true, "el": true, "en": true, "un": true, "una": true, "y": true,
+	"o": true, "por": true, "para": true, "con": true, "es": true, "los": true, "las": true, "del": true,
+	"al": true, "como": true, "se": true, "su": true, "sus": true,
+}
+
+// TokenSpecificityWeight computes the information-theoretic importance weight of a token.
+// Common stop words receive reduced weight, while technical identifiers, tokens containing
+// underscores or digits, and longer terms receive elevated weights.
+func TokenSpecificityWeight(token string) float64 {
+	lower := strings.ToLower(token)
+	if commonStopWords[lower] {
+		return 0.35
+	}
+	hasSpecial := false
+	for _, r := range lower {
+		if (r >= '0' && r <= '9') || r == '_' {
+			hasSpecial = true
+			break
+		}
+	}
+	if hasSpecial {
+		return 2.2
+	}
+	if len(lower) >= 8 {
+		return 1.6
+	}
+	if len(lower) <= 2 {
+		return 0.6
+	}
+	return 1.0
+}
+
+// ComputeWeightedMaxSimScore computes the specificity-weighted ColBERT MaxSim score.
+func ComputeWeightedMaxSimScore(queryTokens, docTokens []string) float64 {
 	if len(queryTokens) == 0 || len(docTokens) == 0 {
 		return 0.0
 	}
 
-	var totalMaxSim float64
+	var totalWeightedSim float64
+	var totalWeight float64
 
 	for _, q := range queryTokens {
+		w := TokenSpecificityWeight(q)
+		totalWeight += w
+
 		var maxSim float64
 		for _, d := range docTokens {
 			sim := TokenSimilarity(q, d)
@@ -96,11 +135,20 @@ func ComputeMaxSimScore(queryTokens, docTokens []string) float64 {
 				break
 			}
 		}
-		totalMaxSim += maxSim
+		totalWeightedSim += w * maxSim
 	}
 
-	// Normalize by query token count to yield a [0.0, 1.0] range
-	return totalMaxSim / float64(len(queryTokens))
+	if totalWeight <= 0 {
+		return 0.0
+	}
+	return totalWeightedSim / totalWeight
+}
+
+// ComputeMaxSimScore computes the ColBERT-style Late-Interaction MaxSim score between query and document.
+//
+// MaxSim(Q, D) = sum_{q in Q} w(q) * max_{d in D} sim(q, d) / sum_{q in Q} w(q)
+func ComputeMaxSimScore(queryTokens, docTokens []string) float64 {
+	return ComputeWeightedMaxSimScore(queryTokens, docTokens)
 }
 
 // ReRankWithLateInteraction re-ranks search results using ColBERT-inspired Late-Interaction MaxSim.

@@ -3,8 +3,11 @@
 package graph
 
 import (
+	"fmt"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // PPROptions configures the Personalized PageRank (HippoRAG) algorithm.
@@ -203,4 +206,65 @@ func HippoRAGPropagate(
 	}
 
 	return scored
+}
+
+// HippoRAG2Propagate executes Personalized PageRank over a heterogeneous bipartite/knowledge graph
+// containing both observation/passage nodes (e.g., "obs:<id>" or "<id>") and symbol/entity nodes (e.g., "sym:<name>").
+//
+// Seeds can be provided as observation IDs (with initial lexical/vector scores) and/or symbol names.
+// The algorithm runs PPR over the joint graph, allowing activation to flow from observations
+// through the symbols they mention to other related symbols and back to dependent observations.
+func HippoRAG2Propagate(
+	nodes []GraphAnalyticsNode,
+	edges []GraphAnalyticsEdge,
+	observationSeeds map[int64]float64,
+	symbolSeeds map[string]float64,
+	opts PPROptions,
+) (obsScores map[int64]float64, symScores map[string]float64) {
+	unifiedSeeds := make(map[string]float64, len(observationSeeds)+len(symbolSeeds))
+
+	// Match observation seeds by "obs:<id>" or numeric "<id>"
+	for obsID, score := range observationSeeds {
+		if score <= 0 {
+			continue
+		}
+		unifiedSeeds[fmt.Sprintf("obs:%d", obsID)] = score
+		unifiedSeeds[strconv.FormatInt(obsID, 10)] = score
+	}
+
+	// Match symbol seeds by "sym:<name>" or "<name>"
+	for sym, score := range symbolSeeds {
+		if score <= 0 {
+			continue
+		}
+		unifiedSeeds[sym] = score
+		if !strings.HasPrefix(sym, "sym:") {
+			unifiedSeeds["sym:"+sym] = score
+		}
+	}
+
+	allScores := ComputePersonalizedPageRank(nodes, edges, unifiedSeeds, opts)
+
+	obsScores = make(map[int64]float64)
+	symScores = make(map[string]float64)
+
+	for nodeID, score := range allScores {
+		if strings.HasPrefix(nodeID, "obs:") {
+			if id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, "obs:"), 10, 64); err == nil {
+				obsScores[id] = score
+				continue
+			}
+		}
+		if id, err := strconv.ParseInt(nodeID, 10, 64); err == nil {
+			// Numeric ID can be an observation
+			obsScores[id] = score
+			continue
+		}
+		// Otherwise treated as symbol
+		cleanSym := strings.TrimPrefix(nodeID, "sym:")
+		symScores[cleanSym] = score
+		symScores[nodeID] = score
+	}
+
+	return obsScores, symScores
 }

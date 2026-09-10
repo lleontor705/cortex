@@ -36,6 +36,38 @@ func TestComputeMaxSimScore(t *testing.T) {
 	}
 }
 
+func TestTokenSpecificityWeight(t *testing.T) {
+	stopWeight := TokenSpecificityWeight("the")
+	technicalWeight := TokenSpecificityWeight("token_validator")
+	normalWeight := TokenSpecificityWeight("server")
+
+	if stopWeight >= normalWeight {
+		t.Errorf("expected stop word weight (%f) < normal weight (%f)", stopWeight, normalWeight)
+	}
+	if technicalWeight <= normalWeight {
+		t.Errorf("expected technical identifier weight (%f) > normal weight (%f)", technicalWeight, normalWeight)
+	}
+}
+
+func TestComputeWeightedMaxSimScore_PrioritizesTechnicalTokens(t *testing.T) {
+	// Query: "how does AuthService work"
+	query := []string{"how", "does", "auth_service", "work"}
+
+	// Doc A matches stop words ("how", "does", "work"), but misses technical token ("auth_service")
+	docA := []string{"how", "does", "database", "work"}
+
+	// Doc B matches the crucial technical token ("auth_service"), but misses stop words
+	docB := []string{"auth_service", "handles", "credentials"}
+
+	scoreA := ComputeMaxSimScore(query, docA)
+	scoreB := ComputeMaxSimScore(query, docB)
+
+	// Due to specificity weighting, Doc B matching "auth_service" must rank higher than Doc A matching only stop words!
+	if scoreB <= scoreA {
+		t.Errorf("expected technical match score (%f) > stop words match score (%f)", scoreB, scoreA)
+	}
+}
+
 func TestReRankWithLateInteraction(t *testing.T) {
 	query := "postgresql tenant isolation"
 

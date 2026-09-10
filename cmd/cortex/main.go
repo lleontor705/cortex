@@ -94,7 +94,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mode, cleanArgs := platform.ParseMode(args)
 	switch mode {
-	case platform.ModeLocal:
+	case platform.ModeLocal, platform.ModeHybrid:
+		if mode == platform.ModeHybrid {
+			_ = os.Setenv("CORTEX_MODE", "hybrid")
+		}
 		// Byte-identical local path: cli.Run delegates to app.Open internally
 		// via openApp(). No double-wiring — platform.Select is proven by tests;
 		// the live execution path preserves the existing main→cli→app chain.
@@ -140,7 +143,7 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local or --mode server)\n", mode)
+		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local, --mode hybrid, or --mode server)\n", mode)
 		return 2
 	}
 }

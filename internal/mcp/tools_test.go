@@ -890,5 +890,65 @@ func (p *Processor) Run() { ProcessData(10) }
 	}
 }
 
+func TestMCP_ArgHelpers(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"bool_native_true":  true,
+		"bool_native_false": false,
+		"bool_str_true":     "true",
+		"bool_str_false":    "false",
+		"bool_str_1":        "1",
+		"bool_str_0":        "0",
+		"bool_num_1":        float64(1),
+		"bool_num_0":        float64(0),
+		"int_float":         float64(42),
+		"int_str":           "99",
+		"int_native":        15,
+	}
+
+	// Test boolArg
+	if !boolArg(req, "bool_native_true", false) {
+		t.Error("expected bool_native_true to be true")
+	}
+	if boolArg(req, "bool_native_false", true) {
+		t.Error("expected bool_native_false to be false")
+	}
+	if !boolArg(req, "bool_str_true", false) {
+		t.Error("expected bool_str_true to be true")
+	}
+	if boolArg(req, "bool_str_false", true) {
+		t.Error("expected bool_str_false to be false")
+	}
+	if !boolArg(req, "bool_str_1", false) {
+		t.Error("expected bool_str_1 to be true")
+	}
+	if boolArg(req, "bool_str_0", true) {
+		t.Error("expected bool_str_0 to be false")
+	}
+	if !boolArg(req, "bool_num_1", false) {
+		t.Error("expected bool_num_1 to be true")
+	}
+	if boolArg(req, "bool_num_0", true) {
+		t.Error("expected bool_num_0 to be false")
+	}
+	if !boolArg(req, "missing_key", true) {
+		t.Error("expected missing_key to return default true")
+	}
+
+	// Test intArg
+	if got := intArg(req, "int_float", 0); got != 42 {
+		t.Errorf("int_float = %d, want 42", got)
+	}
+	if got := intArg(req, "int_str", 0); got != 99 {
+		t.Errorf("int_str = %d, want 99", got)
+	}
+	if got := intArg(req, "int_native", 0); got != 15 {
+		t.Errorf("int_native = %d, want 15", got)
+	}
+	if got := intArg(req, "missing_int", 7); got != 7 {
+		t.Errorf("missing_int = %d, want 7", got)
+	}
+}
+
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)

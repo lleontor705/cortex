@@ -14,6 +14,7 @@ package mcp
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
@@ -50,20 +51,19 @@ var ProfileAgent = map[string]bool{
 	"cortex_search_hybrid":       true,
 	"cortex_revision_history":    true,
 	"cortex_handoff":             true,
-	// Directives, Rules & Codebase Intelligence (Canonical & Legacy Aliases)
+	// Directives, Rules & Codebase Intelligence (Canonical Set)
 	"cortex_get_rules":            true,
 	"cortex_save_rule":            true,
 	"cortex_ingest_code":          true,
-	"cortex_code_scan":            true,
 	"cortex_get_blast_radius":     true,
-	"cortex_code_impact":          true,
 	"cortex_detect_cycles":        true,
 	"cortex_analyze_architecture": true,
-	"cortex_code_analyze":         true,
 	"cortex_get_code_symbols":     true,
-	"cortex_code_symbols":         true,
 	"cortex_get_code_graph":       true,
-	"cortex_code_graph":           true,
+	"cortex_code_map":             true,
+	"cortex_code_tests":           true,
+	"cortex_code_find":            true,
+	"cortex_get_agent_context":    true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
 	"cortex_consolidate":   true,
 	"cortex_project_dna":   true,
@@ -157,6 +157,10 @@ CODEBASE AST & INTELLIGENCE:
   cortex_get_blast_radius - calculate downstream impact of modifying symbols
   cortex_detect_cycles - detect circular dependencies and import cycles
   cortex_analyze_architecture - analyze code communities and god nodes
+  cortex_code_map - generate compact token-budgeted repo map of key symbols
+  cortex_code_tests - reverse call-graph to locate impacted tests for Fast-TDD
+  cortex_code_find - substring and regex search across indexed code symbols
+  cortex_get_agent_context - prompt-ready pack of rules, decisions, bugfixes, and hubs
 
 KNOWLEDGE GRAPH & SCORING:
   cortex_relate - create relationship between observations
@@ -212,11 +216,23 @@ func stringArg(req mcp.CallToolRequest, key string) string {
 }
 
 func intArg(req mcp.CallToolRequest, key string, defaultVal int) int {
-	v, ok := req.GetArguments()[key].(float64)
-	if !ok {
+	raw, ok := req.GetArguments()[key]
+	if !ok || raw == nil {
 		return defaultVal
 	}
-	return int(v)
+	switch v := raw.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed
+		}
+	}
+	return defaultVal
 }
 
 // --- Strict Identifier Helpers (T07 / QW-01) ---
@@ -275,11 +291,29 @@ func withIntegerID(name, description string) mcp.ToolOption {
 }
 
 func boolArg(req mcp.CallToolRequest, key string, defaultVal bool) bool {
-	v, ok := req.GetArguments()[key].(bool)
-	if !ok {
+	raw, ok := req.GetArguments()[key]
+	if !ok || raw == nil {
 		return defaultVal
 	}
-	return v
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		lower := strings.ToLower(strings.TrimSpace(v))
+		switch lower {
+		case "true", "1", "yes", "t", "y":
+			return true
+		case "false", "0", "no", "f", "n":
+			return false
+		}
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	}
+	return defaultVal
 }
 
 // --- Response Helpers ---

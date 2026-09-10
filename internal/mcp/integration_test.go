@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	"github.com/lleontor705/cortex/v2/internal/migration"
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
@@ -799,5 +800,67 @@ func TestCortexSaveLegacyTextFrozenWithStructuredAdditive(t *testing.T) {
 	upsertPayload := structuredSave(t, upsertSecond)
 	if upsertPayload.Status != string(domain.WriteStatusUpdated) {
 		t.Fatalf("upsert status = %q, want %q", upsertPayload.Status, domain.WriteStatusUpdated)
+	}
+}
+
+func TestIntegration_CodeTestsAndFindAndAgentContext(t *testing.T) {
+	stores := setupTestStores(t)
+	ctx := context.Background()
+
+	// Ingest some code symbols and relations
+	syms := []code.Symbol{
+		{ID: "func:pkg.Service", Name: "Service", Kind: "func", FilePath: "pkg/service.go", Project: "demo"},
+		{ID: "func:pkg.TestService", Name: "TestService", Kind: "func", FilePath: "pkg/service_test.go", Project: "demo"},
+	}
+	rels := []code.Relation{
+		{SourceID: "func:pkg.TestService", TargetID: "func:pkg.Service", Relation: "calls", Project: "demo"},
+	}
+	if err := stores.Code.SaveSymbols(ctx, syms); err != nil {
+		t.Fatalf("save symbols: %v", err)
+	}
+	if err := stores.Code.SaveRelations(ctx, rels); err != nil {
+		t.Fatalf("save relations: %v", err)
+	}
+
+	// 1. Test cortex_code_tests
+	testsHandler := handleGetImpactedTests(stores)
+	r1 := callTool(t, testsHandler, map[string]any{
+		"target":  "Service",
+		"project": "demo",
+	})
+	txt1 := resultText(r1)
+	if !strings.Contains(txt1, "TestService") || !strings.Contains(txt1, "pkg/service_test.go") {
+		t.Fatalf("unexpected test impact output: %s", txt1)
+	}
+
+	// 2. Test cortex_code_find
+	findHandler := handleFindSymbols(stores)
+	r2 := callTool(t, findHandler, map[string]any{
+		"query":   "Service",
+		"project": "demo",
+	})
+	txt2 := resultText(r2)
+	if !strings.Contains(txt2, "Service") {
+		t.Fatalf("unexpected find output: %s", txt2)
+	}
+
+	// 3. Test cortex_get_agent_context
+	saveHandler := handleSave(stores)
+	callTool(t, saveHandler, map[string]any{
+		"title":   "Use SQLite v2",
+		"content": "Single file migrations",
+		"type":    "decision",
+		"project": "demo",
+	})
+
+	contextHandler := handleGetAgentContext(stores)
+	r3 := callTool(t, contextHandler, map[string]any{
+		"project": "demo",
+		"format":  "xml",
+	})
+	txt3 := resultText(r3)
+	if !strings.Contains(txt3, "<cortex-context project=\"demo\">") ||
+		!strings.Contains(txt3, "<architectural-decisions>") {
+		t.Fatalf("unexpected agent context output: %s", txt3)
 	}
 }

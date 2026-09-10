@@ -239,6 +239,13 @@ const CORTEX_TOOLS = new Set([
   "cortex_code_symbols",
   "cortex_get_code_graph",
   "cortex_code_graph",
+  "cortex_code_map",
+  "cortex_get_code_map",
+  "cortex_code_tests",
+  "cortex_get_impacted_tests",
+  "cortex_code_find",
+  "cortex_find_symbols",
+  "cortex_get_agent_context",
   // Governance, Skills, Directives & Rules
   "cortex_get_rules",
   "cortex_save_rule",
@@ -335,7 +342,11 @@ TRANSPORT IDENTIFIERS:
 
 ### 2. CODEBASE AST & INTELLIGENCE
 - Call \`cortex_ingest_code(path, project)\` with the **absolute workspace root path** (e.g. \`d:/cortex-ia\`, never \`.\`) to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
-- \`cortex_get_blast_radius(observation_id, depth)\` traverses related observations only. For code refactors, use filtered symbols, source callers, and cycle detection until Cortex exposes a symbol-aware impact contract.
+- Call \`cortex_code_map(path, budget)\` or \`cortex_get_code_map\` to retrieve a token-budgeted PageRank repository map.
+- Call \`cortex_code_tests(target, project, hops)\` or \`cortex_get_impacted_tests\` to pinpoint precisely which test suites are impacted by modified symbols or files.
+- Call \`cortex_code_find(query, project)\` or \`cortex_find_symbols\` to search AST symbols across the repository.
+- Call \`cortex_get_agent_context(project, format)\` to export structured architecture & memory context for agent prompts.
+- Call \`cortex_get_blast_radius(observation_id, depth)\` to traverse related cognitive observations.
 - Call \`cortex_detect_cycles(project)\` to find circular dependencies across modules.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
 

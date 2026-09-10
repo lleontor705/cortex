@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
+	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
 	"github.com/lleontor705/cortex/v2/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
@@ -442,6 +444,110 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 	}
 	if shouldRegister("cortex_get_code_graph", allowlist) {
 		srv.AddTool(graphToolDef("cortex_get_code_graph"), handleGetCodeGraph(stores))
+	}
+
+	// --- cortex_code_map & cortex_get_code_map --------------------------
+	mapToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Get Token-Budgeted Code Repo Map"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Generate a compact, token-budgeted structural map of the repository's key AST symbols, functions, and types for LLM system prompts (inspired by Aider)."),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+			mcp.WithNumber("budget",
+				mcp.Description("Maximum token budget (default: 2048)"),
+			),
+		)
+	}
+	if shouldRegister("cortex_code_map", allowlist) {
+		srv.AddTool(mapToolDef("cortex_code_map"), handleGetCodeMap(stores))
+	}
+	if shouldRegister("cortex_get_code_map", allowlist) {
+		srv.AddTool(mapToolDef("cortex_get_code_map"), handleGetCodeMap(stores))
+	}
+
+	// --- cortex_code_tests & cortex_get_impacted_tests ------------------
+	testToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Find Impacted Tests for Symbol or File"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Analyzes the code graph in reverse to locate all test files and test functions that exercise a target symbol, file, or git diff, returning recommended minimal test execution commands for Fast-TDD."),
+			mcp.WithString("target",
+				mcp.Required(),
+				mcp.Description("Target symbol name, symbol ID, or relative file path"),
+			),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+			mcp.WithNumber("hops",
+				mcp.Description("Maximum hops in the reverse call graph (default: 3)"),
+			),
+		)
+	}
+	if shouldRegister("cortex_code_tests", allowlist) {
+		srv.AddTool(testToolDef("cortex_code_tests"), handleGetImpactedTests(stores))
+	}
+	if shouldRegister("cortex_get_impacted_tests", allowlist) {
+		srv.AddTool(testToolDef("cortex_get_impacted_tests"), handleGetImpactedTests(stores))
+	}
+
+	// --- cortex_code_find & cortex_find_symbols -------------------------
+	findToolDef := func(name string) mcp.Tool {
+		return mcp.NewTool(name,
+			mcp.WithTitleAnnotation("Search Code Symbols by Substring or Regex"),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDescription("Searches indexed code symbols with substring, regex, kind filter, and relevance ranking across 13 languages."),
+			mcp.WithString("query",
+				mcp.Required(),
+				mcp.Description("Query substring or regular expression to search"),
+			),
+			mcp.WithBoolean("is_regex",
+				mcp.Description("Treat query as a regular expression (default: false)"),
+			),
+			mcp.WithString("project",
+				mcp.Description("Project name (defaults to 'default')"),
+			),
+			mcp.WithString("kind",
+				mcp.Description("Filter by symbol kind (func, method, struct, class, interface, etc.)"),
+			),
+			mcp.WithString("file_path",
+				mcp.Description("Filter by file path substring"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum symbols to return (default: 50)"),
+			),
+		)
+	}
+	if shouldRegister("cortex_code_find", allowlist) {
+		srv.AddTool(findToolDef("cortex_code_find"), handleFindSymbols(stores))
+	}
+	if shouldRegister("cortex_find_symbols", allowlist) {
+		srv.AddTool(findToolDef("cortex_find_symbols"), handleFindSymbols(stores))
+	}
+
+	// --- cortex_get_agent_context ---------------------------------------
+	if shouldRegister("cortex_get_agent_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_get_agent_context",
+				mcp.WithTitleAnnotation("Get Structured Agent Context Pack"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Extracts an optimized prompt-injection context pack containing active project rules, architectural decisions, gotchas/bugfix lessons, and core architectural hubs."),
+				mcp.WithString("project",
+					mcp.Description("Project name (defaults to 'default')"),
+				),
+				mcp.WithString("format",
+					mcp.Description("Output format: 'xml', 'markdown', or 'json' (default: 'xml')"),
+				),
+				mcp.WithBoolean("include_repo_map",
+					mcp.Description("Whether to include a token-budgeted repo map (default: false)"),
+				),
+				mcp.WithNumber("repo_map_budget",
+					mcp.Description("Maximum token budget for repo map if included (default: 1024)"),
+				),
+			),
+			handleGetAgentContext(stores),
+		)
 	}
 
 	// --- cortex_get_status ----------------------------------------------
@@ -1449,12 +1555,41 @@ func handleGetCodeGraph(stores *Stores) server.ToolHandlerFunc {
 	}
 }
 
+func handleGetCodeMap(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		if project == "" {
+			project = "default"
+		}
+		budget := intArg(req, "budget", 2048)
+
+		if stores.Code == nil {
+			return errorResult("code store is not initialized")
+		}
+
+		g, err := stores.Code.GetGraph(ctx, project)
+		if err != nil {
+			return errorResult("get code graph: %v", err)
+		}
+
+		repoMap := code.GenerateRepoMap(g, budget)
+		return textResult("%s", repoMap)
+	}
+}
+
 func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		cfg, err := config.Load("")
+		if err != nil {
+			cfg = config.DefaultConfig()
+		}
+		mode, modeDesc := cfg.DetectMode()
+
 		status := map[string]any{
-			"mode":     "local",
-			"database": "sqlite",
-			"version":  serverVersion,
+			"mode":        string(mode),
+			"mode_desc":   modeDesc,
+			"database":    "sqlite",
+			"version":     serverVersion,
 			"capabilities": []string{
 				"fts5_search",
 				"knowledge_graph",
@@ -1467,6 +1602,10 @@ func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 				"rules_directives",
 				"blast_radius",
 				"architecture_analysis",
+				"repo_map",
+				"test_impact",
+				"symbol_search",
+				"agent_context",
 			},
 			"profiles": []string{"agent", "admin", "temporal"},
 		}
@@ -1475,5 +1614,107 @@ func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("serialize status: %v", err)
 		}
 		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func handleGetImpactedTests(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if stores.Code == nil {
+			return errorResult("code store is not initialized")
+		}
+		target := strings.TrimSpace(stringArg(req, "target"))
+		if target == "" {
+			return errorResult("target symbol or file is required")
+		}
+		project := cleanProjectName(stringArg(req, "project"))
+		hops := intArg(req, "hops", 3)
+
+		graph, err := stores.Code.GetGraph(ctx, project)
+		if err != nil {
+			return errorResult("get code graph: %v", err)
+		}
+
+		res := code.FindImpactedTests(graph, target, hops)
+		data, err := json.MarshalIndent(res, "", "  ")
+		if err != nil {
+			return errorResult("marshal test impact result: %v", err)
+		}
+		return textResult("%s", string(data))
+	}
+}
+
+func handleFindSymbols(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if stores.Code == nil {
+			return errorResult("code store is not initialized")
+		}
+		query := strings.TrimSpace(stringArg(req, "query"))
+		if query == "" {
+			return errorResult("query string is required")
+		}
+		project := cleanProjectName(stringArg(req, "project"))
+		isRegex := boolArg(req, "is_regex", false)
+		kind := strings.TrimSpace(stringArg(req, "kind"))
+		filePath := strings.TrimSpace(stringArg(req, "file_path"))
+		limit := intArg(req, "limit", 50)
+
+		graph, err := stores.Code.GetGraph(ctx, project)
+		if err != nil {
+			return errorResult("get code graph: %v", err)
+		}
+
+		results := code.SearchSymbols(graph, code.SymbolSearchQuery{
+			Query:    query,
+			IsRegex:  isRegex,
+			Kind:     kind,
+			FilePath: filePath,
+			Limit:    limit,
+		})
+
+		data, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return errorResult("marshal search results: %v", err)
+		}
+		return textResult("%s", string(data))
+	}
+}
+
+func handleGetAgentContext(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		format := strings.TrimSpace(stringArg(req, "format"))
+		if format == "" {
+			format = "xml"
+		}
+		includeRepoMap := boolArg(req, "include_repo_map", false)
+		repoMapBudget := intArg(req, "repo_map_budget", 1024)
+
+		obsList, err := stores.Observations.List(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   100,
+		})
+		if err != nil {
+			return errorResult("list observations: %v", err)
+		}
+
+		var codeGraph *code.CodeGraph
+		if stores.Code != nil {
+			codeGraph, _ = stores.Code.GetGraph(ctx, project)
+		}
+
+		pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{
+			Project:        project,
+			Format:         format,
+			IncludeRules:   true,
+			IncludeRepoMap: includeRepoMap,
+			RepoMapBudget:  repoMapBudget,
+		})
+
+		rendered, err := contextpack.Render(pack, format)
+		if err != nil {
+			return errorResult("render context pack: %v", err)
+		}
+
+		return textResult("%s", rendered)
 	}
 }

@@ -16,6 +16,9 @@ const (
 	// This is byte-identical to pre-v2 behavior.
 	ModeLocal Mode = "local"
 
+	// ModeHybrid runs the local SQLite composition with remote replication enabled.
+	ModeHybrid Mode = "hybrid"
+
 	// ModeServer runs the multi-tenant PostgreSQL + authenticated HTTP path.
 	// cmd/cortex is the sole bridge to the server composition root.
 	ModeServer Mode = "server"
@@ -30,7 +33,7 @@ const DefaultMode Mode = ModeLocal
 // internal/platform/server and wired directly by cmd/cortex.
 type Runtime struct {
 	// App is the local-mode composition root from internal/app.
-	// Non-nil when Mode == ModeLocal; nil for server mode.
+	// Non-nil when Mode == ModeLocal || Mode == ModeHybrid; nil for server mode.
 	App *app.App
 }
 
@@ -44,7 +47,7 @@ func (r *Runtime) Close() error {
 
 // Select wires the Runtime for the given Mode.
 //
-// ModeLocal  → delegates to [Local], which calls app.Open byte-identically
+// ModeLocal, ModeHybrid → delegates to [Local], which calls app.Open byte-identically
 //
 //	(same SQLite database, same stores, same config defaults).
 //
@@ -52,12 +55,12 @@ func (r *Runtime) Close() error {
 // import the server composition root. cmd/cortex performs that bridge.
 func Select(mode Mode, ctx context.Context, opts app.Options) (*Runtime, error) {
 	switch mode {
-	case ModeLocal:
+	case ModeLocal, ModeHybrid:
 		return Local(ctx, opts)
 	case ModeServer:
 		return nil, fmt.Errorf("server mode is wired by cmd/cortex, not platform.Select")
 	default:
-		return nil, fmt.Errorf("unknown mode %q: use --mode local or --mode server", mode)
+		return nil, fmt.Errorf("unknown mode %q: use --mode local, --mode hybrid, or --mode server", mode)
 	}
 }
 

@@ -30,6 +30,10 @@ They are available immediately — no manual ToolSearch needed.
 
 **Codebase AST & Graphify Intelligence:**
 - `cortex_ingest_code` — scan local files using Zero-CGO 2-Pass Static AST Extractor into dedicated tables (`code_symbols`, `code_relations`)
+- `cortex_code_map` — generate token-budgeted PageRank repository map for code structure
+- `cortex_code_tests` — map impacted test suites for target symbols/files before refactoring
+- `cortex_code_find` — fast AST symbol search across repository
+- `cortex_get_agent_context` — export structured project context for agents (XML, Markdown, JSON)
 - `cortex_get_code_symbols` — query indexed code symbols (functions, structs, classes, interfaces) with filtering by kind, package, file, or pattern
 - `cortex_get_code_graph` — retrieve complete structural call and reference graph for a project
 - `cortex_get_blast_radius` — calculate downstream impact of modifying symbols/files before refactoring

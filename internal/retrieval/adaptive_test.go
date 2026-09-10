@@ -99,6 +99,71 @@ func TestExecuteAdaptiveSearch(t *testing.T) {
 	}
 }
 
+func TestExecuteAdaptiveSearch_HippoRAG2_BipartiteBoost(t *testing.T) {
+	ctx := context.Background()
+
+	// Candidate 1: "Auth Gateway" mentioning AuthService (high initial score)
+	// Candidate 2: "JWT Validation Policy" mentioning TokenValidator (low initial score)
+	mockLexical := func(ctx context.Context, q domain.SearchOptions) ([]*domain.SearchResult, error) {
+		return []*domain.SearchResult{
+			{
+				Rank: 0.80,
+				Observation: domain.Observation{
+					ID:      100,
+					Title:   "Auth Gateway",
+					Content: "Dispatches requests to AuthService.",
+				},
+			},
+			{
+				Rank: 0.10,
+				Observation: domain.Observation{
+					ID:      200,
+					Title:   "JWT Validation Policy",
+					Content: "Enforces signature checks in TokenValidator.",
+				},
+			},
+		}, nil
+	}
+
+	opts := AdaptiveSearchOptions{
+		Mode: "multi_hop",
+		GraphNodes: []graph.GraphAnalyticsNode{
+			{ID: "sym:AuthService", Label: "AuthService", Kind: graph.NodeKindSymbol},
+			{ID: "sym:TokenValidator", Label: "TokenValidator", Kind: graph.NodeKindSymbol},
+		},
+		GraphEdges: []graph.GraphAnalyticsEdge{
+			{Source: "sym:AuthService", Target: "sym:TokenValidator", Type: "calls", Weight: 2.0},
+		},
+	}
+
+	res, err := ExecuteAdaptiveSearch(ctx, "Why does the auth workflow depend on token validation?", opts, mockLexical, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Tier != TierMultiHopGraph {
+		t.Errorf("expected TierMultiHopGraph, got %v", res.Tier)
+	}
+
+	var found200 *domain.SearchResult
+	for _, r := range res.Results {
+		if r.ID == 200 {
+			found200 = r
+			break
+		}
+	}
+
+	if found200 == nil {
+		t.Fatal("expected candidate 200 to survive")
+	}
+
+	// Due to HippoRAG 2 bipartite PPR propagation (obs:100 -> sym:AuthService -> sym:TokenValidator -> obs:200),
+	// candidate 200's rank must be boosted above its original 0.10!
+	if found200.Rank <= 0.10 {
+		t.Errorf("expected candidate 200 to receive HippoRAG 2 topological boost > 0.10, got %f", found200.Rank)
+	}
+}
+
 func BenchmarkClassifyQueryComplexity(b *testing.B) {
 	queries := []string{
 		"func OpenStore",

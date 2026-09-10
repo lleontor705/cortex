@@ -3,6 +3,7 @@ package retrieval
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,8 +27,8 @@ const (
 )
 
 var (
-	// Patterns indicating direct code or identifier lookups
-	directLookupRegex = regexp.MustCompile(`^(func|struct|type|class|interface|const|var)\s+|^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$|^#[0-9]+$|^[a-z0-9_]{3,32}$`)
+	// Patterns indicating direct code, symbol, or identifier lookups
+	directLookupRegex = regexp.MustCompile(`^(?i)(func|struct|type|class|interface|const|var)\s+|^[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+$|^#[0-9]+$|^[a-zA-Z0-9_]{2,40}(\(\))?$`)
 
 	// Keywords indicating macro architectural / community overviews (LightRAG)
 	architecturalKeywords = []string{
@@ -167,9 +168,10 @@ func ExecuteAdaptiveSearch(
 		}
 
 	case TierMultiHopGraph:
-		// HippoRAG Path: Seed with lexical/vector hits, then propagate along knowledge graph
+		// HippoRAG 2 Path: Seed with lexical/vector hits, construct bipartite passage-symbol links,
+		// and propagate activation along knowledge & code dependency graphs in pure Go.
 		var candidateMap = make(map[int64]*domain.SearchResult)
-		var seeds = make(map[string]float64)
+		var obsSeeds = make(map[int64]float64)
 
 		if lexicalSearch != nil {
 			sq := domain.SearchOptions{
@@ -181,17 +183,66 @@ func ExecuteAdaptiveSearch(
 			lex, _ := lexicalSearch(ctx, sq)
 			for _, r := range lex {
 				candidateMap[r.ID] = r
-				nodeKey := strconv.FormatInt(r.ID, 10)
-				seeds[nodeKey] += r.Rank
+				obsSeeds[r.ID] += r.Rank
 			}
 		}
 
-		if len(opts.GraphNodes) > 0 && len(opts.GraphEdges) > 0 && len(seeds) > 0 {
-			// Propagate via HippoRAG Personalized PageRank in memory
-			pprScores := graph.ComputePersonalizedPageRank(opts.GraphNodes, opts.GraphEdges, seeds, graph.DefaultPPROptions())
+		if len(opts.GraphNodes) > 0 && len(opts.GraphEdges) > 0 && len(obsSeeds) > 0 {
+			// Build heterogeneous bipartite graph combining AST/graph nodes and retrieved observations
+			jointNodes := make([]graph.GraphAnalyticsNode, len(opts.GraphNodes), len(opts.GraphNodes)+len(candidateMap))
+			copy(jointNodes, opts.GraphNodes)
+
+			jointEdges := make([]graph.GraphAnalyticsEdge, len(opts.GraphEdges), len(opts.GraphEdges)+(len(candidateMap)*4))
+			copy(jointEdges, opts.GraphEdges)
+
+			// Map symbol nodes by label and ID for fast co-occurrence / mention linking
+			symbolLookup := make(map[string]string)
+			for _, gn := range opts.GraphNodes {
+				if gn.Label != "" && len(gn.Label) >= 3 {
+					symbolLookup[strings.ToLower(gn.Label)] = gn.ID
+				}
+				if gn.ID != "" && len(gn.ID) >= 3 {
+					symbolLookup[strings.ToLower(gn.ID)] = gn.ID
+				}
+			}
+
+			// Add observation nodes and bipartite mention edges
+			for obsID, r := range candidateMap {
+				obsNodeID := fmt.Sprintf("obs:%d", obsID)
+				jointNodes = append(jointNodes, graph.GraphAnalyticsNode{
+					ID:    obsNodeID,
+					Label: r.Title,
+					Kind:  graph.NodeKindObservation,
+				})
+
+				// Numeric ID alias for legacy compatibility
+				numericID := strconv.FormatInt(obsID, 10)
+				jointEdges = append(jointEdges, graph.GraphAnalyticsEdge{
+					Source: obsNodeID,
+					Target: numericID,
+					Type:   domain.RelationRelatesTo,
+					Weight: 1.0,
+				})
+
+				contentLower := strings.ToLower(r.Title + " " + r.TopicKey + " " + r.Content)
+				for symText, targetNodeID := range symbolLookup {
+					if strings.Contains(contentLower, symText) {
+						jointEdges = append(jointEdges, graph.GraphAnalyticsEdge{
+							Source: obsNodeID,
+							Target: targetNodeID,
+							Type:   graph.EdgeTypeMentions,
+							Weight: 1.5,
+						})
+					}
+				}
+			}
+
+			pprOpts := graph.DefaultPPROptions()
+			pprOpts.Directed = false // Associative reasoning flows bidirectionally between code & docs
+
+			obsScores, _ := graph.HippoRAG2Propagate(jointNodes, jointEdges, obsSeeds, nil, pprOpts)
 			for _, r := range candidateMap {
-				nodeKey := strconv.FormatInt(r.ID, 10)
-				if pprBoost, ok := pprScores[nodeKey]; ok {
+				if pprBoost, ok := obsScores[r.ID]; ok && pprBoost > 0 {
 					r.Rank += pprBoost * 2.0 // Boost topologically relevant multi-hop nodes
 				}
 			}

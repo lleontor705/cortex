@@ -21,6 +21,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
+	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
 	cortexhttp "github.com/lleontor705/cortex/v2/internal/http"
 	"github.com/lleontor705/cortex/v2/internal/mcp"
 	"github.com/lleontor705/cortex/v2/internal/ollama"
@@ -107,12 +108,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runConfig(args[2:], stdout, stderr)
 	case "auth":
 		exitCode = runAuth(args[2:], stdout, stderr)
+	case "status", "mode":
+		exitCode = runStatus(args[2:], stdout, stderr)
 	case "ingest":
 		exitCode = runIngest(args[2:], stdout, stderr)
 	case "code":
 		exitCode = runCode(args[2:], stdout, stderr)
 	case "watch":
 		exitCode = runWatch(args[2:], stdout, stderr)
+	case "backup":
+		exitCode = runBackup(args[2:], stdout, stderr)
 	case "update":
 		exitCode = runUpdate(args[2:], stdout, stderr)
 	default:
@@ -149,8 +154,12 @@ Commands:
   reindex [--project P]  Generate vector embeddings for all observations
   doctor                 Run health checks on the database
   gc [--days N]          Garbage collect archived observations (default: 90 days)
+  backup [path]          Create an atomic online backup snapshot of the SQLite database
+  watch [path]           Watch repository for real-time incremental AST indexing
   config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard)
-  code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph)
+  status                 Display operational mode (local, hybrid, server) and status
+  mode                   Alias for status
+  code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph, map)
   migrate <up|down|status> Manage database migrations
   tui                    Launch terminal UI
   serve                  Start HTTP REST API server
@@ -288,7 +297,8 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 }
 
 func runContext(args []string, stdout, stderr io.Writer) int {
-	project, scope := "", ""
+	project, scope, format := "", "", ""
+	repoMapBudget := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--scope":
@@ -296,8 +306,23 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 				scope = args[i+1]
 				i++
 			}
+		case "--format":
+			if i+1 < len(args) {
+				format = args[i+1]
+				i++
+			}
+		case "--pack":
+			if format == "" {
+				format = "markdown"
+			}
 		default:
-			if project == "" {
+			if strings.HasPrefix(args[i], "--format=") {
+				format = strings.TrimPrefix(args[i], "--format=")
+			} else if strings.HasPrefix(args[i], "--budget=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--budget=")); err == nil {
+					repoMapBudget = n
+				}
+			} else if !strings.HasPrefix(args[i], "-") && project == "" {
 				project = args[i]
 			}
 		}
@@ -309,6 +334,33 @@ func runContext(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = a.Close() }()
 	ctx := context.Background()
+
+	if format != "" {
+		observations, err := a.Stores.Observations.List(ctx, domain.ObservationFilter{Project: project, Scope: scope, Limit: 100})
+		if err != nil {
+			writef(stderr, "cortex: %v\n", err)
+			return 1
+		}
+		var codeGraph *code.CodeGraph
+		if project != "" {
+			codeGraph, _ = a.Stores.Code.GetGraph(ctx, project)
+		}
+		pack := contextpack.BuildPack(project, observations, codeGraph, contextpack.Options{
+			Project:        project,
+			Format:         format,
+			IncludeRules:   true,
+			IncludeRepoMap: repoMapBudget > 0,
+			RepoMapBudget:  repoMapBudget,
+		})
+		rendered, err := contextpack.Render(pack, format)
+		if err != nil {
+			writef(stderr, "render context pack: %v\n", err)
+			return 1
+		}
+		writef(stdout, "%s\n", rendered)
+		return 0
+	}
+
 	sessions, err := a.Stores.Sessions.List(ctx, project)
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -672,9 +724,41 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		agent = args[0]
 	}
 	if agent == "" {
-		writeln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex")
+		writeln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex, ollama")
 		return 0
 	}
+	if agent == "ollama" {
+		baseURL := "http://localhost:11434"
+		model := "nomic-embed-text"
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--base-url=") {
+				baseURL = strings.TrimPrefix(arg, "--base-url=")
+			} else if strings.HasPrefix(arg, "--model=") {
+				model = strings.TrimPrefix(arg, "--model=")
+			}
+		}
+		writef(stdout, "Configuring Ollama local embeddings for Cortex...\n")
+		res, err := setup.SetupOllama(baseURL, model)
+		if err != nil {
+			writef(stderr, "cortex setup ollama: %v\n", err)
+			return 1
+		}
+		if res.OllamaOnline {
+			writef(stdout, "  [OK]   Ollama daemon online at %s\n", res.BaseURL)
+			if res.ModelAvailable {
+				writef(stdout, "  [OK]   Model %q is ready and available\n", res.Model)
+			} else {
+				writef(stdout, "  [WARN] Model %q not found in local models: %v\n", res.Model, res.AvailableModels)
+				writef(stdout, "         Run 'ollama pull %s' to download it.\n", res.Model)
+			}
+		} else {
+			writef(stdout, "  [WARN] Ollama daemon not reachable at %s\n", res.BaseURL)
+			writef(stdout, "         Start Ollama with 'ollama serve' or check connection.\n")
+		}
+		writef(stdout, "✅ Configuration saved to: %s\n", res.ConfigPath)
+		return 0
+	}
+
 	result, err := setup.Install(agent)
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -1293,6 +1377,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	writeln(stdout, "Cortex Doctor — Local Health Check\n")
 
+	// 0. Operating Mode
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+	mode, modeDesc := cfg.DetectMode()
+	writef(stdout, "  [OK]   Operating Mode: %s (%s)\n", mode, modeDesc)
+
 	// 1. Database
 	stats, err := a.Stores.Observations.Stats(ctx)
 	if err != nil {
@@ -1348,6 +1440,31 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", len(orphans), pct)
 			}
 		}
+	}
+
+	// 7. Code AST Index
+	if a.Stores.Code != nil {
+		syms, err := a.Stores.Code.ListSymbols(ctx, code.SymbolFilter{Limit: 1})
+		if err == nil && len(syms) > 0 {
+			graph, gErr := a.Stores.Code.GetGraph(ctx, "default")
+			if gErr == nil && graph != nil && len(graph.Symbols) > 0 {
+				writef(stdout, "  [OK]   Code AST: %d symbols, %d relations indexed\n", len(graph.Symbols), len(graph.Relations))
+			} else {
+				writef(stdout, "  [OK]   Code AST: symbols indexed\n")
+			}
+		} else {
+			writef(stdout, "  [INFO] Code AST: no symbols indexed yet (run 'cortex code scan' to index repository)\n")
+		}
+	}
+
+	// 8. Local AI / Ollama Daemon probe
+	ollamaClient := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := ollamaClient.Get("http://localhost:11434/api/tags")
+	if err == nil && resp != nil {
+		_ = resp.Body.Close()
+		writef(stdout, "  [OK]   Ollama daemon: active at http://localhost:11434\n")
+	} else {
+		writef(stdout, "  [INFO] Ollama daemon: offline (optional: run 'ollama serve' for local embeddings)\n")
 	}
 
 	writeln(stdout, "")
@@ -1431,6 +1548,56 @@ func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	writeln(stdout, "Server health check passed.")
+	return 0
+}
+
+// --- backup (atomic sqlite snapshot) ----------------------------------------
+
+func runBackup(args []string, stdout, stderr io.Writer) int {
+	dest := ""
+	for i := 0; i < len(args); i++ {
+		if !strings.HasPrefix(args[i], "-") {
+			dest = args[i]
+			break
+		}
+	}
+	if dest == "" {
+		timestamp := time.Now().Format("20060102-150405")
+		dest = fmt.Sprintf("cortex-backup-%s.db", timestamp)
+	}
+
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		writef(stderr, "error resolving destination path: %v\n", err)
+		return 1
+	}
+
+	// Remove target if it already exists, because VACUUM INTO requires the file not to exist
+	_ = os.Remove(absDest)
+
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+
+	writef(stdout, "Creating atomic backup of Cortex database at %q...\n", absDest)
+
+	cleanPath := filepath.ToSlash(absDest)
+	query := fmt.Sprintf("VACUUM INTO '%s'", strings.ReplaceAll(cleanPath, "'", "''"))
+	if _, err := a.DB.DB().ExecContext(context.Background(), query); err != nil {
+		writef(stderr, "error creating backup: %v\n", err)
+		return 1
+	}
+
+	fi, err := os.Stat(absDest)
+	var sizeBytes int64
+	if err == nil {
+		sizeBytes = fi.Size()
+	}
+
+	writef(stdout, "✅ Backup created successfully: %s (%.2f MB)\n", absDest, float64(sizeBytes)/(1024*1024))
 	return 0
 }
 
@@ -1947,12 +2114,192 @@ func runCode(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "  impact <target> [--project=<name>] [--hops=N]   Calculate blast radius for a symbol or file\n")
 		writef(stdout, "  diff [--staged] [--project=<name>] [--hops=N]   Analyze blast radius of uncommitted Git changes\n")
 		writef(stdout, "  graph [--project=<name>] [--format=mermaid]     Export or visualize code dependency graph\n")
+		writef(stdout, "  map [--project=<name>] [--budget=N]             Generate compact token-budgeted Repo-Map for LLMs\n")
+		writef(stdout, "  tests <target> [--project=<name>] [--hops=N]    Find impacted test files and functions for Fast-TDD\n")
+		writef(stdout, "  find <query> [--project=<name>] [--kind=K]      Search code symbols by substring or regex\n")
 		return 0
 	}
 
 	switch args[0] {
+	case "tests", "test-map", "impacted-tests":
+		var target string
+		project := "default"
+		hops := 3
+		jsonOutput := false
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--hops=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--hops=")); err == nil {
+					hops = n
+				}
+			} else if arg == "--json" {
+				jsonOutput = true
+			} else if !strings.HasPrefix(arg, "-") && target == "" {
+				target = arg
+			}
+		}
+
+		if target == "" {
+			writef(stderr, "error: target symbol or file path is required (e.g. cortex code tests CalculateBlastRadius)\n")
+			return 1
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		res := code.FindImpactedTests(graph, target, hops)
+		if jsonOutput {
+			b, err := json.MarshalIndent(res, "", "  ")
+			if err != nil {
+				writef(stderr, "error serializing json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(b))
+			return 0
+		}
+
+		writef(stdout, "\n🧪 Impacted Tests for %q (%s):\n", res.Target, res.TargetKind)
+		writef(stdout, "  • Impacted Test Files:     %d\n", len(res.ImpactedTestFiles))
+		writef(stdout, "  • Impacted Test Functions: %d\n", len(res.ImpactedTestFuncs))
+
+		if len(res.ImpactedTestFiles) > 0 {
+			writef(stdout, "\n📂 Test Files:\n")
+			for _, f := range res.ImpactedTestFiles {
+				writef(stdout, "     • %s\n", f)
+			}
+		}
+		if len(res.ImpactedTestFuncs) > 0 {
+			writef(stdout, "\n🎯 Test Functions:\n")
+			for _, fn := range res.ImpactedTestFuncs {
+				directStr := "indirect"
+				if fn.Direct {
+					directStr = "direct"
+				}
+				writef(stdout, "     • %s (%s, line %d, %s)\n", fn.Name, fn.FilePath, fn.LineNumber, directStr)
+			}
+		}
+		if len(res.RecommendedCommands) > 0 {
+			writef(stdout, "\n⚡ Recommended Test Commands:\n")
+			for _, cmd := range res.RecommendedCommands {
+				writef(stdout, "     %s\n", cmd)
+			}
+		}
+		writef(stdout, "\n")
+		return 0
+
+	case "find", "search-symbols":
+		var query string
+		project := "default"
+		kind := ""
+		fileFilter := ""
+		isRegex := false
+		limit := 50
+		jsonOutput := false
+
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--kind=") {
+				kind = strings.TrimPrefix(arg, "--kind=")
+			} else if strings.HasPrefix(arg, "--file=") {
+				fileFilter = strings.TrimPrefix(arg, "--file=")
+			} else if strings.HasPrefix(arg, "--limit=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit=")); err == nil && n > 0 {
+					limit = n
+				}
+			} else if arg == "--regex" {
+				isRegex = true
+			} else if arg == "--json" {
+				jsonOutput = true
+			} else if !strings.HasPrefix(arg, "-") && query == "" {
+				query = arg
+			}
+		}
+
+		if query == "" {
+			writef(stderr, "error: search query is required (e.g. cortex code find RepoMap)\n")
+			return 1
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading graph: %v\n", err)
+			return 1
+		}
+
+		results := code.SearchSymbols(graph, code.SymbolSearchQuery{
+			Query:    query,
+			IsRegex:  isRegex,
+			Kind:     kind,
+			FilePath: fileFilter,
+			Limit:    limit,
+		})
+
+		if jsonOutput {
+			b, err := json.MarshalIndent(results, "", "  ")
+			if err != nil {
+				writef(stderr, "error serializing json: %v\n", err)
+				return 1
+			}
+			writef(stdout, "%s\n", string(b))
+			return 0
+		}
+
+		writef(stdout, "Found %d symbol(s) matching %q in project %q:\n\n", len(results), query, project)
+		for _, r := range results {
+			writef(stdout, "  • [%-9s] %-30s %s (line %d) [%s]\n", r.Symbol.Kind, r.Symbol.Name, r.Symbol.FilePath, r.Symbol.LineNumber, r.MatchField)
+		}
+		return 0
+
 	case "scan":
 		return runIngest(args[1:], stdout, stderr)
+	case "map", "repo-map":
+		project := "default"
+		budget := 2048
+		for _, arg := range args[1:] {
+			if strings.HasPrefix(arg, "--project=") {
+				project = strings.TrimPrefix(arg, "--project=")
+			} else if strings.HasPrefix(arg, "--budget=") {
+				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--budget=")); err == nil && n > 0 {
+					budget = n
+				}
+			}
+		}
+
+		a, err := openApp()
+		if err != nil {
+			writef(stderr, "error: %v\n", err)
+			return 1
+		}
+		defer func() { _ = a.Close() }()
+
+		graph, err := a.Stores.Code.GetGraph(context.Background(), project)
+		if err != nil {
+			writef(stderr, "error loading code graph: %v\n", err)
+			return 1
+		}
+
+		repoMap := code.GenerateRepoMap(graph, budget)
+		writef(stdout, "%s\n", repoMap)
+		return 0
 	case "symbols":
 		a, err := openApp()
 		if err != nil {
@@ -2443,4 +2790,85 @@ func renderAsciiGraph(graph *code.CodeGraph, rootSymbol string, hops int, maxNod
 	}
 
 	return sb.String()
+}
+
+// --- status / mode -----------------------------------------------------------
+
+func runStatus(args []string, stdout, stderr io.Writer) int {
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		}
+	}
+
+	cfg, err := config.Load("")
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	mode, modeDesc := cfg.DetectMode()
+
+	dbPath := cfg.Database.Path
+	if dbPath == "" {
+		dbPath = config.DefaultDBPath()
+	}
+	if cfg.Database.InMemory {
+		dbPath = ":memory:"
+	}
+
+	configPath := cfg.LoadedFrom
+	if configPath == "" {
+		configPath = "defaults (no config file loaded)"
+	}
+
+	embInfo := "disabled / not configured"
+	if cfg.AI.Provider != "" {
+		embInfo = fmt.Sprintf("%s (%s)", cfg.AI.Provider, cfg.AI.Model)
+	} else if cfg.Search.EmbeddingProvider != "" {
+		embInfo = fmt.Sprintf("%s (%s)", cfg.Search.EmbeddingProvider, cfg.Search.EmbeddingModel)
+	}
+
+	syncInfo := "disabled"
+	if cfg.Sync.Enabled {
+		target := cfg.Sync.URL
+		if target == "" {
+			target = "configured"
+		}
+		syncInfo = fmt.Sprintf("enabled -> %s", target)
+	}
+
+	if jsonOutput {
+		statusData := map[string]any{
+			"mode":        string(mode),
+			"description": modeDesc,
+			"database": map[string]any{
+				"path":      dbPath,
+				"in_memory": cfg.Database.InMemory,
+			},
+			"sync": map[string]any{
+				"enabled": cfg.Sync.Enabled,
+				"url":     cfg.Sync.URL,
+			},
+			"embeddings":  embInfo,
+			"config_path": configPath,
+		}
+		data, err := json.MarshalIndent(statusData, "", "  ")
+		if err != nil {
+			writef(stderr, "error formatting json: %v\n", err)
+			return 1
+		}
+		writeln(stdout, string(data))
+		return 0
+	}
+
+	writef(stdout, "Cortex Operational Mode & Status\n\n")
+	writef(stdout, "  Operating Mode: %s\n", mode)
+	writef(stdout, "  Description:    %s\n", modeDesc)
+	writef(stdout, "  Database Path:  %s\n", dbPath)
+	writef(stdout, "  Sync Status:    %s\n", syncInfo)
+	writef(stdout, "  Embeddings:     %s\n", embInfo)
+	writef(stdout, "  Config File:    %s\n", configPath)
+
+	return 0
 }

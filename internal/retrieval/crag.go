@@ -19,6 +19,7 @@ type CRAGConfig struct {
 	HighThreshold float64 // typically 0.65
 	LowThreshold  float64 // typically 0.30
 	MinScoreFloor float64 // noise floor, results below this are stripped
+	DynamicMode   bool    // enables dynamic score gap & relative elbow calibration (for RRF/dense distributions)
 }
 
 // DefaultCRAGConfig returns standard CRAG evaluation parameters.
@@ -27,6 +28,17 @@ func DefaultCRAGConfig() CRAGConfig {
 		HighThreshold: 0.65,
 		LowThreshold:  0.30,
 		MinScoreFloor: 0.005, // Minimum RRF / combined score to consider non-noise
+		DynamicMode:   false,
+	}
+}
+
+// DynamicCRAGConfig returns CRAG configuration optimized for dynamic/RRF score distributions.
+func DynamicCRAGConfig() CRAGConfig {
+	return CRAGConfig{
+		HighThreshold: 0.65,
+		LowThreshold:  0.30,
+		MinScoreFloor: 0.005,
+		DynamicMode:   true,
 	}
 }
 
@@ -70,11 +82,40 @@ func EvaluateCRAG(results []*domain.SearchResult, cfg CRAGConfig) CRAGEvaluation
 	grade := ConfidenceGradeMedium
 	needsRefinement := false
 
-	if topScore >= cfg.HighThreshold {
-		grade = ConfidenceGradeHigh
-	} else if topScore < cfg.LowThreshold || len(filtered) == 0 {
-		grade = ConfidenceGradeLow
-		needsRefinement = true
+	if cfg.DynamicMode && topScore > 0 && topScore < cfg.LowThreshold {
+		// Dynamic Calibration Mode: When scores are in RRF space (< LowThreshold, e.g. 0.005 - 0.05),
+		// evaluate confidence based on the relative gap between top score and tail or noise floor.
+		var avgTail float64
+		if len(filtered) > 1 {
+			var tailSum float64
+			for _, r := range filtered[1:] {
+				tailSum += r.Rank
+			}
+			avgTail = tailSum / float64(len(filtered)-1)
+		}
+
+		if len(filtered) == 1 && topScore >= cfg.MinScoreFloor*2 {
+			grade = ConfidenceGradeHigh
+			needsRefinement = false
+		} else if avgTail > 0 && (topScore/avgTail) >= 1.4 {
+			// Clear winner with significant margin over subsequent results
+			grade = ConfidenceGradeHigh
+			needsRefinement = false
+		} else if len(filtered) > 0 && topScore >= cfg.MinScoreFloor {
+			grade = ConfidenceGradeMedium
+			needsRefinement = false
+		} else {
+			grade = ConfidenceGradeLow
+			needsRefinement = true
+		}
+	} else {
+		// Standard absolute thresholding
+		if topScore >= cfg.HighThreshold {
+			grade = ConfidenceGradeHigh
+		} else if topScore < cfg.LowThreshold || len(filtered) == 0 {
+			grade = ConfidenceGradeLow
+			needsRefinement = true
+		}
 	}
 
 	return CRAGEvaluation{

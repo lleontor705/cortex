@@ -312,6 +312,12 @@ var defaults = Config{
 	},
 }
 
+// DefaultConfig returns a copy of default configuration.
+func DefaultConfig() *Config {
+	c := defaults
+	return &c
+}
+
 // Load reads configuration from file, environment variables, and applies defaults
 // The configPath parameter is optional - if empty, it searches for cortex.yaml, cortex.yml, cortex.json, cortex.toml
 func Load(configPath string) (*Config, error) {
@@ -1309,3 +1315,45 @@ func nodeContainsValue(node *yaml.Node, keys ...string) bool {
 	}
 	return false
 }
+
+// OperatingMode represents the runtime operational mode of Cortex.
+type OperatingMode string
+
+const (
+	ModeLocal  OperatingMode = "local"
+	ModeHybrid OperatingMode = "hybrid"
+	ModeServer OperatingMode = "server"
+)
+
+// DetectMode resolves the active operational mode (local, hybrid, server) and descriptive context.
+func (c *Config) DetectMode() (OperatingMode, string) {
+	if c == nil {
+		return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
+	}
+
+	if envMode := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))); envMode != "" {
+		switch envMode {
+		case "server":
+			return ModeServer, "Server (PostgreSQL Multi-Tenant with RLS & Enterprise Governance)"
+		case "hybrid":
+			target := c.Sync.URL
+			if target == "" {
+				target = "remote replication endpoint"
+			}
+			return ModeHybrid, fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", target)
+		case "local":
+			return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
+		}
+	}
+
+	if c.Server.Storage.DSN != "" {
+		return ModeServer, "Server (PostgreSQL Multi-Tenant with RLS & Enterprise Governance)"
+	}
+
+	if c.Sync.Enabled && c.Sync.URL != "" {
+		return ModeHybrid, fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", c.Sync.URL)
+	}
+
+	return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
+}
+

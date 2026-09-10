@@ -27,8 +27,15 @@ func DefaultWatcherConfig(dir, project string) WatcherConfig {
 		Project:          project,
 		PollInterval:     800 * time.Millisecond,
 		DebounceDuration: 500 * time.Millisecond,
-		Extensions:       []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs"},
-		IgnoreDirs:       []string{".git", "node_modules", "vendor", "dist", "bin", ".next", "tmp"},
+		Extensions: []string{
+			".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs",
+			".cs", ".fs", ".vb", ".java", ".kt", ".c", ".cpp", ".cc",
+			".h", ".hpp", ".php", ".rb", ".swift", ".sql",
+		},
+		IgnoreDirs: []string{
+			".git", "node_modules", "vendor", "dist", "bin", ".next",
+			"tmp", "target", "build", "obj", ".cortex-ia",
+		},
 	}
 }
 
@@ -48,7 +55,11 @@ func NewFileWatcher(cfg WatcherConfig) *FileWatcher {
 		cfg.DebounceDuration = 500 * time.Millisecond
 	}
 	if len(cfg.Extensions) == 0 {
-		cfg.Extensions = []string{".go", ".ts", ".tsx", ".py", ".rs"}
+		cfg.Extensions = []string{
+			".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs",
+			".cs", ".fs", ".vb", ".java", ".kt", ".c", ".cpp", ".cc",
+			".h", ".hpp", ".php", ".rb", ".swift", ".sql",
+		}
 	}
 	return &FileWatcher{
 		cfg:      cfg,
