@@ -241,7 +241,7 @@ func (s *Store) saveInTxEnvelope(ctx context.Context, tx *sql.Tx, obs *domain.Ob
 
 	// 1. Check for topic_key upsert
 	if topicKey != "" {
-		existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, topicKey)
+		existingID, err := s.findObservationByTopicKeyTx(tx, obs.Project, scope, topicKey)
 		if err != nil && !isNoRows(err) {
 			return "", fmt.Errorf("memory store: find by topic key: %w", err)
 		}
@@ -1253,16 +1253,17 @@ var _ domain.TxParticipant = (*Store)(nil)
 
 // --- Transaction-Scoped Operations -------------------------------------------
 
-func (s *Store) findObservationByTopicKeyTx(tx *sql.Tx, project, topicKey string) (int64, error) {
+func (s *Store) findObservationByTopicKeyTx(tx *sql.Tx, project, scope, topicKey string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(`
 		SELECT id FROM observations
 		WHERE topic_key = ?
 		  AND ifnull(project, '') = ifnull(?, '')
+		  AND scope = ?
 		  AND deleted_at IS NULL
 		ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
 		LIMIT 1
-	`, topicKey, nullableString(project)).Scan(&id)
+	`, topicKey, nullableString(project), normalizeScope(scope)).Scan(&id)
 	if err != nil {
 		return 0, err
 	}

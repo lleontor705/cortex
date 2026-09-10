@@ -412,6 +412,320 @@ func TestStore_Save_TopicKeyUpsert(t *testing.T) {
 	}
 }
 
+func TestStore_Save_TopicKeyCrossScope(t *testing.T) {
+	t.Run("ProjectThenPersonal", func(t *testing.T) {
+		store, db, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		createTestSession(t, db, "session-project", "my-project")
+		createTestSession(t, db, "session-personal", "my-project")
+
+		// 1. Save project-scoped observation with topic key
+		projectObs := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     domain.ScopeProject,
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision",
+			Content:   "Architecture decision for project",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, projectObs); err != nil {
+			t.Fatalf("Save(projectObs) error = %v", err)
+		}
+		projectID := projectObs.ID
+
+		// 2. Save personal-scoped observation with same topic key and project
+		personalObs := &domain.Observation{
+			SessionID: "session-personal",
+			Project:   "my-project",
+			Scope:     domain.ScopePersonal,
+			Type:      domain.TypeDecision,
+			Title:     "Personal Decision",
+			Content:   "Architecture decision for personal",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, personalObs); err != nil {
+			t.Fatalf("Save(personalObs) error = %v", err)
+		}
+		personalID := personalObs.ID
+
+		// They must have distinct IDs and must not have overwritten each other
+		if personalID == projectID {
+			t.Fatalf("Save() cross-scope collision: personal reused project ID %d", projectID)
+		}
+
+		// Verify both exist in DB as active observations
+		var count int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM observations
+			WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
+		`, "my-project", "architecture/auth").Scan(&count)
+		if err != nil {
+			t.Fatalf("count query error: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("expected 2 active observations with same topic_key across scopes, got %d", count)
+		}
+
+		// Verify both observations retained their respective titles and scopes
+		var projScope, projTitle string
+		if err := db.QueryRow(`SELECT scope, title FROM observations WHERE id = ?`, projectID).Scan(&projScope, &projTitle); err != nil {
+			t.Fatalf("query project obs: %v", err)
+		}
+		if projScope != "project" || projTitle != "Project Decision" {
+			t.Errorf("project obs got scope=%q title=%q, want scope=project title='Project Decision'", projScope, projTitle)
+		}
+
+		var persScope, persTitle string
+		if err := db.QueryRow(`SELECT scope, title FROM observations WHERE id = ?`, personalID).Scan(&persScope, &persTitle); err != nil {
+			t.Fatalf("query personal obs: %v", err)
+		}
+		if persScope != "personal" || persTitle != "Personal Decision" {
+			t.Errorf("personal obs got scope=%q title=%q, want scope=personal title='Personal Decision'", persScope, persTitle)
+		}
+
+		// 3. Upsert personal observation within its own scope
+		personalUpdate := &domain.Observation{
+			SessionID: "session-personal",
+			Project:   "my-project",
+			Scope:     domain.ScopePersonal,
+			Type:      domain.TypeDecision,
+			Title:     "Personal Decision Updated",
+			Content:   "Updated content for personal",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, personalUpdate); err != nil {
+			t.Fatalf("Save(personalUpdate) error = %v", err)
+		}
+		if personalUpdate.ID != personalID {
+			t.Errorf("personal update ID = %d, want %d", personalUpdate.ID, personalID)
+		}
+
+		// 4. Upsert project observation within its own scope
+		projectUpdate := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     domain.ScopeProject,
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision Updated",
+			Content:   "Updated content for project",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, projectUpdate); err != nil {
+			t.Fatalf("Save(projectUpdate) error = %v", err)
+		}
+		if projectUpdate.ID != projectID {
+			t.Errorf("project update ID = %d, want %d", projectUpdate.ID, projectID)
+		}
+
+		// Count remains 2
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM observations
+			WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
+		`, "my-project", "architecture/auth").Scan(&count); err != nil {
+			t.Fatalf("count query error: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("expected count to remain 2, got %d", count)
+		}
+
+		// 5. Default/unspecified scope should normalize to "project" and upsert into project record
+		defaultScopeUpdate := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     "", // empty string defaults/normalizes to "project"
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision Via Default Scope",
+			Content:   "Updated content via default scope",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, defaultScopeUpdate); err != nil {
+			t.Fatalf("Save(defaultScopeUpdate) error = %v", err)
+		}
+		if defaultScopeUpdate.ID != projectID {
+			t.Errorf("default scope update ID = %d, want project ID %d", defaultScopeUpdate.ID, projectID)
+		}
+
+		// 6. Soft delete personal observation: subsequent personal save should create a new record
+		if err := store.Delete(ctx, personalID); err != nil {
+			t.Fatalf("Delete(personalID) error = %v", err)
+		}
+		newPersonalObs := &domain.Observation{
+			SessionID: "session-personal",
+			Project:   "my-project",
+			Scope:     domain.ScopePersonal,
+			Type:      domain.TypeDecision,
+			Title:     "New Personal Decision",
+			Content:   "Fresh personal content after delete",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, newPersonalObs); err != nil {
+			t.Fatalf("Save(newPersonalObs) error = %v", err)
+		}
+		if newPersonalObs.ID == personalID || newPersonalObs.ID == projectID {
+			t.Errorf("new personal ID = %d, should not reuse deleted %d or project %d", newPersonalObs.ID, personalID, projectID)
+		}
+	})
+
+	t.Run("PersonalThenProject", func(t *testing.T) {
+		store, db, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		createTestSession(t, db, "session-personal", "my-project")
+		createTestSession(t, db, "session-project", "my-project")
+
+		// 1. Save personal-scoped observation first
+		personalObs := &domain.Observation{
+			SessionID: "session-personal",
+			Project:   "my-project",
+			Scope:     domain.ScopePersonal,
+			Type:      domain.TypeDecision,
+			Title:     "Personal Decision",
+			Content:   "Architecture decision for personal",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, personalObs); err != nil {
+			t.Fatalf("Save(personalObs) error = %v", err)
+		}
+		personalID := personalObs.ID
+
+		// 2. Save project-scoped observation second with same topic key and project
+		projectObs := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     domain.ScopeProject,
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision",
+			Content:   "Architecture decision for project",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, projectObs); err != nil {
+			t.Fatalf("Save(projectObs) error = %v", err)
+		}
+		projectID := projectObs.ID
+
+		// They must have distinct IDs and must not have overwritten each other
+		if projectID == personalID {
+			t.Fatalf("Save() cross-scope collision: project reused personal ID %d", personalID)
+		}
+
+		// Verify both exist in DB as active observations
+		var count int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM observations
+			WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
+		`, "my-project", "architecture/auth").Scan(&count)
+		if err != nil {
+			t.Fatalf("count query error: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("expected 2 active observations with same topic_key across scopes, got %d", count)
+		}
+
+		// Verify both observations retained their respective titles and scopes
+		var persScope, persTitle string
+		if err := db.QueryRow(`SELECT scope, title FROM observations WHERE id = ?`, personalID).Scan(&persScope, &persTitle); err != nil {
+			t.Fatalf("query personal obs: %v", err)
+		}
+		if persScope != "personal" || persTitle != "Personal Decision" {
+			t.Errorf("personal obs got scope=%q title=%q, want scope=personal title='Personal Decision'", persScope, persTitle)
+		}
+
+		var projScope, projTitle string
+		if err := db.QueryRow(`SELECT scope, title FROM observations WHERE id = ?`, projectID).Scan(&projScope, &projTitle); err != nil {
+			t.Fatalf("query project obs: %v", err)
+		}
+		if projScope != "project" || projTitle != "Project Decision" {
+			t.Errorf("project obs got scope=%q title=%q, want scope=project title='Project Decision'", projScope, projTitle)
+		}
+
+		// 3. Upsert project observation within its own scope
+		projectUpdate := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     domain.ScopeProject,
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision Updated",
+			Content:   "Updated content for project",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, projectUpdate); err != nil {
+			t.Fatalf("Save(projectUpdate) error = %v", err)
+		}
+		if projectUpdate.ID != projectID {
+			t.Errorf("project update ID = %d, want %d", projectUpdate.ID, projectID)
+		}
+
+		// 4. Upsert personal observation within its own scope
+		personalUpdate := &domain.Observation{
+			SessionID: "session-personal",
+			Project:   "my-project",
+			Scope:     domain.ScopePersonal,
+			Type:      domain.TypeDecision,
+			Title:     "Personal Decision Updated",
+			Content:   "Updated content for personal",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, personalUpdate); err != nil {
+			t.Fatalf("Save(personalUpdate) error = %v", err)
+		}
+		if personalUpdate.ID != personalID {
+			t.Errorf("personal update ID = %d, want %d", personalUpdate.ID, personalID)
+		}
+
+		// Count remains 2
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM observations
+			WHERE project = ? AND topic_key = ? AND deleted_at IS NULL
+		`, "my-project", "architecture/auth").Scan(&count); err != nil {
+			t.Fatalf("count query error: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("expected count to remain 2, got %d", count)
+		}
+
+		// 5. Default/unspecified scope should normalize to "project" and upsert into project record
+		defaultScopeUpdate := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     "", // empty string defaults/normalizes to "project"
+			Type:      domain.TypeDecision,
+			Title:     "Project Decision Via Default Scope",
+			Content:   "Updated content via default scope",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, defaultScopeUpdate); err != nil {
+			t.Fatalf("Save(defaultScopeUpdate) error = %v", err)
+		}
+		if defaultScopeUpdate.ID != projectID {
+			t.Errorf("default scope update ID = %d, want project ID %d", defaultScopeUpdate.ID, projectID)
+		}
+
+		// 6. Soft delete project observation: subsequent project save should create a new record
+		if err := store.Delete(ctx, projectID); err != nil {
+			t.Fatalf("Delete(projectID) error = %v", err)
+		}
+		newProjectObs := &domain.Observation{
+			SessionID: "session-project",
+			Project:   "my-project",
+			Scope:     domain.ScopeProject,
+			Type:      domain.TypeDecision,
+			Title:     "New Project Decision",
+			Content:   "Fresh project content after delete",
+			TopicKey:  "architecture/auth",
+		}
+		if err := store.Save(ctx, newProjectObs); err != nil {
+			t.Fatalf("Save(newProjectObs) error = %v", err)
+		}
+		if newProjectObs.ID == projectID || newProjectObs.ID == personalID {
+			t.Errorf("new project ID = %d, should not reuse deleted %d or personal %d", newProjectObs.ID, projectID, personalID)
+		}
+	})
+}
+
 func TestStore_Save_TopicKeyNormalization(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
 	defer cleanup()
