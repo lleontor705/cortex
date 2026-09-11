@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
+	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -618,7 +620,19 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 			Reasoning:    reasoning,
 		}
 
-		if err := svc.CreateEdge(ctx, edge); err != nil {
+		var err error
+		if (edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts) && stores.UnitOfWork != nil && stores.Graph != nil {
+			err = stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Graph}, func(txCtx context.Context) error {
+				return stores.Graph.WithinTx(txCtx, bundle.TxHandle(txCtx), func(enlistedCtx context.Context) error {
+					return svc.CreateEdge(enlistedCtx, edge)
+				})
+			})
+		} else {
+			err = svc.CreateEdge(ctx, edge)
+		}
+
+		if err != nil {
+			slog.Error("cortex_relate: failed to create relationship", "from_id", fromID, "to_id", toID, "relation_type", relationType, "error", err)
 			return errorResult("Failed to create relationship: %s", localErrorText(err))
 		}
 

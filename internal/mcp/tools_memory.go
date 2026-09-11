@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"regexp"
 	"strings"
@@ -534,11 +535,13 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		suggested := suggestTopicKey(typ, title, content)
 
 		// Ensure the session exists (ignore error if already created)
-		_ = stores.Sessions.Create(ctx, &domain.Session{
+		if err := stores.Sessions.Create(ctx, &domain.Session{
 			ID:        sessionID,
 			Project:   project,
 			Directory: ".",
-		})
+		}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			slog.Warn("cortex_save: ensure session failed", "session_id", sessionID, "error", err)
+		}
 
 		obs := &domain.Observation{
 			Title:      title,
@@ -572,6 +575,7 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 				return structuredTextResult(saveStructuredFromEffect(effect),
 					"Memory saved: %q (%s) [duplicate skipped]", title, typ)
 			}
+			slog.Error("cortex_save: persistence failed", "error", err, "title", title, "type", typ, "project", project, "session_id", sessionID)
 			// The textual fallback uses the SAME constant, redacted message as
 			// the structuredContent payload — the raw error (which may carry
 			// SQL text, filesystem paths, or credential fragments) is never

@@ -286,6 +286,43 @@ func setupHandoffStores(t *testing.T) (*Stores, *sql.DB) {
 	return stores, db
 }
 
+func TestIntegration_HandleRelate_SupersedesV2WithUnitOfWork(t *testing.T) {
+	stores, _ := setupHandoffStores(t)
+	saveHandler := handleSave(stores)
+
+	r1 := callTool(t, saveHandler, map[string]interface{}{
+		"title":      "Spec 48",
+		"content":    "Initial spec requirements",
+		"type":       "decision",
+		"project":    "handoff-demo",
+		"session_id": handoffSessionID,
+	})
+	if r1.IsError {
+		t.Fatalf("failed to save spec 48: %v", resultText(r1))
+	}
+
+	r2 := callTool(t, saveHandler, map[string]interface{}{
+		"title":      "Spec 49",
+		"content":    "Updated spec requirements superseding 48",
+		"type":       "decision",
+		"project":    "handoff-demo",
+		"session_id": handoffSessionID,
+	})
+	if r2.IsError {
+		t.Fatalf("failed to save spec 49: %v", resultText(r2))
+	}
+
+	relateHandler := handleRelate(stores)
+	relResult := callTool(t, relateHandler, map[string]interface{}{
+		"from_id":       float64(2),
+		"to_id":         float64(1),
+		"relation_type": "supersedes",
+	})
+	if relResult.IsError || !strings.Contains(resultText(relResult), "Relationship created") {
+		t.Fatalf("expected supersedes relation created with UnitOfWork, got: %q (isError=%v)", resultText(relResult), relResult.IsError)
+	}
+}
+
 // handoffReceiptRow reads the durable receipt ledger for (scope, key).
 func handoffReceiptRow(t *testing.T, db *sql.DB, scope, key string) (count int, state, initialStatus string) {
 	t.Helper()
