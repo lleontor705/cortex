@@ -60,7 +60,7 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		   AND NOT EXISTS (
 		       SELECT 1 FROM cortex_vector.embeddings e WHERE e.id = o.id
 		   )
-		 LIMIT 10`
+		 LIMIT 32`
 
 	rows, err := w.pool.Query(ctx, query)
 	if err != nil {
@@ -74,7 +74,7 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		scope, tenantID, workspaceID, source, obsType string
 	}
 
-	batch := make([]unindexedObservation, 0, 10)
+	batch := make([]unindexedObservation, 0, 32)
 	for rows.Next() {
 		var item unindexedObservation
 		if err := rows.Scan(&item.id, &item.title, &item.content, &item.projectKey, &item.projectPublicID,
@@ -88,14 +88,44 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		return
 	}
 
-	points := make([]domain.VectorPoint, 0, len(batch))
+	validObs := make([]unindexedObservation, 0, len(batch))
+	texts := make([]string, 0, len(batch))
 	for _, obs := range batch {
 		text := strings.TrimSpace(obs.title + "\n" + obs.content)
 		if text == "" {
 			continue
 		}
-		vec, err := w.embeddings.Embed(ctx, text)
-		if err != nil || len(vec) == 0 {
+		validObs = append(validObs, obs)
+		texts = append(texts, text)
+	}
+
+	if len(validObs) == 0 {
+		return
+	}
+
+	var vectors [][]float32
+	if batcher, ok := w.embeddings.(embedding.BatchEmbedder); ok {
+		var err error
+		vectors, err = batcher.EmbedBatch(ctx, texts)
+		if err != nil {
+			log.Printf("server: background embedding worker batch embed error: %v", err)
+			vectors = nil
+		}
+	}
+
+	points := make([]domain.VectorPoint, 0, len(validObs))
+	for i, obs := range validObs {
+		var vec []float32
+		if len(vectors) == len(validObs) {
+			vec = vectors[i]
+		} else {
+			var err error
+			vec, err = w.embeddings.Embed(ctx, texts[i])
+			if err != nil || len(vec) == 0 {
+				continue
+			}
+		}
+		if len(vec) == 0 {
 			continue
 		}
 		points = append(points, domain.VectorPoint{

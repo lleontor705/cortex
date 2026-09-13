@@ -60,11 +60,12 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 	writef(stdout, "👀 Cortex File Watcher activo en %s (proyecto: %s)\n", absDir, project)
 	writef(stdout, "Presiona Ctrl+C para detener.\n\n")
 
-	err = watcher.Watch(ctx, func(path string) {
+	err = watcher.WatchWithEvents(ctx, func(path string) {
 		rel, _ := filepath.Rel(absDir, path)
 		if rel == "" {
 			rel = path
 		}
+		rel = filepath.ToSlash(rel)
 		writef(stdout, "⚡ [Detectado cambio] %s -> indexando AST...\n", rel)
 
 		if a.Stores.Code != nil {
@@ -73,6 +74,10 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 				writef(stderr, "   ⚠️ error extrayendo AST de %s: %v\n", rel, err)
 				return
 			}
+			// Clean up previous symbols and relationships for this file to prevent orphans
+			_ = a.Stores.Code.DeleteSymbolsByFile(ctx, project, rel)
+			_ = a.Stores.Code.DeleteRelationsByFile(ctx, project, rel)
+
 			if len(codeGraph.Symbols) > 0 {
 				if err := a.Stores.Code.SaveSymbols(ctx, codeGraph.Symbols); err != nil {
 					writef(stderr, "   ⚠️ error guardando símbolos: %v\n", err)
@@ -86,6 +91,18 @@ func runWatch(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			writef(stdout, "   ✅ %d símbolos, %d relaciones actualizadas.\n", len(codeGraph.Symbols), len(codeGraph.Relations))
+		}
+	}, func(path string) {
+		rel, _ := filepath.Rel(absDir, path)
+		if rel == "" {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+		writef(stdout, "🗑️ [Detectada eliminación] %s -> eliminando símbolos del grafo...\n", rel)
+		if a.Stores.Code != nil {
+			_ = a.Stores.Code.DeleteSymbolsByFile(ctx, project, rel)
+			_ = a.Stores.Code.DeleteRelationsByFile(ctx, project, rel)
+			writef(stdout, "   ✅ Símbolos y relaciones de %s eliminados.\n", rel)
 		}
 	})
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 	entitystore "github.com/lleontor705/cortex/v2/internal/store/entity"
 	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
@@ -38,6 +39,7 @@ type Stores struct {
 	Metrics           *sqlitestore.MetricsRepository
 	QualityMetrics    *sqlitestore.QualityMetricsRepository
 	Code              *sqlitestore.CodeStore
+	TransientPayloads *sqlitestore.TransientPayloadStore
 
 	// Embeddings is the optional embedding service for vector search.
 	Embeddings embedding.Service
@@ -307,37 +309,121 @@ func computeBackoff(cfg domain.BusyRetryConfig, attempt int) time.Duration {
 // under overload (REQ-EMB-001). When the worker is absent (Worker == nil), no
 // saturation gate is applied: in production the worker and outbox are always
 // paired, so this only affects test wiring and preserves zero-worker behavior.
-func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observation) error {
-	// Zero-embedding / unwired path: standalone save, no outbox activity.
-	if stores.Outbox == nil && (stores.Entities == nil || stores.UnitOfWork == nil) {
-		return stores.Observations.Save(ctx, obs)
+
+// protectedObservation performs complete privacy envelope preflight on a detached
+// observation copy, validating metadata and applying redaction to title and content.
+// The caller's prose is never modified.
+func protectedObservation(obs *domain.Observation) (*domain.Observation, error) {
+	if obs == nil {
+		return nil, &domain.ValidationError{Field: "observation", Message: "observation cannot be nil"}
 	}
-	if stores.UnitOfWork == nil {
-		return fmt.Errorf("bundle: entities require UnitOfWork for atomic save")
+	protectedCopy := *obs
+	meta := make(map[string]string)
+	if protectedCopy.Project != "" {
+		meta["project"] = protectedCopy.Project
+	}
+	if protectedCopy.TopicKey != "" {
+		meta["topic_key"] = protectedCopy.TopicKey
+	}
+	if protectedCopy.Scope != "" {
+		meta["scope"] = protectedCopy.Scope
+	}
+	if protectedCopy.Type != "" {
+		meta["type"] = protectedCopy.Type
+	}
+	if protectedCopy.Source != "" {
+		meta["source"] = protectedCopy.Source
+	}
+	if protectedCopy.SessionID != "" {
+		meta["session_id"] = protectedCopy.SessionID
+	}
+	if protectedCopy.OwnerSubject != "" {
+		meta["owner_subject"] = protectedCopy.OwnerSubject
+	}
+	if protectedCopy.PublicID != "" {
+		meta["public_id"] = protectedCopy.PublicID
+	}
+	for i, tag := range protectedCopy.Tags {
+		meta[fmt.Sprintf("tag[%d]", i)] = tag
+	}
+	env := privacy.Envelope{
+		NamedFields: []privacy.NamedField{
+			{Name: "title", Value: protectedCopy.Title, Required: true},
+			{Name: "content", Value: protectedCopy.Content, Required: true},
+		},
+		Metadata: meta,
+	}
+	protected, err := privacy.ProtectEnvelope(env)
+	if err != nil {
+		return nil, err
+	}
+	for _, nf := range protected.NamedFields {
+		switch nf.Name {
+		case "title":
+			protectedCopy.Title = nf.Value
+		case "content":
+			protectedCopy.Content = nf.Value
+		}
+	}
+	return &protectedCopy, nil
+}
+
+// SaveWithEffect saves an observation with complete privacy envelope preflight
+// and transactional outbox/entity effects, returning the durable SaveEffect.
+//
+// Envelope privacy preflight runs before any state mutation, saturation checks,
+// transaction enlistment, entity extraction, or outbox enqueue. If preflight
+// fails (e.g. malformed or unclosed privacy markers, empty public residual,
+// invalid UTF-8, or marker syntax in metadata/tags), the save fails closed:
+// no transaction begins, no observation or entity links are saved, no outbox
+// intent is enqueued, the caller's observation struct is not mutated, and the
+// returned error is a typed, payload-free diagnostic that never leaks private data.
+func SaveWithEffect(ctx context.Context, stores *Stores, obs *domain.Observation) (domain.SaveEffect, error) {
+	return saveWithEffect(ctx, stores, obs, nil)
+}
+
+// saveWithEffect has a narrow observer seam for package tests. The observer receives
+// the same protected pointer used by the transactional outbox and entity effects.
+func saveWithEffect(ctx context.Context, stores *Stores, obs *domain.Observation, observe func(*domain.Observation) error) (domain.SaveEffect, error) {
+	if stores == nil || stores.Observations == nil {
+		return domain.SaveEffect{}, fmt.Errorf("bundle: observation store is required")
+	}
+	if obs == nil {
+		return domain.SaveEffect{}, &domain.ValidationError{Field: "observation", Message: "observation cannot be nil"}
+	}
+	protectedObs, err := protectedObservation(obs)
+	if err != nil {
+		return domain.SaveEffect{}, err
 	}
 
-	// Saturation check via the worker's authoritative state (single source of
-	// truth — no duplicated bundle-side constant). Fail-closed under overload
-	// (REQ-EMB-001). Skipped when the worker is absent (zero-worker behavior).
+	// Zero-embedding / unwired path: standalone save with effect, no outbox activity.
+	if stores.Outbox == nil && (stores.Entities == nil || stores.UnitOfWork == nil) {
+		effect, err := stores.Observations.SaveWithEffect(ctx, protectedObs)
+		if err == nil {
+			obs.ID = protectedObs.ID
+		}
+		return effect, err
+	}
+	if stores.UnitOfWork == nil {
+		return domain.SaveEffect{}, fmt.Errorf("bundle: entities require UnitOfWork for atomic save")
+	}
+
+	// Saturation check via the worker's authoritative state (fail-closed under overload).
 	if stores.Worker != nil {
 		saturated, err := stores.Worker.IsSaturated(ctx)
 		if err != nil {
-			return fmt.Errorf("bundle: check embed backlog: %w", err)
+			return domain.SaveEffect{}, fmt.Errorf("bundle: check embed backlog: %w", err)
 		}
 		if saturated {
-			return fmt.Errorf("bundle: embedding backlog saturated (worker reports overload)")
+			return domain.SaveEffect{}, fmt.Errorf("bundle: embedding backlog saturated (worker reports overload)")
 		}
 	}
 
-	// Transactional outbox: save observation + enqueue intent atomically.
-	// When SaveInTx signals a dedup skip (ClassDedupSkipped), the outbox
-	// enqueue is SKIPPED (no new observation to embed) and the dedup increment
-	// commits within the shared tx (REQ-MCPH-002). The caller receives
-	// domain.NewDedupSkipped so it can classify the outcome.
 	modelInfo := ""
 	if stores.Embeddings != nil {
 		modelInfo = stores.Embeddings.Model()
 	}
+	var effect domain.SaveEffect
 	var wasDedup bool
 	participants := []domain.TxParticipant{stores.Observations}
 	if stores.Outbox != nil {
@@ -346,15 +432,13 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 	if stores.Entities != nil {
 		participants = append(participants, stores.Entities)
 	}
-	err := stores.UnitOfWork.Do(ctx, nil, participants, func(txCtx context.Context) error {
-		// Participant 1: save the observation within the shared tx.
+	err = stores.UnitOfWork.Do(ctx, nil, participants, func(txCtx context.Context) error {
 		if err := stores.Observations.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
-			return stores.Observations.SaveInTx(c, obs)
+			var serr error
+			effect, serr = stores.Observations.SaveWithEffect(c, protectedObs)
+			return serr
 		}); err != nil {
 			if domain.IsClass(err, domain.ClassDedupSkipped) {
-				// Dedup: the duplicate_count increment already happened in
-				// the shared tx. Return nil so the tx COMMITS (preserving
-				// the increment). Skip the outbox (no new observation).
 				wasDedup = true
 				return nil
 			}
@@ -362,13 +446,18 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 		}
 		if stores.Outbox != nil {
 			if err := stores.Outbox.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
-				return stores.Outbox.EnqueueInTx(c, obs.ID, "embed_upsert", modelInfo)
+				return stores.Outbox.EnqueueInTx(c, protectedObs.ID, "embed_upsert", modelInfo)
 			}); err != nil {
 				return err
 			}
 		}
+		if observe != nil {
+			if err := observe(protectedObs); err != nil {
+				return err
+			}
+		}
 		if stores.Entities != nil {
-			links := domainentity.Extract(obs)
+			links := domainentity.Extract(protectedObs)
 			if err := stores.Entities.WithinTx(txCtx, TxHandle(txCtx), func(c context.Context) error {
 				return stores.Entities.SaveLinksInTx(c, links)
 			}); err != nil {
@@ -378,12 +467,24 @@ func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observ
 		return nil
 	})
 	if err != nil {
-		return err
+		return domain.SaveEffect{}, err
 	}
 	if wasDedup {
-		return domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
+		return effect, domain.NewDedupSkipped("duplicate observation skipped (normalized_hash match)")
 	}
-	return nil
+	// Preserve the legacy ID handoff without copying protected prose to the caller.
+	obs.ID = protectedObs.ID
+	return effect, nil
+}
+
+// SaveWithEmbedIntent saves an observation. When the outbox and UnitOfWork are
+// wired (non-nil), it also enqueues an embed+upsert intent in the SAME
+// transaction as the observation write — the intent commits atomically with the
+// observation, so the embedding worker can process it asynchronously with full
+// durability (REQ-EMB-002 transactional outbox).
+func SaveWithEmbedIntent(ctx context.Context, stores *Stores, obs *domain.Observation) error {
+	_, err := SaveWithEffect(ctx, stores, obs)
+	return err
 }
 
 // ---------------------------------------------------------------------------

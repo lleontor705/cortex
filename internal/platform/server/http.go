@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +21,10 @@ import (
 	agentdomain "github.com/lleontor705/cortex/v2/internal/domain/agent"
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
+	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
 	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 	"github.com/lleontor705/cortex/v2/internal/domain/graph"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
@@ -30,6 +33,8 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/mark3labs/mcp-go/util"
 )
+
+var serverStartTime = time.Now().UTC()
 
 const (
 	maxRequestBody = 1 << 20
@@ -227,6 +232,18 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+	})
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := health(ctx); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "unhealthy", "database unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 
 	extractor := extraction.NewServiceWithPolicy(extraction.Config{}, extraction.DefaultOutboundPolicy())
 	if len(extractors) > 0 && extractors[0] != nil {
@@ -311,6 +328,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions", a.createSession)
 	mux.HandleFunc("GET /api/sessions", a.listSessions)
 	mux.HandleFunc("GET /api/stats", a.stats)
+	mux.HandleFunc("GET /api/system/metrics", a.systemMetrics)
 	mux.HandleFunc("GET /api/audit", a.audit)
 	mux.HandleFunc("GET /api/projects", a.projects)
 	mux.HandleFunc("GET /api/me", a.me)
@@ -582,6 +600,24 @@ func (a *apiHandler) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (a *apiHandler) systemMetrics(w http.ResponseWriter, r *http.Request) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	stats, _ := a.ops.GetServerStats(r.Context())
+
+	resp := map[string]any{
+		"uptime_seconds": int64(time.Since(serverStartTime).Seconds()),
+		"goroutines":     runtime.NumGoroutine(),
+		"alloc_bytes":    m.Alloc,
+		"total_alloc":    m.TotalAlloc,
+		"sys_bytes":      m.Sys,
+		"num_gc":         m.NumGC,
+		"server_stats":   stats,
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (a *apiHandler) audit(w http.ResponseWriter, r *http.Request) {
 	result, err := a.ops.ListAuditEvents(r.Context(), queryInt(r.URL.Query().Get("limit"), 50, 1, 100))
 	if err != nil {
@@ -771,6 +807,8 @@ func (a *apiHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		FromID       string `json:"from_id"`
 		ToID         string `json:"to_id"`
 		RelationType string `json:"relation_type"`
+		Source       string `json:"source,omitempty"`
+		Reasoning    string `json:"reasoning,omitempty"`
 	}
 	if !decodeBody(w, r, &input) {
 		return
@@ -785,7 +823,15 @@ func (a *apiHandler) createEdge(w http.ResponseWriter, r *http.Request) {
 		respondOperationError(w, err)
 		return
 	}
-	edge := domain.Edge{FromObsID: from.ID, ToObsID: to.ID, FromPublicID: from.PublicID, ToPublicID: to.PublicID, RelationType: input.RelationType}
+	edge := domain.Edge{
+		FromObsID:    from.ID,
+		ToObsID:      to.ID,
+		FromPublicID: from.PublicID,
+		ToPublicID:   to.PublicID,
+		RelationType: input.RelationType,
+		Source:       input.Source,
+		Reasoning:    input.Reasoning,
+	}
 	if err := a.ops.CreateGraphEdge(r.Context(), &edge); err != nil {
 		respondOperationError(w, err)
 		return
@@ -1348,6 +1394,11 @@ func boundedMax(limit int) int {
 }
 
 func respondOperationError(w http.ResponseWriter, err error) {
+	var privErr *privacy.Error
+	if errors.As(err, &privErr) {
+		writeError(w, http.StatusBadRequest, string(privErr.Code), privErr.Error())
+		return
+	}
 	switch {
 	case isAuthorizationDenial(err):
 		writeError(w, http.StatusForbidden, "forbidden", "principal is not authorized for this operation")
@@ -1609,6 +1660,23 @@ The server namespace returns observation_ref.public_id only.`),
 	add(mcp.NewTool("cortex_list_skills", mcp.WithDescription("List available corporate and project skills."), mcp.WithString("project")), listProjectSkillsTool(ops))
 	add(mcp.NewTool("cortex_get_skill", mcp.WithDescription("Get full skill instructions, rules, and parameters by key."), mcp.WithString("key", mcp.Required()), mcp.WithString("project")), getProjectSkillTool(ops))
 	add(mcp.NewTool("cortex_resolve_query", mcp.WithDescription("Intelligently resolve a query in Server mode (PostgreSQL RLS, corporate rules, project context, skills, and observations)."), mcp.WithString("query", mcp.Required()), mcp.WithString("project"), mcp.WithNumber("limit")), resolveQueryTool(ops))
+	add(mcp.NewTool("cortex_get_agent_context",
+		mcp.WithTitleAnnotation("Get Structured Agent Context Pack"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDescription("Extracts an optimized prompt-injection context pack containing active project rules, architectural decisions, gotchas/bugfix lessons, and core architectural hubs."),
+		mcp.WithString("project", mcp.Description("Project name (defaults to 'default')")),
+		mcp.WithString("format", mcp.Description("Output format: 'xml', 'markdown', or 'json' (default: 'xml')")),
+		mcp.WithBoolean("include_repo_map", mcp.Description("Whether to include a token-budgeted repo map (default: false)")),
+		mcp.WithNumber("repo_map_budget", mcp.Description("Maximum token budget for repo map if included (default: 1024)")),
+	), agentContextTool(ops))
+	add(mcp.NewTool("cortex_get_compact_context",
+		mcp.WithTitleAnnotation("Get Token-Budgeted Compact Agent Context"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDescription("Extracts an ultra-dense, token-budgeted context pack containing prioritized rules, gotchas, decisions, and architectural hubs, bounded strictly to a max token budget."),
+		mcp.WithString("project", mcp.Description("Project name (defaults to 'default')")),
+		mcp.WithNumber("max_tokens", mcp.Description("Maximum token budget for the context prompt (default: 1500)")),
+		mcp.WithBoolean("include_repo_map", mcp.Description("Whether to include a condensed repo map if budget allows (default: false)")),
+	), compactContextTool(ops))
 	add(mcp.NewTool("cortex_get_status", mcp.WithDescription("Get the active operational mode (Server PostgreSQL), version, and capabilities.")), getStatusTool(ops))
 }
 
@@ -1665,14 +1733,26 @@ func toolString(req mcp.CallToolRequest, key string) string {
 	return v
 }
 func toolInt(req mcp.CallToolRequest, key string, fallback int) int {
+	switch v := toolArgs(req)[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return fallback
+	}
+}
+func toolFloat(req mcp.CallToolRequest, key string, fallback float64) float64 {
 	v, ok := toolArgs(req)[key].(float64)
 	if !ok {
 		return fallback
 	}
-	return int(v)
+	return v
 }
-func toolFloat(req mcp.CallToolRequest, key string, fallback float64) float64 {
-	v, ok := toolArgs(req)[key].(float64)
+func toolBool(req mcp.CallToolRequest, key string, fallback bool) bool {
+	v, ok := toolArgs(req)[key].(bool)
 	if !ok {
 		return fallback
 	}
@@ -1727,6 +1807,13 @@ func saveStructuredFromEffect(effect domain.SaveEffect) any {
 // else keeps memorycontract's stable classification. Raw denial reasons and
 // driver text never surface.
 func serverMemoryError(err error) memorycontract.ErrorStructured {
+	var privErr *privacy.Error
+	if errors.As(err, &privErr) {
+		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
+			Code:    memorycontract.CodeValidation,
+			Message: privErr.Error(),
+		}}
+	}
 	if isAuthorizationDenial(err) {
 		return memorycontract.ErrorStructured{Error: memorycontract.ErrorBody{
 			Code:    memorycontract.CodeForbidden,
@@ -2345,13 +2432,89 @@ func getStatusTool(ops Operations) mcpserver.ToolHandlerFunc {
 			"mode":         "server",
 			"database":     "postgresql",
 			"version":      "2.0.0",
-			"capabilities": []string{"authorized_rls", "project_context", "corporate_skills", "vector_embeddings", "knowledge_graph", "scoring", "handoff"},
+			"capabilities": []string{"authorized_rls", "project_context", "corporate_skills", "vector_embeddings", "knowledge_graph", "scoring", "handoff", "compact_context", "agent_context"},
 		}
 		b, err := json.MarshalIndent(status, "", "  ")
 		if err != nil {
 			return toolResult(nil, err)
 		}
 		return mcp.NewToolResultText(string(b)), nil
+	}
+}
+
+func agentContextTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolProject(req)
+		if project == "" {
+			project = "default"
+		}
+		format := strings.TrimSpace(toolString(req, "format"))
+		if format == "" {
+			format = "xml"
+		}
+		includeRepoMap := toolBool(req, "include_repo_map", false)
+		repoMapBudget := toolInt(req, "repo_map_budget", 1024)
+
+		obsList, err := ops.ListObservations(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   100,
+		})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		codeGraph, _ := ops.GetCodeGraph(ctx, project)
+
+		pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{
+			Project:        project,
+			Format:         format,
+			IncludeRules:   true,
+			IncludeRepoMap: includeRepoMap,
+			RepoMapBudget:  repoMapBudget,
+		})
+
+		rendered, err := contextpack.Render(pack, format)
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		return mcp.NewToolResultText(rendered), nil
+	}
+}
+
+func compactContextTool(ops Operations) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := toolProject(req)
+		if project == "" {
+			project = "default"
+		}
+		maxTokens := toolInt(req, "max_tokens", 1500)
+		if maxTokens <= 0 {
+			maxTokens = 1500
+		}
+		includeRepoMap := toolBool(req, "include_repo_map", false)
+
+		obsList, err := ops.ListObservations(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   100,
+		})
+		if err != nil {
+			return toolResult(nil, err)
+		}
+
+		codeGraph, _ := ops.GetCodeGraph(ctx, project)
+
+		pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{
+			Project:        project,
+			Format:         "compact",
+			IncludeRules:   true,
+			IncludeRepoMap: includeRepoMap,
+			RepoMapBudget:  maxTokens / 3,
+			MaxTokens:      maxTokens,
+		})
+
+		rendered := contextpack.RenderCompact(pack, maxTokens)
+		return mcp.NewToolResultText(rendered), nil
 	}
 }
 

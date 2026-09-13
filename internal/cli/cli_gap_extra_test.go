@@ -563,13 +563,13 @@ func TestGapImportJSONReportsRejectedObservation(t *testing.T) {
 		t.Fatalf("write JSON import fixture: %v", err)
 	}
 	code, out, errB := run(t, "cortex", "import", "--from-json", "--path", input)
-	if code != 0 {
+	if code != 1 {
 		t.Fatalf("import rejected observation code = %d, stderr = %q", code, errB)
 	}
-	if !strings.Contains(errB, "warning: skipped") {
+	if !strings.Contains(errB, "cortex: import rejected:") {
 		t.Fatalf("import rejected observation stderr = %q", errB)
 	}
-	if !strings.Contains(out, "Imported 0 of 1 observations from JSON") {
+	if strings.Contains(out, "Imported") {
 		t.Fatalf("import rejected observation stdout = %q", out)
 	}
 }

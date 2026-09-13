@@ -900,4 +900,17 @@ func TestIntegration_CodeTestsAndFindAndAgentContext(t *testing.T) {
 		!strings.Contains(txt3, "<architectural-decisions>") {
 		t.Fatalf("unexpected agent context output: %s", txt3)
 	}
+
+	// 4. Test cortex_get_compact_context
+	compactHandler := handleGetCompactContext(stores)
+	r4 := callTool(t, compactHandler, map[string]any{
+		"project":    "demo",
+		"max_tokens": 500,
+	})
+	txt4 := resultText(r4)
+	if !strings.Contains(txt4, "# Cortex Intelligence: demo") ||
+		!strings.Contains(txt4, "Key Decisions") {
+		t.Fatalf("unexpected compact context output: %s", txt4)
+	}
 }
+

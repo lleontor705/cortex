@@ -6,6 +6,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
@@ -180,7 +181,29 @@ func (requestOperations) CreateGraphEdge(ctx context.Context, value *domain.Edge
 	if err != nil {
 		return err
 	}
-	return ops.CreateGraphEdge(ctx, value)
+	if value == nil {
+		return domain.ErrInvalidInput
+	}
+	if err := privacy.ValidateMetadata(map[string]string{
+		"relation_type": value.RelationType,
+		"source":        value.Source,
+	}); err != nil {
+		return err
+	}
+	res, err := privacy.ProtectOptionalText(value.Reasoning)
+	if err != nil {
+		return err
+	}
+	clone := *value
+	clone.Reasoning = res.ProtectedValue
+	if err := ops.CreateGraphEdge(ctx, &clone); err != nil {
+		return err
+	}
+	value.ID = clone.ID
+	value.PublicID = clone.PublicID
+	value.Reasoning = clone.Reasoning
+	value.CreatedAt = clone.CreatedAt
+	return nil
 }
 func (requestOperations) GetGraphEdgeByPublicID(ctx context.Context, id string) (*domain.Edge, error) {
 	ops, err := operationsFromContext(ctx)

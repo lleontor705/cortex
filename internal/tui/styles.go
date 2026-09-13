@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // ─── Color Palette & Theme Engine ──────────────────────────────────────────
 
@@ -25,22 +29,22 @@ type ThemePalette struct {
 
 var (
 	darkPalette = ThemePalette{
-		BaseBg:       lipgloss.Color("#16161e"),
-		PanelBg:      lipgloss.Color("#1a1b2e"),
-		Overlay:      lipgloss.Color("#565f89"),
-		Text:         lipgloss.Color("#c0caf5"),
-		Subtext:      lipgloss.Color("#7aa2f7"),
-		Cyan:         lipgloss.Color("#2ac3de"),
-		Blue:         lipgloss.Color("#7aa2f7"),
-		Purple:       lipgloss.Color("#bb9af7"),
-		Green:        lipgloss.Color("#9ece6a"),
-		Amber:        lipgloss.Color("#e0af68"),
-		Red:          lipgloss.Color("#f7768e"),
-		Mauve:        lipgloss.Color("#c0a0f0"),
-		Teal:         lipgloss.Color("#73daca"),
-		Gold:         lipgloss.Color("#e0af68"),
-		HighlightBg:  lipgloss.Color("#2ac3de"),
-		HighlightTxt: lipgloss.Color("#16161e"),
+		BaseBg:       lipgloss.Color("#090d16"),
+		PanelBg:      lipgloss.Color("#0f172a"),
+		Overlay:      lipgloss.Color("#334155"),
+		Text:         lipgloss.Color("#f8fafc"),
+		Subtext:      lipgloss.Color("#94a3b8"),
+		Cyan:         lipgloss.Color("#06b6d4"),
+		Blue:         lipgloss.Color("#3b82f6"),
+		Purple:       lipgloss.Color("#8b5cf6"),
+		Green:        lipgloss.Color("#10b981"),
+		Amber:        lipgloss.Color("#f59e0b"),
+		Red:          lipgloss.Color("#ef4444"),
+		Mauve:        lipgloss.Color("#c084fc"),
+		Teal:         lipgloss.Color("#14b8a6"),
+		Gold:         lipgloss.Color("#fbbf24"),
+		HighlightBg:  lipgloss.Color("#3b82f6"),
+		HighlightTxt: lipgloss.Color("#ffffff"),
 	}
 
 	lightPalette = ThemePalette{
@@ -156,8 +160,28 @@ var (
 	noResultsStyle   lipgloss.Style
 
 	// Cortex-Exclusive
-	graphEdgeStyle lipgloss.Style
-	statusBarStyle lipgloss.Style
+	graphEdgeStyle    lipgloss.Style
+	statusBarStyle    lipgloss.Style
+	badgeStyle        lipgloss.Style
+	chipStyle         lipgloss.Style
+	beaconActiveStyle lipgloss.Style
+
+	// Command Deck
+	deckTabActiveStyle      lipgloss.Style
+	deckTabInactiveStyle    lipgloss.Style
+	deckSubTabActiveStyle   lipgloss.Style
+	deckSubTabInactiveStyle lipgloss.Style
+
+	// Modern Modular Cards & Gauges
+	cardSubtleStyle       lipgloss.Style
+	cardActiveStyle       lipgloss.Style
+	cardHeaderStyle       lipgloss.Style
+	progressBarFilledStyle lipgloss.Style
+	progressBarEmptyStyle  lipgloss.Style
+
+	// Master-Detail Split-Pane Styles
+	paneFocusedStyle   lipgloss.Style
+	paneUnfocusedStyle lipgloss.Style
 )
 
 func init() {
@@ -172,10 +196,10 @@ func rebuildStyles() {
 	headerStyle = lipgloss.NewStyle().
 		Bold(true).
 		Foreground(colorCyan).
-		BorderStyle(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.RoundedBorder()).
 		BorderBottom(true).
 		BorderForeground(colorOverlay).
-		PaddingBottom(1).
+		PaddingBottom(0).
 		MarginBottom(1)
 
 	helpStyle = lipgloss.NewStyle().
@@ -203,7 +227,7 @@ func rebuildStyles() {
 		PaddingLeft(2)
 
 	statCardStyle = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(colorOverlay).
 		Padding(1, 2).
 		MarginBottom(1)
@@ -268,7 +292,7 @@ func rebuildStyles() {
 		PaddingRight(1)
 
 	timelineFocusStyle = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(colorCyan).
 		Padding(0, 1)
 
@@ -280,7 +304,7 @@ func rebuildStyles() {
 		Foreground(colorOverlay)
 
 	searchInputStyle = lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(colorCyan).
 		Foreground(colorText).
 		Padding(0, 1).
@@ -299,6 +323,73 @@ func rebuildStyles() {
 	statusBarStyle = lipgloss.NewStyle().
 		Foreground(colorText).
 		Background(activePalette.PanelBg).
+		Padding(0, 1)
+
+	badgeStyle = lipgloss.NewStyle().
+		Bold(true).
+		Padding(0, 1)
+
+	chipStyle = lipgloss.NewStyle().
+		Foreground(colorSubtext).
+		Background(activePalette.PanelBg).
+		Padding(0, 1)
+
+	beaconActiveStyle = lipgloss.NewStyle().
+		Foreground(colorGreen).
+		Bold(true)
+
+	deckTabActiveStyle = lipgloss.NewStyle().
+		Background(colorCyan).
+		Foreground(lipgloss.Color("#090d16")).
+		Bold(true).
+		Padding(0, 1)
+
+	deckTabInactiveStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e293b")).
+		Foreground(colorSubtext).
+		Padding(0, 1)
+
+	deckSubTabActiveStyle = lipgloss.NewStyle().
+		Background(colorPurple).
+		Foreground(lipgloss.Color("#090d16")).
+		Bold(true).
+		Padding(0, 1)
+
+	deckSubTabInactiveStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e293b")).
+		Foreground(colorSubtext).
+		Padding(0, 1)
+
+	cardSubtleStyle = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(colorOverlay).
+		Padding(0, 1)
+
+	cardActiveStyle = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(colorCyan).
+		Padding(0, 1)
+
+	cardHeaderStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorCyan).
+		MarginBottom(1)
+
+	progressBarFilledStyle = lipgloss.NewStyle().
+		Foreground(colorCyan).
+		Bold(true)
+
+	progressBarEmptyStyle = lipgloss.NewStyle().
+		Foreground(colorOverlay)
+
+	paneFocusedStyle = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(colorCyan).
+		Padding(0, 1)
+
+	paneUnfocusedStyle = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(colorOverlay).
 		Padding(0, 1)
 }
 
@@ -322,4 +413,19 @@ func typeColor(obsType string) lipgloss.Color {
 	default:
 		return colorSubtext
 	}
+}
+
+// renderTypeBadge returns a styled chip for observation types.
+func renderTypeBadge(obsType string) string {
+	c := typeColor(obsType)
+	label := strings.ToUpper(obsType)
+	if label == "" {
+		label = "NOTE"
+	}
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(c).
+		Background(activePalette.PanelBg).
+		Padding(0, 1).
+		Render("[" + label + "]")
 }

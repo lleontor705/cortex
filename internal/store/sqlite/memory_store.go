@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 )
 
 // errDedupSkipped is a private sentinel returned by saveInTx when a duplicate
@@ -1759,9 +1760,17 @@ func validateObservation(obs *domain.Observation) error {
 	return validateObservationEnvelope(obs, maxObservationContentLength)
 }
 
-// validateObservationEnvelope validates an observation against the given
-// content ceiling (see saveInTxEnvelope).
+// validateObservationEnvelope validates an observation against structural constraints,
+// applies privacy protection to metadata and text fields, and checks protected title
+// and content sizes against the given content ceiling (see saveInTxEnvelope).
 func validateObservationEnvelope(obs *domain.Observation, maxContent int) error {
+	if err := validateObservationStructural(obs); err != nil {
+		return err
+	}
+	return protectObservation(obs, maxContent)
+}
+
+func validateObservationStructural(obs *domain.Observation) error {
 	if obs == nil {
 		return &domain.ValidationError{
 			Field:   "observation",
@@ -1776,24 +1785,12 @@ func validateObservationEnvelope(obs *domain.Observation, maxContent int) error 
 			Message: "title is required",
 		}
 	}
-	if len(title) > maxObservationTitleLength {
-		return &domain.ValidationError{
-			Field:   "title",
-			Message: fmt.Sprintf("title exceeds %d characters", maxObservationTitleLength),
-		}
-	}
 
 	content := strings.TrimSpace(obs.Content)
 	if content == "" {
 		return &domain.ValidationError{
 			Field:   "content",
 			Message: "content is required",
-		}
-	}
-	if len(content) > maxContent {
-		return &domain.ValidationError{
-			Field:   "content",
-			Message: fmt.Sprintf("content exceeds %d characters", maxContent),
 		}
 	}
 
@@ -1832,6 +1829,124 @@ func validateObservationEnvelope(obs *domain.Observation, maxContent int) error 
 		}
 	}
 
+	return nil
+}
+
+// PreflightObservation performs detached privacy preflight on an observation,
+// validating metadata and redacting private markers in title and content.
+// The caller's input struct is never mutated.
+func PreflightObservation(obs *domain.Observation) (*domain.Observation, error) {
+	return PreflightObservationCeiling(obs, maxObservationContentLength)
+}
+
+// PreflightObservationCeiling performs detached privacy preflight with a custom content ceiling.
+func PreflightObservationCeiling(obs *domain.Observation, maxContent int) (*domain.Observation, error) {
+	if obs == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	meta := map[string]string{"project": obs.Project, "topic_key": obs.TopicKey, "scope": obs.Scope, "type": obs.Type, "source": obs.Source, "session_id": obs.SessionID}
+	for i, tag := range obs.Tags {
+		meta[fmt.Sprintf("tag[%d]", i)] = tag
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return nil, err
+	}
+	results, err := privacy.ProtectNamedFields(privacy.NamedField{Name: "title", Value: obs.Title, Required: true}, privacy.NamedField{Name: "content", Value: obs.Content, Required: true})
+	if err != nil {
+		return nil, err
+	}
+	protectedTitle, protectedContent := results["title"].ProtectedValue, results["content"].ProtectedValue
+	if len(protectedTitle) > maxObservationTitleLength {
+		return nil, &domain.ValidationError{Field: "title", Message: fmt.Sprintf("title exceeds %d characters", maxObservationTitleLength)}
+	}
+	if len(protectedContent) > maxContent {
+		return nil, &domain.ValidationError{Field: "content", Message: fmt.Sprintf("content exceeds %d characters", maxContent)}
+	}
+	clone := *obs
+	if len(obs.Tags) > 0 {
+		clone.Tags = append([]string(nil), obs.Tags...)
+	}
+	clone.Title, clone.Content = protectedTitle, protectedContent
+	return &clone, nil
+}
+
+// PreflightSession performs detached privacy preflight on a session.
+// Validates session metadata and redacts private markers from optional summary.
+// The caller's input struct is never mutated.
+func PreflightSession(sess *domain.Session) (*domain.Session, error) {
+	if sess == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	if err := privacy.ValidateMetadata(map[string]string{"id": sess.ID, "project": sess.Project, "directory": sess.Directory}); err != nil {
+		return nil, err
+	}
+	clone := *sess
+	if sess.Summary != "" {
+		res, err := privacy.ProtectOptionalText(sess.Summary)
+		if err != nil {
+			return nil, err
+		}
+		clone.Summary = res.ProtectedValue
+	}
+	return &clone, nil
+}
+
+// PreflightPrompt performs detached privacy preflight on a prompt.
+// Validates prompt metadata and redacts private markers from content.
+// The caller's input struct is never mutated.
+func PreflightPrompt(p *domain.Prompt) (*domain.Prompt, error) {
+	if p == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	if err := privacy.ValidateMetadata(map[string]string{"session_id": p.SessionID, "project": p.Project}); err != nil {
+		return nil, err
+	}
+	res, err := privacy.ProtectField("content", p.Content, true)
+	if err != nil {
+		return nil, err
+	}
+	clone := *p
+	clone.Content = res.ProtectedValue
+	return &clone, nil
+}
+
+// PreflightExportData performs atomic detached privacy preflight on ExportData.
+// If any session, observation, or prompt fails preflight, it returns an error
+// immediately and leaves the source data untouched.
+func PreflightExportData(data *ExportData) (*ExportData, error) {
+	if data == nil {
+		return nil, nil
+	}
+	out := &ExportData{Version: data.Version, ExportedAt: data.ExportedAt, Sessions: make([]*domain.Session, len(data.Sessions)), Observations: make([]*domain.Observation, len(data.Observations)), Prompts: make([]*domain.Prompt, len(data.Prompts))}
+	var err error
+	for i, sess := range data.Sessions {
+		if out.Sessions[i], err = PreflightSession(sess); err != nil {
+			return nil, err
+		}
+	}
+	for i, obs := range data.Observations {
+		if out.Observations[i], err = PreflightObservation(obs); err != nil {
+			return nil, err
+		}
+	}
+	for i, prompt := range data.Prompts {
+		if out.Prompts[i], err = PreflightPrompt(prompt); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func protectObservation(obs *domain.Observation, maxContent int) error {
+	if obs == nil {
+		return nil
+	}
+	protected, err := PreflightObservationCeiling(obs, maxContent)
+	if err != nil {
+		return err
+	}
+	obs.Title = protected.Title
+	obs.Content = protected.Content
 	return nil
 }
 
@@ -1985,7 +2100,7 @@ func (s *Store) ExportAll(ctx context.Context) (*ExportData, error) {
 		}
 	}
 
-	return data, nil
+	return PreflightExportData(data)
 }
 
 // SyncImportResult holds the outcome of a sync import.
@@ -1995,15 +2110,72 @@ type SyncImportResult struct {
 	PromptsImported      int `json:"prompts_imported"`
 }
 
+// Stable, payload-free import error classifications.
+type ImportError struct {
+	Message string
+}
+
+func (e *ImportError) Error() string {
+	if e == nil || e.Message == "" {
+		return "import failed"
+	}
+	return e.Message
+}
+
+func (e *ImportError) Is(target error) bool {
+	if target == nil {
+		return false
+	}
+	if target == ErrImportFailed {
+		return true
+	}
+	other, ok := target.(*ImportError)
+	if !ok || other == nil {
+		return false
+	}
+	return other == ErrImportFailed || other.Message == "import failed" || other.Message == "" || other.Message == e.Message
+}
+
+var (
+	ErrImportFailed      = &ImportError{Message: "import failed"}
+	ErrImportSession     = &ImportError{Message: "import session failed"}
+	ErrImportObservation = &ImportError{Message: "import observation failed"}
+	ErrImportPrompt      = &ImportError{Message: "import prompt failed"}
+	ErrImportTransaction = &ImportError{Message: "import transaction failed"}
+)
+
+func mapImportTxError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrImportSession) {
+		return ErrImportSession
+	}
+	if errors.Is(err, ErrImportObservation) {
+		return ErrImportObservation
+	}
+	if errors.Is(err, ErrImportPrompt) {
+		return ErrImportPrompt
+	}
+	return ErrImportTransaction
+}
+
 // ImportData imports sessions, observations and prompts from an export.
 // Sessions are skipped if they already exist (by ID).
 // Observations and prompts get new auto-increment IDs.
 func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportResult, error) {
+	if data == nil {
+		return &SyncImportResult{}, nil
+	}
+	cleanData, err := PreflightExportData(data)
+	if err != nil {
+		return nil, err
+	}
 	result := &SyncImportResult{}
 
-	return result, s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		// Import sessions (skip duplicates)
-		for _, sess := range data.Sessions {
+		for _, sess := range cleanData.Sessions {
 			var endedAt interface{}
 			if sess.EndedAt != nil {
 				endedAt = sess.EndedAt.Format(time.RFC3339)
@@ -2014,14 +2186,14 @@ func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportRe
 				sess.ID, sess.Project, sess.Directory,
 				sess.StartedAt.Format(time.RFC3339), endedAt, nullableString(sess.Summary))
 			if err != nil {
-				return fmt.Errorf("import session %s: %w", sess.ID, err)
+				return ErrImportSession
 			}
 			n, _ := res.RowsAffected()
 			result.SessionsImported += int(n)
 		}
 
 		// Import observations (new IDs)
-		for _, obs := range data.Observations {
+		for _, obs := range cleanData.Observations {
 			scope := normalizeScope(obs.Scope)
 			topicKey := normalizeTopicKey(obs.TopicKey)
 			obsType := normalizeObservationType(obs.Type)
@@ -2038,13 +2210,13 @@ func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportRe
 				normalizeConfidence(obs.Confidence), obsSource, tagsToJSON(obs.Tags),
 				obs.CreatedAt.Format(time.RFC3339), obs.UpdatedAt.Format(time.RFC3339))
 			if err != nil {
-				return fmt.Errorf("import observation %q: %w", obs.Title, err)
+				return ErrImportObservation
 			}
 			result.ObservationsImported++
 		}
 
 		// Import prompts (new IDs)
-		for _, p := range data.Prompts {
+		for _, p := range cleanData.Prompts {
 			_, err := tx.ExecContext(ctx,
 				`INSERT INTO user_prompts(session_id, content, project, created_at)
 				 VALUES(?, ?, ?, ?)`,
@@ -2053,13 +2225,17 @@ func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportRe
 				if isMissingTableError(err, "user_prompts") {
 					continue
 				}
-				return fmt.Errorf("import prompt: %w", err)
+				return ErrImportPrompt
 			}
 			result.PromptsImported++
 		}
 
 		return nil
 	})
+	if err != nil {
+		return nil, mapImportTxError(err)
+	}
+	return result, nil
 }
 
 // MergeResult holds the outcome of a project merge operation.

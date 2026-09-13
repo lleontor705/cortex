@@ -41,6 +41,7 @@ func (r *Resolver) Resolve(raw *ExtractionResult) *code.CodeGraph {
 	byPkgAndName := make(map[string]map[string]string)  // pkg -> (name -> canonicalSymbolID)
 	exportsByFile := make(map[string]map[string]string) // file -> (exportedName -> canonicalSymbolID)
 	importsByFile := make(map[string][]ImportFact)      // file -> []ImportFact
+	filePkgMap := make(map[string]string)               // file -> package
 
 	now := time.Now().UTC()
 
@@ -106,6 +107,7 @@ func (r *Resolver) Resolve(raw *ExtractionResult) *code.CodeGraph {
 		byFileAndName[ent.File][ent.Name] = symbolID
 
 		if ent.Package != "" {
+			filePkgMap[ent.File] = ent.Package
 			if _, exists := byPkgAndName[ent.Package]; !exists {
 				byPkgAndName[ent.Package] = make(map[string]string)
 			}
@@ -208,6 +210,18 @@ func (r *Resolver) Resolve(raw *ExtractionResult) *code.CodeGraph {
 						okTgt = true
 						confidence = code.ConfidenceInferred
 						reasoning = fmt.Sprintf("Resolved local symbol %s in %s", targetName, sourceFile)
+					}
+				}
+				if !okTgt {
+					if pkg, hasPkg := filePkgMap[sourceFile]; hasPkg && pkg != "" {
+						if pkgSyms, hasPkgSyms := byPkgAndName[pkg]; hasPkgSyms {
+							if matchID, ok := pkgSyms[targetName]; ok {
+								tgtID = matchID
+								okTgt = true
+								confidence = code.ConfidenceInferred
+								reasoning = fmt.Sprintf("Resolved package symbol %s in package %s", targetName, pkg)
+							}
+						}
 					}
 				}
 			}

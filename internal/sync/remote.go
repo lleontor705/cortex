@@ -3,7 +3,9 @@ package sync
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
 
@@ -97,39 +100,43 @@ func (s *RemoteSyncer) Sync(ctx context.Context) (*RemoteResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	for start := 0; start < len(batch.Sessions); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.Sessions))
-		if err = s.push(ctx, &domain.SyncBatch{Sessions: batch.Sessions[start:end]}, result); err != nil {
+	cleanBatch, err := preflightSyncBatch(batch)
+	if err != nil {
+		return nil, fmt.Errorf("remote sync push preflight: %w", err)
+	}
+	for start := 0; start < len(cleanBatch.Sessions); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.Sessions))
+		if err = s.push(ctx, &domain.SyncBatch{Sessions: cleanBatch.Sessions[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
-	for start := 0; start < len(batch.Observations); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.Observations))
-		if err = s.push(ctx, &domain.SyncBatch{Observations: batch.Observations[start:end]}, result); err != nil {
+	for start := 0; start < len(cleanBatch.Observations); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.Observations))
+		if err = s.push(ctx, &domain.SyncBatch{Observations: cleanBatch.Observations[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
-	for start := 0; start < len(batch.Prompts); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.Prompts))
-		if err = s.push(ctx, &domain.SyncBatch{Prompts: batch.Prompts[start:end]}, result); err != nil {
+	for start := 0; start < len(cleanBatch.Prompts); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.Prompts))
+		if err = s.push(ctx, &domain.SyncBatch{Prompts: cleanBatch.Prompts[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
-	for start := 0; start < len(batch.Edges); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.Edges))
-		if err = s.push(ctx, &domain.SyncBatch{Edges: batch.Edges[start:end]}, result); err != nil {
+	for start := 0; start < len(cleanBatch.Edges); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.Edges))
+		if err = s.push(ctx, &domain.SyncBatch{Edges: cleanBatch.Edges[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
-	for start := 0; start < len(batch.CodeSymbols); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.CodeSymbols))
-		if err = s.push(ctx, &domain.SyncBatch{CodeSymbols: batch.CodeSymbols[start:end]}, result); err != nil {
+	for start := 0; start < len(cleanBatch.CodeSymbols); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.CodeSymbols))
+		if err = s.push(ctx, &domain.SyncBatch{CodeSymbols: cleanBatch.CodeSymbols[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
-	for start := 0; start < len(batch.CodeRelations); start += pushBatchLimit {
-		end := min(start+pushBatchLimit, len(batch.CodeRelations))
-		if err = s.push(ctx, &domain.SyncBatch{CodeRelations: batch.CodeRelations[start:end]}, result); err != nil {
+	for start := 0; start < len(cleanBatch.CodeRelations); start += pushBatchLimit {
+		end := min(start+pushBatchLimit, len(cleanBatch.CodeRelations))
+		if err = s.push(ctx, &domain.SyncBatch{CodeRelations: cleanBatch.CodeRelations[start:end]}, result); err != nil {
 			return nil, err
 		}
 	}
@@ -370,13 +377,111 @@ func (s *RemoteSyncer) cursor(ctx context.Context) (int64, error) {
 	return strconv.ParseInt(raw, 10, 64)
 }
 
+func hashNormalized(content string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(content)))
+	return hex.EncodeToString(h[:])
+}
+
+func protectOpt(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	res, err := privacy.ProtectOptionalText(s)
+	if err != nil {
+		return "", err
+	}
+	return res.ProtectedValue, nil
+}
+
+func preflightSyncBatch(batch *domain.SyncBatch) (*domain.SyncBatch, error) {
+	if batch == nil {
+		return nil, nil
+	}
+	out := &domain.SyncBatch{
+		Sessions:      make([]domain.SyncSession, len(batch.Sessions)),
+		Observations:  make([]domain.SyncObservation, len(batch.Observations)),
+		Prompts:       make([]domain.SyncPrompt, len(batch.Prompts)),
+		Edges:         make([]domain.SyncEdge, len(batch.Edges)),
+		CodeSymbols:   make([]domain.SyncCodeSymbol, len(batch.CodeSymbols)),
+		CodeRelations: make([]domain.SyncCodeRelation, len(batch.CodeRelations)),
+	}
+	var err error
+	for i, s := range batch.Sessions {
+		if err = privacy.ValidateMetadata(map[string]string{"sync_id": s.SyncID, "project": s.Project, "directory": s.Directory}); err != nil {
+			return nil, err
+		}
+		if s.Summary, err = protectOpt(s.Summary); err != nil {
+			return nil, err
+		}
+		out.Sessions[i] = s
+	}
+	for i, o := range batch.Observations {
+		meta := map[string]string{"session_sync_id": o.SessionSyncID, "sync_id": o.SyncID, "project": o.Project, "topic_key": o.TopicKey, "scope": o.Scope, "type": o.Type, "source": o.Source}
+		for idx, tag := range o.Tags {
+			meta[fmt.Sprintf("t%d", idx)] = tag
+		}
+		if err = privacy.ValidateMetadata(meta); err != nil {
+			return nil, err
+		}
+		if len(o.Tags) > 0 {
+			o.Tags = append([]string(nil), o.Tags...)
+		}
+		if !o.Deleted || o.Title != "" || o.Content != "" {
+			res, err := privacy.ProtectNamedFields(privacy.NamedField{Name: "title", Value: o.Title, Required: true}, privacy.NamedField{Name: "content", Value: o.Content, Required: true})
+			if err != nil {
+				return nil, err
+			}
+			o.Title, o.Content = res["title"].ProtectedValue, res["content"].ProtectedValue
+		}
+		out.Observations[i] = o
+	}
+	for i, p := range batch.Prompts {
+		if err = privacy.ValidateMetadata(map[string]string{"session_sync_id": p.SessionSyncID, "sync_id": p.SyncID, "project": p.Project}); err != nil {
+			return nil, err
+		}
+		res, err := privacy.ProtectField("content", p.Content, true)
+		if err != nil {
+			return nil, err
+		}
+		p.Content = res.ProtectedValue
+		out.Prompts[i] = p
+	}
+	for i, e := range batch.Edges {
+		if err = privacy.ValidateMetadata(map[string]string{"from_sync_id": e.FromSyncID, "to_sync_id": e.ToSyncID, "sync_id": e.SyncID, "relation": e.Relation, "source": e.Source}); err != nil {
+			return nil, err
+		}
+		if e.Reasoning, err = protectOpt(e.Reasoning); err != nil {
+			return nil, err
+		}
+		out.Edges[i] = e
+	}
+	for i, s := range batch.CodeSymbols {
+		if err = privacy.ValidateMetadata(map[string]string{"project": s.Project, "file_path": s.FilePath, "kind": s.Kind, "name": s.Name}); err != nil {
+			return nil, err
+		}
+		out.CodeSymbols[i] = s
+	}
+	for i, r := range batch.CodeRelations {
+		if err = privacy.ValidateMetadata(map[string]string{"project": r.Project, "source_id": r.SourceID, "target_id": r.TargetID, "relation": r.Relation}); err != nil {
+			return nil, err
+		}
+		out.CodeRelations[i] = r
+	}
+	return out, nil
+}
+
 func (s *RemoteSyncer) apply(ctx context.Context, page *domain.SyncPage) error {
+	cleanBatch, err := preflightSyncBatch(&page.SyncBatch)
+	if err != nil {
+		return fmt.Errorf("remote sync apply preflight: %w", err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, v := range page.Sessions {
+	for _, v := range cleanBatch.Sessions {
 		localID := v.SyncID
 		var existing string
 		err = tx.QueryRowContext(ctx, `SELECT local_id FROM remote_sync_sessions WHERE sync_id=?`, v.SyncID).Scan(&existing)
@@ -398,7 +503,7 @@ func (s *RemoteSyncer) apply(ctx context.Context, page *domain.SyncPage) error {
 			return err
 		}
 	}
-	for _, v := range page.Observations {
+	for _, v := range cleanBatch.Observations {
 		if v.TopicKey != "" {
 			if _, err = tx.ExecContext(ctx, `UPDATE observations SET sync_id=? WHERE project=? AND topic_key=? AND deleted_at IS NULL AND sync_id<>?`, v.SyncID, v.Project, v.TopicKey, v.SyncID); err != nil {
 				return err
@@ -413,12 +518,12 @@ func (s *RemoteSyncer) apply(ctx context.Context, page *domain.SyncPage) error {
 		if v.Deleted {
 			deleted = v.UpdatedAt.UTC().Format(time.RFC3339Nano)
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO observations(sync_id,session_id,type,title,content,project,scope,topic_key,normalized_hash,confidence,source,tags,created_at,updated_at,deleted_at) VALUES(?,?,?,?,?,?,?,?,lower(hex(randomblob(16))),?,?,?,?,?,?) ON CONFLICT(sync_id) WHERE sync_id IS NOT NULL DO UPDATE SET session_id=excluded.session_id,type=excluded.type,title=excluded.title,content=excluded.content,project=excluded.project,scope=excluded.scope,topic_key=excluded.topic_key,confidence=excluded.confidence,source=excluded.source,tags=excluded.tags,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at WHERE excluded.updated_at>=observations.updated_at`, v.SyncID, sessionID, v.Type, v.Title, v.Content, v.Project, v.Scope, nullString(v.TopicKey), v.Confidence, v.Source, string(tags), v.CreatedAt.UTC().Format(time.RFC3339Nano), v.UpdatedAt.UTC().Format(time.RFC3339Nano), deleted)
+		_, err = tx.ExecContext(ctx, `INSERT INTO observations(sync_id,session_id,type,title,content,project,scope,topic_key,normalized_hash,confidence,source,tags,created_at,updated_at,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(sync_id) WHERE sync_id IS NOT NULL DO UPDATE SET session_id=excluded.session_id,type=excluded.type,title=excluded.title,content=excluded.content,project=excluded.project,scope=excluded.scope,topic_key=excluded.topic_key,confidence=excluded.confidence,source=excluded.source,tags=excluded.tags,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at WHERE excluded.updated_at>=observations.updated_at`, v.SyncID, sessionID, v.Type, v.Title, v.Content, v.Project, v.Scope, nullString(v.TopicKey), hashNormalized(v.Content), v.Confidence, v.Source, string(tags), v.CreatedAt.UTC().Format(time.RFC3339Nano), v.UpdatedAt.UTC().Format(time.RFC3339Nano), deleted)
 		if err != nil {
 			return err
 		}
 	}
-	for _, v := range page.Prompts {
+	for _, v := range cleanBatch.Prompts {
 		var sessionID string
 		if err = tx.QueryRowContext(ctx, `SELECT local_id FROM remote_sync_sessions WHERE sync_id=?`, v.SessionSyncID).Scan(&sessionID); err != nil {
 			return err
@@ -428,7 +533,7 @@ func (s *RemoteSyncer) apply(ctx context.Context, page *domain.SyncPage) error {
 			return err
 		}
 	}
-	for _, v := range page.Edges {
+	for _, v := range cleanBatch.Edges {
 		if v.Deleted {
 			var localID int64
 			err = tx.QueryRowContext(ctx, `SELECT local_id FROM remote_sync_edges WHERE sync_id=?`, v.SyncID).Scan(&localID)
@@ -477,6 +582,57 @@ func (s *RemoteSyncer) apply(ctx context.Context, page *domain.SyncPage) error {
 			return err
 		}
 	}
+
+	if len(cleanBatch.CodeSymbols) > 0 {
+		var symTableCount int
+		_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='code_symbols'`).Scan(&symTableCount)
+		if symTableCount > 0 {
+			for _, s := range cleanBatch.CodeSymbols {
+				if s.Deleted {
+					if _, err = tx.ExecContext(ctx, `DELETE FROM code_symbols WHERE id=?`, s.ID); err != nil {
+						return err
+					}
+					continue
+				}
+				paramsData, _ := json.Marshal(s.Parameters)
+				metaData, _ := json.Marshal(s.Metadata)
+				complexity := s.Complexity
+				if complexity <= 0 {
+					complexity = 1
+				}
+				endLine := s.EndLine
+				if endLine <= 0 {
+					endLine = s.LineNumber
+				}
+				_, err = tx.ExecContext(ctx, `INSERT INTO code_symbols(id, project, file_path, line_number, end_line, kind, name, package_name, parent_id, visibility, signature, doc_summary, parameters, return_type, complexity, metadata, file_hash, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET project=excluded.project, file_path=excluded.file_path, line_number=excluded.line_number, end_line=excluded.end_line, kind=excluded.kind, name=excluded.name, package_name=excluded.package_name, parent_id=excluded.parent_id, visibility=excluded.visibility, signature=excluded.signature, doc_summary=excluded.doc_summary, parameters=excluded.parameters, return_type=excluded.return_type, complexity=excluded.complexity, metadata=excluded.metadata, file_hash=excluded.file_hash, updated_at=excluded.updated_at WHERE excluded.updated_at >= code_symbols.updated_at`,
+					s.ID, s.Project, s.FilePath, s.LineNumber, endLine, s.Kind, s.Name, s.PackageName, s.ParentID, s.Visibility, s.Signature, s.DocSummary, string(paramsData), s.ReturnType, complexity, string(metaData), s.FileHash, s.CreatedAt.UTC().Format(time.RFC3339Nano), s.UpdatedAt.UTC().Format(time.RFC3339Nano))
+				if err != nil {
+					return fmt.Errorf("remote sync apply code symbol %s: %w", s.ID, err)
+				}
+			}
+		}
+	}
+
+	if len(cleanBatch.CodeRelations) > 0 {
+		var relTableCount int
+		_ = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='code_relations'`).Scan(&relTableCount)
+		if relTableCount > 0 {
+			for _, r := range cleanBatch.CodeRelations {
+				if r.Deleted {
+					if _, err = tx.ExecContext(ctx, `DELETE FROM code_relations WHERE project=? AND source_id=? AND target_id=? AND relation=?`, r.Project, r.SourceID, r.TargetID, r.Relation); err != nil {
+						return err
+					}
+					continue
+				}
+				_, err = tx.ExecContext(ctx, `INSERT INTO code_relations(project, source_id, target_id, relation, confidence, reasoning, created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(project, source_id, target_id, relation) DO UPDATE SET confidence=excluded.confidence, reasoning=excluded.reasoning`,
+					r.Project, r.SourceID, r.TargetID, r.Relation, r.Confidence, r.Reasoning, r.CreatedAt.UTC().Format(time.RFC3339Nano))
+				if err != nil {
+					return fmt.Errorf("remote sync apply code relation: %w", err)
+				}
+			}
+		}
+	}
+
 	_, err = tx.ExecContext(ctx, `INSERT INTO remote_sync_state(key,value) VALUES('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(page.Cursor, 10))
 	if err != nil {
 		return err

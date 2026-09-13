@@ -201,7 +201,7 @@ func (e *SQLiteHandoffExecutor) saveObservation(ctx context.Context, tx *sql.Tx,
 		TopicKey:   in.TopicKey,
 		Confidence: in.Confidence,
 		Source:     in.Source,
-		Tags:       in.Tags,
+		Tags:       append([]string(nil), in.Tags...),
 	}
 	var effect domain.SaveEffect
 	err := e.stores.Observations.WithinTx(ctx, tx, func(c context.Context) error {

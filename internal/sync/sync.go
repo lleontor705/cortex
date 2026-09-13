@@ -99,6 +99,11 @@ func (sy *Syncer) Export(ctx context.Context, createdBy, project string) (*SyncR
 		return &SyncResult{IsEmpty: true}, nil
 	}
 
+	chunk, err = preflightChunkData(chunk)
+	if err != nil {
+		return nil, fmt.Errorf("sync export: %w", err)
+	}
+
 	// Serialize chunk
 	data, err := json.Marshal(chunk)
 	if err != nil {
@@ -175,10 +180,15 @@ func (sy *Syncer) Import(ctx context.Context) (*ImportResult, error) {
 			return nil, fmt.Errorf("sync import: parse chunk %s: %w", entry.ID, err)
 		}
 
+		cleanChunk, err := preflightChunkData(&chunk)
+		if err != nil {
+			return nil, fmt.Errorf("sync import: chunk %s: %w", entry.ID, err)
+		}
+
 		importData := &sqlitestore.ExportData{
-			Sessions:     chunk.Sessions,
-			Observations: chunk.Observations,
-			Prompts:      chunk.Prompts,
+			Sessions:     cleanChunk.Sessions,
+			Observations: cleanChunk.Observations,
+			Prompts:      cleanChunk.Prompts,
 		}
 		importResult, err := sy.store.ImportData(ctx, importData)
 		if err != nil {
@@ -189,6 +199,7 @@ func (sy *Syncer) Import(ctx context.Context) (*ImportResult, error) {
 			return nil, fmt.Errorf("sync import: record chunk %s: %w", entry.ID, err)
 		}
 
+		synced[entry.ID] = true
 		result.ChunksImported++
 		result.SessionsImported += importResult.SessionsImported
 		result.ObservationsImported += importResult.ObservationsImported
@@ -196,6 +207,17 @@ func (sy *Syncer) Import(ctx context.Context) (*ImportResult, error) {
 	}
 
 	return result, nil
+}
+
+func preflightChunkData(chunk *ChunkData) (*ChunkData, error) {
+	if chunk == nil {
+		return nil, nil
+	}
+	clean, err := sqlitestore.PreflightExportData(&sqlitestore.ExportData{Sessions: chunk.Sessions, Observations: chunk.Observations, Prompts: chunk.Prompts})
+	if err != nil {
+		return nil, err
+	}
+	return &ChunkData{Sessions: clean.Sessions, Observations: clean.Observations, Prompts: clean.Prompts}, nil
 }
 
 // Status returns sync status: local chunks, remote chunks, pending imports.
@@ -274,12 +296,20 @@ func filterNewData(chunk *ChunkData, afterTime string) *ChunkData {
 	}
 	result := &ChunkData{}
 	for _, s := range chunk.Sessions {
-		if s.StartedAt.After(cutoff) {
+		t := s.StartedAt
+		if s.EndedAt != nil && !s.EndedAt.IsZero() {
+			t = *s.EndedAt
+		}
+		if t.After(cutoff) {
 			result.Sessions = append(result.Sessions, s)
 		}
 	}
 	for _, o := range chunk.Observations {
-		if o.CreatedAt.After(cutoff) {
+		t := o.CreatedAt
+		if !o.UpdatedAt.IsZero() {
+			t = o.UpdatedAt
+		}
+		if t.After(cutoff) {
 			result.Observations = append(result.Observations, o)
 		}
 	}

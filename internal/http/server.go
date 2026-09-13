@@ -7,6 +7,7 @@ package http
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
@@ -38,9 +40,18 @@ const (
 	maxLimit = 100
 )
 
+// ObservationStore captures observation persistence and data import/export
+// capabilities required by the HTTP server.
+type ObservationStore interface {
+	domain.ObservationRepository
+	DB() *sql.DB
+	ExportAll(ctx context.Context) (*sqlitestore.ExportData, error)
+	ImportData(ctx context.Context, data *sqlitestore.ExportData) (*sqlitestore.SyncImportResult, error)
+}
+
 // Deps bundles store dependencies for HTTP handlers.
 type Deps struct {
-	Observations      *sqlitestore.Store
+	Observations      ObservationStore
 	Sessions          *session.Store
 	Search            *search.Store
 	Prompts           *prompt.Store
@@ -173,6 +184,101 @@ func (s *Server) handleListObservations(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, obs)
 }
 
+func preflightObservationPrivacy(obs *domain.Observation) (*domain.Observation, error) {
+	if obs == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	meta := map[string]string{"project": obs.Project, "topic_key": obs.TopicKey, "scope": obs.Scope, "type": obs.Type, "source": obs.Source, "session_id": obs.SessionID}
+	for i, t := range obs.Tags {
+		meta[fmt.Sprintf("t%d", i)] = t
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return nil, err
+	}
+	resTitle, err := privacy.ProtectField("title", obs.Title, true)
+	if err != nil {
+		return nil, err
+	}
+	resContent, err := privacy.ProtectField("content", obs.Content, true)
+	if err != nil {
+		return nil, err
+	}
+	protected := *obs
+	if len(obs.Tags) > 0 {
+		protected.Tags = append([]string(nil), obs.Tags...)
+	}
+	protected.Title = resTitle.ProtectedValue
+	protected.Content = resContent.ProtectedValue
+	return &protected, nil
+}
+
+func preflightObservations(observations []*domain.Observation) ([]*domain.Observation, error) {
+	staged := make([]*domain.Observation, len(observations))
+	for i, obs := range observations {
+		var err error
+		if staged[i], err = preflightObservationPrivacy(obs); err != nil {
+			return nil, err
+		}
+	}
+	return staged, nil
+}
+
+func preflightSessionPrivacy(sess *domain.Session) (*domain.Session, error) {
+	if sess == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	if err := privacy.ValidateMetadata(map[string]string{"id": sess.ID, "project": sess.Project, "directory": sess.Directory}); err != nil {
+		return nil, err
+	}
+	protected := *sess
+	if sess.Summary != "" {
+		res, err := privacy.ProtectOptionalText(sess.Summary)
+		if err != nil {
+			return nil, err
+		}
+		protected.Summary = res.ProtectedValue
+	}
+	return &protected, nil
+}
+
+func preflightSessions(sessions []*domain.Session) ([]*domain.Session, error) {
+	staged := make([]*domain.Session, len(sessions))
+	for i, sess := range sessions {
+		var err error
+		if staged[i], err = preflightSessionPrivacy(sess); err != nil {
+			return nil, err
+		}
+	}
+	return staged, nil
+}
+
+func preflightPromptPrivacy(p *domain.Prompt) (*domain.Prompt, error) {
+	if p == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	if err := privacy.ValidateMetadata(map[string]string{"session_id": p.SessionID, "project": p.Project}); err != nil {
+		return nil, err
+	}
+	res, err := privacy.ProtectField("content", p.Content, true)
+	if err != nil {
+		return nil, err
+	}
+	protected := *p
+	protected.Content = res.ProtectedValue
+	return &protected, nil
+}
+
+func preflightPrompts(prompts []*domain.Prompt) ([]*domain.Prompt, error) {
+	staged := make([]*domain.Prompt, len(prompts))
+	for i, p := range prompts {
+		var err error
+		if staged[i], err = preflightPromptPrivacy(p); err != nil {
+			return nil, err
+		}
+	}
+	return staged, nil
+}
+
 func (s *Server) handleCreateObservation(w http.ResponseWriter, r *http.Request) {
 	var obs domain.Observation
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBodySize)).Decode(&obs); err != nil {
@@ -180,11 +286,17 @@ func (s *Server) handleCreateObservation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.deps.Observations.Save(r.Context(), &obs); err != nil {
+	protected, err := preflightObservationPrivacy(&obs)
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, obs)
+
+	if err := s.deps.Observations.Save(r.Context(), protected); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, *protected)
 }
 
 func (s *Server) handleGetObservation(w http.ResponseWriter, r *http.Request) {
@@ -252,11 +364,17 @@ func (s *Server) handleUpdateObservation(w http.ResponseWriter, r *http.Request)
 	}
 	obs.ID = id
 
-	if err := s.deps.Observations.Update(r.Context(), &obs); err != nil {
+	protected, err := preflightObservationPrivacy(&obs)
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, obs)
+
+	if err := s.deps.Observations.Update(r.Context(), protected); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, *protected)
 }
 
 func (s *Server) handleDeleteObservation(w http.ResponseWriter, r *http.Request) {
@@ -292,11 +410,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.deps.Sessions.Create(r.Context(), &sess); err != nil {
+	protected, err := preflightSessionPrivacy(&sess)
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, sess)
+
+	if err := s.deps.Sessions.Create(r.Context(), protected); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, *protected)
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +442,19 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := privacy.ValidateMetadata(map[string]string{"id": id}); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if body.Summary != "" {
+		res, err := privacy.ProtectOptionalText(body.Summary)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		body.Summary = res.ProtectedValue
+	}
+
 	if err := s.deps.Sessions.End(r.Context(), id, body.Summary); err != nil {
 		mapDomainError(w, err)
 		return
@@ -331,19 +468,26 @@ func (s *Server) handleCreatePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidJSON, "invalid JSON")
 		return
 	}
-	if strings.TrimSpace(value.SessionID) == "" || strings.TrimSpace(value.Content) == "" || strings.TrimSpace(value.Project) == "" {
-		writeError(w, http.StatusBadRequest, codeInvalidReq, "session_id, content, and project are required")
+	if strings.TrimSpace(value.SessionID) == "" || strings.TrimSpace(value.Project) == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidReq, "session_id and project are required")
 		return
 	}
-	if _, err := s.deps.Sessions.GetByID(r.Context(), value.SessionID); err != nil {
+
+	protected, err := preflightPromptPrivacy(&value)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	if _, err := s.deps.Sessions.GetByID(r.Context(), protected.SessionID); err != nil {
 		mapDomainError(w, err)
 		return
 	}
-	if err := s.deps.Prompts.Save(r.Context(), &value); err != nil {
+	if err := s.deps.Prompts.Save(r.Context(), protected); err != nil {
 		mapDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, value)
+	writeJSON(w, http.StatusCreated, *protected)
 }
 
 // --- Search -----------------------------------------------------------------
@@ -463,6 +607,22 @@ func (s *Server) handleCreateEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := privacy.ValidateMetadata(map[string]string{
+		"relation_type": edge.RelationType,
+		"source":        edge.Source,
+	}); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if edge.Reasoning != "" {
+		res, err := privacy.ProtectOptionalText(edge.Reasoning)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		edge.Reasoning = res.ProtectedValue
+	}
+
 	svc := s.graphService
 	if err := svc.CreateEdge(r.Context(), &edge); err != nil {
 		mapDomainError(w, err)
@@ -558,7 +718,30 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidJSON, "invalid JSON")
 		return
 	}
-	result, err := s.deps.Observations.ImportData(r.Context(), &data)
+
+	stagedObs, err := preflightObservations(data.Observations)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	stagedSessions, err := preflightSessions(data.Sessions)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	stagedPrompts, err := preflightPrompts(data.Prompts)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	result, err := s.deps.Observations.ImportData(r.Context(), &sqlitestore.ExportData{
+		Version:      data.Version,
+		ExportedAt:   data.ExportedAt,
+		Sessions:     stagedSessions,
+		Observations: stagedObs,
+		Prompts:      stagedPrompts,
+	})
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -599,6 +782,10 @@ type publicError struct {
 // Messages come only from this table (plus safe, domain-constructed
 // validation text); the raw error string is never echoed.
 func classifyPublicError(err error) publicError {
+	var privErr *privacy.Error
+	if errors.As(err, &privErr) && privErr != nil {
+		return publicError{http.StatusBadRequest, string(privErr.Code), privErr.Error()}
+	}
 	switch {
 	case err == nil:
 		return publicError{http.StatusInternalServerError, codeInternal, "internal error"}

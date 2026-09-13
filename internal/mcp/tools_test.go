@@ -129,6 +129,7 @@ func setupTestStores(t *testing.T) *Stores {
 	db := testDB.DB()
 
 	codeStore, _ := sqlitestore.NewCodeStore(db)
+	transientStore, _ := sqlitestore.NewTransientPayloadStore(db)
 
 	return &Stores{
 		Observations:      sqlitestore.NewStore(db),
@@ -140,6 +141,7 @@ func setupTestStores(t *testing.T) *Stores {
 		Vectors:           sqlite_blob.New(db),
 		TemporalSnapshots: sqlitestore.NewTemporalSnapshotRepository(db),
 		Code:              codeStore,
+		TransientPayloads: transientStore,
 	}
 }
 
@@ -611,6 +613,25 @@ func TestHandleSearchHybrid(t *testing.T) {
 	text := resultText(result)
 	if !strings.Contains(text, "Hybrid test observation") {
 		t.Errorf("expected to find observation, got %q", text)
+	}
+}
+
+func TestHandleSearchHybrid_WithWeights(t *testing.T) {
+	stores := setupTestStores(t)
+	createSession(t, stores, "s1", "demo")
+	saveObs(t, stores, "Weighted observation", "demo", "s1")
+
+	handler := handleSearchHybrid(stores)
+	result := callTool(t, handler, map[string]interface{}{
+		"query":          "Weighted",
+		"project":        "demo",
+		"lexical_weight": 2.5,
+		"vector_weight":  0.5,
+	})
+
+	text := resultText(result)
+	if !strings.Contains(text, "Weighted observation") {
+		t.Errorf("expected to find observation with custom weights, got %q", text)
 	}
 }
 

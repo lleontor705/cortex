@@ -104,4 +104,23 @@ func TestBuildPack_And_Renderers(t *testing.T) {
 	if !strings.Contains(jsonStr, "\"project\": \"test-cortex\"") {
 		t.Errorf("json missing project: %s", jsonStr)
 	}
+
+	// 4. Test Compact
+	compactStr, err := Render(pack, "compact")
+	if err != nil {
+		t.Fatalf("render compact failed: %v", err)
+	}
+	if !strings.Contains(compactStr, "# Cortex Intelligence: test-cortex") ||
+		!strings.Contains(compactStr, "Active Rules & Directives") ||
+		!strings.Contains(compactStr, "Gotchas & Bugfixes") ||
+		!strings.Contains(compactStr, "Key Decisions") {
+		t.Errorf("compact missing expected content: %s", compactStr)
+	}
+
+	// 5. Test strict token budgeting in RenderCompact
+	budgeted := RenderCompact(pack, 50) // small budget ~200 chars
+	if len(budgeted) > 300 {
+		t.Errorf("expected budgeted output to be bounded, got %d chars", len(budgeted))
+	}
 }
+

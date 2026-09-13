@@ -88,6 +88,121 @@ func TestRemoteSyncPushesLocalAndPullsServerData(t *testing.T) {
 	}
 }
 
+func TestRemoteSyncPullsCodeSymbolsAndRelations(t *testing.T) {
+	db := newTransportTestDB(t)
+	// Create code intelligence tables in local SQLite
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS code_symbols (
+			id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			line_number INTEGER NOT NULL,
+			end_line INTEGER,
+			kind TEXT NOT NULL,
+			name TEXT NOT NULL,
+			package_name TEXT,
+			parent_id TEXT,
+			visibility TEXT,
+			signature TEXT,
+			doc_summary TEXT,
+			parameters TEXT,
+			return_type TEXT,
+			complexity INTEGER DEFAULT 1,
+			metadata TEXT,
+			file_hash TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE IF NOT EXISTS code_relations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project TEXT NOT NULL,
+			source_id TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			relation TEXT NOT NULL,
+			confidence REAL DEFAULT 1.0,
+			reasoning TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE (project, source_id, target_id, relation)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create code tables: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sym := domain.SyncCodeSymbol{
+		ID:          "sym-1",
+		Project:     "cortex",
+		FilePath:    "internal/sync/remote.go",
+		LineNumber:  45,
+		EndLine:     70,
+		Kind:        "function",
+		Name:        "NewRemoteSyncer",
+		PackageName: "sync",
+		DocSummary:  "Constructor for RemoteSyncer",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	rel := domain.SyncCodeRelation{
+		Project:    "cortex",
+		SourceID:   "sym-1",
+		TargetID:   "sym-2",
+		Relation:   "calls",
+		Confidence: 0.95,
+		Reasoning:  "Direct function call in body",
+		CreatedAt:  now,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/sync/changes":
+			_ = json.NewEncoder(w).Encode(domain.SyncPage{
+				SyncBatch: domain.SyncBatch{
+					CodeSymbols:   []domain.SyncCodeSymbol{sym},
+					CodeRelations: []domain.SyncCodeRelation{rel},
+				},
+				Cursor: 12,
+			})
+		case "/api/sync/push":
+			_ = json.NewEncoder(w).Encode(domain.SyncResult{Accepted: 1})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	syncer, err := NewRemoteSyncer(db, server.URL, "secret", time.Second)
+	if err != nil {
+		t.Fatalf("NewRemoteSyncer: %v", err)
+	}
+	res, err := syncer.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.Pulled != 2 {
+		t.Fatalf("expected Pulled=2 (1 symbol + 1 relation), got %d", res.Pulled)
+	}
+
+	// Verify symbol exists in DB
+	var symName, symDoc string
+	if err := db.QueryRow(`SELECT name, doc_summary FROM code_symbols WHERE id='sym-1'`).Scan(&symName, &symDoc); err != nil {
+		t.Fatalf("symbol was not persisted to SQLite: %v", err)
+	}
+	if symName != "NewRemoteSyncer" || symDoc != "Constructor for RemoteSyncer" {
+		t.Fatalf("unexpected symbol in SQLite: name=%q doc=%q", symName, symDoc)
+	}
+
+	// Verify relation exists in DB
+	var relType string
+	var relConf float64
+	if err := db.QueryRow(`SELECT relation, confidence FROM code_relations WHERE source_id='sym-1' AND target_id='sym-2'`).Scan(&relType, &relConf); err != nil {
+		t.Fatalf("relation was not persisted to SQLite: %v", err)
+	}
+	if relType != "calls" || relConf != 0.95 {
+		t.Fatalf("unexpected relation in SQLite: relation=%q confidence=%f", relType, relConf)
+	}
+}
+
 // newTransportTestDB opens an isolated in-memory SQLite database with the v2
 // baseline applied and one local session, so a full sync cycle (pull + push)
 // exercises the Authorization path.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 )
 
 // Store implements the SQLite session store.
@@ -58,19 +59,39 @@ func (s *Store) Create(ctx context.Context, session *domain.Session) error {
 		}
 	}
 
-	// Set timestamp if not provided
-	if session.StartedAt.IsZero() {
-		session.StartedAt = time.Now()
+	meta := map[string]string{
+		"id":        session.ID,
+		"project":   session.Project,
+		"directory": session.Directory,
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return err
+	}
+
+	var protectedSummary string
+	if session.Summary != "" {
+		res, err := privacy.ProtectField("summary", session.Summary, false)
+		if err != nil {
+			return err
+		}
+		protectedSummary = res.ProtectedValue
+	}
+
+	startedAt := session.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
 	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
 		VALUES (?, ?, ?, ?, NULL, ?)
-	`, session.ID, session.Project, session.Directory, session.StartedAt.Format(time.RFC3339), session.Summary)
+	`, session.ID, session.Project, session.Directory, startedAt.Format(time.RFC3339), protectedSummary)
 	if err != nil {
 		return fmt.Errorf("session store: create session: %w", err)
 	}
 
+	session.StartedAt = startedAt
+	session.Summary = protectedSummary
 	return nil
 }
 
@@ -134,6 +155,19 @@ func (s *Store) End(ctx context.Context, id string, summary string) error {
 		}
 	}
 
+	if err := privacy.ValidateMetadata(map[string]string{"id": id}); err != nil {
+		return err
+	}
+
+	var protectedSummary string
+	if summary != "" {
+		res, err := privacy.ProtectField("summary", summary, false)
+		if err != nil {
+			return err
+		}
+		protectedSummary = res.ProtectedValue
+	}
+
 	// First check if session exists and is not already ended
 	session, err := s.GetByID(ctx, id)
 	if err != nil {
@@ -150,7 +184,7 @@ func (s *Store) End(ctx context.Context, id string, summary string) error {
 		UPDATE sessions
 		SET ended_at = ?, summary = ?
 		WHERE id = ? AND ended_at IS NULL
-	`, now.Format(time.RFC3339), summary, id)
+	`, now.Format(time.RFC3339), protectedSummary, id)
 	if err != nil {
 		return fmt.Errorf("session store: end session: %w", err)
 	}

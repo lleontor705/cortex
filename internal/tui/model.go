@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -137,6 +138,47 @@ type setupInstallMsg struct {
 	err    error
 }
 
+type animTickMsg time.Time
+
+func animTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
+		return animTickMsg(t)
+	})
+}
+
+type setupAgentsDetectedMsg struct {
+	statuses []setup.AgentStatus
+}
+
+func detectAgentsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return setupAgentsDetectedMsg{statuses: setup.DetectAgents()}
+	}
+}
+
+type testConnResultMsg struct {
+	provider string
+	success  bool
+	message  string
+}
+
+func testConnectionCmd(provider, baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		if provider == "ollama" || provider == "Ollama" {
+			res, err := setup.SetupOllama(baseURL, "")
+			if err != nil {
+				return testConnResultMsg{provider: provider, success: false, message: err.Error()}
+			}
+			if res.OllamaOnline {
+				msg := fmt.Sprintf("Online (%d models available)", len(res.AvailableModels))
+				return testConnResultMsg{provider: provider, success: true, message: msg}
+			}
+			return testConnResultMsg{provider: provider, success: false, message: "Ollama not reachable at " + baseURL}
+		}
+		return testConnResultMsg{provider: provider, success: true, message: "Configuration valid"}
+	}
+}
+
 // Embedding config messages
 type ollamaStatusMsg struct {
 	running  bool
@@ -206,6 +248,11 @@ type Model struct {
 	Cursor     int
 	Scroll     int
 
+	// Command Deck Workspaces
+	ActiveDeckWorkspace int // 0: Knowledge Hub, 1: Neural Graph, 2: System Health, 3: Control & Setup
+	ControlDeckTab      int // 0: Agents, 1: Local & AI Config, 2: Embeddings
+	KnowledgeDeckTab    int // 0: Recent, 1: Search, 2: Sessions, 3: Archived
+
 	// Update notification
 	UpdateResult *update.Result
 
@@ -272,6 +319,7 @@ type Model struct {
 
 	// Setup
 	SetupAgents           []setup.Agent
+	SetupDetectedAgents   []setup.AgentStatus
 	SetupResult           *setup.Result
 	SetupInstalling       bool
 	SetupInstallingName   string
@@ -281,6 +329,11 @@ type Model struct {
 	SetupAllowlistApplied bool
 	SetupAllowlistError   string
 	SetupSpinner          spinner.Model
+
+	// Animation & Testing State
+	AnimFrame       int
+	TestConnStatus  string
+	TestConnTesting bool
 
 	// Embedding config
 	EmbCfgDirty          bool
@@ -595,12 +648,30 @@ func New(deps *Deps) Model {
 	}
 }
 
-// Init loads initial data (stats for the dashboard).
+// Init loads initial data (stats for the dashboard and memory stream).
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadStats(m.deps),
 		loadActivityData(m.deps),
+		loadRecentObservations(m.deps, ""),
 		checkForUpdate(m.Version),
+		animTickCmd(),
+		detectAgentsCmd(),
 		tea.EnterAltScreen,
 	)
 }
+
+// ActiveWorkspace returns the 0-indexed active deck workspace (0..3).
+func (m Model) ActiveWorkspace() int {
+	switch m.Screen {
+	case ScreenGraph:
+		return 1
+	case ScreenHealth, ScreenArchive:
+		return 2
+	case ScreenSetup, ScreenLocalConfig, ScreenEmbeddingConfig:
+		return 3
+	default:
+		return 0
+	}
+}
+

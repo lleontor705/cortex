@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 )
 
 // Store implements the SQLite prompt store.
@@ -44,15 +45,34 @@ func (s *Store) Save(ctx context.Context, prompt *domain.Prompt) error {
 		}
 	}
 
-	// Set timestamp if not provided
-	if prompt.CreatedAt.IsZero() {
-		prompt.CreatedAt = time.Now()
+	meta := make(map[string]string)
+	if prompt.Project != "" {
+		meta["project"] = prompt.Project
+	}
+	if prompt.SessionID != "" {
+		meta["session_id"] = prompt.SessionID
+	}
+	if prompt.PublicID != "" {
+		meta["public_id"] = prompt.PublicID
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return err
+	}
+
+	res, err := privacy.ProtectField("content", prompt.Content, true)
+	if err != nil {
+		return err
+	}
+
+	createdAt := prompt.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
 	}
 
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO user_prompts (content, project, session_id, created_at)
 		VALUES (?, ?, ?, ?)
-	`, prompt.Content, prompt.Project, prompt.SessionID, prompt.CreatedAt.Format(time.RFC3339))
+	`, res.ProtectedValue, prompt.Project, prompt.SessionID, createdAt.Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("prompt store: insert prompt: %w", err)
 	}
@@ -63,6 +83,8 @@ func (s *Store) Save(ctx context.Context, prompt *domain.Prompt) error {
 	}
 
 	prompt.ID = id
+	prompt.Content = res.ProtectedValue
+	prompt.CreatedAt = createdAt
 	return nil
 }
 

@@ -95,7 +95,7 @@ func (s *CodeStore) SaveSymbols(ctx context.Context, symbols []code.Symbol) erro
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
@@ -310,7 +310,7 @@ func (s *CodeStore) SaveRelations(ctx context.Context, relations []code.Relation
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}

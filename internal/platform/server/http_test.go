@@ -559,6 +559,67 @@ func TestHTTPHealthIsPublicAndChecksDatabase(t *testing.T) {
 	}
 }
 
+func TestHTTPHealthLiveAndReady(t *testing.T) {
+	// Liveness is always alive (process up) even if DB is down
+	h := testHandler(func(context.Context) error { return errors.New("db down") })
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"alive"`) {
+		t.Fatalf("live response = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Readiness returns 200 when healthy
+	h = testHandler(func(context.Context) error { return nil })
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ready"`) {
+		t.Fatalf("ready response = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Readiness returns 503 when unhealthy
+	h = testHandler(func(context.Context) error { return errors.New("db down") })
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unhealthy ready status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHTTPSystemMetrics(t *testing.T) {
+	ops := newFakeOperations()
+	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+	// Unauthenticated denied
+	req := httptest.NewRequest(http.MethodGet, "/api/system/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	// Authenticated returns metrics
+	req = httptest.NewRequest(http.MethodGet, "/api/system/metrics", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode metrics JSON: %v", err)
+	}
+	if _, ok := res["uptime_seconds"]; !ok {
+		t.Fatalf("missing uptime_seconds: %v", res)
+	}
+	if _, ok := res["goroutines"]; !ok {
+		t.Fatalf("missing goroutines: %v", res)
+	}
+	if _, ok := res["alloc_bytes"]; !ok {
+		t.Fatalf("missing alloc_bytes: %v", res)
+	}
+}
+
 func TestIssueTokenRejectsInvalidSubjectUUID(t *testing.T) {
 	ops := newFakeOperations()
 	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
@@ -732,13 +793,52 @@ func TestMCPInitializeAndListServerTools(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tools/list response = %d %s", rec.Code, rec.Body.String())
 	}
-	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_graph_subgraph", "cortex_score", "cortex_handoff"} {
+	for _, name := range []string{"cortex_save", "cortex_session_start", "cortex_search", "cortex_get_observation", "cortex_update", "cortex_delete", "cortex_relate", "cortex_graph", "cortex_graph_subgraph", "cortex_score", "cortex_handoff", "cortex_get_compact_context", "cortex_get_agent_context"} {
 		if !strings.Contains(rec.Body.String(), `"name":"`+name+`"`) {
 			t.Errorf("tools/list missing %s: %s", name, rec.Body.String())
 		}
 	}
 	if strings.Contains(rec.Body.String(), `"mem_`) {
 		t.Fatalf("tools/list exposed legacy namespace: %s", rec.Body.String())
+	}
+}
+
+func TestServerMCPContextTools(t *testing.T) {
+	ops := newFakeOperations()
+	_ = ops.SaveObservation(context.Background(), &domain.Observation{
+		Project:  "test-proj",
+		Type:     "pattern",
+		TopicKey: "rules/cgo",
+		Title:    "Zero CGO",
+		Content:  "Must never import CGO in core packages",
+		Tags:     []string{"rule"},
+	})
+	_ = ops.SaveObservation(context.Background(), &domain.Observation{
+		Project:  "test-proj",
+		Type:     "bugfix",
+		Title:    "Memory Leak",
+		Content:  "Always close rows and cancel context",
+		TopicKey: "gotchas/leak",
+	})
+
+	// Test cortex_get_agent_context
+	resAgent := callServerTool(t, agentContextTool(ops), map[string]any{
+		"project": "test-proj",
+		"format":  "xml",
+	})
+	agentText := serverToolText(resAgent)
+	if !strings.Contains(agentText, "<cortex-context") || !strings.Contains(agentText, "Zero CGO") {
+		t.Fatalf("agent context output unexpected: %s", agentText)
+	}
+
+	// Test cortex_get_compact_context
+	resCompact := callServerTool(t, compactContextTool(ops), map[string]any{
+		"project":    "test-proj",
+		"max_tokens": float64(1000),
+	})
+	compactText := serverToolText(resCompact)
+	if !strings.Contains(compactText, "Zero CGO") || !strings.Contains(compactText, "Rules") {
+		t.Fatalf("compact context output unexpected: %s", compactText)
 	}
 }
 

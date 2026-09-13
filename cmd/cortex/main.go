@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/google/uuid"
+	"github.com/mattn/go-isatty"
 	"github.com/lleontor705/cortex/v2/internal/cli"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/platform"
@@ -98,6 +99,16 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		if mode == platform.ModeHybrid {
 			_ = os.Setenv("CORTEX_MODE", "hybrid")
 		}
+		// If invoked interactively with no command arguments (e.g. user double-clicked
+		// the binary on Windows or launched 'cortex' directly in an interactive terminal),
+		// launch the interactive TUI interface rather than exiting immediately.
+		if len(cleanArgs) <= 1 && isInteractive(stdout) {
+			progName := "cortex"
+			if len(cleanArgs) == 1 {
+				progName = cleanArgs[0]
+			}
+			cleanArgs = []string{progName, "tui"}
+		}
 		// Byte-identical local path: cli.Run delegates to app.Open internally
 		// via openApp(). No double-wiring — platform.Select is proven by tests;
 		// the live execution path preserves the existing main→cli→app chain.
@@ -147,3 +158,18 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 2
 	}
 }
+
+func isInteractive(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	if !isatty.IsTerminal(f.Fd()) && !isatty.IsCygwinTerminal(f.Fd()) {
+		return false
+	}
+	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+		return false
+	}
+	return true
+}
+

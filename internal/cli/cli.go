@@ -22,6 +22,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	cortexhttp "github.com/lleontor705/cortex/v2/internal/http"
 	"github.com/lleontor705/cortex/v2/internal/mcp"
 	"github.com/lleontor705/cortex/v2/internal/ollama"
@@ -253,6 +254,14 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	title, content := args[0], args[1]
+	if strings.TrimSpace(title) == "" {
+		writef(stderr, "cortex: validation error on field \"title\": title is required\n")
+		return 1
+	}
+	if strings.TrimSpace(content) == "" {
+		writef(stderr, "cortex: validation error on field \"content\": content is required\n")
+		return 1
+	}
 	typ, project, scope, topicKey := "manual", "", "project", ""
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
@@ -278,6 +287,12 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	obs := &domain.Observation{SessionID: defaultSessionID(project), Title: title, Content: content, Type: typ, Project: project, Scope: scope, TopicKey: topicKey}
+	protectedObs, err := preflightObservationPrivacy(obs)
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
 	a, err := openApp()
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -285,14 +300,12 @@ func runSave(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = a.Close() }()
 	ctx := context.Background()
-	sessionID := defaultSessionID(project)
-	_ = a.Stores.Sessions.Create(ctx, &domain.Session{ID: sessionID, Project: projectOrDefault(project), Directory: currentDir()})
-	obs := &domain.Observation{SessionID: sessionID, Title: title, Content: content, Type: typ, Project: project, Scope: scope, TopicKey: topicKey}
-	if err := a.Stores.Observations.Save(ctx, obs); err != nil {
+	_ = a.Stores.Sessions.Create(ctx, &domain.Session{ID: protectedObs.SessionID, Project: projectOrDefault(protectedObs.Project), Directory: currentDir()})
+	if err := a.Stores.Observations.Save(ctx, protectedObs); err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	writef(stdout, "Memory saved: #%d %q (%s)\n", obs.ID, title, typ)
+	writef(stdout, "Memory saved: #%d %q (%s)\n", protectedObs.ID, protectedObs.Title, protectedObs.Type)
 	return 0
 }
 
@@ -724,7 +737,27 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		agent = args[0]
 	}
 	if agent == "" {
+		writeln(stdout, "Cortex Agent Integrations & Setup Wizard")
 		writeln(stdout, "Supported agents: opencode, claude-code, gemini-cli, codex, ollama")
+		writeln(stdout, "")
+		writeln(stdout, "Environment Detection:")
+		for _, st := range setup.DetectAgents() {
+			icon := "○"
+			statusBadge := "[NOT DETECTED]"
+			if st.Configured {
+				icon = "✓"
+				statusBadge = "[CONFIGURED]  "
+			} else if st.Detected {
+				icon = "●"
+				statusBadge = "[READY]       "
+			}
+			writef(stdout, "  %s %s %-14s %-20s — %s\n", icon, statusBadge, st.Name, "("+st.DisplayName+")", st.StatusText)
+		}
+		writeln(stdout, "")
+		writeln(stdout, "Quick Commands:")
+		writeln(stdout, "  cortex setup <agent>          Install integration (e.g. 'cortex setup claude-code')")
+		writeln(stdout, "  cortex setup ollama           Configure local Ollama embeddings")
+		writeln(stdout, "  cortex tui                    Open interactive terminal dashboard")
 		return 0
 	}
 	if agent == "ollama" {
@@ -783,6 +816,46 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+func preflightObservationPrivacy(obs *domain.Observation) (*domain.Observation, error) {
+	if obs == nil {
+		return nil, privacy.ErrNilEnvelope
+	}
+	meta := map[string]string{"project": obs.Project, "topic_key": obs.TopicKey, "scope": obs.Scope, "type": obs.Type, "source": obs.Source, "session_id": obs.SessionID}
+	for i, t := range obs.Tags {
+		meta[fmt.Sprintf("t%d", i)] = t
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return nil, err
+	}
+	resTitle, err := privacy.ProtectField("title", obs.Title, true)
+	if err != nil {
+		return nil, err
+	}
+	resContent, err := privacy.ProtectField("content", obs.Content, true)
+	if err != nil {
+		return nil, err
+	}
+	protected := *obs
+	if len(obs.Tags) > 0 {
+		protected.Tags = append([]string(nil), obs.Tags...)
+	}
+	protected.Title = resTitle.ProtectedValue
+	protected.Content = resContent.ProtectedValue
+	return &protected, nil
+}
+
+func preflightObservations(observations []*domain.Observation) ([]*domain.Observation, error) {
+	staged := make([]*domain.Observation, len(observations))
+	for i, obs := range observations {
+		protected, err := preflightObservationPrivacy(obs)
+		if err != nil {
+			return nil, err
+		}
+		staged[i] = protected
+	}
+	return staged, nil
+}
+
 func importFromJSON(args []string, stdout, stderr io.Writer) int {
 	path := ""
 	for i := 0; i < len(args); i++ {
@@ -811,6 +884,12 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	protected, err := preflightObservations(observations)
+	if err != nil {
+		writef(stderr, "cortex: import rejected: %v\n", err)
+		return 1
+	}
+
 	a, err := openApp()
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -820,7 +899,7 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	saved := 0
-	for _, obs := range observations {
+	for _, obs := range protected {
 		// Ensure session exists
 		if obs.SessionID != "" {
 			_ = a.Stores.Sessions.Create(ctx, &domain.Session{
@@ -834,7 +913,7 @@ func importFromJSON(args []string, stdout, stderr io.Writer) int {
 		saved++
 	}
 
-	writef(stdout, "Imported %d of %d observations from JSON\n", saved, len(observations))
+	writef(stdout, "Imported %d of %d observations from JSON\n", saved, len(protected))
 	return 0
 }
 

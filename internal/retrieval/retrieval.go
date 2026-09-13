@@ -158,6 +158,10 @@ type FuseOptions struct {
 	DecayHalfLifeDays float64
 	// ReferenceTime is the anchor time for decay calculation. If zero, time.Now() is used.
 	ReferenceTime time.Time
+	// LexicalWeight specifies the multiplier for FTS5 lexical score (defaults to 1.0 if <= 0).
+	LexicalWeight float64
+	// VectorWeight specifies the multiplier for dense vector similarity score (defaults to 1.0 if <= 0).
+	VectorWeight float64
 }
 
 // FuseResults combines FTS5 full-text search results with vector similarity
@@ -170,11 +174,20 @@ func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 
 // FuseResultsWithOptions combines FTS5 full-text search results with vector similarity
 // search results using Reciprocal Rank Fusion (k=60) with support for configurable
-// exponential temporal decay (Time-Decayed RRF).
+// exponential temporal decay (Time-Decayed RRF) and lexical/vector weighting.
 func FuseResultsWithOptions(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, opts FuseOptions) []*domain.SearchResult {
 	type scored struct {
 		result *domain.SearchResult
 		score  float64
+	}
+
+	lexWeight := opts.LexicalWeight
+	if lexWeight <= 0 {
+		lexWeight = 1.0
+	}
+	vecWeight := opts.VectorWeight
+	if vecWeight <= 0 {
+		vecWeight = 1.0
 	}
 
 	scoreMap := make(map[int64]*scored)
@@ -183,14 +196,14 @@ func FuseResultsWithOptions(ftsResults []*domain.SearchResult, vecResults []*dom
 	for rank, r := range ftsResults {
 		scoreMap[r.ID] = &scored{
 			result: r,
-			score:  1.0 / (rrfConstant + float64(rank+1)),
+			score:  lexWeight / (rrfConstant + float64(rank+1)),
 		}
 	}
 
 	// Add vector result scores: 1-based rank position only. An ID already
 	// present from FTS5 accumulates additive RRF credit.
 	for rank, vr := range vecResults {
-		rrf := 1.0 / (rrfConstant + float64(rank+1))
+		rrf := vecWeight / (rrfConstant + float64(rank+1))
 		if existing, ok := scoreMap[vr.ID]; ok {
 			existing.score += rrf
 		} else {
@@ -225,14 +238,16 @@ func FuseResultsWithOptions(ftsResults []*domain.SearchResult, vecResults []*dom
 		}
 	}
 
-	// Sort by descending RRF score. sort.Slice (NOT stable) preserves the
-	// original consumer behavior; ties are broken non-deterministically.
+	// Sort by descending RRF score stably, breaking ties deterministically by Observation ID.
 	sorted := make([]*scored, 0, len(scoreMap))
 	for _, s := range scoreMap {
 		sorted = append(sorted, s)
 	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].score > sorted[j].score
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].score != sorted[j].score {
+			return sorted[i].score > sorted[j].score
+		}
+		return sorted[i].result.ID > sorted[j].result.ID
 	})
 
 	limit := opts.Limit

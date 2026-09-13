@@ -502,3 +502,62 @@ func TestRenderNewObsModal(t *testing.T) {
 		t.Errorf("expected save button in output, got %q", output)
 	}
 }
+
+func TestViewDashboardTypeBreakdown(t *testing.T) {
+	m := New(&Deps{Version: "v0.1.0"})
+	m.Width, m.Height = 120, 40
+	m.Stats = &combinedStats{
+		TotalObservations: 15,
+		TotalSessions:     2,
+		ByType: map[string]int{
+			"decision": 7,
+			"bugfix":   8,
+		},
+	}
+
+	output := m.viewDashboard()
+	if !strings.Contains(output, "DECISION") || !strings.Contains(output, "7") {
+		t.Error("dashboard should show decision count breakdown")
+	}
+	if !strings.Contains(output, "BUGFIX") || !strings.Contains(output, "8") {
+		t.Error("dashboard should show bugfix count breakdown")
+	}
+}
+
+func TestViewSetupWithDetectedAgents(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+	m.SetupAgents = []setup.Agent{
+		{Name: "claude-code", Description: "Claude Code plugin", InstallDir: "/tmp/.claude/mcp"},
+		{Name: "opencode", Description: "OpenCode plugin", InstallDir: "/tmp/.config/opencode"},
+		{Name: "gemini-cli", Description: "Gemini CLI plugin", InstallDir: "/tmp/.gemini"},
+	}
+	m.SetupDetectedAgents = []setup.AgentStatus{
+		{Name: "claude-code", Configured: true, Detected: true},
+		{Name: "opencode", Configured: false, Detected: true},
+		{Name: "gemini-cli", Configured: false, Detected: false},
+	}
+
+	output := m.viewSetup()
+	if !strings.Contains(output, "CONFIGURED") {
+		t.Error("viewSetup should show CONFIGURED badge for configured agent")
+	}
+	if !strings.Contains(output, "READY") {
+		t.Error("viewSetup should show READY badge for detected unconfigured agent")
+	}
+	if !strings.Contains(output, "NOT DETECTED") {
+		t.Error("viewSetup should show NOT DETECTED badge for missing agent")
+	}
+}
+
+func TestViewLocalConfigTestConnectionPrompt(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+	m.LocalCfgFocusField = 3 // AI & LLM section
+
+	output := m.viewLocalConfig()
+	if !strings.Contains(output, "test LLM") {
+		t.Error("viewLocalConfig should display test LLM instruction")
+	}
+}
+

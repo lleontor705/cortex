@@ -817,3 +817,49 @@ export function runApp() {
 		t.Errorf("expected 2-pass resolver to connect runApp -> computeHash with 'calls' relation")
 	}
 }
+
+func TestGoSymbolNoCollisionAcrossPackages(t *testing.T) {
+	tempDir := t.TempDir()
+
+	cliDir := filepath.Join(tempDir, "cmd", "cli")
+	serverDir := filepath.Join(tempDir, "cmd", "server")
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		t.Fatalf("mkdir cliDir: %v", err)
+	}
+	if err := os.MkdirAll(serverDir, 0755); err != nil {
+		t.Fatalf("mkdir serverDir: %v", err)
+	}
+
+	cliCode := `package main
+func Run() string { return "cli" }
+`
+	serverCode := `package main
+func Run() string { return "server" }
+`
+	if err := os.WriteFile(filepath.Join(cliDir, "main.go"), []byte(cliCode), 0644); err != nil {
+		t.Fatalf("write cli main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "main.go"), []byte(serverCode), 0644); err != nil {
+		t.Fatalf("write server main.go: %v", err)
+	}
+
+	extractor := NewExtractor(tempDir)
+	graph, err := extractor.ExtractCodeGraph(tempDir, "test_proj", 100)
+	if err != nil {
+		t.Fatalf("ExtractCodeGraph failed: %v", err)
+	}
+
+	var runSymbols []string
+	for _, sym := range graph.Symbols {
+		if sym.Name == "Run" {
+			runSymbols = append(runSymbols, sym.ID)
+		}
+	}
+
+	if len(runSymbols) != 2 {
+		t.Fatalf("expected exactly 2 Run symbols, got %d", len(runSymbols))
+	}
+	if runSymbols[0] == runSymbols[1] {
+		t.Errorf("expected distinct symbol IDs for Run in different packages, got collision: %s", runSymbols[0])
+	}
+}

@@ -255,6 +255,10 @@ func (w *Worker) processOne(ctx, finalizeCtx context.Context) bool {
 	if len(intents) == 0 {
 		return false
 	}
+	if batcher, ok := w.embeddings.(BatchEmbedder); ok && len(intents) > 1 {
+		w.processBatch(ctx, finalizeCtx, intents, batcher)
+		return true
+	}
 	for _, in := range intents {
 		if ctx.Err() != nil {
 			// During drain: leave the leased intent in place. RecoverPending
@@ -265,6 +269,114 @@ func (w *Worker) processOne(ctx, finalizeCtx context.Context) bool {
 	}
 	return true
 }
+
+// processBatch processes multiple leased intents in a single batch embedding call.
+func (w *Worker) processBatch(ctx, finalizeCtx context.Context, intents []sqlitestore.OutboxIntent, batcher BatchEmbedder) {
+	if ctx.Err() != nil {
+		return
+	}
+	type item struct {
+		intent sqlitestore.OutboxIntent
+		text   string
+	}
+	var validItems []item
+	for _, in := range intents {
+		if ctx.Err() != nil {
+			return
+		}
+		obs, err := w.obs.GetByID(ctx, in.ObservationID)
+		if err != nil {
+			w.finalizeFailure(finalizeCtx, in, fmt.Errorf("hydrate observation %d: %w", in.ObservationID, err))
+			continue
+		}
+		text := PrepareObservationText(obs)
+		chunks := ChunkText(text, MaxSingleEmbeddingLength, ChunkOverlapChars)
+		targetText := text
+		if len(chunks) > 0 {
+			targetText = chunks[0]
+		}
+		validItems = append(validItems, item{intent: in, text: targetText})
+	}
+
+	if len(validItems) == 0 {
+		return
+	}
+
+	texts := make([]string, len(validItems))
+	for i, it := range validItems {
+		texts[i] = it.text
+	}
+
+	vecs, err := batcher.EmbedBatch(ctx, texts)
+	if err != nil {
+		if ctx.Err() != nil {
+			return // cancellation during embed: leave leased
+		}
+		// Fallback: process individually so transient or single-item errors don't fail the whole batch
+		for _, it := range validItems {
+			if ctx.Err() != nil {
+				return
+			}
+			w.processIntent(ctx, finalizeCtx, it.intent)
+		}
+		return
+	}
+
+	expectedDims := w.embeddings.Dimensions()
+	var points []domain.VectorPoint
+	var successfulIntents []sqlitestore.OutboxIntent
+
+	for i, it := range validItems {
+		vec := vecs[i]
+		if len(vec) == 0 {
+			w.finalizeFailure(finalizeCtx, it.intent, fmt.Errorf("embed: model %q returned empty vector", w.embeddings.Model()))
+			continue
+		}
+		if len(vec) != expectedDims {
+			cause := &domain.ValidationError{
+				Field:   "embedding",
+				Message: fmt.Sprintf("dimension mismatch: model %q declares %d dims but produced %d", w.embeddings.Model(), expectedDims, len(vec)),
+			}
+			w.finalizeFailure(finalizeCtx, it.intent, cause)
+			continue
+		}
+		points = append(points, domain.VectorPoint{
+			ID:     it.intent.ObservationID,
+			Vector: vec,
+			ModelInfo: domain.ModelInfo{
+				Name:      w.embeddings.Model(),
+				Dimension: expectedDims,
+			},
+		})
+		successfulIntents = append(successfulIntents, it.intent)
+	}
+
+	if len(points) == 0 {
+		return
+	}
+
+	if err := w.vectors.Upsert(ctx, points); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		for _, in := range successfulIntents {
+			w.finalizeFailure(finalizeCtx, in, fmt.Errorf("store embedding batch: %w", err))
+		}
+		return
+	}
+
+	namespace := w.embeddings.Model() + ":" + strconv.Itoa(expectedDims)
+	if err := w.outbox.UpdateIndexState(finalizeCtx, namespace, 1.0, len(points)); err != nil {
+		log.Printf("embedding worker: update index_state for namespace %q: %v", namespace, err)
+	}
+
+	for _, in := range successfulIntents {
+		if err := w.outbox.MarkComplete(finalizeCtx, in.ID); err != nil {
+			log.Printf("embedding worker: mark complete for intent %d: %v", in.ID, err)
+		}
+	}
+}
+
 
 // processIntent processes a single leased intent: hydrate → embed (versioned) →
 // validate dims → upsert → track namespace → mark complete. On failure it

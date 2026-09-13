@@ -13,8 +13,10 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	projectpkg "github.com/lleontor705/cortex/v2/internal/project"
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -499,6 +501,29 @@ Duplicates are automatically detected and skipped  -- safe to call multiple time
 
 // -- Tool Handlers --
 
+func preflightObservationPrivacy(obs *domain.Observation) error {
+	if obs == nil {
+		return nil
+	}
+	meta := map[string]string{"project": obs.Project, "topic_key": obs.TopicKey, "scope": obs.Scope, "type": obs.Type, "source": obs.Source, "session_id": obs.SessionID}
+	for i, t := range obs.Tags {
+		meta[fmt.Sprintf("t%d", i)] = t
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return err
+	}
+	results, err := privacy.ProtectNamedFields(
+		privacy.NamedField{Name: "title", Value: obs.Title, Required: true},
+		privacy.NamedField{Name: "content", Value: obs.Content, Required: true},
+	)
+	if err != nil {
+		return err
+	}
+	obs.Title = results["title"].ProtectedValue
+	obs.Content = results["content"].ProtectedValue
+	return nil
+}
+
 func handleSave(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		title := stringArg(req, "title")
@@ -532,17 +557,6 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			sessionID = defaultSessionID(project)
 		}
 
-		suggested := suggestTopicKey(typ, title, content)
-
-		// Ensure the session exists (ignore error if already created)
-		if err := stores.Sessions.Create(ctx, &domain.Session{
-			ID:        sessionID,
-			Project:   project,
-			Directory: ".",
-		}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
-			slog.Warn("cortex_save: ensure session failed", "session_id", sessionID, "error", err)
-		}
-
 		obs := &domain.Observation{
 			Title:      title,
 			Content:    content,
@@ -554,6 +568,27 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			Confidence: confidence,
 			Source:     source,
 			Tags:       tags,
+		}
+
+		if err := preflightObservationPrivacy(obs); err != nil {
+			var privErr *privacy.Error
+			msg := err.Error()
+			if errors.As(err, &privErr) {
+				msg = privErr.Error()
+			}
+			payload := memorycontract.Validationf("%s", msg)
+			return structuredErrorResult(payload, "Failed to save: %s", payload.Error.Message)
+		}
+
+		suggested := suggestTopicKey(typ, obs.Title, obs.Content)
+
+		// Ensure the session exists (ignore error if already created)
+		if err := stores.Sessions.Create(ctx, &domain.Session{
+			ID:        obs.SessionID,
+			Project:   obs.Project,
+			Directory: ".",
+		}); err != nil && !strings.Contains(strings.ToLower(err.Error()), "unique") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			slog.Warn("cortex_save: ensure session failed", "session_id", obs.SessionID, "error", err)
 		}
 
 		// Save observation. When the transactional outbox + UnitOfWork are wired
@@ -573,9 +608,9 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 		if err != nil {
 			if domain.IsClass(err, domain.ClassDedupSkipped) {
 				return structuredTextResult(saveStructuredFromEffect(effect),
-					"Memory saved: %q (%s) [duplicate skipped]", title, typ)
+					"Memory saved: %q (%s) [duplicate skipped]", obs.Title, typ)
 			}
-			slog.Error("cortex_save: persistence failed", "error", err, "title", title, "type", typ, "project", project, "session_id", sessionID)
+			slog.Error("cortex_save: persistence failed", "error", err, "title", obs.Title, "type", typ, "project", project, "session_id", sessionID)
 			// The textual fallback uses the SAME constant, redacted message as
 			// the structuredContent payload — the raw error (which may carry
 			// SQL text, filesystem paths, or credential fragments) is never
@@ -584,7 +619,7 @@ func handleSave(stores *Stores) server.ToolHandlerFunc {
 			return structuredErrorResult(payload, "Failed to save: %s", payload.Error.Message)
 		}
 
-		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
+		msg := fmt.Sprintf("Memory saved: %q (%s)", obs.Title, typ)
 		if topicKey == "" && suggested != "" {
 			msg += fmt.Sprintf("\nSuggested topic_key: %s", suggested)
 		}
@@ -921,8 +956,13 @@ func handleHandoff(stores *Stores) server.ToolHandlerFunc {
 		if result.Ref.LocalID != nil {
 			localID = *result.Ref.LocalID
 		}
+		titleRes, _ := privacy.ProtectField("title", request.Observation.Title, false)
+		displayTitle := request.Observation.Title
+		if titleRes.ProtectedValue != "" {
+			displayTitle = titleRes.ProtectedValue
+		}
 		return structuredTextResult(structured,
-			"Handoff recorded: %q #%d (%s)", request.Observation.Title, localID, result.Status)
+			"Handoff recorded: %q #%d (%s)", displayTitle, localID, result.Status)
 	}
 }
 
@@ -1097,6 +1137,24 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("Search error: %s. Try simpler keywords.", localErrorText(err))
 		}
 
+		// When vector index is healthy and embeddings are configured, enrich with semantic search via RRF
+		if stores.Embeddings != nil && domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
+			if queryVec, embedErr := stores.Embeddings.Embed(ctx, query); embedErr == nil && len(queryVec) > 0 {
+				vecQuery := domain.VectorQuery{
+					Vector:    queryVec,
+					Limit:     limit,
+					Threshold: 0.3,
+					Filters: map[string]any{
+						"project": project,
+						"scope":   scope,
+					},
+				}
+				if vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations); vecErr == nil && len(vecResults) > 0 {
+					results = retrieval.FuseResults(results, vecResults, limit)
+				}
+			}
+		}
+
 		if len(results) == 0 {
 			return textResult("No memories found for: %q", query)
 		}
@@ -1241,6 +1299,18 @@ func handleSessionSummary(stores *Stores) server.ToolHandlerFunc {
 			sessionID = defaultSessionID(project)
 		}
 
+		if err := privacy.ValidateMetadata(map[string]string{
+			"session_id": sessionID,
+			"project":    project,
+		}); err != nil {
+			return errorResult("Failed to save session summary: %s", err.Error())
+		}
+		res, err := privacy.ProtectField("content", content, true)
+		if err != nil {
+			return errorResult("Failed to save session summary: %s", err.Error())
+		}
+		content = res.ProtectedValue
+
 		// Ensure the session exists
 		_ = stores.Sessions.Create(ctx, &domain.Session{
 			ID:        sessionID,
@@ -1324,6 +1394,18 @@ func handleSavePrompt(stores *Stores) server.ToolHandlerFunc {
 			sessionID = defaultSessionID(project)
 		}
 
+		if err := privacy.ValidateMetadata(map[string]string{
+			"session_id": sessionID,
+			"project":    project,
+		}); err != nil {
+			return errorResult("Failed to save prompt: %s", err.Error())
+		}
+		res, err := privacy.ProtectField("content", content, true)
+		if err != nil {
+			return errorResult("Failed to save prompt: %s", err.Error())
+		}
+		content = res.ProtectedValue
+
 		// Ensure the session exists
 		_ = stores.Sessions.Create(ctx, &domain.Session{
 			ID:        sessionID,
@@ -1352,6 +1434,23 @@ func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("id must be a positive integer")
 		}
 
+		meta := make(map[string]string)
+		if v, ok := req.GetArguments()["project"].(string); ok {
+			meta["project"] = v
+		}
+		if v, ok := req.GetArguments()["scope"].(string); ok {
+			meta["scope"] = v
+		}
+		if v, ok := req.GetArguments()["type"].(string); ok {
+			meta["type"] = v
+		}
+		if v, ok := req.GetArguments()["topic_key"].(string); ok {
+			meta["topic_key"] = v
+		}
+		if err := privacy.ValidateMetadata(meta); err != nil {
+			return errorResult("Failed to update memory: %s", err.Error())
+		}
+
 		// Fetch existing observation
 		obs, err := stores.Observations.GetByID(ctx, id)
 		if err != nil {
@@ -1361,11 +1460,19 @@ func handleUpdate(stores *Stores) server.ToolHandlerFunc {
 		// Apply only the provided fields
 		changed := false
 		if v, ok := req.GetArguments()["title"].(string); ok {
-			obs.Title = v
+			res, err := privacy.ProtectField("title", v, true)
+			if err != nil {
+				return errorResult("Failed to update memory: %s", err.Error())
+			}
+			obs.Title = res.ProtectedValue
 			changed = true
 		}
 		if v, ok := req.GetArguments()["content"].(string); ok {
-			obs.Content = v
+			res, err := privacy.ProtectField("content", v, true)
+			if err != nil {
+				return errorResult("Failed to update memory: %s", err.Error())
+			}
+			obs.Content = res.ProtectedValue
 			changed = true
 		}
 		if v, ok := req.GetArguments()["type"].(string); ok {
@@ -1426,6 +1533,14 @@ func handleSessionStart(stores *Stores) server.ToolHandlerFunc {
 			directory = "."
 		}
 
+		if err := privacy.ValidateMetadata(map[string]string{
+			"id":        id,
+			"project":   project,
+			"directory": directory,
+		}); err != nil {
+			return errorResult("Failed to start session: %s", err.Error())
+		}
+
 		if err := stores.Sessions.Create(ctx, &domain.Session{
 			ID:        id,
 			Project:   project,
@@ -1442,6 +1557,17 @@ func handleSessionEnd(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := stringArg(req, "id")
 		summary := stringArg(req, "summary")
+
+		if err := privacy.ValidateMetadata(map[string]string{"id": id}); err != nil {
+			return errorResult("Failed to end session: %s", err.Error())
+		}
+		if summary != "" {
+			res, err := privacy.ProtectOptionalText(summary)
+			if err != nil {
+				return errorResult("Failed to end session: %s", err.Error())
+			}
+			summary = res.ProtectedValue
+		}
 
 		if err := stores.Sessions.End(ctx, id, summary); err != nil {
 			return errorResult("Failed to end session: %s", localErrorText(err))
@@ -1470,8 +1596,17 @@ func handleStats(stores *Stores) server.ToolHandlerFunc {
 			projects = strings.Join(obsStats.Projects, ", ")
 		}
 
-		return textResult("Memory System Stats:\n- Sessions: %d\n- Observations: %d\n- Projects: %s",
-			sessStats.TotalSessions, obsStats.TotalObservations, projects)
+		var extraInfo string
+		if stores.TransientPayloads != nil {
+			savedTokens, totalBytes, count, err := stores.TransientPayloads.Stats(ctx, "")
+			if err == nil && count > 0 {
+				extraInfo = fmt.Sprintf("\n- Context Optimization:\n  * Externalized Payloads: %d\n  * Raw Bytes Compressed: %d\n  * Estimated Tokens Saved: %d",
+					count, totalBytes, savedTokens)
+			}
+		}
+
+		return textResult("Memory System Stats:\n- Sessions: %d\n- Observations: %d\n- Projects: %s%s",
+			sessStats.TotalSessions, obsStats.TotalObservations, projects, extraInfo)
 	}
 }
 
@@ -1700,6 +1835,24 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("content is required  -- include text with a '## Key Learnings:' section")
 		}
 
+		if source == "" {
+			source = domain.SourceAuto
+		}
+
+		env := privacy.Envelope{
+			Content: content,
+			Metadata: map[string]string{
+				"session_id": sessionID,
+				"project":    project,
+				"source":     source,
+			},
+		}
+		protected, err := privacy.ProtectEnvelope(env)
+		if err != nil {
+			return errorResult("Failed to capture passive learnings: %s", err.Error())
+		}
+		content = protected.Content
+
 		if sessionID == "" {
 			sessionID = defaultSessionID(project)
 			_ = stores.Sessions.Create(ctx, &domain.Session{
@@ -1707,10 +1860,6 @@ func handleCapturePassive(stores *Stores) server.ToolHandlerFunc {
 				Project:   project,
 				Directory: ".",
 			})
-		}
-
-		if source == "" {
-			source = domain.SourceAuto
 		}
 
 		learnings := extractLearnings(content)

@@ -61,6 +61,119 @@ func TestHandleDashboardQuit(t *testing.T) {
 	}
 }
 
+func TestHandleDashboardDirectShortcuts(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+
+	// 'r' -> ScreenRecent
+	updated, _ := m.handleKeyPress("r")
+	res := updated.(Model)
+	if res.Screen != ScreenRecent {
+		t.Fatalf("r shortcut: screen = %v, want %v", res.Screen, ScreenRecent)
+	}
+
+	// 'g' -> ScreenGraph
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("g")
+	res = updated.(Model)
+	if res.Screen != ScreenGraph {
+		t.Fatalf("g shortcut: screen = %v, want %v", res.Screen, ScreenGraph)
+	}
+
+	// 'c' -> ScreenLocalConfig
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("c")
+	res = updated.(Model)
+	if res.Screen != ScreenLocalConfig {
+		t.Fatalf("c shortcut: screen = %v, want %v", res.Screen, ScreenLocalConfig)
+	}
+
+	// 'i' -> ScreenSetup
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("i")
+	res = updated.(Model)
+	if res.Screen != ScreenSetup {
+		t.Fatalf("i shortcut: screen = %v, want %v", res.Screen, ScreenSetup)
+	}
+}
+
+func TestHandleLocalConfigTestConnection(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+	m.Screen = ScreenLocalConfig
+	m.LocalCfgFocusField = 3 // AI section
+	m.LocalCfgLLMBaseURL.SetValue("http://127.0.0.1:11434")
+
+	updated, cmd := m.handleLocalConfigKeys("t")
+	res := updated.(Model)
+	if !res.TestConnTesting {
+		t.Error("expected TestConnTesting to be true")
+	}
+	if cmd == nil {
+		t.Fatal("expected test connection cmd to be non-nil")
+	}
+}
+
+func TestHandleWorkspaceSwitchers(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+	m.Screen = ScreenDashboard
+
+	// Press '1' -> ScreenRecent (Workspace 0)
+	updated, _ := m.handleKeyPress("1")
+	res := updated.(Model)
+	if res.Screen != ScreenRecent || res.ActiveDeckWorkspace != 0 {
+		t.Fatalf("key 1: screen=%v ws=%d, want ScreenRecent, ws=0", res.Screen, res.ActiveDeckWorkspace)
+	}
+
+	// Press '2' -> ScreenGraph (Workspace 1)
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("2")
+	res = updated.(Model)
+	if res.Screen != ScreenGraph || res.ActiveDeckWorkspace != 1 {
+		t.Fatalf("key 2: screen=%v ws=%d, want ScreenGraph, ws=1", res.Screen, res.ActiveDeckWorkspace)
+	}
+
+	// Press '3' -> ScreenHealth (Workspace 2)
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("3")
+	res = updated.(Model)
+	if res.Screen != ScreenHealth || res.ActiveDeckWorkspace != 2 {
+		t.Fatalf("key 3: screen=%v ws=%d, want ScreenHealth, ws=2", res.Screen, res.ActiveDeckWorkspace)
+	}
+
+	// Press '4' -> ScreenSetup (Workspace 3)
+	m.Screen = ScreenDashboard
+	updated, _ = m.handleKeyPress("4")
+	res = updated.(Model)
+	if res.Screen != ScreenSetup || res.ActiveDeckWorkspace != 3 {
+		t.Fatalf("key 4: screen=%v ws=%d, want ScreenSetup, ws=3", res.Screen, res.ActiveDeckWorkspace)
+	}
+}
+
+func TestHandleControlHubSubTabSwitching(t *testing.T) {
+	m := New(&Deps{})
+	m.Width, m.Height = 120, 40
+
+	// From Setup, press 'c' -> ScreenLocalConfig
+	m.Screen = ScreenSetup
+	updated, _ := m.handleSetupKeys("c")
+	res := updated.(Model)
+	if res.Screen != ScreenLocalConfig {
+		t.Fatalf("c from Setup: screen=%v, want ScreenLocalConfig", res.Screen)
+	}
+
+	// From LocalConfig, press 'i' -> ScreenSetup
+	m.Screen = ScreenLocalConfig
+	updated, _ = m.handleLocalConfigKeys("i")
+	res = updated.(Model)
+	if res.Screen != ScreenSetup {
+		t.Fatalf("i from LocalConfig: screen=%v, want ScreenSetup", res.Screen)
+	}
+}
+
+
+
 // ─── Search Results Keys ────────────────────────────────────────────────────
 
 func TestHandleSearchResultsKeysScrollAndDetail(t *testing.T) {

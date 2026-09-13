@@ -9,6 +9,19 @@ import (
 	"testing"
 )
 
+func TestRunNoArgsNonInteractivePrintsUsage(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+
+	code := run([]string{"cortex"}, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("run() code = %d, want 1", code)
+	}
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("run() stdout missing Usage: %q", stdout.String())
+	}
+}
+
 func TestRunUnknownCommandReturnsError(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}

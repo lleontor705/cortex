@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
 	"github.com/lleontor705/cortex/v2/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
@@ -176,6 +178,12 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 				mcp.WithString("mode",
 					mcp.Description("Adaptive retrieval mode: 'auto' (Adaptive-RAG with HippoRAG and CRAG gating), 'direct' (fast factual), 'semantic' (hybrid vectors), 'multi_hop' (HippoRAG graph reasoning)"),
+				),
+				mcp.WithNumber("lexical_weight",
+					mcp.Description("Optional weight multiplier for FTS5 lexical matching in RRF (default: 1.0)"),
+				),
+				mcp.WithNumber("vector_weight",
+					mcp.Description("Optional weight multiplier for vector semantic similarity in RRF (default: 1.0)"),
 				),
 				mcp.WithNumber("limit",
 					mcp.Description("Max results (default: 10, max: 50)"),
@@ -552,6 +560,28 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
+	// --- cortex_get_compact_context -------------------------------------
+	if shouldRegister("cortex_get_compact_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("cortex_get_compact_context",
+				mcp.WithTitleAnnotation("Get Token-Budgeted Compact Agent Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDescription("Extracts an ultra-dense, token-budgeted context pack containing prioritized rules, gotchas, decisions, and architectural hubs, bounded strictly to a max token budget."),
+				mcp.WithString("project",
+					mcp.Description("Project name (defaults to 'default')"),
+				),
+				mcp.WithNumber("max_tokens",
+					mcp.Description("Maximum token budget for the context prompt (default: 1500)"),
+				),
+				mcp.WithBoolean("include_repo_map",
+					mcp.Description("Whether to include a condensed repo map if budget allows (default: false)"),
+				),
+			),
+			handleGetCompactContext(stores),
+		)
+	}
+
+
 	// --- cortex_get_status ----------------------------------------------
 	if shouldRegister("cortex_get_status", allowlist) {
 		srv.AddTool(
@@ -609,6 +639,25 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("confidence must be between 0.0 and 1.0")
 		}
 
+		if err := privacy.ValidateMetadata(map[string]string{
+			"relation_type": relationType,
+			"source":        source,
+		}); err != nil {
+			var privErr *privacy.Error
+			if errors.As(err, &privErr) {
+				return errorResult("Failed to create relationship: %s", privErr.Error())
+			}
+			return errorResult("Failed to create relationship: %s", localErrorText(err))
+		}
+
+		res, err := privacy.ProtectOptionalText(reasoning)
+		if err != nil {
+			var privErr *privacy.Error
+			if errors.As(err, &privErr) {
+				return errorResult("Failed to create relationship: %s", privErr.Error())
+			}
+			return errorResult("Failed to create relationship: %s", localErrorText(err))
+		}
 		svc := graphdomain.NewService(stores.Graph)
 		edge := &domain.Edge{
 			FromObsID:    fromID,
@@ -617,10 +666,9 @@ func handleRelate(stores *Stores) server.ToolHandlerFunc {
 			Weight:       weight,
 			Confidence:   confidence,
 			Source:       source,
-			Reasoning:    reasoning,
+			Reasoning:    res.ProtectedValue,
 		}
 
-		var err error
 		if (edge.RelationType == domain.RelationSupersedes || edge.RelationType == domain.RelationContradicts) && stores.UnitOfWork != nil && stores.Graph != nil {
 			err = stores.UnitOfWork.Do(ctx, nil, []domain.TxParticipant{stores.Graph}, func(txCtx context.Context) error {
 				return stores.Graph.WithinTx(txCtx, bundle.TxHandle(txCtx), func(enlistedCtx context.Context) error {
@@ -783,6 +831,8 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 		project := stringArg(req, "project")
 		scope := stringArg(req, "scope")
 		limit := intArg(req, "limit", 10)
+		lexicalWeight := floatArg(req, "lexical_weight", 1.0)
+		vectorWeight := floatArg(req, "vector_weight", 1.0)
 
 		if query == "" {
 			return errorResult("query is required")
@@ -844,7 +894,11 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 				}
 				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
 				if vecErr == nil && len(vecResults) > 0 {
-					ftsResults = retrieval.FuseResults(ftsResults, vecResults, limit)
+					ftsResults = retrieval.FuseResultsWithOptions(ftsResults, vecResults, retrieval.FuseOptions{
+						Limit:         limit,
+						LexicalWeight: lexicalWeight,
+						VectorWeight:  vectorWeight,
+					})
 				}
 			}
 		}
@@ -1093,6 +1147,41 @@ func handleResolveQuery(stores *Stores) server.ToolHandlerFunc {
 			Limit:   5,
 		})
 
+		// Retrieve active project directives and rules
+		obsList, _ := stores.Observations.List(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   20,
+		})
+		var rules []map[string]any
+		for _, o := range obsList {
+			isRule := o.Type == "pattern" || o.Type == "config" || strings.HasPrefix(o.TopicKey, "rules/") || strings.HasPrefix(o.TopicKey, "directive/")
+			for _, tag := range o.Tags {
+				if tag == "rule" || tag == "directive" {
+					isRule = true
+					break
+				}
+			}
+			if isRule {
+				rules = append(rules, map[string]any{
+					"id":        o.ID,
+					"title":     o.Title,
+					"topic_key": o.TopicKey,
+					"content":   o.Content,
+					"scope":     o.Scope,
+				})
+			}
+		}
+
+		// Retrieve matching code symbols if code store is available
+		var codeSymbols []code.Symbol
+		if stores.Code != nil {
+			codeSymbols, _ = stores.Code.ListSymbols(ctx, code.SymbolFilter{
+				Project: project,
+				Query:   query,
+				Limit:   5,
+			})
+		}
+
 		response := map[string]any{
 			"mode":               "local",
 			"database":           "sqlite",
@@ -1100,6 +1189,8 @@ func handleResolveQuery(stores *Stores) server.ToolHandlerFunc {
 			"project":            project,
 			"total_matches":      len(results),
 			"observations":       results,
+			"rules":              rules,
+			"code_symbols":       codeSymbols,
 			"recent_surrounding": recent,
 		}
 
@@ -1270,6 +1361,14 @@ func handleIngestCode(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		if stores.Code != nil {
+			if fi, statErr := os.Stat(targetPath); statErr == nil && !fi.IsDir() {
+				filePath := filepath.ToSlash(targetPath)
+				if len(codeGraph.Symbols) > 0 {
+					filePath = codeGraph.Symbols[0].FilePath
+				}
+				_ = stores.Code.DeleteSymbolsByFile(ctx, project, filePath)
+				_ = stores.Code.DeleteRelationsByFile(ctx, project, filePath)
+			}
 			if err := stores.Code.SaveSymbols(ctx, codeGraph.Symbols); err != nil {
 				return errorResult("error saving code symbols: %v", err)
 			}
@@ -1732,3 +1831,40 @@ func handleGetAgentContext(stores *Stores) server.ToolHandlerFunc {
 		return textResult("%s", rendered)
 	}
 }
+
+func handleGetCompactContext(stores *Stores) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		project := cleanProjectName(stringArg(req, "project"))
+		maxTokens := intArg(req, "max_tokens", 1500)
+		if maxTokens <= 0 {
+			maxTokens = 1500
+		}
+		includeRepoMap := boolArg(req, "include_repo_map", false)
+
+		obsList, err := stores.Observations.List(ctx, domain.ObservationFilter{
+			Project: project,
+			Limit:   100,
+		})
+		if err != nil {
+			return errorResult("list observations: %v", err)
+		}
+
+		var codeGraph *code.CodeGraph
+		if stores.Code != nil {
+			codeGraph, _ = stores.Code.GetGraph(ctx, project)
+		}
+
+		pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{
+			Project:        project,
+			Format:         "compact",
+			IncludeRules:   true,
+			IncludeRepoMap: includeRepoMap,
+			RepoMapBudget:  maxTokens / 3,
+			MaxTokens:      maxTokens,
+		})
+
+		rendered := contextpack.RenderCompact(pack, maxTokens)
+		return textResult("%s", rendered)
+	}
+}
+

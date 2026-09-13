@@ -12,14 +12,16 @@ import (
 // Options specifies criteria for building an agent context pack.
 type Options struct {
 	Project        string
-	Format         string // "markdown", "xml", "json" (default "markdown")
+	Format         string // "markdown", "xml", "json", "compact" (default "markdown")
 	MaxDecisions   int    // default 5
 	MaxBugfixes    int    // default 5
 	MaxGodNodes    int    // default 5
 	IncludeRules   bool   // default true
 	IncludeRepoMap bool   // default false
 	RepoMapBudget  int    // default 1024
+	MaxTokens      int    // token budget for compact rendering (default 1500)
 }
+
 
 // Pack represents the assembled intelligence packet for an AI agent.
 type Pack struct {
@@ -110,9 +112,11 @@ func BuildPack(
 	return pack
 }
 
-// Render formats the pack according to the requested format ("markdown", "xml", "json").
+// Render formats the pack according to the requested format ("markdown", "xml", "json", "compact").
 func Render(pack *Pack, format string) (string, error) {
 	switch strings.ToLower(format) {
+	case "compact", "compact-markdown", "compact-md":
+		return RenderCompact(pack, 1500), nil
 	case "xml":
 		return RenderXML(pack), nil
 	case "json":
@@ -123,6 +127,7 @@ func Render(pack *Pack, format string) (string, error) {
 		return RenderMarkdown(pack), nil
 	}
 }
+
 
 // RenderMarkdown produces human-and-agent readable Markdown.
 func RenderMarkdown(pack *Pack) string {
@@ -254,3 +259,105 @@ func RenderJSON(pack *Pack) (string, error) {
 	}
 	return string(bytes), nil
 }
+
+// RenderCompact formats the pack into an ultra-dense, token-budgeted representation.
+// It prioritizes critical directives/rules, gotchas/bugfixes, architectural decisions, and
+// core God Nodes, truncating gracefully when the estimated token budget is reached.
+// If maxTokens <= 0, a default budget of 1500 tokens is used.
+func RenderCompact(pack *Pack, maxTokens int) string {
+	if pack == nil {
+		return ""
+	}
+	if maxTokens <= 0 {
+		maxTokens = 1500
+	}
+	// Conservative heuristic: ~4 characters per token
+	charBudget := maxTokens * 4
+
+	var sb strings.Builder
+	header := fmt.Sprintf("# Cortex Intelligence: %s [Rules: %d | Bugs: %d | Decisions: %d | Hubs: %d]\n\n",
+		pack.Project, len(pack.Rules), len(pack.Bugfixes), len(pack.Decisions), len(pack.GodNodes))
+	sb.WriteString(header)
+
+	budgetRemaining := charBudget - sb.Len()
+
+	appendItem := func(sectionTitle string, items []string) {
+		if len(items) == 0 || budgetRemaining <= 100 {
+			return
+		}
+		var sec strings.Builder
+		sec.WriteString(sectionTitle)
+		sec.WriteString("\n")
+		for _, it := range items {
+			line := "- " + it + "\n"
+			if len(line) > budgetRemaining {
+				if budgetRemaining > 40 {
+					line = line[:budgetRemaining-10] + "...\n"
+					sec.WriteString(line)
+				}
+				budgetRemaining = 0
+				break
+			}
+			sec.WriteString(line)
+			budgetRemaining -= len(line)
+		}
+		sec.WriteString("\n")
+		sb.WriteString(sec.String())
+	}
+
+	// 1. Rules & Directives (Highest Priority)
+	var ruleItems []string
+	for _, r := range pack.Rules {
+		c := strings.Join(strings.Fields(strings.TrimSpace(r.Content)), " ")
+		if len(c) > 120 {
+			c = c[:117] + "..."
+		}
+		ruleItems = append(ruleItems, fmt.Sprintf("**%s**: %s", r.Title, c))
+	}
+	appendItem("## Active Rules & Directives", ruleItems)
+
+	// 2. Gotchas & Bugfix Lessons (High Priority)
+	var bugItems []string
+	for _, b := range pack.Bugfixes {
+		c := strings.Join(strings.Fields(strings.TrimSpace(b.Content)), " ")
+		if len(c) > 120 {
+			c = c[:117] + "..."
+		}
+		bugItems = append(bugItems, fmt.Sprintf("[#%d] **%s**: %s", b.ID, b.Title, c))
+	}
+	appendItem("## Gotchas & Bugfixes", bugItems)
+
+	// 3. Architectural Decisions (Medium Priority)
+	var decItems []string
+	for _, d := range pack.Decisions {
+		c := strings.Join(strings.Fields(strings.TrimSpace(d.Content)), " ")
+		if len(c) > 120 {
+			c = c[:117] + "..."
+		}
+		decItems = append(decItems, fmt.Sprintf("[#%d] **%s**: %s", d.ID, d.Title, c))
+	}
+	appendItem("## Key Decisions", decItems)
+
+	// 4. Core Hubs / God Nodes (Architectural Context)
+	var hubItems []string
+	for _, gn := range pack.GodNodes {
+		hubItems = append(hubItems, fmt.Sprintf("`%s` in `%s` (degree: %d)", gn.Name, gn.FilePath, gn.Degree))
+	}
+	appendItem("## Architectural Hubs", hubItems)
+
+	// 5. Repo Map (if present and budget allows)
+	if pack.RepoMap != "" && budgetRemaining > 150 {
+		var sec strings.Builder
+		sec.WriteString("## Repo Map\n```\n")
+		rm := pack.RepoMap
+		if len(rm)+20 > budgetRemaining {
+			rm = rm[:budgetRemaining-20] + "\n..."
+		}
+		sec.WriteString(rm)
+		sec.WriteString("\n```\n")
+		sb.WriteString(sec.String())
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+

@@ -17,6 +17,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/identity"
 )
 
@@ -57,6 +58,43 @@ func (s *AuthorizedStore) authorizeObservation(ctx context.Context, action authz
 	return s.authorize(ctx, authz.ResourceMemory, action, r.ProjectID, r.OwnerSubject, r.Classification)
 }
 
+// preflightObservation performs detached privacy preflight on an observation,
+// validating metadata and redacting private markers in title and content.
+// The caller's input struct is never mutated on failure.
+func preflightObservation(obs *domain.Observation) (*domain.Observation, error) {
+	if obs == nil {
+		return nil, domain.ErrInvalidInput
+	}
+	meta := map[string]string{
+		"project":    obs.Project,
+		"topic_key":  obs.TopicKey,
+		"scope":      obs.Scope,
+		"type":       obs.Type,
+		"source":     obs.Source,
+		"session_id": obs.SessionID,
+	}
+	for i, tag := range obs.Tags {
+		meta[fmt.Sprintf("tag[%d]", i)] = tag
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return nil, err
+	}
+	results, err := privacy.ProtectNamedFields(
+		privacy.NamedField{Name: "title", Value: obs.Title, Required: true},
+		privacy.NamedField{Name: "content", Value: obs.Content, Required: true},
+	)
+	if err != nil {
+		return nil, err
+	}
+	clone := *obs
+	if len(obs.Tags) > 0 {
+		clone.Tags = append([]string(nil), obs.Tags...)
+	}
+	clone.Title = results["title"].ProtectedValue
+	clone.Content = results["content"].ProtectedValue
+	return &clone, nil
+}
+
 func (s *AuthorizedStore) SaveObservation(ctx context.Context, o *domain.Observation) error {
 	if o == nil {
 		return domain.ErrInvalidInput
@@ -64,7 +102,20 @@ func (s *AuthorizedStore) SaveObservation(ctx context.Context, o *domain.Observa
 	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
 		return err
 	}
-	return s.store.observations().Save(ctx, o)
+	protected, err := preflightObservation(o)
+	if err != nil {
+		return err
+	}
+	if err := s.store.observations().Save(ctx, protected); err != nil {
+		return err
+	}
+	o.ID = protected.ID
+	o.PublicID = protected.PublicID
+	o.CreatedAt = protected.CreatedAt
+	o.UpdatedAt = protected.UpdatedAt
+	o.Title = protected.Title
+	o.Content = protected.Content
+	return nil
 }
 
 // SaveObservationWithEffect authorizes the write exactly like SaveObservation
@@ -78,7 +129,21 @@ func (s *AuthorizedStore) SaveObservationWithEffect(ctx context.Context, o *doma
 	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
 		return domain.SaveEffect{}, err
 	}
-	return s.store.observations().SaveWithEffect(ctx, o)
+	protected, err := preflightObservation(o)
+	if err != nil {
+		return domain.SaveEffect{}, err
+	}
+	eff, err := s.store.observations().SaveWithEffect(ctx, protected)
+	if err != nil {
+		return domain.SaveEffect{}, err
+	}
+	o.ID = protected.ID
+	o.PublicID = protected.PublicID
+	o.CreatedAt = protected.CreatedAt
+	o.UpdatedAt = protected.UpdatedAt
+	o.Title = protected.Title
+	o.Content = protected.Content
+	return eff, nil
 }
 
 // handoffAuthorizationError converts authorization outcomes into the stable
@@ -168,12 +233,12 @@ func (s *AuthorizedStore) ExecuteHandoff(ctx context.Context, req domain.Handoff
 	if s == nil || s.store == nil {
 		return domain.ObservationWriteResult{}, domain.ErrHandoffUnauthorized
 	}
+	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, req.Observation.Project, s.store.principal.Subject, req.Observation.Scope); err != nil {
+		return domain.ObservationWriteResult{}, handoffAuthorizationError(err)
+	}
 	canonical, _, hash, err := domain.CanonicalizeHandoff(req)
 	if err != nil {
 		return domain.ObservationWriteResult{}, err
-	}
-	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, req.Observation.Project, s.store.principal.Subject, req.Observation.Scope); err != nil {
-		return domain.ObservationWriteResult{}, handoffAuthorizationError(err)
 	}
 	return s.store.executeHandoff(ctx, s.derivedHandoffScope(), req.IdempotencyKey, canonical, hash, s.authorizeHandoffRelationInTx)
 }
@@ -249,7 +314,17 @@ func (s *AuthorizedStore) UpdateObservation(ctx context.Context, o *domain.Obser
 	if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, o.Project, s.store.principal.Subject, o.Scope); err != nil {
 		return err
 	}
-	return s.store.observations().Update(ctx, o)
+	protected, err := preflightObservation(o)
+	if err != nil {
+		return err
+	}
+	if err := s.store.observations().Update(ctx, protected); err != nil {
+		return err
+	}
+	o.Title = protected.Title
+	o.Content = protected.Content
+	o.UpdatedAt = protected.UpdatedAt
+	return nil
 }
 func (s *AuthorizedStore) DeleteObservation(ctx context.Context, id int64) error {
 	if err := s.authorizeObservation(ctx, authz.ActionDelete, id); err != nil {
@@ -357,7 +432,26 @@ func (s *AuthorizedStore) BulkSaveObservations(ctx context.Context, observations
 			return err
 		}
 	}
-	return s.store.observations().SaveBulk(ctx, observations)
+	protectedBatch := make([]*domain.Observation, len(observations))
+	for i, o := range observations {
+		protected, err := preflightObservation(o)
+		if err != nil {
+			return err
+		}
+		protectedBatch[i] = protected
+	}
+	if err := s.store.observations().SaveBulk(ctx, protectedBatch); err != nil {
+		return err
+	}
+	for i, o := range observations {
+		o.ID = protectedBatch[i].ID
+		o.PublicID = protectedBatch[i].PublicID
+		o.Title = protectedBatch[i].Title
+		o.Content = protectedBatch[i].Content
+		o.CreatedAt = protectedBatch[i].CreatedAt
+		o.UpdatedAt = protectedBatch[i].UpdatedAt
+	}
+	return nil
 }
 
 // CreateSession creates a session in the authorized workspace context.

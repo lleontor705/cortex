@@ -43,6 +43,12 @@ type Service interface {
 	Model() string
 }
 
+// BatchEmbedder optionally generates vector embeddings for multiple texts in a single batch request.
+type BatchEmbedder interface {
+	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+
 // Config configures the embedding service.
 type Config struct {
 	Provider string // "ollama", "openai", "none"
@@ -191,6 +197,72 @@ func (s *ollamaService) Embed(ctx context.Context, text string) ([]float32, erro
 	return vec, nil
 }
 
+func (s *ollamaService) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if err := acquire(ctx, s.sem); err != nil {
+		return nil, err
+	}
+	defer func() { <-s.sem }()
+	body := map[string]any{
+		"model": s.model,
+		"input": texts,
+	}
+	data, _ := json.Marshal(body)
+
+	url := s.baseURL + "/api/embed"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("ollama: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama: request failed (is Ollama running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ollama: API returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Embeddings [][]float64 `json:"embeddings"`
+	}
+	maxBody := s.maxResponseBody
+	if int64(len(texts)) > 1 && maxBody < int64(len(texts))*s.maxResponseBody {
+		maxBody = int64(len(texts)) * s.maxResponseBody
+	}
+	if err := decodeBounded(resp.Body, maxBody, &result); err != nil {
+		return nil, fmt.Errorf("ollama: decode: %w", err)
+	}
+	if len(result.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("ollama: expected %d embeddings, got %d", len(texts), len(result.Embeddings))
+	}
+
+	vectors := make([][]float32, len(result.Embeddings))
+	for idx, raw := range result.Embeddings {
+		vec := make([]float32, len(raw))
+		for i, v := range raw {
+			vec[i] = float32(v)
+		}
+		vectors[idx] = vec
+	}
+
+	if len(vectors) > 0 && len(vectors[0]) > 0 {
+		s.mu.Lock()
+		if s.dims == 0 {
+			s.dims = len(vectors[0])
+		}
+		s.mu.Unlock()
+	}
+
+	return vectors, nil
+}
+
+
 func (s *ollamaService) Dimensions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,6 +351,79 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 	return vec, nil
 }
 
+func (s *openAIService) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if err := acquire(ctx, s.sem); err != nil {
+		return nil, err
+	}
+	defer func() { <-s.sem }()
+	body := map[string]any{
+		"model": s.model,
+		"input": texts,
+	}
+	data, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.baseURL+"/embeddings", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("openai: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai: request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openai: API returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	maxBody := s.maxResponseBody
+	if int64(len(texts)) > 1 && maxBody < int64(len(texts))*s.maxResponseBody {
+		maxBody = int64(len(texts)) * s.maxResponseBody
+	}
+	if err := decodeBounded(resp.Body, maxBody, &result); err != nil {
+		return nil, fmt.Errorf("openai: decode: %w", err)
+	}
+	if len(result.Data) != len(texts) {
+		return nil, fmt.Errorf("openai: expected %d embeddings, got %d", len(texts), len(result.Data))
+	}
+
+	vectors := make([][]float32, len(texts))
+	for _, item := range result.Data {
+		if item.Index < 0 || item.Index >= len(texts) {
+			return nil, fmt.Errorf("openai: invalid index %d in response", item.Index)
+		}
+		vectors[item.Index] = item.Embedding
+	}
+
+	for i, v := range vectors {
+		if v == nil {
+			return nil, fmt.Errorf("openai: missing embedding at index %d", i)
+		}
+	}
+
+	if len(vectors) > 0 && len(vectors[0]) > 0 {
+		s.mu.Lock()
+		if s.dims == 0 {
+			s.dims = len(vectors[0])
+		}
+		s.mu.Unlock()
+	}
+
+	return vectors, nil
+}
+
 func acquire(ctx context.Context, sem chan struct{}) error {
 	select {
 	case sem <- struct{}{}:
@@ -320,8 +465,11 @@ func (s *openAIService) Close() error {
 	return nil
 }
 
-// Compile-time assertions: both concrete services implement io.Closer.
+// Compile-time assertions: both concrete services implement io.Closer and BatchEmbedder.
 var (
 	_ interface{ Close() error } = (*ollamaService)(nil)
+	_ BatchEmbedder              = (*ollamaService)(nil)
 	_ interface{ Close() error } = (*openAIService)(nil)
+	_ BatchEmbedder              = (*openAIService)(nil)
 )
+

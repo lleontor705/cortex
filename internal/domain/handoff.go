@@ -6,8 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"unicode/utf8"
+
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 )
 
 // MaxHandoffPayloadSize matches the runtime's accepted request-body limit.
@@ -114,6 +119,66 @@ func CanonicalizeHandoff(req HandoffRequest) (CanonicalHandoff, []byte, [32]byte
 	if !validHandoffText(req) || req.IdempotencyKey == "" || req.Observation.Title == "" || req.Observation.Content == "" {
 		return CanonicalHandoff{}, nil, [32]byte{}, ErrHandoffValidation
 	}
+
+	tupleVal, err := decodeTuple(req.CapabilityTuple)
+	if err != nil {
+		return CanonicalHandoff{}, nil, [32]byte{}, ErrHandoffValidation
+	}
+
+	meta := make(map[string]string)
+	if req.IdempotencyKey != "" {
+		meta["idempotency_key"] = req.IdempotencyKey
+	}
+	if req.Observation.Project != "" {
+		meta["project"] = req.Observation.Project
+	}
+	if req.Observation.TopicKey != "" {
+		meta["topic_key"] = req.Observation.TopicKey
+	}
+	if req.Observation.Scope != "" {
+		meta["scope"] = req.Observation.Scope
+	}
+	if req.Observation.Type != "" {
+		meta["type"] = req.Observation.Type
+	}
+	if req.Observation.Source != "" {
+		meta["source"] = req.Observation.Source
+	}
+	if req.Observation.SessionID != "" {
+		meta["session_id"] = req.Observation.SessionID
+	}
+	for i, tag := range req.Observation.Tags {
+		meta[fmt.Sprintf("tag[%d]", i)] = tag
+	}
+	if req.Relation != nil && req.Relation.Type != "" {
+		meta["relation_type"] = req.Relation.Type
+	}
+	if tupleVal != nil {
+		collectCapabilityMetadata(meta, tupleVal)
+	}
+	if err := privacy.ValidateMetadata(meta); err != nil {
+		return CanonicalHandoff{}, nil, [32]byte{}, err
+	}
+
+	named := []privacy.NamedField{
+		{Name: "title", Value: req.Observation.Title, Required: true},
+		{Name: "content", Value: req.Observation.Content, Required: true},
+	}
+	if req.Relation != nil && req.Relation.Reasoning != "" {
+		named = append(named, privacy.NamedField{
+			Name: "reasoning", Value: req.Relation.Reasoning, Required: false,
+		})
+	}
+	protectedFields, err := privacy.ProtectNamedFields(named...)
+	if err != nil {
+		return CanonicalHandoff{}, nil, [32]byte{}, err
+	}
+	req.Observation.Title = protectedFields["title"].ProtectedValue
+	req.Observation.Content = protectedFields["content"].ProtectedValue
+	if req.Relation != nil && req.Relation.Reasoning != "" {
+		req.Relation.Reasoning = protectedFields["reasoning"].ProtectedValue
+	}
+
 	requestPayload, err := json.Marshal(req)
 	if err != nil {
 		return CanonicalHandoff{}, nil, [32]byte{}, ErrHandoffValidation
@@ -127,9 +192,12 @@ func CanonicalizeHandoff(req HandoffRequest) (CanonicalHandoff, []byte, [32]byte
 		}
 	}
 
-	tuple, err := canonicalJSON(req.CapabilityTuple)
-	if err != nil {
-		return CanonicalHandoff{}, nil, [32]byte{}, ErrHandoffValidation
+	var tuple json.RawMessage
+	if len(req.CapabilityTuple) > 0 {
+		tuple, err = json.Marshal(tupleVal)
+		if err != nil {
+			return CanonicalHandoff{}, nil, [32]byte{}, ErrHandoffValidation
+		}
 	}
 	canonical := CanonicalHandoff{
 		Observation:     req.Observation,
@@ -146,7 +214,7 @@ func CanonicalizeHandoff(req HandoffRequest) (CanonicalHandoff, []byte, [32]byte
 	return canonical, payload, sha256.Sum256(payload), nil
 }
 
-func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+func decodeTuple(raw json.RawMessage) (any, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -166,7 +234,48 @@ func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
 		}
 		return nil, err
 	}
-	return json.Marshal(value)
+	return value, nil
+}
+
+func collectCapabilityMetadata(meta map[string]string, val any) {
+	idx := 0
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(t))
+			for k := range t {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				meta[fmt.Sprintf("capability_tuple_key[%d]", idx)] = k
+				idx++
+				walk(t[k])
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		case string:
+			meta[fmt.Sprintf("capability_tuple_val[%d]", idx)] = t
+			idx++
+			trimmed := strings.TrimSpace(t)
+			if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+				(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+				var inner any
+				dec := json.NewDecoder(strings.NewReader(trimmed))
+				dec.UseNumber()
+				if err := dec.Decode(&inner); err == nil {
+					var extra any
+					if errors.Is(dec.Decode(&extra), io.EOF) {
+						walk(inner)
+					}
+				}
+			}
+		}
+	}
+	walk(val)
 }
 
 type HandoffScope string

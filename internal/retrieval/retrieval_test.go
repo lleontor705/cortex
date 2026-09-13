@@ -280,6 +280,70 @@ func TestFuseResults_RRFConstantIsSixty(t *testing.T) {
 	}
 }
 
+func TestFuseResults_WeightedRRF(t *testing.T) {
+	// fts has ID 1 at rank 0 (score without weight = 1/61 ~ 0.01639)
+	fts := []*domain.SearchResult{
+		{Observation: domain.Observation{ID: 1, Title: "Lexical Match"}},
+	}
+	// vec has ID 2 at rank 0 (score without weight = 1/61 ~ 0.01639)
+	vec := []*domain.VectorSearchResult{
+		{Observation: domain.Observation{ID: 2, Title: "Semantic Match"}, Similarity: 0.9},
+	}
+
+	// 1. Lexical weighted higher (LexicalWeight: 2.0, VectorWeight: 1.0) -> ID 1 should win
+	resultsLex := FuseResultsWithOptions(fts, vec, FuseOptions{
+		LexicalWeight: 2.0,
+		VectorWeight:  1.0,
+	})
+	if len(resultsLex) != 2 || resultsLex[0].ID != 1 {
+		t.Fatalf("expected ID 1 to win under LexicalWeight=2.0, got: %v", resultsLex)
+	}
+
+	// 2. Vector weighted higher (LexicalWeight: 1.0, VectorWeight: 2.0) -> ID 2 should win
+	resultsVec := FuseResultsWithOptions(fts, vec, FuseOptions{
+		LexicalWeight: 1.0,
+		VectorWeight:  2.0,
+	})
+	if len(resultsVec) != 2 || resultsVec[0].ID != 2 {
+		t.Fatalf("expected ID 2 to win under VectorWeight=2.0, got: %v", resultsVec)
+	}
+
+	// 3. Zero / negative weights default to 1.0
+	resultsDefault := FuseResultsWithOptions(fts, vec, FuseOptions{
+		LexicalWeight: 0,
+		VectorWeight:  -1,
+	})
+	if len(resultsDefault) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(resultsDefault))
+	}
+}
+
+func TestFuseResults_DeterministicTieBreak(t *testing.T) {
+	// Both have identical ranks in FTS only, so identical RRF scores.
+	// Deterministic tie-breaker should sort higher Observation.ID first.
+	fts := []*domain.SearchResult{
+		{Observation: domain.Observation{ID: 10, Title: "Item 10"}},
+		{Observation: domain.Observation{ID: 20, Title: "Item 20"}},
+	}
+	// Give each identical single score by running with vector results at same rank
+	vec := []*domain.VectorSearchResult{
+		{Observation: domain.Observation{ID: 20}, Similarity: 0.8},
+		{Observation: domain.Observation{ID: 10}, Similarity: 0.8},
+	}
+	// Both ID 10 and ID 20 have:
+	// ID 10: 1/61 + 1/62
+	// ID 20: 1/62 + 1/61
+	// Total RRF score is identical!
+	results := FuseResultsWithOptions(fts, vec, FuseOptions{})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Deterministic tie breaker: ID 20 > ID 10
+	if results[0].ID != 20 || results[1].ID != 10 {
+		t.Fatalf("expected tie breaker to place ID 20 first, got [%d, %d]", results[0].ID, results[1].ID)
+	}
+}
+
 // --- Compile-time: stubObsLookup satisfies ObservationLookup ---
 
 func TestStubObsLookup_ImplementsObservationLookup(t *testing.T) {

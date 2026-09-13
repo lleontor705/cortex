@@ -119,6 +119,12 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("app: initialize code store: %w", err)
 	}
 
+	transientStore, err := sqlitestore.NewTransientPayloadStore(manager.DB())
+	if err != nil {
+		_ = manager.Close()
+		return nil, fmt.Errorf("app: initialize transient payload store: %w", err)
+	}
+
 	stores := &bundle.Stores{
 		Observations:      sqlitestore.NewStore(manager.DB()),
 		Sessions:          session.NewStore(manager.DB()),
@@ -132,6 +138,7 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		Metrics:           sqlitestore.NewMetricsRepository(manager.DB()),
 		QualityMetrics:    sqlitestore.NewQualityMetricsRepository(manager.DB()),
 		Code:              codeStore,
+		TransientPayloads: transientStore,
 	}
 
 	// Wire the UnitOfWork for atomic cross-store saves (W2.1, W4.1). Always
@@ -206,41 +213,52 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		a.archivalCancel = archivalSvc.Start(ctx)
 	}
 
-	if cfg.Sync.Enabled && !opts.DisableRemoteSync {
-		token := os.Getenv(cfg.Sync.TokenEnv)
-		if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
-			token = cfg.Sync.TokenEnv
-		}
-		if token == "" && cfg.HTTP.Token != "" {
-			token = cfg.HTTP.Token
-		}
-		remote, syncErr := cortsync.NewRemoteSyncer(manager.DB(), cfg.Sync.URL, token, cfg.Sync.Timeout)
-		if syncErr != nil {
-			log.Printf("warning: remote sync disabled: %v", syncErr)
+	isHybrid := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))) == "hybrid"
+	if (cfg.Sync.Enabled || isHybrid) && !opts.DisableRemoteSync {
+		if strings.TrimSpace(cfg.Sync.URL) == "" {
+			if isHybrid {
+				log.Printf("warning: CORTEX_MODE is hybrid but sync.url is empty; remote sync disabled")
+			}
 		} else {
-			syncCtx, cancel := context.WithCancel(ctx)
-			a.syncCancel = cancel
-			done := make(chan struct{})
-			a.syncDone = done
-			go func() {
-				defer close(done)
-				run := func() {
-					if _, err := remote.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
-						log.Printf("warning: remote sync failed; local writes remain available: %v", err)
+			token := os.Getenv(cfg.Sync.TokenEnv)
+			if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
+				token = cfg.Sync.TokenEnv
+			}
+			if token == "" && cfg.HTTP.Token != "" {
+				token = cfg.HTTP.Token
+			}
+			remote, syncErr := cortsync.NewRemoteSyncer(manager.DB(), cfg.Sync.URL, token, cfg.Sync.Timeout)
+			if syncErr != nil {
+				log.Printf("warning: remote sync disabled: %v", syncErr)
+			} else {
+				syncCtx, cancel := context.WithCancel(ctx)
+				a.syncCancel = cancel
+				done := make(chan struct{})
+				a.syncDone = done
+				go func() {
+					defer close(done)
+					run := func() {
+						if _, err := remote.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
+							log.Printf("warning: remote sync failed; local writes remain available: %v", err)
+						}
 					}
-				}
-				run()
-				ticker := time.NewTicker(cfg.Sync.Interval)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-syncCtx.Done():
-						return
-					case <-ticker.C:
-						run()
+					run()
+					interval := cfg.Sync.Interval
+					if interval <= 0 {
+						interval = time.Minute
 					}
-				}
-			}()
+					ticker := time.NewTicker(interval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-syncCtx.Done():
+							return
+						case <-ticker.C:
+							run()
+						}
+					}
+				}()
+			}
 		}
 	}
 

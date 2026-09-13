@@ -96,12 +96,11 @@ func (w *FileWatcher) isSupported(path string) bool {
 	return false
 }
 
-// ScanOnce performs a single scan of the directory tree, returning modified or added files.
-func (w *FileWatcher) ScanOnce() []string {
+// ScanDiff performs a single scan of the directory tree, returning modified/added files and deleted files.
+func (w *FileWatcher) ScanDiff() (changed []string, deleted []string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	var changed []string
 	currentFiles := make(map[string]bool)
 
 	_ = filepath.Walk(w.cfg.Directory, func(path string, info os.FileInfo, err error) error {
@@ -134,13 +133,32 @@ func (w *FileWatcher) ScanOnce() []string {
 		return nil
 	})
 
+	for path := range w.modTimes {
+		if !currentFiles[path] {
+			deleted = append(deleted, path)
+			delete(w.modTimes, path)
+		}
+	}
+
+	return changed, deleted
+}
+
+// ScanOnce performs a single scan of the directory tree, returning modified or added files.
+func (w *FileWatcher) ScanOnce() []string {
+	changed, _ := w.ScanDiff()
 	return changed
 }
 
 // Watch runs the polling loop until the context is canceled, calling onFileChanged on updates.
 func (w *FileWatcher) Watch(ctx context.Context, onFileChanged func(path string)) error {
+	return w.WatchWithEvents(ctx, onFileChanged, nil)
+}
+
+// WatchWithEvents runs the polling loop until the context is canceled, calling onFileChanged on updates
+// and onFileDeleted when monitored files are removed.
+func (w *FileWatcher) WatchWithEvents(ctx context.Context, onFileChanged func(path string), onFileDeleted func(path string)) error {
 	// Initialize baseline snapshot
-	_ = w.ScanOnce()
+	_, _ = w.ScanDiff()
 
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
@@ -150,10 +168,15 @@ func (w *FileWatcher) Watch(ctx context.Context, onFileChanged func(path string)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			changed := w.ScanOnce()
+			changed, deleted := w.ScanDiff()
 			for _, file := range changed {
 				if onFileChanged != nil {
 					onFileChanged(file)
+				}
+			}
+			for _, file := range deleted {
+				if onFileDeleted != nil {
+					onFileDeleted(file)
 				}
 			}
 		}

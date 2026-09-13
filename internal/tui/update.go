@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -135,6 +136,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.UpdateResult = msg.result
 		return m, nil
 
+	case animTickMsg:
+		m.AnimFrame++
+		return m, animTickCmd()
+
+	case setupAgentsDetectedMsg:
+		m.SetupDetectedAgents = msg.statuses
+		return m, nil
+
+	case testConnResultMsg:
+		m.TestConnTesting = false
+		if msg.success {
+			m.TestConnStatus = "✓ " + msg.message
+		} else {
+			m.TestConnStatus = "✗ " + msg.message
+		}
+		return m, nil
+
 	case statsLoadedMsg:
 		if msg.err != nil {
 			m.ErrorMsg = msg.err.Error()
@@ -176,6 +194,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 5
 		}
 		m.SearchListModel.SetSize(w, h)
+		if m.PreviewVisible && len(msg.results) > 0 {
+			m.updatePreviewContent()
+		}
 		return m, nil
 
 	case codeSearchResultsMsg:
@@ -201,6 +222,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 5
 		}
 		m.SearchListModel.SetSize(w, h)
+		if m.PreviewVisible && len(msg.results) > 0 {
+			m.updatePreviewContent()
+		}
 		return m, nil
 
 	case recentObservationsMsg:
@@ -224,6 +248,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h = 5
 		}
 		m.RecentList.SetSize(w, h)
+		if m.PreviewVisible && len(msg.observations) > 0 {
+			m.updatePreviewContent()
+		}
 		return m, nil
 
 	case observationDetailMsg:
@@ -603,6 +630,50 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Command Deck Workspace Switchers (1: Knowledge Hub, 2: Neural Graph, 3: System Health, 4: Control & Setup)
+	if (key == "1" || key == "2" || key == "3" || key == "4") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
+		switch key {
+		case "1":
+			m.ActiveDeckWorkspace = 0
+			m.PrevScreen = m.Screen
+			m.Screen = ScreenRecent
+			m.Cursor = 0
+			m.Scroll = 0
+			return m, loadRecentObservations(m.deps, m.FilterProject)
+		case "2":
+			m.ActiveDeckWorkspace = 1
+			m.PrevScreen = m.Screen
+			m.Screen = ScreenGraph
+			m.Cursor = 0
+			m.Scroll = 0
+			if m.GraphRootID != 0 {
+				return m, loadGraphRelated(m.deps, m.GraphRootID)
+			}
+			if len(m.RecentObservations) > 0 {
+				m.GraphRootID = m.RecentObservations[0].ID
+				return m, loadGraphRelated(m.deps, m.GraphRootID)
+			}
+			return m, loadRecentObservations(m.deps, m.FilterProject)
+		case "3":
+			m.ActiveDeckWorkspace = 2
+			m.PrevScreen = m.Screen
+			m.Screen = ScreenHealth
+			m.Cursor = 0
+			m.Scroll = 0
+			project := ""
+			if m.Stats != nil && len(m.Stats.Projects) > 0 {
+				project = m.Stats.Projects[0]
+			}
+			return m, loadHealthData(m.deps, project)
+		case "4":
+			m.ActiveDeckWorkspace = 3
+			m.PrevScreen = m.Screen
+			m.Screen = ScreenSetup
+			m.Cursor = 0
+			return m, detectAgentsCmd()
+		}
+	}
+
 	// Quick memory creation modal — available from list and dashboard screens
 	if (key == "n" || key == "N") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
 		m.NewObsModalOpen = true
@@ -711,13 +782,13 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
 var dashboardMenuItems = []string{
-	"Search memories",
+	"Configuration Center (Modular Settings)",
 	"Recent observations",
 	"Browse sessions",
 	"Knowledge graph",
 	"Memory health",
 	"Archived observations",
-	"Embedding settings",
+	"Search memories",
 	"Local settings",
 	"Connect to server",
 	"Setup agent plugin",
@@ -725,17 +796,49 @@ var dashboardMenuItems = []string{
 }
 
 func (m Model) handleDashboardKeys(key string) (tea.Model, tea.Cmd) {
+	maxItems := len(dashboardMenuItems)
+
 	switch key {
 	case "up", "k":
 		if m.Cursor > 0 {
 			m.Cursor--
 		}
 	case "down", "j":
-		if m.Cursor < len(dashboardMenuItems)-1 {
+		if m.Cursor < maxItems-1 {
 			m.Cursor++
 		}
 	case "enter", " ":
 		return m.handleDashboardSelection()
+	case "1":
+		m.Cursor = 0
+		return m.handleDashboardSelection()
+	case "2":
+		m.Cursor = 1
+		return m.handleDashboardSelection()
+	case "3":
+		m.Cursor = 2
+		return m.handleDashboardSelection()
+	case "4":
+		m.Cursor = 3
+		return m.handleDashboardSelection()
+	case "5":
+		m.Cursor = 4
+		return m.handleDashboardSelection()
+	case "6":
+		m.Cursor = 5
+		return m.handleDashboardSelection()
+	case "7":
+		m.Cursor = 6
+		return m.handleDashboardSelection()
+	case "8":
+		m.Cursor = 7
+		return m.handleDashboardSelection()
+	case "9":
+		m.Cursor = 8
+		return m.handleDashboardSelection()
+	case "t", "T":
+		ToggleTheme()
+		return m, nil
 	case "s", "/":
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenSearch
@@ -743,6 +846,18 @@ func (m Model) handleDashboardKeys(key string) (tea.Model, tea.Cmd) {
 		m.SearchInput.SetValue("")
 		m.SearchInput.Focus()
 		return m, nil
+	case "r", "R":
+		m.Cursor = 1
+		return m.handleDashboardSelection()
+	case "g", "G":
+		m.Cursor = 3
+		return m.handleDashboardSelection()
+	case "c", "C":
+		m.Cursor = 7
+		return m.handleDashboardSelection()
+	case "i", "I":
+		m.Cursor = 9
+		return m.handleDashboardSelection()
 	case "u", "U":
 		if m.UpdateResult != nil {
 			m.ToastMessage = fmt.Sprintf("Downloading & installing %s...", m.UpdateResult.Latest)
@@ -769,13 +884,8 @@ func (m Model) performSelfUpdateCmd() tea.Cmd {
 
 func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 	switch m.Cursor {
-	case 0: // Search
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSearch
-		m.Cursor = 0
-		m.SearchInput.SetValue("")
-		m.SearchInput.Focus()
-		return m, nil
+	case 0: // Configuration Center
+		return m.openLocalConfig(), nil
 	case 1: // Recent observations
 		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenRecent
@@ -793,7 +903,6 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.Screen = ScreenGraph
 		m.Cursor = 0
 		m.Scroll = 0
-		// Load graph from most recent observation if available
 		if len(m.RecentObservations) > 0 {
 			m.GraphRootID = m.RecentObservations[0].ID
 			return m, loadGraphRelated(m.deps, m.GraphRootID)
@@ -815,43 +924,12 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.Cursor = 0
 		m.Scroll = 0
 		return m, loadArchivedObservations(m.deps, m.FilterProject)
-	case 6: // Embedding settings
+	case 6: // Search
 		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenEmbeddingConfig
+		m.Screen = ScreenSearch
 		m.Cursor = 0
-		m.EmbCfgFocusField = 0
-		m.EmbCfgSaved = false
-		m.EmbCfgSaving = false
-		m.EmbCfgError = ""
-		m.EmbCfgDirty = false
-		m.EmbCfgOllamaChecked = false
-		m.EmbCfgPulling = false
-		m.EmbCfgStarting = false
-		m.EmbCfgReindexWarning = false
-		m.EmbCfgReindexing = false
-		m.EmbCfgReindexProgress = ""
-		// Reload config from disk to get latest values
-		if m.deps.App != nil {
-			_ = m.deps.App.ReloadConfig()
-			m.deps.Config = m.deps.App.Config
-		}
-		// Load current config values into TUI fields
-		if m.deps.Config != nil {
-			switch m.deps.Config.Search.EmbeddingProvider {
-			case "ollama":
-				m.EmbCfgProvider = 1
-			case "openai":
-				m.EmbCfgProvider = 2
-			default:
-				m.EmbCfgProvider = 0
-			}
-			m.EmbCfgModel.SetValue(m.deps.Config.Search.EmbeddingModel)
-			m.EmbCfgVector = m.deps.Config.Search.Vector
-			m.EmbCfgAutoStart = m.deps.Config.Search.OllamaAutoStart
-		}
-		// Save original values for change detection
-		m.EmbCfgOriginalProvider = m.EmbCfgProvider
-		m.EmbCfgOriginalModel = m.EmbCfgModel.Value()
+		m.SearchInput.SetValue("")
+		m.SearchInput.Focus()
 		return m, nil
 	case 7: // Local settings
 		return m.openLocalConfig(), nil
@@ -871,11 +949,12 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.SetupAllowlistPrompt = false
 		m.SetupAllowlistApplied = false
 		m.SetupAllowlistError = ""
-		return m, nil
+		return m, detectAgentsCmd()
 	case 10: // Quit
 		return m, tea.Quit
+	default:
+		return m.openLocalConfig(), nil
 	}
-	return m, nil
 }
 
 // ─── Search Input ───────────────────────────────────────────────────────────
@@ -1113,6 +1192,15 @@ func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
 			m.PrevScreen = ScreenRecent
 			m.PrevCursor = m.RecentList.Index()
 			return m, loadTimeline(m.deps, item.obs.ID)
+		}
+	case "g":
+		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
+			m.PrevScreen = ScreenRecent
+			m.PrevCursor = m.RecentList.Index()
+			m.GraphRootID = item.obs.ID
+			m.Screen = ScreenGraph
+			m.ActiveDeckWorkspace = 1
+			return m, loadGraphRelated(m.deps, m.GraphRootID)
 		}
 	case "d":
 		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
@@ -1490,6 +1578,8 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 			m.SetupInstallingName = agent.Name
 			return m, tea.Batch(m.SetupSpinner.Tick, installAgent(agent.Name))
 		}
+	case "c", "C":
+		return m.openLocalConfig(), nil
 	case "esc", "q":
 		m.Screen = ScreenDashboard
 		m.Cursor = 0
@@ -1695,7 +1785,19 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		case 15:
 			return m.startLocalConfigSave()
 		}
-		return m, nil
+	case "t", "T":
+		providers := []string{"None", "Ollama", "OpenAI", "Anthropic", "OpenRouter", "Groq", "DeepSeek", "Custom"}
+		provName := "Ollama"
+		if m.LocalCfgLLMProvider >= 0 && m.LocalCfgLLMProvider < len(providers) {
+			provName = providers[m.LocalCfgLLMProvider]
+		}
+		m.TestConnTesting = true
+		m.TestConnStatus = ""
+		return m, testConnectionCmd(provName, m.LocalCfgLLMBaseURL.Value())
+	case "i", "I":
+		m.Screen = ScreenSetup
+		m.Cursor = 0
+		return m, detectAgentsCmd()
 	case "s", "S":
 		return m.startLocalConfigSave()
 	case "r", "R":
@@ -2054,18 +2156,26 @@ func (m *Model) updatePreviewContent() {
 	case ScreenSearchResults:
 		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
 			r := item.result
-			content = fmt.Sprintf("Title: %s\nType: %s\nProject: %s\nCreated: %s\nScore: %.0f%%\n\n%s",
-				r.Title, r.Type, r.Project, formatTime(r.CreatedAt), r.Rank*100, r.Content)
+			typeBadge := renderTypeBadge(r.Type)
+			content = fmt.Sprintf("%s  #%d  •  %.0f%% Match\nProject: %s  •  %s\n\n%s\n\n%s",
+				typeBadge, r.ID, r.Rank*100, r.Project, formatTime(r.CreatedAt),
+				lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(r.Title),
+				r.Content)
 		} else if item, ok := m.SearchListModel.SelectedItem().(codeSymbolItem); ok {
 			s := item.symbol
-			content = fmt.Sprintf("Symbol: %s\nKind: %s\nProject: %s\nFile: %s:%d\nPackage: %s\nVisibility: %s\n\n%s",
-				s.Name, s.Kind, s.Project, s.FilePath, s.LineNumber, s.PackageName, s.Visibility, s.Signature)
+			content = fmt.Sprintf("[SYMBOL] %s  (%s)\nFile: %s:%d  •  Package: %s\n\n%s\n\n%s",
+				s.Name, s.Kind, s.FilePath, s.LineNumber, s.PackageName,
+				lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(s.Name),
+				s.Signature)
 		}
-	case ScreenRecent:
+	case ScreenRecent, ScreenDashboard:
 		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
 			o := item.obs
-			content = fmt.Sprintf("Title: %s\nType: %s\nProject: %s\nCreated: %s\n\n%s",
-				o.Title, o.Type, o.Project, formatTime(o.CreatedAt), o.Content)
+			typeBadge := renderTypeBadge(o.Type)
+			content = fmt.Sprintf("%s  #%d\nProject: %s  •  %s\n\n%s\n\n%s",
+				typeBadge, o.ID, o.Project, formatTime(o.CreatedAt),
+				lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render(o.Title),
+				o.Content)
 		}
 	}
 	m.PreviewViewport.SetContent(content)

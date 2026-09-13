@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 )
 
 // pushWorkspace resolves the transaction-bound workspace bigint. The sync
@@ -71,38 +72,250 @@ func pushResolveEndpoint(ctx context.Context, tx pgx.Tx, workspace int64, client
 	return id, nil
 }
 
+func protectOpt(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	res, err := privacy.ProtectOptionalText(s)
+	if err != nil {
+		return "", err
+	}
+	return res.ProtectedValue, nil
+}
+
+func preflightSyncBatch(batch *domain.SyncBatch) (*domain.SyncBatch, error) {
+	if batch == nil {
+		return nil, domain.ErrInvalidInput
+	}
+	out := &domain.SyncBatch{
+		Sessions:      make([]domain.SyncSession, len(batch.Sessions)),
+		Observations:  make([]domain.SyncObservation, len(batch.Observations)),
+		Prompts:       make([]domain.SyncPrompt, len(batch.Prompts)),
+		Edges:         make([]domain.SyncEdge, len(batch.Edges)),
+		CodeSymbols:   make([]domain.SyncCodeSymbol, len(batch.CodeSymbols)),
+		CodeRelations: make([]domain.SyncCodeRelation, len(batch.CodeRelations)),
+	}
+	var err error
+	for i, s := range batch.Sessions {
+		if err = privacy.ValidateMetadata(map[string]string{
+			"sync_id":   s.SyncID,
+			"project":   s.Project,
+			"directory": s.Directory,
+		}); err != nil {
+			return nil, err
+		}
+		if s.Summary, err = protectOpt(s.Summary); err != nil {
+			return nil, err
+		}
+		out.Sessions[i] = s
+	}
+	for i, o := range batch.Observations {
+		meta := map[string]string{
+			"session_sync_id": o.SessionSyncID,
+			"sync_id":         o.SyncID,
+			"project":         o.Project,
+			"topic_key":       o.TopicKey,
+			"scope":           o.Scope,
+			"type":            o.Type,
+			"source":          o.Source,
+		}
+		for idx, tag := range o.Tags {
+			meta[fmt.Sprintf("t%d", idx)] = tag
+		}
+		if err = privacy.ValidateMetadata(meta); err != nil {
+			return nil, err
+		}
+		if len(o.Tags) > 0 {
+			o.Tags = append([]string(nil), o.Tags...)
+		}
+		if !o.Deleted || o.Title != "" || o.Content != "" {
+			res, err := privacy.ProtectNamedFields(
+				privacy.NamedField{Name: "title", Value: o.Title, Required: true},
+				privacy.NamedField{Name: "content", Value: o.Content, Required: true},
+			)
+			if err != nil {
+				return nil, err
+			}
+			o.Title, o.Content = res["title"].ProtectedValue, res["content"].ProtectedValue
+		}
+		out.Observations[i] = o
+	}
+	for i, p := range batch.Prompts {
+		if err = privacy.ValidateMetadata(map[string]string{
+			"session_sync_id": p.SessionSyncID,
+			"sync_id":         p.SyncID,
+			"project":         p.Project,
+		}); err != nil {
+			return nil, err
+		}
+		if !p.Deleted || p.Content != "" {
+			res, err := privacy.ProtectField("content", p.Content, true)
+			if err != nil {
+				return nil, err
+			}
+			p.Content = res.ProtectedValue
+		}
+		out.Prompts[i] = p
+	}
+	for i, e := range batch.Edges {
+		if err = privacy.ValidateMetadata(map[string]string{
+			"from_sync_id": e.FromSyncID,
+			"to_sync_id":   e.ToSyncID,
+			"sync_id":      e.SyncID,
+			"relation":     e.Relation,
+			"source":       e.Source,
+		}); err != nil {
+			return nil, err
+		}
+		if e.Reasoning, err = protectOpt(e.Reasoning); err != nil {
+			return nil, err
+		}
+		out.Edges[i] = e
+	}
+	for i, s := range batch.CodeSymbols {
+		if err = privacy.ValidateMetadata(map[string]string{
+			"project":   s.Project,
+			"file_path": s.FilePath,
+			"kind":      s.Kind,
+			"name":      s.Name,
+		}); err != nil {
+			return nil, err
+		}
+		out.CodeSymbols[i] = s
+	}
+	for i, r := range batch.CodeRelations {
+		if err = privacy.ValidateMetadata(map[string]string{
+			"project":   r.Project,
+			"source_id": r.SourceID,
+			"target_id": r.TargetID,
+			"relation":  r.Relation,
+		}); err != nil {
+			return nil, err
+		}
+		out.CodeRelations[i] = r
+	}
+	return out, nil
+}
+
+func protectPullPage(page *domain.SyncPage) error {
+	if page == nil {
+		return nil
+	}
+	for i := range page.Sessions {
+		s := &page.Sessions[i]
+		if err := privacy.ValidateMetadata(map[string]string{
+			"sync_id":   s.SyncID,
+			"project":   s.Project,
+			"directory": s.Directory,
+		}); err != nil {
+			return err
+		}
+		var err error
+		if s.Summary, err = protectOpt(s.Summary); err != nil {
+			return err
+		}
+	}
+	for i := range page.Observations {
+		o := &page.Observations[i]
+		meta := map[string]string{
+			"session_sync_id": o.SessionSyncID,
+			"sync_id":         o.SyncID,
+			"project":         o.Project,
+			"topic_key":       o.TopicKey,
+			"scope":           o.Scope,
+			"type":            o.Type,
+			"source":          o.Source,
+		}
+		for idx, tag := range o.Tags {
+			meta[fmt.Sprintf("t%d", idx)] = tag
+		}
+		if err := privacy.ValidateMetadata(meta); err != nil {
+			return err
+		}
+		if !o.Deleted || o.Title != "" || o.Content != "" {
+			res, err := privacy.ProtectNamedFields(
+				privacy.NamedField{Name: "title", Value: o.Title, Required: true},
+				privacy.NamedField{Name: "content", Value: o.Content, Required: true},
+			)
+			if err != nil {
+				return err
+			}
+			o.Title = res["title"].ProtectedValue
+			o.Content = res["content"].ProtectedValue
+		}
+	}
+	for i := range page.Prompts {
+		p := &page.Prompts[i]
+		if err := privacy.ValidateMetadata(map[string]string{
+			"session_sync_id": p.SessionSyncID,
+			"sync_id":         p.SyncID,
+			"project":         p.Project,
+		}); err != nil {
+			return err
+		}
+		if !p.Deleted || p.Content != "" {
+			res, err := privacy.ProtectField("content", p.Content, true)
+			if err != nil {
+				return err
+			}
+			p.Content = res.ProtectedValue
+		}
+	}
+	for i := range page.Edges {
+		e := &page.Edges[i]
+		if err := privacy.ValidateMetadata(map[string]string{
+			"from_sync_id": e.FromSyncID,
+			"to_sync_id":   e.ToSyncID,
+			"sync_id":      e.SyncID,
+			"relation":     e.Relation,
+			"source":       e.Source,
+		}); err != nil {
+			return err
+		}
+		var err error
+		if e.Reasoning, err = protectOpt(e.Reasoning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch) (*domain.SyncResult, error) {
 	if batch == nil {
 		return nil, domain.ErrInvalidInput
 	}
-	for _, session := range batch.Sessions {
+	cleanBatch, err := preflightSyncBatch(batch)
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range cleanBatch.Sessions {
 		if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, session.Project, s.store.principal.Subject, ""); err != nil {
 			return nil, err
 		}
 	}
-	for _, observation := range batch.Observations {
+	for _, observation := range cleanBatch.Observations {
 		if err := s.authorize(ctx, authz.ResourceMemory, authz.ActionWrite, observation.Project, s.store.principal.Subject, observation.Scope); err != nil {
 			return nil, err
 		}
 	}
-	if len(batch.Edges) > 0 {
+	if len(cleanBatch.Edges) > 0 {
 		if err := s.authorize(ctx, authz.ResourceGraph, authz.ActionWrite, "", "", ""); err != nil {
 			return nil, err
 		}
 	}
-	if len(batch.CodeSymbols) > 0 || len(batch.CodeRelations) > 0 {
+	if len(cleanBatch.CodeSymbols) > 0 || len(cleanBatch.CodeRelations) > 0 {
 		if err := s.authorize(ctx, authz.ResourceCode, authz.ActionWrite, "", "", ""); err != nil {
 			return nil, err
 		}
 	}
 	accepted := 0
-	err := s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.store.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		workspace, err := pushWorkspace(ctx)
 		if err != nil {
 			return err
 		}
 		actor := actorFromContext(ctx)
-		for _, value := range batch.Sessions {
+		for _, value := range cleanBatch.Sessions {
 			if value.SyncID == "" || value.StartedAt.IsZero() {
 				return domain.ErrInvalidInput
 			}
@@ -119,7 +332,7 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			}
 			accepted++
 		}
-		for _, value := range batch.Observations {
+		for _, value := range cleanBatch.Observations {
 			if value.SyncID == "" || value.SessionSyncID == "" || value.Title == "" || value.Content == "" {
 				return domain.ErrInvalidInput
 			}
@@ -143,7 +356,7 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			}
 			accepted++
 		}
-		for _, value := range batch.Prompts {
+		for _, value := range cleanBatch.Prompts {
 			if value.SyncID == "" || value.SessionSyncID == "" || value.Content == "" {
 				return domain.ErrInvalidInput
 			}
@@ -157,7 +370,7 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			}
 			accepted++
 		}
-		for _, value := range batch.Edges {
+		for _, value := range cleanBatch.Edges {
 			if value.SyncID == "" || value.FromSyncID == "" || value.ToSyncID == "" || value.Relation == "" {
 				return domain.ErrInvalidInput
 			}
@@ -181,7 +394,7 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 			}
 			accepted++
 		}
-		for _, sym := range batch.CodeSymbols {
+		for _, sym := range cleanBatch.CodeSymbols {
 			if sym.ID == "" || sym.Project == "" || sym.FilePath == "" || sym.Name == "" {
 				continue
 			}
@@ -223,7 +436,7 @@ func (s *AuthorizedStore) PushSync(ctx context.Context, batch *domain.SyncBatch)
 				workspace, projectID, sym.Project)
 			accepted++
 		}
-		for _, rel := range batch.CodeRelations {
+		for _, rel := range cleanBatch.CodeRelations {
 			if rel.SourceID == "" || rel.TargetID == "" || rel.Relation == "" || rel.Project == "" {
 				continue
 			}
@@ -347,5 +560,11 @@ func (s *AuthorizedStore) PullSync(ctx context.Context, cursor int64, limit int)
 		}
 		return nil
 	})
-	return page, err
+	if err != nil {
+		return nil, err
+	}
+	if err := protectPullPage(page); err != nil {
+		return nil, err
+	}
+	return page, nil
 }

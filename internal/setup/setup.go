@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	opencodeplugin "github.com/lleontor705/cortex/v2/plugin/opencode"
 )
@@ -112,6 +115,150 @@ type Agent struct {
 	InstallDir  string
 }
 
+// AgentStatus describes the live installation and configuration state of an agent.
+type AgentStatus struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	InstallDir  string `json:"install_dir"`
+	Detected    bool   `json:"detected"`
+	Configured  bool   `json:"configured"`
+	StatusText  string `json:"status_text"`
+}
+
+// DetectAgents inspects the environment and reports installation/configuration status for supported agents.
+func DetectAgents() []AgentStatus {
+	home, _ := resolveHome()
+	statuses := make([]AgentStatus, 0, 5)
+
+	// 1. Claude Code
+	claudeDir := filepath.Join(home, ".claude")
+	claudeDetected := dirOrFileExists(claudeDir) || commandExists("claude")
+	claudeMcp := filepath.Join(claudeDir, "mcp", "cortex.json")
+	claudeConfigured := fileExists(claudeMcp)
+	statusClaude := "Not detected"
+	if claudeConfigured {
+		statusClaude = "Configured (Plugin Active)"
+	} else if claudeDetected {
+		statusClaude = "Detected (Ready to install)"
+	}
+	statuses = append(statuses, AgentStatus{
+		Name:        "claude-code",
+		DisplayName: "Claude Code",
+		Description: "Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
+		InstallDir:  filepath.Join(claudeDir, "mcp"),
+		Detected:    claudeDetected,
+		Configured:  claudeConfigured,
+		StatusText:  statusClaude,
+	})
+
+	// 2. OpenCode
+	opencodeDir := filepath.Join(home, ".config", "opencode")
+	opencodeAlt := filepath.Join(home, ".opencode")
+	opencodeDetected := dirOrFileExists(opencodeDir) || dirOrFileExists(opencodeAlt) || commandExists("opencode")
+	opencodePlugin := filepath.Join(opencodeDir, "plugins", "cortex.ts")
+	opencodeAltPlugin := filepath.Join(opencodeAlt, "plugins", "cortex.ts")
+	opencodeConfigured := fileExists(opencodePlugin) || fileExists(opencodeAltPlugin)
+	statusOpenCode := "Not detected"
+	if opencodeConfigured {
+		statusOpenCode = "Configured (Plugin Active)"
+	} else if opencodeDetected {
+		statusOpenCode = "Detected (Ready to install)"
+	}
+	statuses = append(statuses, AgentStatus{
+		Name:        "opencode",
+		DisplayName: "OpenCode",
+		Description: "MCP registration with Memory Protocol",
+		InstallDir:  opencodeDir,
+		Detected:    opencodeDetected,
+		Configured:  opencodeConfigured,
+		StatusText:  statusOpenCode,
+	})
+
+	// 3. Gemini CLI
+	geminiDir := filepath.Join(home, ".gemini")
+	geminiDetected := dirOrFileExists(geminiDir) || commandExists("gemini")
+	geminiConfig := filepath.Join(geminiDir, "antigravity", "mcp.json")
+	geminiConfigured := fileExists(geminiConfig)
+	statusGemini := "Not detected"
+	if geminiConfigured {
+		statusGemini = "Configured (MCP Registered)"
+	} else if geminiDetected {
+		statusGemini = "Detected (Ready to install)"
+	}
+	statuses = append(statuses, AgentStatus{
+		Name:        "gemini-cli",
+		DisplayName: "Gemini CLI",
+		Description: "MCP registration plus system prompt compaction recovery",
+		InstallDir:  geminiDir,
+		Detected:    geminiDetected,
+		Configured:  geminiConfigured,
+		StatusText:  statusGemini,
+	})
+
+	// 4. Codex
+	codexDir := filepath.Join(home, ".codex")
+	codexDetected := dirOrFileExists(codexDir) || commandExists("codex")
+	codexConfig := filepath.Join(codexDir, "config.toml")
+	codexConfigured := fileExists(codexConfig)
+	statusCodex := "Not detected"
+	if codexConfigured {
+		statusCodex = "Configured"
+	} else if codexDetected {
+		statusCodex = "Detected (Ready to install)"
+	}
+	statuses = append(statuses, AgentStatus{
+		Name:        "codex",
+		DisplayName: "Codex",
+		Description: "MCP registration plus model/compaction instruction files",
+		InstallDir:  codexDir,
+		Detected:    codexDetected,
+		Configured:  codexConfigured,
+		StatusText:  statusCodex,
+	})
+
+	// 5. Ollama Local Embeddings
+	ollamaDetected := commandExists("ollama")
+	client := &http.Client{Timeout: 350 * time.Millisecond}
+	resp, err := client.Get("http://localhost:11434/api/tags")
+	ollamaOnline := err == nil && resp != nil && resp.StatusCode == http.StatusOK
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	statusOllama := "Not detected"
+	if ollamaOnline {
+		statusOllama = "Online (localhost:11434 ready)"
+	} else if ollamaDetected {
+		statusOllama = "Installed (daemon offline)"
+	}
+	statuses = append(statuses, AgentStatus{
+		Name:        "ollama",
+		DisplayName: "Ollama Embeddings",
+		Description: "Local Zero-Token Vector Embedding Engine (nomic-embed-text)",
+		InstallDir:  "http://localhost:11434",
+		Detected:    ollamaDetected || ollamaOnline,
+		Configured:  ollamaOnline,
+		StatusText:  statusOllama,
+	})
+
+	return statuses
+}
+
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirOrFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // SupportedAgents returns the list of agents that can be set up.
 func SupportedAgents() []Agent {
 	home, _ := resolveHome()
@@ -157,8 +304,14 @@ func Install(agent string) (*Result, error) {
 		return installGeminiCLI(home, bin)
 	case "codex":
 		return installCodex(home, bin)
+	case "ollama":
+		res, err := SetupOllama("http://localhost:11434", "nomic-embed-text")
+		if err != nil {
+			return nil, err
+		}
+		return &Result{Agent: "ollama", Destination: res.ConfigPath, Files: 1}, nil
 	default:
-		return nil, fmt.Errorf("unsupported agent: %s\nSupported: claude-code, opencode, gemini-cli, codex", agent)
+		return nil, fmt.Errorf("unsupported agent: %s\nSupported: claude-code, opencode, gemini-cli, codex, ollama", agent)
 	}
 }
 

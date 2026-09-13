@@ -98,7 +98,7 @@ func extractGoGenDecl(fset *token.FileSet, d *ast.GenDecl, relPath, pkgName, fil
 			pos := fset.Position(s.Pos())
 			endPos := fset.Position(s.End())
 			typeName := s.Name.Name
-			typeID := fmt.Sprintf("type:%s.%s", pkgName, typeName)
+			typeID := fmt.Sprintf("type:%s:%s", relPath, typeName)
 
 			kind := code.KindType
 			metadata := make(map[string]any)
@@ -211,12 +211,12 @@ func extractGoFuncDecl(fset *token.FileSet, d *ast.FuncDecl, relPath, pkgName, f
 		kind = code.KindMethod
 		receiverType = typeString(d.Recv.List[0].Type)
 		receiver = strings.TrimPrefix(receiverType, "*")
-		parentID = fmt.Sprintf("type:%s.%s", pkgName, receiver)
+		parentID = fmt.Sprintf("type:%s:%s", relPath, receiver)
 	}
 
-	funcID := fmt.Sprintf("func:%s.%s", pkgName, funcName)
+	funcID := fmt.Sprintf("func:%s:%s", relPath, funcName)
 	if receiver != "" {
-		funcID = fmt.Sprintf("method:%s.%s.%s", pkgName, receiver, funcName)
+		funcID = fmt.Sprintf("method:%s:%s.%s", relPath, receiver, funcName)
 	}
 
 	// Extract typed parameters
@@ -325,7 +325,7 @@ func extractGoFuncDecl(fset *token.FileSet, d *ast.FuncDecl, relPath, pkgName, f
 				switch fun := call.Fun.(type) {
 				case *ast.Ident:
 					// Direct function call in same package or built-in
-					targetID := fmt.Sprintf("func:%s.%s", pkgName, fun.Name)
+					targetID := fmt.Sprintf("func:%s", fun.Name)
 					res.Relationships = append(res.Relationships, CodeRelationship{
 						Source:     funcID,
 						Target:     targetID,
@@ -351,7 +351,7 @@ func extractGoFuncDecl(fset *token.FileSet, d *ast.FuncDecl, relPath, pkgName, f
 				typeStr := typeString(comp.Type)
 				if typeStr != "" {
 					cleanType := strings.TrimPrefix(typeStr, "*")
-					targetID := fmt.Sprintf("type:%s.%s", pkgName, cleanType)
+					targetID := fmt.Sprintf("type:%s", cleanType)
 					res.Relationships = append(res.Relationships, CodeRelationship{
 						Source:     funcID,
 						Target:     targetID,

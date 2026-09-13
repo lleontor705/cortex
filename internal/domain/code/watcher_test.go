@@ -45,6 +45,40 @@ func TestFileWatcher_DetectsModification(t *testing.T) {
 	}
 }
 
+func TestFileWatcher_DetectsDeletion(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "cortex_watcher_delete_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	testFile := filepath.Join(tempDir, "service.go")
+	if err := os.WriteFile(testFile, []byte("package main\n\nfunc Run() {}\n"), 0644); err != nil {
+		t.Fatalf("failed to write initial test file: %v", err)
+	}
+
+	cfg := DefaultWatcherConfig(tempDir, "test-proj")
+	cfg.PollInterval = 50 * time.Millisecond
+	watcher := NewFileWatcher(cfg)
+
+	// Baseline scan registers file
+	_ = watcher.ScanOnce()
+
+	// Delete file
+	if err := os.Remove(testFile); err != nil {
+		t.Fatalf("failed to delete test file: %v", err)
+	}
+
+	// ScanDiff should report file as deleted
+	changed, deleted := watcher.ScanDiff()
+	if len(changed) != 0 {
+		t.Errorf("expected 0 changed, got %d", len(changed))
+	}
+	if len(deleted) != 1 || deleted[0] != testFile {
+		t.Errorf("expected deleted [ %s ], got %v", testFile, deleted)
+	}
+}
+
 func TestFileWatcher_WatchLoop(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "cortex_watch_loop_*")
 	if err != nil {

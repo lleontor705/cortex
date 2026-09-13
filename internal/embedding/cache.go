@@ -125,3 +125,90 @@ func (c *CachedService) Len() int {
 	defer c.mu.RUnlock()
 	return len(c.items)
 }
+
+// EmbedBatch returns embeddings for multiple texts, serving from LRU cache when possible and
+// batching cache misses through inner's BatchEmbedder if supported.
+func (c *CachedService) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	results := make([][]float32, len(texts))
+	var missingIndices []int
+	var missingTexts []string
+
+	c.mu.Lock()
+	for i, text := range texts {
+		key := hashKey(c.inner.Model(), text)
+		if elem, ok := c.items[key]; ok {
+			c.evictList.MoveToFront(elem)
+			vec := elem.Value.(*cacheEntry).vector
+			res := make([]float32, len(vec))
+			copy(res, vec)
+			results[i] = res
+		} else {
+			missingIndices = append(missingIndices, i)
+			missingTexts = append(missingTexts, text)
+		}
+	}
+	c.mu.Unlock()
+
+	if len(missingTexts) == 0 {
+		return results, nil
+	}
+
+	var fetched [][]float32
+	if batcher, ok := c.inner.(BatchEmbedder); ok {
+		var err error
+		fetched, err = batcher.EmbedBatch(ctx, missingTexts)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		fetched = make([][]float32, len(missingTexts))
+		for k, text := range missingTexts {
+			vec, err := c.inner.Embed(ctx, text)
+			if err != nil {
+				return nil, err
+			}
+			fetched[k] = vec
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for k, vec := range fetched {
+		origIdx := missingIndices[k]
+		res := make([]float32, len(vec))
+		copy(res, vec)
+		results[origIdx] = res
+
+		key := hashKey(c.inner.Model(), missingTexts[k])
+		if elem, ok := c.items[key]; ok {
+			c.evictList.MoveToFront(elem)
+			continue
+		}
+
+		if c.evictList.Len() >= c.capacity {
+			oldest := c.evictList.Back()
+			if oldest != nil {
+				c.evictList.Remove(oldest)
+				delete(c.items, oldest.Value.(*cacheEntry).key)
+			}
+		}
+
+		stored := make([]float32, len(vec))
+		copy(stored, vec)
+		elem := c.evictList.PushFront(&cacheEntry{key: key, vector: stored})
+		c.items[key] = elem
+	}
+
+	return results, nil
+}
+
+// Compile-time assertions: CachedService implements Service and BatchEmbedder.
+var (
+	_ Service       = (*CachedService)(nil)
+	_ BatchEmbedder = (*CachedService)(nil)
+)
+

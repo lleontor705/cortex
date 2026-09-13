@@ -64,12 +64,17 @@ var ProfileAgent = map[string]bool{
 	"cortex_code_tests":           true,
 	"cortex_code_find":            true,
 	"cortex_get_agent_context":    true,
+	"cortex_get_compact_context":  true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate":   true,
-	"cortex_project_dna":   true,
-	"cortex_resolve_query": true,
-	"cortex_get_status":    true,
+	"cortex_consolidate":          true,
+	"cortex_project_dna":          true,
+	"cortex_resolve_query":        true,
+	"cortex_get_status":           true,
+	// Context Optimization & Sandbox Execution
+	"cortex_execute":        true,
+	"cortex_search_payload": true,
 }
+
 
 // ProfileAdmin contains admin/diagnostic tools for manual curation
 // (TUI, CLI, dashboards). Destructive tools carry destructive-hint annotations.
@@ -161,6 +166,8 @@ CODEBASE AST & INTELLIGENCE:
   cortex_code_tests - reverse call-graph to locate impacted tests for Fast-TDD
   cortex_code_find - substring and regex search across indexed code symbols
   cortex_get_agent_context - prompt-ready pack of rules, decisions, bugfixes, and hubs
+  cortex_get_compact_context - ultra-dense, token-budgeted prompt-ready pack
+
 
 KNOWLEDGE GRAPH & SCORING:
   cortex_relate - create relationship between observations
@@ -197,6 +204,7 @@ func NewServerWithTools(stores *Stores, allowlist map[string]bool) *server.MCPSe
 	registerMemoryTools(srv, stores, allowlist)
 	registerCortexTools(srv, stores, allowlist)
 	registerTemporalTools(srv, stores, allowlist)
+	registerSandboxTools(srv, stores, allowlist)
 	return srv
 }
 
