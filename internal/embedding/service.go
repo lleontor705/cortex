@@ -48,7 +48,6 @@ type BatchEmbedder interface {
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-
 // Config configures the embedding service.
 type Config struct {
 	Provider string // "ollama", "openai", "none"
@@ -262,7 +261,6 @@ func (s *ollamaService) EmbedBatch(ctx context.Context, texts []string) ([][]flo
 	return vectors, nil
 }
 
-
 func (s *ollamaService) Dimensions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -472,4 +470,3 @@ var (
 	_ interface{ Close() error } = (*openAIService)(nil)
 	_ BatchEmbedder              = (*openAIService)(nil)
 )
-

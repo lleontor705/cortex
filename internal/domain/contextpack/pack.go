@@ -22,7 +22,6 @@ type Options struct {
 	MaxTokens      int    // token budget for compact rendering (default 1500)
 }
 
-
 // Pack represents the assembled intelligence packet for an AI agent.
 type Pack struct {
 	Project   string                `json:"project"`
@@ -127,7 +126,6 @@ func Render(pack *Pack, format string) (string, error) {
 		return RenderMarkdown(pack), nil
 	}
 }
-
 
 // RenderMarkdown produces human-and-agent readable Markdown.
 func RenderMarkdown(pack *Pack) string {
@@ -360,4 +358,3 @@ func RenderCompact(pack *Pack, maxTokens int) string {
 
 	return strings.TrimSpace(sb.String())
 }
-

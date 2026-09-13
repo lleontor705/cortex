@@ -427,10 +427,18 @@ func TestCortexPrivacyHandoff_MalformedProseAndMetadataRejectedZeroEffects(t *te
 		{"unclosed title", func(a map[string]any) { a["observation"].(map[string]any)["title"] = "Title <private>" + canary }},
 		{"stray closing title", func(a map[string]any) { a["observation"].(map[string]any)["title"] = "Title </private>" }},
 		{"unclosed content", func(a map[string]any) { a["observation"].(map[string]any)["content"] = "Body <private>" + canary }},
-		{"nested content", func(a map[string]any) { a["observation"].(map[string]any)["content"] = "<private>a <private>b</private></private>" }},
-		{"pure private title", func(a map[string]any) { a["observation"].(map[string]any)["title"] = "<private>" + canary + "</private>" }},
-		{"pure private content", func(a map[string]any) { a["observation"].(map[string]any)["content"] = "<private>" + canary + "</private>" }},
-		{"marker in tag", func(a map[string]any) { a["observation"].(map[string]any)["tags"] = []any{"<private>" + canary + "</private>"} }},
+		{"nested content", func(a map[string]any) {
+			a["observation"].(map[string]any)["content"] = "<private>a <private>b</private></private>"
+		}},
+		{"pure private title", func(a map[string]any) {
+			a["observation"].(map[string]any)["title"] = "<private>" + canary + "</private>"
+		}},
+		{"pure private content", func(a map[string]any) {
+			a["observation"].(map[string]any)["content"] = "<private>" + canary + "</private>"
+		}},
+		{"marker in tag", func(a map[string]any) {
+			a["observation"].(map[string]any)["tags"] = []any{"<private>" + canary + "</private>"}
+		}},
 		{"marker in idempotency_key", func(a map[string]any) { a["idempotency_key"] = "<private>" + canary + "</private>" }},
 		{"unclosed reasoning", func(a map[string]any) { a["relation"].(map[string]any)["reasoning"] = "Why <private>" + canary }},
 		{"marker in relation_type", func(a map[string]any) { a["relation"].(map[string]any)["type"] = "<private>" + canary + "</private>" }},

@@ -66,15 +66,14 @@ var ProfileAgent = map[string]bool{
 	"cortex_get_agent_context":    true,
 	"cortex_get_compact_context":  true,
 	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate":          true,
-	"cortex_project_dna":          true,
-	"cortex_resolve_query":        true,
-	"cortex_get_status":           true,
+	"cortex_consolidate":   true,
+	"cortex_project_dna":   true,
+	"cortex_resolve_query": true,
+	"cortex_get_status":    true,
 	// Context Optimization & Sandbox Execution
 	"cortex_execute":        true,
 	"cortex_search_payload": true,
 }
-
 
 // ProfileAdmin contains admin/diagnostic tools for manual curation
 // (TUI, CLI, dashboards). Destructive tools carry destructive-hint annotations.

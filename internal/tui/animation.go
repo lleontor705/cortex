@@ -8,11 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	beaconColors  = []lipgloss.Color{colorGreen, colorTeal, colorCyan, colorBlue}
-)
-
 const (
 	BrailleLogo = `     ⣠⣶⣿⣿⣿⣿⣶⣤⡀       ⢀⣤⣶⣿⣿⣿⣿⣶⣄
   ⢰⣿⣿⠟⠉   ⠹⣿⣿⣄⣠⣿⣿⠏   ⠈⠻⣿⣿⡆
@@ -62,45 +57,6 @@ func ShimmerLogo(frame int) string {
 		renderedLines = append(renderedLines, sb.String())
 	}
 	return strings.Join(renderedLines, "\n")
-}
-
-// renderPulsingBeacon returns a breathing status beacon.
-func renderPulsingBeacon(frame int) string {
-	c := beaconColors[frame%len(beaconColors)]
-	dot := lipgloss.NewStyle().Foreground(c).Bold(true).Render("●")
-	text := lipgloss.NewStyle().Foreground(colorText).Bold(true).Render(" NEURAL LINK ACTIVE")
-	return dot + text
-}
-
-// renderSpinner returns an animated Braille spinner frame.
-func renderSpinner(frame int) string {
-	frameChar := spinnerFrames[frame%len(spinnerFrames)]
-	return lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(frameChar)
-}
-
-// renderProgressBar renders a sleek horizontal progress bar.
-func renderProgressBar(percent float64, width int) string {
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 1.0 {
-		percent = 1.0
-	}
-	if width < 5 {
-		width = 10
-	}
-
-	filledLen := int(percent * float64(width))
-	if filledLen > width {
-		filledLen = width
-	}
-	emptyLen := width - filledLen
-
-	filled := progressBarFilledStyle.Render(strings.Repeat("■", filledLen))
-	empty := progressBarEmptyStyle.Render(strings.Repeat("□", emptyLen))
-	pctLabel := fmt.Sprintf(" %3.0f%%", percent*100)
-
-	return filled + empty + lipgloss.NewStyle().Foreground(colorSubtext).Render(pctLabel)
 }
 
 // renderLogo renders the official Cortex Shimmer Logo or compact title.

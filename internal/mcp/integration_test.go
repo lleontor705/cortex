@@ -913,4 +913,3 @@ func TestIntegration_CodeTestsAndFindAndAgentContext(t *testing.T) {
 		t.Fatalf("unexpected compact context output: %s", txt4)
 	}
 }
-

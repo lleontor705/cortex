@@ -123,4 +123,3 @@ func TestBuildPack_And_Renderers(t *testing.T) {
 		t.Errorf("expected budgeted output to be bounded, got %d chars", len(budgeted))
 	}
 }
-

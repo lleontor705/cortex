@@ -40,7 +40,7 @@ func TestSandboxTools_ExecuteAndExternalize(t *testing.T) {
 	}
 
 	stores, db := newTestSandboxStores(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	srv := NewServer(stores)
 
@@ -200,4 +200,3 @@ func TestStats_WithTransientPayloads(t *testing.T) {
 		t.Errorf("Expected Estimated Tokens Saved in stats output, got: %s", textWithPayload)
 	}
 }
-

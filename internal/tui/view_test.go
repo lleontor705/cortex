@@ -560,4 +560,3 @@ func TestViewLocalConfigTestConnectionPrompt(t *testing.T) {
 		t.Error("viewLocalConfig should display test LLM instruction")
 	}
 }
-

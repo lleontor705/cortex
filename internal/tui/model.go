@@ -674,4 +674,3 @@ func (m Model) ActiveWorkspace() int {
 		return 0
 	}
 }
-

@@ -282,4 +282,3 @@ func TestWorker_BatchEmbeddingIntegration(t *testing.T) {
 		t.Fatalf("expected both intents completed, got %+v", outbox.completed)
 	}
 }
-

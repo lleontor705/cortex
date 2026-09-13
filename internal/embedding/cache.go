@@ -211,4 +211,3 @@ var (
 	_ Service       = (*CachedService)(nil)
 	_ BatchEmbedder = (*CachedService)(nil)
 )
-

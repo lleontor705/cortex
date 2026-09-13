@@ -1356,4 +1356,3 @@ func (c *Config) DetectMode() (OperatingMode, string) {
 
 	return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
 }
-

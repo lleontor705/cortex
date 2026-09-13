@@ -160,24 +160,14 @@ var (
 	noResultsStyle   lipgloss.Style
 
 	// Cortex-Exclusive
-	graphEdgeStyle    lipgloss.Style
-	statusBarStyle    lipgloss.Style
-	badgeStyle        lipgloss.Style
-	chipStyle         lipgloss.Style
-	beaconActiveStyle lipgloss.Style
+	graphEdgeStyle lipgloss.Style
+	statusBarStyle lipgloss.Style
 
 	// Command Deck
 	deckTabActiveStyle      lipgloss.Style
 	deckTabInactiveStyle    lipgloss.Style
 	deckSubTabActiveStyle   lipgloss.Style
 	deckSubTabInactiveStyle lipgloss.Style
-
-	// Modern Modular Cards & Gauges
-	cardSubtleStyle       lipgloss.Style
-	cardActiveStyle       lipgloss.Style
-	cardHeaderStyle       lipgloss.Style
-	progressBarFilledStyle lipgloss.Style
-	progressBarEmptyStyle  lipgloss.Style
 
 	// Master-Detail Split-Pane Styles
 	paneFocusedStyle   lipgloss.Style
@@ -325,19 +315,6 @@ func rebuildStyles() {
 		Background(activePalette.PanelBg).
 		Padding(0, 1)
 
-	badgeStyle = lipgloss.NewStyle().
-		Bold(true).
-		Padding(0, 1)
-
-	chipStyle = lipgloss.NewStyle().
-		Foreground(colorSubtext).
-		Background(activePalette.PanelBg).
-		Padding(0, 1)
-
-	beaconActiveStyle = lipgloss.NewStyle().
-		Foreground(colorGreen).
-		Bold(true)
-
 	deckTabActiveStyle = lipgloss.NewStyle().
 		Background(colorCyan).
 		Foreground(lipgloss.Color("#090d16")).
@@ -359,28 +336,6 @@ func rebuildStyles() {
 		Background(lipgloss.Color("#1e293b")).
 		Foreground(colorSubtext).
 		Padding(0, 1)
-
-	cardSubtleStyle = lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(colorOverlay).
-		Padding(0, 1)
-
-	cardActiveStyle = lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(colorCyan).
-		Padding(0, 1)
-
-	cardHeaderStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(colorCyan).
-		MarginBottom(1)
-
-	progressBarFilledStyle = lipgloss.NewStyle().
-		Foreground(colorCyan).
-		Bold(true)
-
-	progressBarEmptyStyle = lipgloss.NewStyle().
-		Foreground(colorOverlay)
 
 	paneFocusedStyle = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).

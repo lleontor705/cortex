@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	DefaultTimeout    = 15 * time.Second
-	MaxTimeout        = 60 * time.Second
-	DefaultMaxOutput  = 5 * 1024 * 1024 // 5 MB
-	MaxAllowedOutput  = 20 * 1024 * 1024 // 20 MB
+	DefaultTimeout   = 15 * time.Second
+	MaxTimeout       = 60 * time.Second
+	DefaultMaxOutput = 5 * 1024 * 1024  // 5 MB
+	MaxAllowedOutput = 20 * 1024 * 1024 // 20 MB
 )
 
 // DefaultRunner implements Runner using host subprocesses.
@@ -83,7 +83,7 @@ func (r *DefaultRunner) Execute(ctx context.Context, req ExecutionRequest) (*Exe
 	if err != nil {
 		return nil, fmt.Errorf("create temp sandbox dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	scriptPath := filepath.Join(tmpDir, "script"+ext)
 	if err := os.WriteFile(scriptPath, []byte(req.Code), 0600); err != nil {

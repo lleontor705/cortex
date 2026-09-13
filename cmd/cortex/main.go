@@ -10,11 +10,11 @@ import (
 	"syscall"
 
 	"github.com/google/uuid"
-	"github.com/mattn/go-isatty"
 	"github.com/lleontor705/cortex/v2/internal/cli"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/platform"
 	serverplatform "github.com/lleontor705/cortex/v2/internal/platform/server"
+	"github.com/mattn/go-isatty"
 )
 
 // version is set by GoReleaser via ldflags at build time.
@@ -172,4 +172,3 @@ func isInteractive(w io.Writer) bool {
 	}
 	return true
 }
-

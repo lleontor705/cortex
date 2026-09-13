@@ -581,7 +581,6 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-
 	// --- cortex_get_status ----------------------------------------------
 	if shouldRegister("cortex_get_status", allowlist) {
 		srv.AddTool(
@@ -1699,10 +1698,10 @@ func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 		mode, modeDesc := cfg.DetectMode()
 
 		status := map[string]any{
-			"mode":        string(mode),
-			"mode_desc":   modeDesc,
-			"database":    "sqlite",
-			"version":     serverVersion,
+			"mode":      string(mode),
+			"mode_desc": modeDesc,
+			"database":  "sqlite",
+			"version":   serverVersion,
 			"capabilities": []string{
 				"fts5_search",
 				"knowledge_graph",
@@ -1867,4 +1866,3 @@ func handleGetCompactContext(stores *Stores) server.ToolHandlerFunc {
 		return textResult("%s", rendered)
 	}
 }
-

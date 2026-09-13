@@ -172,8 +172,6 @@ func TestHandleControlHubSubTabSwitching(t *testing.T) {
 	}
 }
 
-
-
 // ─── Search Results Keys ────────────────────────────────────────────────────
 
 func TestHandleSearchResultsKeysScrollAndDetail(t *testing.T) {

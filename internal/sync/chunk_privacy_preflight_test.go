@@ -58,12 +58,19 @@ func getMatrixCases(canary string, now time.Time) []matrixCase {
 func makePrefixChunk(tc matrixCase, now time.Time) ([]*domain.Session, []*domain.Observation, []*domain.Prompt, string) {
 	vObs := &domain.Observation{SessionID: "s1", Title: "Valid", Content: "Valid <private>sec_v</private>", Project: "p", Scope: "project", CreatedAt: now, UpdatedAt: now}
 	s := []*domain.Session{{ID: "s1", Project: "p", Directory: "/d", StartedAt: now}}
-	if tc.sess != nil { s = append(s, tc.sess) }
+	if tc.sess != nil {
+		s = append(s, tc.sess)
+	}
 	o := []*domain.Observation{vObs}
 	origBad := ""
-	if tc.obs != nil { origBad = tc.obs.Content; o = append(o, tc.obs) }
+	if tc.obs != nil {
+		origBad = tc.obs.Content
+		o = append(o, tc.obs)
+	}
 	p := []*domain.Prompt{{SessionID: "s1", Project: "p", Content: "P <private>sec_v</private>", CreatedAt: now}}
-	if tc.pmt != nil { p = append(p, tc.pmt) }
+	if tc.pmt != nil {
+		p = append(p, tc.pmt)
+	}
 	return s, o, p, origBad
 }
 

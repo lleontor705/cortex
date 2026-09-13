@@ -407,4 +407,3 @@ func TestObservation_ProtectedOverLimit_RejectsWithoutPersistenceEffects(t *test
 		})
 	}
 }
-

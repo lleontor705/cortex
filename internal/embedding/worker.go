@@ -377,7 +377,6 @@ func (w *Worker) processBatch(ctx, finalizeCtx context.Context, intents []sqlite
 	}
 }
 
-
 // processIntent processes a single leased intent: hydrate → embed (versioned) →
 // validate dims → upsert → track namespace → mark complete. On failure it
 // classifies retryable vs non-retryable and records the outcome.

@@ -39,15 +39,7 @@ func (m Model) viewDashboard() string {
 	var lines []string
 
 	// 1. Shimmer Logo with Braille Wings
-	if m.Height <= 0 || m.Height >= 18 {
-		lines = append(lines, ShimmerLogo(m.AnimFrame))
-		sub := lipgloss.NewStyle().Foreground(colorSubtext).Render("  cortex " + m.Version + " · Configuration & Runtime Control Hub · " + m.CurrentUser)
-		lines = append(lines, sub, "")
-	} else {
-		title := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).Render("cortex " + m.Version)
-		sub := lipgloss.NewStyle().Foreground(colorSubtext).Render(" · Configuration Hub · " + m.CurrentUser)
-		lines = append(lines, title+sub, "")
-	}
+	lines = append(lines, m.renderLogo())
 
 	// 2. Identity, Runtime Mode & Telemetry Status Line
 	var metaParts []string
@@ -118,11 +110,11 @@ func (m Model) viewDashboard() string {
 	// 5. Menu Entries (Configuration-Centered)
 	for i, entry := range dashboardMenuItems {
 		prefix := fmt.Sprintf("  [%d] ", i+1)
-		text := entry
 		desc := ""
 		if i < len(homeDescriptions) {
 			desc = " · " + lipgloss.NewStyle().Foreground(colorSubtext).Render(homeDescriptions[i])
 		}
+		var text string
 		if i == m.Cursor {
 			prefix = fmt.Sprintf("▸ [%d] ", i+1)
 			text = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(entry)

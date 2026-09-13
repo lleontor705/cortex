@@ -144,7 +144,7 @@ func (s *TransientPayloadStore) Search(ctx context.Context, id string, query str
 	if err != nil {
 		return nil, fmt.Errorf("search transient payloads fts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []payload.SearchResult
 	for rows.Next() {

@@ -114,7 +114,7 @@ func handleExecute(stores *Stores) server.ToolHandlerFunc {
 
 		if res.ExitCode != 0 {
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Execution failed with exit code %d (in %v):\n", res.ExitCode, res.Duration))
+			fmt.Fprintf(&sb, "Execution failed with exit code %d (in %v):\n", res.ExitCode, res.Duration)
 			if res.Stderr != "" {
 				sb.WriteString("STDERR:\n" + res.Stderr + "\n")
 			}
@@ -178,9 +178,9 @@ func handleSearchPayload(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Found %d match(es) for query %q:\n\n", len(results), query))
+		fmt.Fprintf(&sb, "Found %d match(es) for query %q:\n\n", len(results), query)
 		for i, match := range results {
-			sb.WriteString(fmt.Sprintf("%d. %s\n\n", i+1, match.Snippet))
+			fmt.Fprintf(&sb, "%d. %s\n\n", i+1, match.Snippet)
 		}
 
 		return textResult("%s", strings.TrimSpace(sb.String()))

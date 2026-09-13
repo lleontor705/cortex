@@ -19,7 +19,7 @@ func (m Model) viewSetup() string {
 	// Control & Setup Sub-Tabs
 	st1 := deckSubTabActiveStyle.Render("1 Agent Plugins (MCP)")
 	st2 := deckSubTabInactiveStyle.Render("2 Local & AI Config")
-	b.WriteString(fmt.Sprintf("  Tabs: %s %s  %s\n\n", st1, st2, lipgloss.NewStyle().Foreground(colorSubtext).Render("(press [c] for local config)")))
+	fmt.Fprintf(&b, "  Tabs: %s %s  %s\n\n", st1, st2, lipgloss.NewStyle().Foreground(colorSubtext).Render("(press [c] for local config)"))
 
 	// Show spinner while installing
 	if m.SetupInstalling {
@@ -126,9 +126,9 @@ func (m Model) viewSetup() string {
 		}
 
 		if i == m.Cursor {
-			b.WriteString(menuSelectedStyle.Render("▸ " + agent.Description) + badge)
+			b.WriteString(menuSelectedStyle.Render("▸ "+agent.Description) + badge)
 		} else {
-			b.WriteString(menuItemStyle.Render("  " + agent.Description) + badge)
+			b.WriteString(menuItemStyle.Render("  "+agent.Description) + badge)
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "      %s %s\n\n",
@@ -151,7 +151,7 @@ func (m Model) viewLocalConfig() string {
 	// Control & Setup Sub-Tabs
 	st1 := deckSubTabInactiveStyle.Render("1 Agent Plugins (MCP)")
 	st2 := deckSubTabActiveStyle.Render("2 Local & AI Config")
-	b.WriteString(fmt.Sprintf("\n  Tabs: %s %s  %s\n", st1, st2, lipgloss.NewStyle().Foreground(colorSubtext).Render("(press [i] for agent plugins)")))
+	fmt.Fprintf(&b, "\n  Tabs: %s %s  %s\n", st1, st2, lipgloss.NewStyle().Foreground(colorSubtext).Render("(press [i] for agent plugins)"))
 
 	mode, modeDetail, modeColor := "LOCAL ONLY", "SQLite stays local on this device — Zero-CGO, Zero-Bloat.", colorTeal
 	if m.LocalCfgMCPRemote {
