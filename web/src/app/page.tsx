@@ -114,7 +114,7 @@ export default function DashboardPage() {
 
       {/* Metrics Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {isAdmin && viewMode === "global" ? "Total Observaciones (Tenant)" : "Mis Observaciones"}
           </span>
@@ -126,7 +126,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {isAdmin && viewMode === "global" ? "Aristas de Grafo (Tenant)" : "Mis Vínculos de Grafo"}
           </span>
@@ -138,7 +138,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {isAdmin && viewMode === "global" ? "Sesiones Totales" : "Mis Sesiones de Agente"}
           </span>
@@ -150,7 +150,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-sm">
+        <Card className="p-4 sm:p-5">
           <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
             {isAdmin && viewMode === "global" ? "Proyectos Activos" : "Mis Proyectos Asignados"}
           </span>
@@ -164,7 +164,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick Action Banner */}
-      <Card className="p-4 sm:p-6 bg-gradient-to-r from-blue-900/20 via-[var(--bg-surface)] to-purple-900/20 border-[var(--border-subtle)] shadow-md">
+      <Card className="p-4 sm:p-6 bg-gradient-to-r from-blue-500/10 via-[var(--bg-surface)] to-indigo-500/10 border-[var(--border-subtle)] shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <h2 className="text-sm sm:text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
@@ -195,11 +195,11 @@ export default function DashboardPage() {
       {/* Two Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         {/* Recent Observations */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between">
+        <Card className="p-4 sm:p-5 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
               <CardTitle className="text-sm text-[var(--text-primary)]">
-                <BrainCircuit className="h-4 w-4 text-blue-400" />
+                <BrainCircuit className="h-4 w-4 text-blue-500" />
                 Últimas Observaciones
               </CardTitle>
               <Link href="/memory">
@@ -256,10 +256,10 @@ export default function DashboardPage() {
         {/* Sessions & Access Authority */}
         <div className="space-y-4 sm:space-y-6">
           {/* Active Sessions */}
-          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <Card className="p-4 sm:p-5">
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
               <CardTitle className="text-sm text-[var(--text-primary)]">
-                <Layers className="h-4 w-4 text-amber-400" />
+                <Layers className="h-4 w-4 text-amber-500" />
                 Sesiones Recientes
               </CardTitle>
             </div>
@@ -292,7 +292,7 @@ export default function DashboardPage() {
           </Card>
 
           {/* Principal Clearance Card */}
-          <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+          <Card className="p-4 sm:p-5">
             <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-3">
               <CardTitle className="text-sm text-[var(--text-primary)]">
                 <Shield className="h-4 w-4 text-emerald-400" />

@@ -1,3 +1,6 @@
-node_modules
-.next
 .git
+node_modules/
+.next/
+coverage/
+*.tsbuildinfo
+*.log

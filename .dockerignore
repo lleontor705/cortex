@@ -1,13 +1,34 @@
-﻿bin/
+# Version control and IDE
+.git
+.github
+.idea
+.vscode
+.claude
+
+# Local state and databases
+.cortex
+*.db
+*.db-wal
+*.db-shm
+
+# Go binaries and coverage
+bin/
+cover/
+/coverage*
+*.prof
+
+# Node & web build artifacts
 node_modules/
 web/node_modules/
 web/.next/
-coverage/
-*.out
-*.exe
-.git/
-.cache/
-.codex/
-.gocache/
-.tmp/
-.opencode-spike/
+web/coverage/
+web/*.tsbuildinfo
+plugin/*/node_modules/
+
+# Logs and temp files
+*.log
+tmp/
+
+# Documentation and specifications
+openspec/
+docs/

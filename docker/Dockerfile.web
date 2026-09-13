@@ -1,22 +1,28 @@
-FROM node:22-alpine AS builder
+# Multi-platform builder: uses host architecture ($BUILDPLATFORM) so Next.js bundling
+# runs at native speed without slow/hanging QEMU emulation for linux/arm64 targets.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 WORKDIR /app
 
-# Public variables are compiled into the browser bundle. Docker Compose opts
-# into the managed endpoint; standalone web deployments keep the input field.
+# Cache package manifests and dependencies first
+COPY web/package*.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# Public variables compiled into browser bundle during Next.js build.
+# Placed AFTER dependency installation so changing ARGs does not invalidate npm ci cache.
 ARG NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT=false
 ARG NEXT_PUBLIC_CORTEX_SERVER_URL=http://localhost:7438
 ENV NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT=$NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT
 ENV NEXT_PUBLIC_CORTEX_SERVER_URL=$NEXT_PUBLIC_CORTEX_SERVER_URL
-# Copy web package manifests and install dependencies
-COPY web/package*.json ./
-RUN npm ci || npm install
+ENV NEXT_TELEMETRY_DISABLED=1
 
-# Copy web application source code
+# Copy source code and build production standalone bundles
 COPY web/ ./
 RUN mkdir -p public
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN --mount=type=cache,target=/app/.next/cache \
+    npm run build
 
+# Multi-platform runtime: runs on the target architecture ($TARGETPLATFORM)
 FROM node:22-alpine AS runner
 WORKDIR /app
 
@@ -34,4 +40,6 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
 EXPOSE 3000
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/health || exit 1
 CMD ["node", "server.js"]

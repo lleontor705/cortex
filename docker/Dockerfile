@@ -2,13 +2,16 @@ FROM golang:1.26.5-alpine AS builder
 
 WORKDIR /build
 
-# Download dependencies first (cache layer)
+# Download dependencies first with BuildKit module cache
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
-# Build
+# Build with Go native zero-CGO
 COPY . .
-RUN CGO_ENABLED=0 go build -tags cortex_vectors -ldflags="-s -w" -o cortex ./cmd/cortex
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -tags cortex_vectors -ldflags="-s -w" -o cortex ./cmd/cortex
 
 # Runtime image
 FROM alpine:3.20

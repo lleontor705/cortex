@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    --background: 222 47% 6%;
+    --background: 222 47% 7%;
     --foreground: 210 40% 98%;
 
     --card: 222 47% 11%;
@@ -16,10 +16,10 @@
     --primary: 217 91% 60%;
     --primary-foreground: 210 40% 98%;
 
-    --secondary: 217 33% 17%;
+    --secondary: 217 33% 16%;
     --secondary-foreground: 210 40% 98%;
 
-    --muted: 217 33% 17%;
+    --muted: 217 33% 15%;
     --muted-foreground: 215 20% 65%;
 
     --accent: 217 33% 17%;
@@ -29,18 +29,18 @@
     --destructive-foreground: 210 40% 98%;
 
     --border: 217 33% 20%;
-    --input: 222 47% 8%;
+    --input: 222 47% 10%;
     --ring: 217 91% 60%;
 
     --radius: 0.625rem;
 
-    /* Legacy compatibility CSS vars */
-    --bg-primary: #090d16;
-    --bg-secondary: #0f172a;
+    /* Legacy compatibility CSS vars - Dark (Default) */
+    --bg-primary: #0b0f17;
+    --bg-secondary: #111827;
     --bg-surface: #1e293b;
     --bg-surface-hover: #273549;
-    --bg-input: #0b1120;
-    --border-subtle: #1e293b;
+    --bg-input: #0f172a;
+    --border-subtle: rgba(255, 255, 255, 0.08);
     --border-default: #334155;
     --border-focus: #3b82f6;
     --text-primary: #f8fafc;
@@ -73,7 +73,7 @@
     --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    --primary: 217 91% 50%;
+    --primary: 221 83% 53%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96%;
     --secondary-foreground: 222 47% 11%;
@@ -85,8 +85,9 @@
     --destructive-foreground: 210 40% 98%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 217 91% 60%;
+    --ring: 221 83% 53%;
 
+    /* Legacy compatibility CSS vars - Light */
     --bg-primary: #f8fafc;
     --bg-secondary: #ffffff;
     --bg-surface: #f1f5f9;
@@ -98,8 +99,18 @@
     --text-primary: #0f172a;
     --text-secondary: #475569;
     --text-muted: #94a3b8;
-    --accent-primary: #0284c7;
-    --accent-hover: #0369a1;
+    --accent-primary: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-text: #ffffff;
+    --success: #059669;
+    --success-bg: rgba(5, 150, 105, 0.1);
+    --warning: #d97706;
+    --warning-bg: rgba(217, 119, 6, 0.1);
+    --danger: #dc2626;
+    --danger-bg: rgba(220, 38, 38, 0.1);
+    --shadow-subtle: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.08);
+    --shadow-elevation: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.08);
   }
 }
 

@@ -233,24 +233,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   if (!isConnected && !isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4 relative overflow-hidden">
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4 relative overflow-hidden">
         {/* Background glow ambient effects */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-1/4 right-1/3 w-80 h-80 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-blue-500/10 dark:bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 right-1/3 w-80 h-80 bg-indigo-500/10 dark:bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
 
-        <Card className="max-w-md w-full p-8 bg-slate-900/90 border-slate-800 shadow-2xl backdrop-blur-xl relative z-10">
+        <Card className="max-w-md w-full p-8 shadow-2xl backdrop-blur-xl relative z-10 border-border bg-card text-card-foreground">
           <div className="text-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/30 text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/10">
+            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/30 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/10">
               <BrainCircuit className="h-7 w-7" />
             </div>
-            <h1 className="text-xl font-bold text-white tracking-tight">CORTEX CONTROL ROOM</h1>
-            <p className="text-xs text-slate-400 mt-1">
+            <h1 className="text-xl font-bold tracking-tight text-card-foreground">CORTEX CONTROL ROOM</h1>
+            <p className="text-xs text-muted-foreground mt-1">
               Memoria persistente y arquitectura cognitiva para coding agents
             </p>
           </div>
 
           {(connectError || error) && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-lg text-xs mb-5 flex items-center gap-2.5">
+            <div className="bg-destructive/10 border border-destructive/30 text-destructive p-3 rounded-lg text-xs mb-5 flex items-center gap-2.5">
               <AlertCircle className="h-4 w-4 shrink-0" />
               <span>{connectError || error}</span>
             </div>
@@ -259,13 +259,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <form onSubmit={handleConnect} className="space-y-4 text-xs">
             {managedServerEndpoint ? (
               <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2.5">
-                <p className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Servidor Cortex</p>
-                <p className="mt-1 font-mono text-xs text-blue-300 break-all">{serverUrl}</p>
-                <p className="mt-1 text-[11px] text-slate-400">Configurado automáticamente por Docker Compose.</p>
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Servidor Cortex</p>
+                <p className="mt-1 font-mono text-xs text-blue-600 dark:text-blue-300 break-all">{serverUrl}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Configurado automáticamente por Docker Compose.</p>
               </div>
             ) : (
               <div className="space-y-1.5">
-                <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase tracking-wider">
                   CORTEX SERVER ENDPOINT
                 </label>
                 <Input
@@ -274,13 +274,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   onChange={(e) => setInputUrl(e.target.value)}
                   placeholder="http://localhost:7438"
                   required
-                  className="h-10 text-xs bg-slate-950/80"
+                  className="h-10 text-xs"
                 />
               </div>
             )}
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider">
+              <label className="text-[11px] font-semibold text-muted-foreground block uppercase tracking-wider">
                 BEARER TOKEN / AUTH KEY
               </label>
               <Input
@@ -291,7 +291,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 }
                 placeholder="cortex_sec_..."
                 required
-                className="h-10 text-xs bg-slate-950/80"
+                className="h-10 text-xs"
               />
             </div>
 
@@ -304,18 +304,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Button>
           </form>
 
-          <div className="mt-6 pt-5 border-t border-slate-800 text-center flex items-center justify-between">
-            <p className="text-[11px] text-slate-500 text-left">
-              Soporta tokens <code className="text-slate-400 font-mono">admin</code> y <code className="text-slate-400 font-mono">member</code>.
+          <div className="mt-6 pt-5 border-t border-border text-center flex items-center justify-between">
+            <p className="text-[11px] text-muted-foreground text-left">
+              Soporta tokens <code className="text-foreground font-mono font-medium">admin</code> y <code className="text-foreground font-mono font-medium">member</code>.
             </p>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={toggleTheme}
-              className="text-xs text-slate-400 hover:text-white"
+              className="text-xs text-muted-foreground hover:text-foreground"
             >
-              {isLightMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              {isLightMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4 text-amber-500" />}
             </Button>
           </div>
         </Card>
@@ -428,12 +428,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Sidebar Footer / System Status */}
-      <div className="p-3.5 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] space-y-3">
+      <div className="p-3.5 border-t border-[var(--border-subtle)] space-y-3">
         {/* User Identity & Role Card */}
         <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-xs shrink-0">
+              <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-xs shrink-0">
                 {displayName.charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0">
@@ -451,10 +451,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               variant="outline"
               className={`text-[9px] px-1.5 py-0 uppercase font-mono tracking-wider shrink-0 ${
                 isAdmin
-                  ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                  ? "border-purple-500/40 text-purple-600 dark:text-purple-400 bg-purple-500/10"
                   : isDeveloper
-                  ? "border-blue-500/40 text-blue-400 bg-blue-500/10"
-                  : "border-slate-500/40 text-slate-400 bg-slate-500/10"
+                  ? "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10"
+                  : "border-slate-500/40 text-slate-600 dark:text-slate-400 bg-slate-500/10"
               }`}
             >
               {primaryRole}
@@ -463,8 +463,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="pt-1 border-t border-[var(--border-subtle)]/50 flex items-center justify-between text-[10px]">
             <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-emerald-400 font-medium">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-emerald-600 dark:text-emerald-400 font-medium">
                 {serverUrl.includes("railway") || serverUrl.includes("http") ? "PostgreSQL Cloud Node" : "Local SQLite Node"}
               </span>
             </div>
@@ -480,7 +480,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onClick={logout}
           variant="ghost"
           size="sm"
-          className="w-full justify-center text-xs text-[var(--text-secondary)] hover:text-red-400 hover:bg-red-500/10 h-8"
+          className="w-full justify-center text-xs text-[var(--text-secondary)] hover:text-destructive hover:bg-destructive/10 h-8"
         >
           <LogOut className="h-3.5 w-3.5 mr-1.5" />
           <span>Cerrar Sesión</span>
