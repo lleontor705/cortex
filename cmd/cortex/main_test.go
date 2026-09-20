@@ -94,3 +94,64 @@ func TestParseServerInvocationPreservesServeMode(t *testing.T) {
 		t.Fatalf("invocation = %+v, error = %v", inv, err)
 	}
 }
+
+func TestParseServerInvocationHelpAndVersionFlags(t *testing.T) {
+	for _, flag := range []string{"-h", "--help", "help"} {
+		inv, err := parseServerInvocation([]string{"cortex", flag})
+		if err != nil {
+			t.Fatalf("parseServerInvocation with %q returned error: %v", flag, err)
+		}
+		if !inv.help {
+			t.Fatalf("expected help=true for %q", flag)
+		}
+	}
+
+	for _, flag := range []string{"-v", "--version", "version"} {
+		inv, err := parseServerInvocation([]string{"cortex", flag})
+		if err != nil {
+			t.Fatalf("parseServerInvocation with %q returned error: %v", flag, err)
+		}
+		if !inv.version {
+			t.Fatalf("expected version=true for %q", flag)
+		}
+	}
+
+	// Reindex with --help should not require --project-id
+	inv, err := parseServerInvocation([]string{"cortex", "reindex", "--help"})
+	if err != nil {
+		t.Fatalf("reindex with --help returned error: %v", err)
+	}
+	if !inv.help {
+		t.Fatal("expected help=true for reindex --help")
+	}
+}
+
+func TestRunServerHelpAndVersion(t *testing.T) {
+	for _, flag := range []string{"--help", "-h", "help"} {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		code := runContext(context.Background(), []string{"cortex", "--mode", "server", flag}, stdout, stderr)
+		if code != 0 {
+			t.Fatalf("runContext(--mode server %s) code = %d, want 0, stderr = %q", flag, code, stderr.String())
+		}
+		out := stdout.String()
+		for _, want := range []string{"--config", "reindex", "--project-id"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("runContext(--mode server %s) stdout missing %q:\n%s", flag, want, out)
+			}
+		}
+	}
+
+	for _, flag := range []string{"--version", "-v", "version"} {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		code := runContext(context.Background(), []string{"cortex", "--mode", "server", flag}, stdout, stderr)
+		if code != 0 {
+			t.Fatalf("runContext(--mode server %s) code = %d, want 0, stderr = %q", flag, code, stderr.String())
+		}
+		if !strings.HasPrefix(stdout.String(), "cortex ") {
+			t.Fatalf("runContext(--mode server %s) stdout = %q, want prefix 'cortex '", flag, stdout.String())
+		}
+	}
+}
+

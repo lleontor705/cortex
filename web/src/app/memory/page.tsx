@@ -9,6 +9,9 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/shared/PageHeader";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { StatusBadge } from "@/components/shared/StatusBadge";
 import {
   BrainCircuit,
   Plus,
@@ -160,31 +163,25 @@ export default function MemoryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
-            <BrainCircuit className="h-6 w-6 text-blue-500" />
-            Memoria & Observaciones
-          </h1>
-          <p className="text-xs text-[var(--text-muted)] mt-1">
-            Registro persistente de conocimientos, decisiones, patrones y soluciones capturadas por los agentes
-          </p>
-        </div>
-
-        {isAdmin ? (
-          <Button onClick={() => setIsModalOpen(true)} size="sm" className="gap-2">
-            <Plus className="h-4 w-4" />
-            <span>Nueva Observación Manual (Admin)</span>
-          </Button>
-        ) : (
-          <Badge variant="secondary" className="text-xs py-1.5 px-3">
-            🤖 Sincronización automática vía Agente (MCP)
-          </Badge>
-        )}
-      </div>
+      <PageHeader
+        title="Memoria & Observaciones"
+        description="Registro persistente de conocimientos, decisiones, patrones y soluciones capturadas por los agentes."
+        actions={
+          isAdmin ? (
+            <Button onClick={() => setIsModalOpen(true)} size="sm" className="gap-2">
+              <Plus className="h-4 w-4" />
+              <span>Nueva Observación Manual</span>
+            </Button>
+          ) : (
+            <Badge variant="secondary" className="text-xs py-1 px-2.5 font-mono">
+              MCP Sync Activo
+            </Badge>
+          )
+        }
+      />
 
       {/* Filter Bar */}
-      <Card className="p-3.5 sm:p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+      <Card className="p-3.5 sm:p-4 bg-card border-border shadow-sm">
         <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2.5 sm:gap-3">
           <div className="flex-1 min-w-[200px]">
             <Input
@@ -219,9 +216,9 @@ export default function MemoryPage() {
               className="h-9 text-xs w-full"
             >
               <option value="">Todos los estados RAG</option>
-              <option value="indexed">🟢 Vectorizado en RAG</option>
-              <option value="pending">🟡 RAG En Cola</option>
-              <option value="unindexed">⚪ Sin Vectorizar</option>
+              <option value="indexed">Vectorizado en RAG</option>
+              <option value="pending">RAG En Cola</option>
+              <option value="unindexed">Sin Vectorizar</option>
             </Select>
           </div>
 
@@ -231,7 +228,7 @@ export default function MemoryPage() {
               placeholder="Filtrar proyecto..."
               value={filterProject}
               onChange={(e) => setFilterProject(e.target.value)}
-              className="h-9 text-xs"
+              className="h-9 text-xs font-mono"
             />
           </div>
         </div>
@@ -239,35 +236,37 @@ export default function MemoryPage() {
 
       {/* Observations Grid */}
       {loading ? (
-        <Card className="p-12 text-center text-xs text-[var(--text-muted)] bg-[var(--bg-secondary)] border-[var(--border-subtle)]">
+        <Card className="p-12 text-center text-xs text-muted-foreground bg-card border-border">
           Cargando observaciones...
         </Card>
       ) : filteredObservations.length === 0 ? (
-        <Card className="p-12 text-center bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
-          <p className="text-xs text-[var(--text-muted)]">
-            No se encontraron observaciones con los filtros actuales.
-          </p>
-          <Button onClick={() => setIsModalOpen(true)} variant="secondary" size="sm">
-            Crear la primera observación
-          </Button>
-        </Card>
+        <EmptyState
+          icon={BrainCircuit}
+          title="No se encontraron observaciones"
+          description="Ajusta los filtros de búsqueda o crea una nueva observación manual para el proyecto."
+          action={
+            isAdmin ? (
+              <Button onClick={() => setIsModalOpen(true)} variant="outline" size="sm" className="text-xs">
+                Crear primera observación
+              </Button>
+            ) : null
+          }
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
           {filteredObservations.map((obs) => (
             <Card
               key={obs.id}
               onClick={() => setSelectedObservation(obs)}
-              className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] flex flex-col justify-between hover:border-blue-500/50 hover:shadow-md transition-all cursor-pointer group"
+              className="p-4 bg-card border-border flex flex-col justify-between hover:border-border transition-colors cursor-pointer group shadow-sm"
             >
               <div>
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-xs font-semibold text-[var(--text-primary)] group-hover:text-blue-400 leading-snug line-clamp-2 transition-colors">
+                  <h3 className="text-xs font-semibold text-foreground group-hover:text-primary leading-snug line-clamp-2 transition-colors">
                     {obs.title}
                   </h3>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Badge variant={obs.type === "decision" ? "default" : obs.type === "bugfix" ? "destructive" : "secondary"} className="text-[10px]">
-                      {obs.type}
-                    </Badge>
+                  <div className="shrink-0">
+                    <StatusBadge status={obs.type} />
                   </div>
                 </div>
 
@@ -288,7 +287,7 @@ export default function MemoryPage() {
                   )}
                 </div>
 
-                <p className="text-xs text-[var(--text-secondary)] line-clamp-4 leading-relaxed mb-3 whitespace-pre-wrap">
+                <p className="text-xs text-muted-foreground line-clamp-4 leading-relaxed mb-3 whitespace-pre-wrap">
                   {obs.content}
                 </p>
               </div>
@@ -297,22 +296,22 @@ export default function MemoryPage() {
                 {obs.tags && obs.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mb-3">
                     {obs.tags.slice(0, 4).map((tag, idx) => (
-                      <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
+                      <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-secondary border border-border text-muted-foreground font-mono">
                         #{tag}
                       </span>
                     ))}
                     {obs.tags.length > 4 && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--bg-surface)] text-[var(--text-muted)] font-mono">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground font-mono">
                         +{obs.tags.length - 4}
                       </span>
                     )}
                   </div>
                 )}
 
-                <div className="flex items-center justify-between pt-3 border-t border-[var(--border-subtle)] text-[11px] text-[var(--text-muted)]">
+                <div className="flex items-center justify-between pt-3 border-t border-border text-[11px] text-muted-foreground">
                   <div className="overflow-hidden mr-2 flex items-center gap-1.5">
-                    <Folder className="h-3 w-3 text-blue-400 shrink-0" />
-                    <span className="truncate">Proyecto: <b className="text-[var(--text-primary)]">{obs.project}</b></span>
+                    <Folder className="h-3 w-3 text-primary shrink-0" />
+                    <span className="truncate">Proyecto: <b className="text-foreground font-mono">{obs.project}</b></span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <Button
@@ -322,7 +321,7 @@ export default function MemoryPage() {
                       }}
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                      className="h-7 w-7 text-primary hover:text-primary/80 hover:bg-primary/10"
                       title="Ver detalles completos"
                     >
                       <Eye className="h-3.5 w-3.5" />
@@ -335,13 +334,13 @@ export default function MemoryPage() {
                         }}
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                         title="Eliminar observación (propietario / admin)"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     ) : (
-                      <span className="text-[10px] text-[var(--text-muted)] italic">Protegido</span>
+                      <span className="text-[10px] text-muted-foreground italic">Protegido</span>
                     )}
                   </div>
                 </div>
@@ -362,16 +361,16 @@ export default function MemoryPage() {
                     <Badge variant={selectedObservation.type === "decision" ? "default" : selectedObservation.type === "bugfix" ? "destructive" : "secondary"} className="text-xs">
                       {selectedObservation.type}
                     </Badge>
-                    <Badge variant="purple" className="text-xs font-mono">
+                    <Badge variant="secondary" className="text-xs font-mono">
                       {selectedObservation.project}
                     </Badge>
                     {selectedObservation.scope && (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)]">
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-secondary border border-border text-muted-foreground font-mono">
                         Alcance: {selectedObservation.scope}
                       </span>
                     )}
                   </div>
-                  <DialogTitle className="text-base font-bold text-[var(--text-primary)] leading-snug pt-1">
+                  <DialogTitle className="text-base font-bold text-foreground leading-snug pt-1">
                     {selectedObservation.title}
                   </DialogTitle>
                 </div>
@@ -381,30 +380,30 @@ export default function MemoryPage() {
 
             <div className="space-y-4 mt-4 text-xs">
               {/* Metadata Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 rounded-lg bg-secondary/50 border border-border">
                 <div>
-                  <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">ID Local / Ref</span>
-                  <span className="font-mono text-xs text-[var(--text-primary)] font-semibold truncate block">
+                  <span className="text-[10px] text-muted-foreground block uppercase font-mono">ID Local / Ref</span>
+                  <span className="font-mono text-xs text-foreground font-semibold truncate block">
                     #{selectedObservation.id}
                   </span>
                 </div>
                 <div>
-                  <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Confianza</span>
-                  <span className="text-xs text-emerald-400 font-semibold">
+                  <span className="text-[10px] text-muted-foreground block uppercase font-mono">Confianza</span>
+                  <span className="text-xs text-emerald-500 dark:text-emerald-400 font-semibold font-mono">
                     {Math.round((selectedObservation.confidence ?? 1.0) * 100)}%
                   </span>
                 </div>
                 {selectedObservation.topic_key ? (
                   <div className="col-span-2">
-                    <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Topic Key</span>
-                    <span className="font-mono text-[11px] text-indigo-400 truncate block">
+                    <span className="text-[10px] text-muted-foreground block uppercase font-mono">Topic Key</span>
+                    <span className="font-mono text-[11px] text-primary truncate block">
                       {selectedObservation.topic_key}
                     </span>
                   </div>
                 ) : (
                   <div className="col-span-2">
-                    <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono">Fuente</span>
-                    <span className="text-xs text-[var(--text-secondary)] truncate block">
+                    <span className="text-[10px] text-muted-foreground block uppercase font-mono">Fuente</span>
+                    <span className="text-xs text-foreground truncate block">
                       {selectedObservation.source || "auto / agente"}
                     </span>
                   </div>
@@ -412,41 +411,41 @@ export default function MemoryPage() {
               </div>
 
               {/* RAG & Semantic Pipeline Panel */}
-              <div className="p-3.5 rounded-lg bg-gradient-to-r from-blue-950/30 via-purple-950/20 to-[var(--bg-surface)] border border-blue-500/30 space-y-2.5">
+              <div className="p-3.5 rounded-lg bg-secondary/50 border border-border space-y-2.5">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-blue-400" />
-                    <span className="font-semibold text-xs text-[var(--text-primary)]">Pipeline RAG & Indexación Semántica</span>
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <span className="font-semibold text-xs text-foreground">Pipeline RAG & Indexación Semántica</span>
                   </div>
                   {selectedObservation.rag_status === "pending" ? (
-                    <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-400 border-amber-500/30 flex items-center gap-1 font-mono">
+                    <Badge variant="outline" className="text-[10px] bg-amber-500/10 text-amber-500 border-amber-500/30 flex items-center gap-1 font-mono">
                       <Clock className="h-3 w-3 animate-spin" /> En Cola de Vectorización (Outbox)
                     </Badge>
                   ) : selectedObservation.rag_status === "failed" ? (
-                    <Badge variant="outline" className="text-[10px] bg-rose-500/10 text-rose-400 border-rose-500/30 flex items-center gap-1 font-mono">
+                    <Badge variant="outline" className="text-[10px] bg-destructive/10 text-destructive border-destructive/30 flex items-center gap-1 font-mono">
                       <AlertCircle className="h-3 w-3" /> Error de Vectorización
                     </Badge>
                   ) : (
-                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30 flex items-center gap-1 font-mono">
+                    <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border-emerald-500/30 flex items-center gap-1 font-mono">
                       <CheckCircle2 className="h-3 w-3" /> Vectorizado y Activo en RAG
                     </Badge>
                   )}
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[11px] pt-1.5 border-t border-[var(--border-subtle)]/70">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-[11px] pt-1.5 border-t border-border/70">
                   <div>
-                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Modelo de Embeddings</span>
-                    <span className="font-mono text-[var(--text-primary)] font-medium">
+                    <span className="text-[10px] text-muted-foreground block font-mono uppercase">Modelo de Embeddings</span>
+                    <span className="font-mono text-foreground font-medium">
                       {selectedObservation.embedding_model || "Configurado en Servidor"}
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Dimensiones Vectoriales</span>
-                    <span className="font-mono text-[var(--text-primary)] font-medium">
+                    <span className="text-[10px] text-muted-foreground block font-mono uppercase">Dimensiones Vectoriales</span>
+                    <span className="font-mono text-foreground font-medium">
                       {selectedObservation.embedding_dimensions ? `${selectedObservation.embedding_dimensions}d` : "Auto-detectado"}
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-[var(--text-muted)] block font-mono uppercase">Recuperación Híbrida</span>
+                    <span className="text-[10px] text-muted-foreground block font-mono uppercase">Recuperación Híbrida</span>
                     <span className="text-emerald-400 font-medium font-mono">FTS5 + Cosine (RRF k=60)</span>
                   </div>
                 </div>
@@ -455,7 +454,7 @@ export default function MemoryPage() {
               {/* Full Content Block */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1.5">
+                  <label className="text-[11px] font-semibold text-foreground uppercase tracking-wider flex items-center gap-1.5">
                     <FileText className="h-3.5 w-3.5 text-blue-400" />
                     Contenido Completo & Contexto
                   </label>
@@ -483,7 +482,7 @@ export default function MemoryPage() {
                     )}
                   </Button>
                 </div>
-                <div className="p-3.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] max-h-72 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap select-text text-[var(--text-primary)]">
+                <div className="p-3.5 rounded-lg bg-secondary/50 border border-border max-h-72 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap select-text text-foreground">
                   {selectedObservation.content}
                 </div>
               </div>
@@ -491,12 +490,12 @@ export default function MemoryPage() {
               {/* Tags */}
               {selectedObservation.tags && selectedObservation.tags.length > 0 && (
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider block">
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
                     Etiquetas / Tags ({selectedObservation.tags.length})
                   </label>
                   <div className="flex flex-wrap gap-1.5">
                     {selectedObservation.tags.map((tag, idx) => (
-                      <span key={idx} className="text-[11px] px-2.5 py-1 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] font-mono">
+                      <span key={idx} className="text-[11px] px-2.5 py-1 rounded-md bg-secondary border border-border text-foreground font-mono">
                         #{tag}
                       </span>
                     ))}
@@ -506,14 +505,14 @@ export default function MemoryPage() {
 
               {/* Owner / Multi-Tenant Info */}
               {selectedObservation.owner_subject && (
-                <div className="text-[10px] text-[var(--text-muted)] flex items-center gap-1.5 pt-1">
-                  <Shield className="h-3 w-3 text-purple-400" />
-                  <span>Propietario / Subject: <code className="font-mono text-purple-300">{selectedObservation.owner_subject}</code></span>
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 pt-1">
+                  <Shield className="h-3 w-3 text-muted-foreground" />
+                  <span>Propietario / Subject: <code className="font-mono text-foreground font-medium">{selectedObservation.owner_subject}</code></span>
                 </div>
               )}
 
               {/* Modal Footer */}
-              <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t border-[var(--border-subtle)]">
+              <div className="flex flex-wrap justify-between items-center gap-2 pt-3 border-t border-border">
                 <div>
                   {canDeleteObservation(selectedObservation) && (
                     <Button
@@ -545,7 +544,7 @@ export default function MemoryPage() {
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogHeader>
           <DialogTitle>
-            <BrainCircuit className="h-4 w-4 text-blue-400" />
+            <BrainCircuit className="h-4 w-4 text-primary" />
             Registrar Nueva Observación
           </DialogTitle>
           <DialogClose onClick={() => setIsModalOpen(false)} />
@@ -553,7 +552,7 @@ export default function MemoryPage() {
 
         <form onSubmit={handleCreateObservation} className="space-y-3.5 mt-4 text-xs">
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               TÍTULO / RESUMEN
             </label>
             <Input
@@ -566,11 +565,11 @@ export default function MemoryPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               CONTENIDO / CONTEXTO DETALLADO
             </label>
             <textarea
-              className="flex min-h-[90px] w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
+              className="flex min-h-[90px] w-full rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
               rows={4}
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
@@ -581,7 +580,7 @@ export default function MemoryPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 TIPO
               </label>
               <Select
@@ -598,7 +597,7 @@ export default function MemoryPage() {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 PROYECTO
               </label>
               <Input
@@ -611,7 +610,7 @@ export default function MemoryPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-foreground block uppercase">
               TAGS (SEPARADOS POR COMA)
             </label>
             <Input
@@ -622,7 +621,7 @@ export default function MemoryPage() {
             />
           </div>
 
-          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
+          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-border">
             <Button type="button" variant="outline" size="sm" onClick={() => setIsModalOpen(false)}>
               Cancelar
             </Button>

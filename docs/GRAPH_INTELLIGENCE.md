@@ -66,10 +66,16 @@ The AST extractor analyzes codebase repositories and extracts structured symbols
 - `POST /api/graph/resolve`: Resolves knowledge contradictions with `supersedes` edges.
 
 ### MCP Tools
-- `cortex_get_blast_radius`: Inquires affected symbols and files when planning code changes.
-- `cortex_analyze_architecture`: Analyzes subsystem communities and architectural hubs.
-- `cortex_detect_cycles`: Checks for circular dependencies.
-- `cortex_graph_subgraph`: Traverses bounded heterogeneous subgraphs.
+- `cortex_ingest_code`: Extracts and indexes symbols and relationships via 2-Pass Static AST parsing into dedicated tables.
+- `cortex_get_code_symbols`: Queries indexed symbols (functions, structs, interfaces, classes) with filters and regex search.
+- `cortex_code_map`: Generates a token-budgeted PageRank structural repository map.
+- `cortex_code_tests`: Pinpoints impacted test suites using reverse call graphs (essential for Fast-TDD).
+- `cortex_get_blast_radius`: Inquires affected symbols and files when planning code changes (supports `include_tests: true`).
+- `cortex_analyze_architecture`: Analyzes subsystem communities (Louvain), god nodes, and architectural hubs.
+- `cortex_detect_cycles`: Detects circular dependencies and import loops (Tarjan SCC).
+- `cortex_relate`: Establishes typed relationships between observations and entities.
+- `cortex_graph` / `cortex_graph_path`: Traverses neighborhoods and calculates shortest paths in the knowledge graph.
+- `cortex_graph_subgraph`: Traverses bounded heterogeneous subgraphs (observations, entities, actors, sessions).
 
 ---
 

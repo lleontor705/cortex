@@ -1180,6 +1180,10 @@ describe("Cortex Mode Detection & Memory Instructions", () => {
     expect(serverInstructions).toContain("cortex_resolve_query")
     expect(serverInstructions).toContain("cortex_get_blast_radius")
     expect(serverInstructions).toContain("cortex_detect_cycles")
+    expect(serverInstructions).toContain("cortex_get_code_symbols")
+    expect(serverInstructions).toContain("cortex_graph_subgraph")
+    expect(serverInstructions).toContain("cortex_handoff")
+    expect(serverInstructions).toContain("cortex_get_status")
   })
 
   it("builds local-specific memory instructions with numeric IDs and FTS5 search", async () => {
@@ -1190,6 +1194,13 @@ describe("Cortex Mode Detection & Memory Instructions", () => {
     expect(localInstructions).toContain("cortex_search")
     expect(localInstructions).toContain("cortex_context")
     expect(localInstructions).toContain("cortex_relate")
+    expect(localInstructions).toContain("cortex_get_code_symbols")
+    expect(localInstructions).toContain("cortex_code_map")
+    expect(localInstructions).toContain("cortex_code_tests")
+    expect(localInstructions).toContain("cortex_graph_path")
+    expect(localInstructions).toContain("cortex_get_agent_context")
+    expect(localInstructions).toContain("cortex_get_status")
+    expect(localInstructions).toContain("cortex_handoff")
   })
 })
 

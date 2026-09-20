@@ -617,3 +617,139 @@ func writeJSON(t *testing.T, path string, v any) {
 		t.Fatalf("writeJSON(%q) error = %v", path, err)
 	}
 }
+
+// --- InstallWithOptions tests ------------------------------------------------
+
+func TestInstallClaudeCode_WithModularProfiles(t *testing.T) {
+	home := setupHome(t)
+
+	// 1. Dev Profile
+	resDev, err := InstallWithOptions("claude-code", Options{Profile: "dev"})
+	if err != nil {
+		t.Fatalf("InstallWithOptions(claude-code, dev) error = %v", err)
+	}
+	if resDev == nil {
+		t.Fatal("resDev is nil")
+	}
+
+	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
+	rawDev := assertFile(t, mcpPath)
+	var cfgDev map[string]any
+	if err := json.Unmarshal(rawDev, &cfgDev); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	argsDev := cfgDev["args"].([]any)
+	if len(argsDev) != 2 || argsDev[1] != "--tools=dev" {
+		t.Errorf("argsDev = %v, want [mcp --tools=dev]", argsDev)
+	}
+
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	settingsRaw := assertFile(t, settingsPath)
+	var settings map[string]any
+	if err := json.Unmarshal(settingsRaw, &settings); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	allow := allowListFromSettings(t, settings)
+	for _, tool := range cortexDevMCPTools {
+		if !allow[tool] {
+			t.Errorf("settings missing dev tool %q", tool)
+		}
+	}
+	// Verify that tools outside the dev profile were not added
+	if allow["mcp__plugin_cortex_cortex__cortex_analyze_architecture"] {
+		t.Error("settings should not contain cortex_analyze_architecture in dev profile")
+	}
+
+	// 2. Minimal Profile
+	home2 := setupHome(t)
+	resMin, err := InstallWithOptions("claude-code", Options{Profile: "minimal"})
+	if err != nil {
+		t.Fatalf("InstallWithOptions(claude-code, minimal) error = %v", err)
+	}
+	if resMin == nil {
+		t.Fatal("resMin is nil")
+	}
+
+	mcpPath2 := filepath.Join(home2, ".claude", "mcp", "cortex.json")
+	rawMin := assertFile(t, mcpPath2)
+	var cfgMin map[string]any
+	if err := json.Unmarshal(rawMin, &cfgMin); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	argsMin := cfgMin["args"].([]any)
+	if len(argsMin) != 2 || argsMin[1] != "--tools=minimal" {
+		t.Errorf("argsMin = %v, want [mcp --tools=minimal]", argsMin)
+	}
+
+	settingsRaw2 := assertFile(t, filepath.Join(home2, ".claude", "settings.json"))
+	var settings2 map[string]any
+	if err := json.Unmarshal(settingsRaw2, &settings2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	allow2 := allowListFromSettings(t, settings2)
+	for _, tool := range cortexMinimalMCPTools {
+		if !allow2[tool] {
+			t.Errorf("settings missing minimal tool %q", tool)
+		}
+	}
+	if allow2["mcp__plugin_cortex_cortex__cortex_ingest_code"] {
+		t.Error("settings should not contain cortex_ingest_code in minimal profile")
+	}
+}
+
+func TestInstallOpenCode_WithModularProfiles(t *testing.T) {
+	home := setupHome(t)
+
+	// 1. Dev Profile
+	resDev, err := InstallWithOptions("opencode", Options{Profile: "dev"})
+	if err != nil {
+		t.Fatalf("InstallWithOptions(opencode, dev) error = %v", err)
+	}
+	if resDev == nil {
+		t.Fatal("resDev is nil")
+	}
+
+	mcpPath := filepath.Join(home, ".config", "opencode", "cortex-mcp.json")
+	rawDev := assertFile(t, mcpPath)
+	var cfgDev struct {
+		MCP map[string]struct {
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+			Enabled bool     `json:"enabled"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(rawDev, &cfgDev); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	entry := cfgDev.MCP["cortex"]
+	if len(entry.Command) != 3 || entry.Command[2] != "--tools=dev" {
+		t.Errorf("entry.Command = %v, want [<bin> mcp --tools=dev]", entry.Command)
+	}
+
+	// 2. Minimal Profile
+	home2 := setupHome(t)
+	resMin, err := InstallWithOptions("opencode", Options{Profile: "minimal"})
+	if err != nil {
+		t.Fatalf("InstallWithOptions(opencode, minimal) error = %v", err)
+	}
+	if resMin == nil {
+		t.Fatal("resMin is nil")
+	}
+
+	mcpPath2 := filepath.Join(home2, ".config", "opencode", "cortex-mcp.json")
+	rawMin := assertFile(t, mcpPath2)
+	var cfgMin struct {
+		MCP map[string]struct {
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+			Enabled bool     `json:"enabled"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(rawMin, &cfgMin); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	entryMin := cfgMin.MCP["cortex"]
+	if len(entryMin.Command) != 3 || entryMin.Command[2] != "--tools=minimal" {
+		t.Errorf("entryMin.Command = %v, want [<bin> mcp --tools=minimal]", entryMin.Command)
+	}
+}

@@ -4,20 +4,21 @@ The production entrypoint is `cmd/cortex`. Run `cortex help` for flags and `cort
 
 | Command | Purpose |
 |---|---|
-| `setup` | Install Claude Code, OpenCode, Gemini CLI, or Codex integration |
-| `search` | Search local observations |
+| `setup` | Install agent integration with modular tool profiles (`--profile=agent\|dev\|minimal`) |
+| `status` / `mode` | Display operational mode (local, hybrid, server), DB path, sync status, and embedding provider |
+| `search` | Search observations with multi-modal retrieval (`--mode=auto\|direct\|semantic\|multi_hop`) |
 | `save` | Save a local observation |
 | `context` | Show recent session context |
 | `stats` | Show local statistics |
 | `timeline` | Show local observation timeline |
 | `revisions` | Show observation revisions |
-| `tui` | Launch Bubble Tea UI |
+| `tui` | Launch Bubble Tea interactive terminal UI (`--config` opens Configuration Center directly) |
 | `serve` | Start local SQLite HTTP |
-| `mcp` | Start local MCP stdio |
+| `mcp` | Start local MCP stdio (`--tools=agent\|dev\|minimal`, defaults to `agent`) |
 | `doctor` | Check database, FTS, graph, vectors, and orphans |
 | `reindex` | Rebuild local vector/index data |
 | `gc` | Remove archived local observations |
-| `config` | Manage configuration (`get`, `set`, `show`, `validate`, `init`, `wizard`) |
+| `config` | Manage configuration (`get`, `set`, `show`, `validate`, `init`, `wizard [--cli\|--tui]`, `path`) |
 | `auth` | Manage user authentication session (`login`, `status`, `logout`) |
 | `export` / `import` | Exchange observation data |
 | `sync` | Synchronize configured chunks |

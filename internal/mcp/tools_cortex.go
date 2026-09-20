@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/ast"
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/contextpack"
-	"github.com/lleontor705/cortex/v2/internal/domain/dna"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
@@ -83,23 +83,11 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				mcp.WithNumber("max_results",
 					mcp.Description("Maximum emitted related observations 1-1000 (default: 100)"),
 				),
+				mcp.WithString("format",
+					mcp.Description("Output format: 'summary' (default, related observations) or 'relationships' (detailed incoming and outgoing typed edges)"),
+				),
 			),
 			handleGraph(stores),
-		)
-	}
-
-	if shouldRegister("cortex_graph_relationships", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_graph_relationships",
-				mcp.WithTitleAnnotation("List Graph Relationships"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription("List incoming and outgoing relationships for an observation, including type, weight, confidence, provenance, and temporal metadata."),
-				withIntegerID("observation_id", "Observation ID"),
-			),
-			handleGraphRelationships(stores),
 		)
 	}
 
@@ -137,59 +125,6 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleScore(stores),
-		)
-	}
-
-	// --- cortex_archive -------------------------------------------------
-	if shouldRegister("cortex_archive", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_archive",
-				mcp.WithTitleAnnotation("Archive Observation"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription("Archive an observation by soft-deleting it. Archived observations can still be found with include_archived searches."),
-				withIntegerID("observation_id", "Observation ID to archive"),
-			),
-			handleArchive(stores),
-		)
-	}
-
-	// --- cortex_search_hybrid -------------------------------------------
-	if shouldRegister("cortex_search_hybrid", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_search_hybrid",
-				mcp.WithTitleAnnotation("Hybrid Search"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription("Search using FTS5 full-text search. When vector search is enabled, combines FTS5 and vector results using Reciprocal Rank Fusion. Falls back to FTS5-only when vectors are disabled."),
-				mcp.WithString("query",
-					mcp.Required(),
-					mcp.Description("Search query -- natural language or keywords"),
-				),
-				mcp.WithString("project",
-					mcp.Description("Filter by project name"),
-				),
-				mcp.WithString("scope",
-					mcp.Description("Filter by scope: project or personal"),
-				),
-				mcp.WithString("mode",
-					mcp.Description("Adaptive retrieval mode: 'auto' (Adaptive-RAG with HippoRAG and CRAG gating), 'direct' (fast factual), 'semantic' (hybrid vectors), 'multi_hop' (HippoRAG graph reasoning)"),
-				),
-				mcp.WithNumber("lexical_weight",
-					mcp.Description("Optional weight multiplier for FTS5 lexical matching in RRF (default: 1.0)"),
-				),
-				mcp.WithNumber("vector_weight",
-					mcp.Description("Optional weight multiplier for vector semantic similarity in RRF (default: 1.0)"),
-				),
-				mcp.WithNumber("limit",
-					mcp.Description("Max results (default: 10, max: 50)"),
-				),
-			),
-			handleSearchHybrid(stores),
 		)
 	}
 
@@ -235,44 +170,6 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleConsolidate(stores),
-		)
-	}
-
-	// --- cortex_project_dna ---------------------------------------------
-	if shouldRegister("cortex_project_dna", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_project_dna",
-				mcp.WithTitleAnnotation("Project DNA"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Generate a structured summary of a project's key decisions, patterns, tech stack, and gotchas from stored observations. Useful for onboarding or context recovery."),
-				mcp.WithString("project",
-					mcp.Required(),
-					mcp.Description("Project name to generate DNA for"),
-				),
-			),
-			handleProjectDNA(stores),
-		)
-	}
-
-	// --- cortex_resolve_query -------------------------------------------
-	if shouldRegister("cortex_resolve_query", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_resolve_query",
-				mcp.WithTitleAnnotation("Resolve Query with Active Mode"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Intelligently resolve a query using Cortex memory and knowledge graph in the active runtime mode (Local SQLite FTS5/Graph or Server PostgreSQL). Returns structured relevant observations, recent context, and operational metadata."),
-				mcp.WithString("query",
-					mcp.Required(),
-					mcp.Description("The question, topic or search query to resolve"),
-				),
-				mcp.WithString("project",
-					mcp.Description("Optional project filter (defaults to all or current workspace)"),
-				),
-				mcp.WithNumber("limit",
-					mcp.Description("Maximum number of observations to retrieve (default: 10)"),
-				),
-			),
-			handleResolveQuery(stores),
 		)
 	}
 
@@ -340,33 +237,36 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 			),
 		)
 	}
-	if shouldRegister("cortex_code_scan", allowlist) {
-		srv.AddTool(ingestToolDef("cortex_code_scan"), handleIngestCode(stores))
-	}
 	if shouldRegister("cortex_ingest_code", allowlist) {
 		srv.AddTool(ingestToolDef("cortex_ingest_code"), handleIngestCode(stores))
 	}
 
-	// --- cortex_code_impact & cortex_get_blast_radius -------------------
+	// --- cortex_get_blast_radius ----------------------------------------
 	blastToolDef := func(name string) mcp.Tool {
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Get Code Impact & Blast Radius"),
 			mcp.WithReadOnlyHintAnnotation(true),
 			mcp.WithDescription("Calculate the blast radius (impacted downstream code entities, callers, and related observations) when modifying a code symbol, file, or observation."),
 			mcp.WithString("target",
-				mcp.Description("Code symbol name (e.g. CalculateTax), file path (e.g. main.go), or node ID"),
+				mcp.Description("Target symbol name, file path, or observation ID to analyze blast radius for"),
+				mcp.Required(),
 			),
-			withIntegerID("observation_id", "Legacy argument: Observation ID or symbol reference to analyze"),
+			mcp.WithNumber("observation_id",
+				mcp.Description("Optional numeric observation ID"),
+			),
 			mcp.WithString("project",
 				mcp.Description("Project name (defaults to 'default')"),
 			),
+			mcp.WithNumber("max_depth",
+				mcp.Description("Maximum traversal depth (default: 3)"),
+			),
 			mcp.WithNumber("depth",
-				mcp.Description("Traversal depth (default: 3)"),
+				mcp.Description("Traversal depth (legacy alias for max_depth, default: 3)"),
+			),
+			mcp.WithBoolean("include_tests",
+				mcp.Description("Whether to include impacted test suites and functions in the blast radius (default: false)"),
 			),
 		)
-	}
-	if shouldRegister("cortex_code_impact", allowlist) {
-		srv.AddTool(blastToolDef("cortex_code_impact"), handleGetBlastRadius(stores))
 	}
 	if shouldRegister("cortex_get_blast_radius", allowlist) {
 		srv.AddTool(blastToolDef("cortex_get_blast_radius"), handleGetBlastRadius(stores))
@@ -387,7 +287,7 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 		)
 	}
 
-	// --- cortex_code_analyze & cortex_analyze_architecture --------------
+	// --- cortex_analyze_architecture -----------------------------------
 	archToolDef := func(name string) mcp.Tool {
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Analyze Code Architecture"),
@@ -398,14 +298,11 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 			),
 		)
 	}
-	if shouldRegister("cortex_code_analyze", allowlist) {
-		srv.AddTool(archToolDef("cortex_code_analyze"), handleAnalyzeArchitecture(stores))
-	}
 	if shouldRegister("cortex_analyze_architecture", allowlist) {
 		srv.AddTool(archToolDef("cortex_analyze_architecture"), handleAnalyzeArchitecture(stores))
 	}
 
-	// --- cortex_code_symbols & cortex_get_code_symbols ------------------
+	// --- cortex_get_code_symbols ----------------------------------------
 	symToolDef := func(name string) mcp.Tool {
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Get Code AST Symbols"),
@@ -426,37 +323,19 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 			mcp.WithString("query",
 				mcp.Description("Search pattern for symbol name or signature"),
 			),
+			mcp.WithBoolean("is_regex",
+				mcp.Description("Treat query as a regular expression (default: false)"),
+			),
 			mcp.WithNumber("limit",
 				mcp.Description("Maximum symbols to return (default: 100)"),
 			),
 		)
 	}
-	if shouldRegister("cortex_code_symbols", allowlist) {
-		srv.AddTool(symToolDef("cortex_code_symbols"), handleGetCodeSymbols(stores))
-	}
 	if shouldRegister("cortex_get_code_symbols", allowlist) {
 		srv.AddTool(symToolDef("cortex_get_code_symbols"), handleGetCodeSymbols(stores))
 	}
 
-	// --- cortex_code_graph & cortex_get_code_graph ----------------------
-	graphToolDef := func(name string) mcp.Tool {
-		return mcp.NewTool(name,
-			mcp.WithTitleAnnotation("Get Code Structural Graph"),
-			mcp.WithReadOnlyHintAnnotation(true),
-			mcp.WithDescription("Get the full structural code graph with symbols and caller/callee relations for a project."),
-			mcp.WithString("project",
-				mcp.Description("Project name (defaults to 'default')"),
-			),
-		)
-	}
-	if shouldRegister("cortex_code_graph", allowlist) {
-		srv.AddTool(graphToolDef("cortex_code_graph"), handleGetCodeGraph(stores))
-	}
-	if shouldRegister("cortex_get_code_graph", allowlist) {
-		srv.AddTool(graphToolDef("cortex_get_code_graph"), handleGetCodeGraph(stores))
-	}
-
-	// --- cortex_code_map & cortex_get_code_map --------------------------
+	// --- cortex_code_map -----------------------------------------------
 	mapToolDef := func(name string) mcp.Tool {
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Get Token-Budgeted Code Repo Map"),
@@ -473,11 +352,8 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 	if shouldRegister("cortex_code_map", allowlist) {
 		srv.AddTool(mapToolDef("cortex_code_map"), handleGetCodeMap(stores))
 	}
-	if shouldRegister("cortex_get_code_map", allowlist) {
-		srv.AddTool(mapToolDef("cortex_get_code_map"), handleGetCodeMap(stores))
-	}
 
-	// --- cortex_code_tests & cortex_get_impacted_tests ------------------
+	// --- cortex_code_tests ----------------------------------------------
 	testToolDef := func(name string) mcp.Tool {
 		return mcp.NewTool(name,
 			mcp.WithTitleAnnotation("Find Impacted Tests for Symbol or File"),
@@ -498,43 +374,6 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 	if shouldRegister("cortex_code_tests", allowlist) {
 		srv.AddTool(testToolDef("cortex_code_tests"), handleGetImpactedTests(stores))
 	}
-	if shouldRegister("cortex_get_impacted_tests", allowlist) {
-		srv.AddTool(testToolDef("cortex_get_impacted_tests"), handleGetImpactedTests(stores))
-	}
-
-	// --- cortex_code_find & cortex_find_symbols -------------------------
-	findToolDef := func(name string) mcp.Tool {
-		return mcp.NewTool(name,
-			mcp.WithTitleAnnotation("Search Code Symbols by Substring or Regex"),
-			mcp.WithReadOnlyHintAnnotation(true),
-			mcp.WithDescription("Searches indexed code symbols with substring, regex, kind filter, and relevance ranking across 13 languages."),
-			mcp.WithString("query",
-				mcp.Required(),
-				mcp.Description("Query substring or regular expression to search"),
-			),
-			mcp.WithBoolean("is_regex",
-				mcp.Description("Treat query as a regular expression (default: false)"),
-			),
-			mcp.WithString("project",
-				mcp.Description("Project name (defaults to 'default')"),
-			),
-			mcp.WithString("kind",
-				mcp.Description("Filter by symbol kind (func, method, struct, class, interface, etc.)"),
-			),
-			mcp.WithString("file_path",
-				mcp.Description("Filter by file path substring"),
-			),
-			mcp.WithNumber("limit",
-				mcp.Description("Maximum symbols to return (default: 50)"),
-			),
-		)
-	}
-	if shouldRegister("cortex_code_find", allowlist) {
-		srv.AddTool(findToolDef("cortex_code_find"), handleFindSymbols(stores))
-	}
-	if shouldRegister("cortex_find_symbols", allowlist) {
-		srv.AddTool(findToolDef("cortex_find_symbols"), handleFindSymbols(stores))
-	}
 
 	// --- cortex_get_agent_context ---------------------------------------
 	if shouldRegister("cortex_get_agent_context", allowlist) {
@@ -542,12 +381,15 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 			mcp.NewTool("cortex_get_agent_context",
 				mcp.WithTitleAnnotation("Get Structured Agent Context Pack"),
 				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Extracts an optimized prompt-injection context pack containing active project rules, architectural decisions, gotchas/bugfix lessons, and core architectural hubs."),
+				mcp.WithDescription("Extracts an optimized prompt-injection context pack containing active project rules, architectural decisions, gotchas/bugfix lessons, and core architectural hubs (supports max_tokens for compact rendering)."),
 				mcp.WithString("project",
 					mcp.Description("Project name (defaults to 'default')"),
 				),
 				mcp.WithString("format",
-					mcp.Description("Output format: 'xml', 'markdown', or 'json' (default: 'xml')"),
+					mcp.Description("Output format: 'xml', 'markdown', 'json', or 'compact' (default: 'xml')"),
+				),
+				mcp.WithNumber("max_tokens",
+					mcp.Description("Optional maximum token budget (triggers compact rendering when provided)"),
 				),
 				mcp.WithBoolean("include_repo_map",
 					mcp.Description("Whether to include a token-budgeted repo map (default: false)"),
@@ -557,27 +399,6 @@ func registerCortexTools(srv *server.MCPServer, stores *Stores, allowlist map[st
 				),
 			),
 			handleGetAgentContext(stores),
-		)
-	}
-
-	// --- cortex_get_compact_context -------------------------------------
-	if shouldRegister("cortex_get_compact_context", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_get_compact_context",
-				mcp.WithTitleAnnotation("Get Token-Budgeted Compact Agent Context"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDescription("Extracts an ultra-dense, token-budgeted context pack containing prioritized rules, gotchas, decisions, and architectural hubs, bounded strictly to a max token budget."),
-				mcp.WithString("project",
-					mcp.Description("Project name (defaults to 'default')"),
-				),
-				mcp.WithNumber("max_tokens",
-					mcp.Description("Maximum token budget for the context prompt (default: 1500)"),
-				),
-				mcp.WithBoolean("include_repo_map",
-					mcp.Description("Whether to include a condensed repo map if budget allows (default: false)"),
-				),
-			),
-			handleGetCompactContext(stores),
 		)
 	}
 
@@ -694,6 +515,18 @@ func handleGraph(stores *Stores) server.ToolHandlerFunc {
 		if !ok {
 			return errorResult("observation_id must be a positive integer")
 		}
+
+		if stringArg(req, "format") == "relationships" {
+			edges, err := graphdomain.NewService(stores.Graph).GetRelationships(ctx, obsID)
+			if err != nil {
+				return errorResult("Failed to get graph relationships: %s", localErrorText(err))
+			}
+			if edges == nil {
+				edges = []*domain.Edge{}
+			}
+			return jsonTextResult(edges)
+		}
+
 		depth := intArg(req, "depth", 1)
 
 		svc := graphdomain.NewService(stores.Graph)
@@ -1094,23 +927,6 @@ func handleConsolidate(stores *Stores) server.ToolHandlerFunc {
 	}
 }
 
-func handleProjectDNA(stores *Stores) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		project := stringArg(req, "project")
-		if project == "" {
-			return errorResult("project is required")
-		}
-
-		svc := dna.NewService(stores.Observations, stores.Scoring, stores.Graph)
-		result, err := svc.Generate(ctx, project)
-		if err != nil {
-			return errorResult("failed to generate DNA: %s", localErrorText(err))
-		}
-
-		return textResult("%s", result)
-	}
-}
-
 // floatArg extracts a float64 argument with a default value.
 func floatArg(req mcp.CallToolRequest, key string, defaultVal float64) float64 {
 	v, ok := req.GetArguments()[key].(float64)
@@ -1400,7 +1216,10 @@ func handleIngestCode(stores *Stores) server.ToolHandlerFunc {
 
 func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		depth := intArg(req, "depth", 3)
+		depth := intArg(req, "max_depth", 0)
+		if depth <= 0 {
+			depth = intArg(req, "depth", 3)
+		}
 		if depth <= 0 || depth > 10 {
 			depth = 3
 		}
@@ -1411,11 +1230,33 @@ func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
 
 		target := stringArg(req, "target")
 		if target == "" {
+			if num, ok := req.GetArguments()["target"].(float64); ok && num > 0 {
+				target = fmt.Sprintf("%.0f", num)
+			}
+		}
+		if target == "" {
 			target = stringArg(req, "node_id")
 		}
 
-		// Check if observation_id is provided as a positive integer
+		// Check if observation_id is provided directly as a positive integer
 		obsID, isPositiveInt := positiveIDArg(req, "observation_id")
+		if !isPositiveInt {
+			if s, ok := req.GetArguments()["observation_id"].(string); ok {
+				if id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && id > 0 {
+					obsID = id
+					isPositiveInt = true
+				}
+			}
+		}
+		if !isPositiveInt && target != "" {
+			// If target is a numeric string (e.g. "42"), check if it corresponds to an observation ID
+			if id, err := strconv.ParseInt(strings.TrimSpace(target), 10, 64); err == nil && id > 0 {
+				if obs, err := stores.Observations.GetByID(ctx, id); err == nil && obs != nil {
+					obsID = id
+					isPositiveInt = true
+				}
+			}
+		}
 		if isPositiveInt {
 			obs, err := stores.Observations.GetByID(ctx, obsID)
 			if err != nil {
@@ -1480,6 +1321,20 @@ func handleGetBlastRadius(stores *Stores) server.ToolHandlerFunc {
 			graph, err := stores.Code.GetGraph(ctx, project)
 			if err == nil && graph != nil && len(graph.Symbols) > 0 {
 				blast := code.CalculateCodeBlastRadius(graph, target, depth)
+				if boolArg(req, "include_tests", false) {
+					testImpact := code.FindImpactedTests(graph, target, depth)
+					res := map[string]any{
+						"blast_radius":         blast,
+						"impacted_test_files":  testImpact.ImpactedTestFiles,
+						"impacted_test_funcs":  testImpact.ImpactedTestFuncs,
+						"recommended_commands": testImpact.RecommendedCommands,
+					}
+					b, err := json.MarshalIndent(res, "", "  ")
+					if err != nil {
+						return errorResult("serialize blast radius with tests: %v", err)
+					}
+					return mcp.NewToolResultText(string(b)), nil
+				}
 				b, err := json.MarshalIndent(blast, "", "  ")
 				if err != nil {
 					return errorResult("serialize blast radius: %v", err)
@@ -1630,6 +1485,25 @@ func handleGetCodeSymbols(stores *Stores) server.ToolHandlerFunc {
 
 		if stores.Code == nil {
 			return errorResult("code store is not initialized")
+		}
+
+		if isRegex := boolArg(req, "is_regex", false); isRegex && filter.Query != "" {
+			graph, err := stores.Code.GetGraph(ctx, project)
+			if err != nil {
+				return errorResult("get code graph: %v", err)
+			}
+			results := code.SearchSymbols(graph, code.SymbolSearchQuery{
+				Query:    filter.Query,
+				IsRegex:  true,
+				Kind:     filter.Kind,
+				FilePath: filter.FilePath,
+				Limit:    filter.Limit,
+			})
+			b, err := json.MarshalIndent(results, "", "  ")
+			if err != nil {
+				return errorResult("serialize symbols: %v", err)
+			}
+			return mcp.NewToolResultText(string(b)), nil
 		}
 
 		symbols, err := stores.Code.ListSymbols(ctx, filter)
@@ -1812,6 +1686,23 @@ func handleGetAgentContext(stores *Stores) server.ToolHandlerFunc {
 		var codeGraph *code.CodeGraph
 		if stores.Code != nil {
 			codeGraph, _ = stores.Code.GetGraph(ctx, project)
+		}
+
+		maxTokens := intArg(req, "max_tokens", 0)
+		if format == "compact" || maxTokens > 0 {
+			if maxTokens <= 0 {
+				maxTokens = 1500
+			}
+			pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{
+				Project:        project,
+				Format:         "compact",
+				IncludeRules:   true,
+				IncludeRepoMap: includeRepoMap,
+				RepoMapBudget:  maxTokens / 3,
+				MaxTokens:      maxTokens,
+			})
+			rendered := contextpack.RenderCompact(pack, maxTokens)
+			return textResult("%s", rendered)
 		}
 
 		pack := contextpack.BuildPack(project, obsList, codeGraph, contextpack.Options{

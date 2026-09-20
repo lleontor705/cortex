@@ -28,6 +28,8 @@ export interface AgentExportContext {
   projectName?: string;
   /** Integration mode: "hybrid" (Local-First + Sync, default) or "remote" (Remote MCP proxy) */
   mode?: "hybrid" | "remote";
+  /** Local MCP tools profile: "agent" (default, 22 tools), "dev" (11 tools), or "minimal" (5 tools) */
+  profile?: "agent" | "dev" | "minimal";
 }
 
 function assertDestination(ctx: AgentExportContext): void {
@@ -49,10 +51,11 @@ interface McpServerConfig {
   env?: Record<string, string>;
 }
 
-function mcpLocalServer(): McpServerConfig {
+function mcpLocalServer(ctx?: AgentExportContext): McpServerConfig {
+  const profile = ctx?.profile || "agent";
   return {
     command: "cortex",
-    args: ["mcp", "--tools=agent"],
+    args: ["mcp", `--tools=${profile}`],
   };
 }
 
@@ -80,25 +83,25 @@ function mcpRemoteServer(ctx: AgentExportContext): McpServerConfig {
 
 export function generateClaudeDesktopConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer(ctx);
   return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateCursorMcpConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer(ctx);
   return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateWindsurfConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer(ctx);
   return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
 export function generateVSCodeClineConfig(ctx: AgentExportContext): string {
   assertDestination(ctx);
-  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer();
+  const server = ctx.mode === "remote" ? mcpRemoteServer(ctx) : mcpLocalServer(ctx);
   return JSON.stringify({ mcpServers: { cortex: server } }, null, 2);
 }
 
@@ -123,13 +126,14 @@ export function generateOpenCodeConfig(ctx: AgentExportContext): string {
     );
   }
 
+  const profile = ctx.profile || "agent";
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
       mcp: {
         cortex: {
           type: "local",
-          command: ["cortex", "mcp", "--tools=agent"],
+          command: ["cortex", "mcp", `--tools=${profile}`],
           enabled: true,
         },
       },

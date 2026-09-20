@@ -236,4 +236,16 @@ describe("agent configuration exporters", () => {
     expect(() => generateCortexYaml(loopback)).not.toThrow();
     expect(() => generateQuickstartScript(loopback, "sh")).not.toThrow();
   });
+
+  it("supports modular profiles (dev, minimal, agent)", () => {
+    const dev = JSON.parse(generateClaudeDesktopConfig({ ...ctx, profile: "dev" })) as {
+      mcpServers: { cortex: { args: string[] } };
+    };
+    expect(dev.mcpServers.cortex.args).toEqual(["mcp", "--tools=dev"]);
+
+    const minimal = JSON.parse(generateCursorMcpConfig({ ...ctx, profile: "minimal" })) as {
+      mcpServers: { cortex: { args: string[] } };
+    };
+    expect(minimal.mcpServers.cortex.args).toEqual(["mcp", "--tools=minimal"]);
+  });
 });

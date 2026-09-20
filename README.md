@@ -78,17 +78,20 @@ make build
 ### 1. Modo Local (SQLite, CLI & TUI)
 
 ```bash
-# Configurar integración automática con tu agente preferido
-cortex setup claude-code
-cortex setup opencode
+# Configurar integración automática con perfiles modulares (dev, minimal, agent)
+cortex setup claude-code --profile=dev
+cortex setup opencode --profile=agent
+
+# Ver estado del modo operativo (local, híbrido, server)
+cortex status
 
 # Diagnóstico de base de datos e índices
 cortex doctor
 
-# Búsqueda semántica e híbrida
-cortex search "decisión de arquitectura"
+# Búsqueda adaptativa con clasificación de complejidad
+cortex search "decisión de arquitectura" --mode=auto
 
-# Lanzar interfaz interactiva en terminal
+# Lanzar interfaz interactiva en terminal (con selector de perfiles integrado)
 cortex tui
 ```
 
@@ -154,14 +157,12 @@ Agrega Cortex como servidor MCP en tu editor o agente:
 }
 ```
 
-### Herramientas MCP Disponibles:
-- `cortex_ingest_code`: Escanea e ingesta repositorios o archivos modificados tras refactorizaciones.
-- `cortex_get_blast_radius`: Calcula los archivos y funciones impactados por un cambio.
-- `cortex_analyze_architecture`: Diagnostica comunidades funcionales, God nodes y anomalías.
-- `cortex_detect_cycles`: Detecta dependencias e importaciones circulares.
-- `cortex_save` / `cortex_handoff`: Guarda observaciones y handoffs con idempotencia.
-- `cortex_search` / `cortex_relate`: Búsqueda híbrida y creación de aristas de grafo.
-- `cortex_get_project_context`: Obtiene reglas corporativas y skills del proyecto.
+### Perfiles Modulares y Herramientas MCP:
+Cortex organiza su catálogo en perfiles modulares (`--tools=agent|dev|minimal|admin|temporal`):
+- **Memoria Episódica & Búsqueda:** `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search` (FTS5 + Vectores + HippoRAG + Adaptive-RAG), `cortex_get_agent_context`.
+- **Grafo de Conocimiento & Linaje:** `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_revision_history`, `cortex_handoff` (handoff idempotente entre agentes).
+- **Inteligencia de Código AST (Zero-CGO):** `cortex_ingest_code` (extracción estática políglota), `cortex_get_code_symbols`, `cortex_code_map` (PageRank repo map), `cortex_code_tests` (Fast-TDD test impact), `cortex_get_blast_radius`, `cortex_detect_cycles`, `cortex_analyze_architecture`.
+- **Gobernanza & Estado:** `cortex_get_rules`, `cortex_save_rule`, `cortex_get_status` (modo SQLite/Postgres y capacidades). En modo Server también: `cortex_get_project_context`, `cortex_list_skills`, `cortex_get_skill`, `cortex_resolve_query`.
 
 ---
 

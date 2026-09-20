@@ -214,6 +214,24 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	isHybrid := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))) == "hybrid"
+	if (cfg.Sync.Enabled || isHybrid) && strings.TrimSpace(cfg.Sync.URL) != "" {
+		token := os.Getenv(cfg.Sync.TokenEnv)
+		if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
+			token = cfg.Sync.TokenEnv
+		}
+		if token == "" && cfg.HTTP.Token != "" {
+			token = cfg.HTTP.Token
+		}
+		if token != "" {
+			remoteSearchClient, err := cortsync.NewRemoteSearchClient(cfg.Sync.URL, token, cfg.Sync.Timeout)
+			if err != nil {
+				log.Printf("warning: remote search disabled: %v", err)
+			} else {
+				stores.RemoteSearch = remoteSearchClient
+			}
+		}
+	}
+
 	if (cfg.Sync.Enabled || isHybrid) && !opts.DisableRemoteSync {
 		if strings.TrimSpace(cfg.Sync.URL) == "" {
 			if isHybrid {

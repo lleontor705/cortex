@@ -22,44 +22,56 @@ import (
 // cortexMCPTools lists the tool permission names for Claude Code's settings.json.
 var cortexMCPTools = []string{
 	"mcp__plugin_cortex_cortex__cortex_analyze_architecture",
-	"mcp__plugin_cortex_cortex__cortex_capture_passive",
-	"mcp__plugin_cortex_cortex__cortex_code_analyze",
-	"mcp__plugin_cortex_cortex__cortex_code_find",
-	"mcp__plugin_cortex_cortex__cortex_code_graph",
-	"mcp__plugin_cortex_cortex__cortex_code_impact",
 	"mcp__plugin_cortex_cortex__cortex_code_map",
-	"mcp__plugin_cortex_cortex__cortex_code_scan",
-	"mcp__plugin_cortex_cortex__cortex_code_symbols",
 	"mcp__plugin_cortex_cortex__cortex_code_tests",
-	"mcp__plugin_cortex_cortex__cortex_consolidate",
 	"mcp__plugin_cortex_cortex__cortex_context",
 	"mcp__plugin_cortex_cortex__cortex_detect_cycles",
-	"mcp__plugin_cortex_cortex__cortex_find_symbols",
 	"mcp__plugin_cortex_cortex__cortex_get_agent_context",
 	"mcp__plugin_cortex_cortex__cortex_get_blast_radius",
-	"mcp__plugin_cortex_cortex__cortex_get_code_graph",
-	"mcp__plugin_cortex_cortex__cortex_get_code_map",
 	"mcp__plugin_cortex_cortex__cortex_get_code_symbols",
-	"mcp__plugin_cortex_cortex__cortex_get_impacted_tests",
 	"mcp__plugin_cortex_cortex__cortex_get_observation",
 	"mcp__plugin_cortex_cortex__cortex_get_rules",
 	"mcp__plugin_cortex_cortex__cortex_get_status",
 	"mcp__plugin_cortex_cortex__cortex_graph",
+	"mcp__plugin_cortex_cortex__cortex_graph_path",
+	"mcp__plugin_cortex_cortex__cortex_handoff",
 	"mcp__plugin_cortex_cortex__cortex_ingest_code",
-	"mcp__plugin_cortex_cortex__cortex_project_dna",
 	"mcp__plugin_cortex_cortex__cortex_relate",
 	"mcp__plugin_cortex_cortex__cortex_revision_history",
 	"mcp__plugin_cortex_cortex__cortex_save",
-	"mcp__plugin_cortex_cortex__cortex_save_prompt",
 	"mcp__plugin_cortex_cortex__cortex_save_rule",
-	"mcp__plugin_cortex_cortex__cortex_score",
 	"mcp__plugin_cortex_cortex__cortex_search",
-	"mcp__plugin_cortex_cortex__cortex_search_hybrid",
-	"mcp__plugin_cortex_cortex__cortex_session_end",
-	"mcp__plugin_cortex_cortex__cortex_session_start",
 	"mcp__plugin_cortex_cortex__cortex_session_summary",
-	"mcp__plugin_cortex_cortex__cortex_suggest_topic_key",
 	"mcp__plugin_cortex_cortex__cortex_update",
+}
+
+// cortexDevMCPTools lists the tool permission names for Claude Code's settings.json in the dev profile.
+var cortexDevMCPTools = []string{
+	"mcp__plugin_cortex_cortex__cortex_save",
+	"mcp__plugin_cortex_cortex__cortex_search",
+	"mcp__plugin_cortex_cortex__cortex_context",
+	"mcp__plugin_cortex_cortex__cortex_session_summary",
+	"mcp__plugin_cortex_cortex__cortex_get_observation",
+	"mcp__plugin_cortex_cortex__cortex_get_agent_context",
+	"mcp__plugin_cortex_cortex__cortex_relate",
+	"mcp__plugin_cortex_cortex__cortex_get_rules",
+	"mcp__plugin_cortex_cortex__cortex_ingest_code",
+	"mcp__plugin_cortex_cortex__cortex_get_blast_radius",
+	"mcp__plugin_cortex_cortex__cortex_code_tests",
+}
+
+// cortexMinimalMCPTools lists the tool permission names for Claude Code's settings.json in the minimal profile.
+var cortexMinimalMCPTools = []string{
+	"mcp__plugin_cortex_cortex__cortex_save",
+	"mcp__plugin_cortex_cortex__cortex_search",
+	"mcp__plugin_cortex_cortex__cortex_context",
+	"mcp__plugin_cortex_cortex__cortex_session_summary",
+	"mcp__plugin_cortex_cortex__cortex_get_observation",
+}
+
+// Options specifies customization options for agent installation.
+type Options struct {
+	Profile string // Profile name or tool filter (e.g. "dev", "minimal", "agent")
 }
 
 // memoryProtocol is the Memory Protocol instructions injected into agents.
@@ -286,8 +298,13 @@ func SupportedAgents() []Agent {
 	}
 }
 
-// Install sets up Cortex integration for the given agent.
+// Install sets up Cortex integration for the given agent using default options.
 func Install(agent string) (*Result, error) {
+	return InstallWithOptions(agent, Options{})
+}
+
+// InstallWithOptions sets up Cortex integration for the given agent with specific options.
+func InstallWithOptions(agent string, opts Options) (*Result, error) {
 	home, err := resolveHome()
 	if err != nil {
 		return nil, err
@@ -297,9 +314,9 @@ func Install(agent string) (*Result, error) {
 
 	switch agent {
 	case "claude-code":
-		return installClaudeCode(home, bin)
+		return installClaudeCodeWithOptions(home, bin, opts)
 	case "opencode":
-		return installOpenCode(home, bin)
+		return installOpenCodeWithOptions(home, bin, opts)
 	case "gemini-cli":
 		return installGeminiCLI(home, bin)
 	case "codex":
@@ -329,29 +346,44 @@ func AddClaudeCodeAllowlist() error {
 
 // --- Claude Code ------------------------------------------------------------
 
-func installClaudeCode(home, bin string) (*Result, error) {
+func installClaudeCodeWithOptions(home, bin string, opts Options) (*Result, error) {
+	profile := strings.TrimSpace(opts.Profile)
+	if profile == "" {
+		profile = "agent"
+	}
 	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
 	mcpContent := fmt.Sprintf(`{
   "name": "cortex",
   "type": "stdio",
   "command": %s,
-  "args": ["mcp", "--tools=agent"]
+  "args": ["mcp", "--tools=%s"]
 }
-`, jsonString(bin))
+`, jsonString(bin), profile)
 
 	if err := writeFile(mcpPath, mcpContent); err != nil {
 		return nil, fmt.Errorf("write MCP config: %w", err)
 	}
 
-	// Add tool allowlist to settings.json
+	// Add tool allowlist to settings.json based on profile
+	allowTools := cortexMCPTools
+	switch profile {
+	case "minimal":
+		allowTools = cortexMinimalMCPTools
+	case "dev", "coder":
+		allowTools = cortexDevMCPTools
+	}
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	addClaudeCodeAllowlist(settingsPath)
+	addClaudeCodeAllowlistWithTools(settingsPath, allowTools)
 
 	return &Result{Agent: "claude-code", Destination: mcpPath, Files: 1}, nil
 }
 
 // addClaudeCodeAllowlist adds cortex MCP tool permissions to Claude Code settings.
 func addClaudeCodeAllowlist(settingsPath string) {
+	addClaudeCodeAllowlistWithTools(settingsPath, cortexMCPTools)
+}
+
+func addClaudeCodeAllowlistWithTools(settingsPath string, tools []string) {
 	// Read existing settings
 	var settings map[string]interface{}
 	data, err := os.ReadFile(settingsPath)
@@ -378,7 +410,7 @@ func addClaudeCodeAllowlist(settingsPath string) {
 	}
 
 	// Add missing tools
-	for _, tool := range cortexMCPTools {
+	for _, tool := range tools {
 		if !existing[tool] {
 			allowList = append(allowList, tool)
 		}
@@ -399,7 +431,11 @@ func addClaudeCodeAllowlist(settingsPath string) {
 
 // --- OpenCode ---------------------------------------------------------------
 
-func installOpenCode(home, bin string) (*Result, error) {
+func installOpenCodeWithOptions(home, bin string, opts Options) (*Result, error) {
+	profile := strings.TrimSpace(opts.Profile)
+	if profile == "" {
+		profile = "agent"
+	}
 	configDir := filepath.Join(home, ".config", "opencode")
 
 	mcpPath := filepath.Join(configDir, "cortex-mcp.json")
@@ -407,12 +443,12 @@ func installOpenCode(home, bin string) (*Result, error) {
   "mcp": {
     "cortex": {
       "type": "local",
-      "command": [%s, "mcp", "--tools=agent"],
+      "command": [%s, "mcp", "--tools=%s"],
       "enabled": true
     }
   }
 }
-`, jsonString(bin))
+`, jsonString(bin), profile)
 
 	if err := writeFile(mcpPath, mcpContent); err != nil {
 		return nil, err

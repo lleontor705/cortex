@@ -2,15 +2,24 @@
 
 Cortex works with any AI coding agent that supports MCP. Run `cortex setup <agent>` for automatic configuration.
 
+```bash
+# Check detected agents and installed integrations
+cortex setup --list
+
+# Install with modular profiles (dev: 11 tools, minimal: 5 tools, agent: 22 tools)
+cortex setup claude-code --profile=dev
+cortex setup opencode --profile=agent
+```
+
 ## Claude Code
 
 ```bash
-cortex setup claude-code
+cortex setup claude-code [--profile=agent|dev|minimal]
 ```
 
 This creates:
 - `~/.claude/mcp/cortex.json` — MCP server registration (durable, survives plugin updates)
-- Updates `~/.claude/settings.json` — adds tool allowlists for auto-approval
+- Updates `~/.claude/settings.json` — adds profile-specific tool allowlists for auto-approval
 
 ### Plugin (Optional)
 
@@ -32,7 +41,7 @@ The plugin provides:
 ## OpenCode
 
 ```bash
-cortex setup opencode
+cortex setup opencode [--profile=agent|dev|minimal]
 ```
 
 This creates:
@@ -108,15 +117,13 @@ Add to your agent's MCP configuration:
 Control which tools are loaded:
 
 ```bash
-  cortex mcp                          # All local tools (default)
-  cortex mcp --tools=agent            # Agent profile for coding sessions
-  cortex mcp --tools=admin            # Admin profile for curation
-  cortex mcp --tools=temporal         # Temporal and observability profile
-  cortex mcp --tools=agent,admin      # Combine profiles
+  cortex mcp                          # Default: agent profile (22 canonical agent tools)
+  cortex mcp --tools=agent            # Full agent suite (memory, graph, AST, blast radius, handoff)
+  cortex mcp --tools=dev              # Developer profile (11 tools: memory + AST/blast radius/tests)
+  cortex mcp --tools=minimal          # Minimalist profile (5 essential memory tools for fast models)
   cortex mcp --tools=cortex_save,cortex_search  # Individual tools
 ```
 
 Server deployments expose an authenticated subset of the Cortex-native namespace
 through Streamable HTTP at `/mcp`. The server does not load the local profiles;
-see [MCP.md](MCP.md) for its exact ten-tool catalog. Use a bearer token and do
-not send `mem_*` tool names.
+see [MCP.md](MCP.md) for its exact catalog. Use a bearer token and follow the active schema.

@@ -204,63 +204,58 @@ export function isTokenlessEligible(mode: CortexMode, rawUrl: string = CORTEX_UR
 // Cortex's own MCP tools — don't count these as "tool calls" for session stats.
 // cortex_handoff is handled separately before this set is consulted.
 const CORTEX_TOOLS = new Set([
-  // Core memory
-  "cortex_search",
+  // Core memory (ProfileAgent & ProfileMinimal)
   "cortex_save",
   "cortex_update",
-  "cortex_delete",
-  "cortex_suggest_topic_key",
-  "cortex_save_prompt",
-  "cortex_session_summary",
-  "cortex_context",
-  "cortex_stats",
-  "cortex_timeline",
   "cortex_get_observation",
-  "cortex_session_start",
-  "cortex_session_end",
-  "cortex_capture_passive",
-  // Knowledge graph & Architecture
+  "cortex_context",
+  "cortex_session_summary",
+  "cortex_search",
+
+  // Prompt Context & Retrieval
+  "cortex_get_agent_context",
+  "cortex_get_compact_context",
+  "cortex_resolve_query",
+  "cortex_search_hybrid",
+
+  // Knowledge Graph
   "cortex_relate",
   "cortex_graph",
-  "cortex_graph_relationships",
   "cortex_graph_path",
   "cortex_graph_subgraph",
-  "cortex_score",
-  "cortex_archive",
-  "cortex_search_hybrid",
-  "cortex_get_blast_radius",
-  "cortex_code_impact",
-  "cortex_analyze_architecture",
-  "cortex_code_analyze",
-  "cortex_detect_cycles",
-  "cortex_ingest_code",
-  "cortex_code_scan",
-  "cortex_get_code_symbols",
-  "cortex_code_symbols",
-  "cortex_get_code_graph",
-  "cortex_code_graph",
-  "cortex_code_map",
-  "cortex_get_code_map",
-  "cortex_code_tests",
-  "cortex_get_impacted_tests",
-  "cortex_code_find",
-  "cortex_find_symbols",
-  "cortex_get_agent_context",
-  // Governance, Skills, Directives & Rules
+  "cortex_graph_relationships",
+
+  // Directives & Governance
   "cortex_get_rules",
   "cortex_save_rule",
   "cortex_get_project_context",
   "cortex_list_skills",
   "cortex_get_skill",
-  "cortex_resolve_query",
+
+  // Codebase AST & Test Impact (ProfileAgent & ProfileDev)
+  "cortex_ingest_code",
+  "cortex_get_code_symbols",
+  "cortex_get_blast_radius",
+  "cortex_code_tests",
+  "cortex_detect_cycles",
+  "cortex_analyze_architecture",
+  "cortex_code_map",
   "cortex_get_status",
-  // History & Hygiene
+
+  // Lineage, Multi-Agent & Durable Handoff
   "cortex_revision_history",
-  "cortex_consolidate",
-  "cortex_project_dna",
-  "cortex_merge_projects",
   "cortex_handoff",
-  // Temporal (advanced)
+
+  // Admin & Diagnostics (ProfileAdmin)
+  "cortex_delete",
+  "cortex_stats",
+  "cortex_timeline",
+  "cortex_archive",
+  "cortex_score",
+  "cortex_consolidate",
+  "cortex_merge_projects",
+
+  // Temporal / Point-in-time (ProfileTemporal)
   "cortex_temporal_create_edge",
   "cortex_temporal_get_edges",
   "cortex_temporal_get_relevant",
@@ -272,6 +267,29 @@ const CORTEX_TOOLS = new Set([
   "cortex_temporal_evolution_path",
   "cortex_temporal_fact_state",
   "cortex_search_temporal",
+
+  // Session lifecycle & passive capture internals
+  "cortex_session_start",
+  "cortex_session_end",
+  "cortex_capture_passive",
+  "cortex_suggest_topic_key",
+  "cortex_save_prompt",
+  "cortex_project_dna",
+  "cortex_project_artifact_save",
+  "cortex_project_artifact_revision",
+  "cortex_project_protocol",
+
+  // Backward-compatibility aliases
+  "cortex_code_impact",
+  "cortex_code_analyze",
+  "cortex_code_scan",
+  "cortex_code_symbols",
+  "cortex_get_code_graph",
+  "cortex_code_graph",
+  "cortex_get_code_map",
+  "cortex_get_impacted_tests",
+  "cortex_code_find",
+  "cortex_find_symbols",
 ])
 
 // ─── Mode-Aware Memory Instructions ──────────────────────────────────────────
@@ -307,23 +325,36 @@ Format for \`cortex_save\`:
 - **topic_key** (optional): stable key for evolving topics (e.g. \`auth/jwt-rotation\`)
 - **content**: What was done, Why it was done, Affected files, and Lessons learned.
 
+Use \`cortex_update(id, ...)\` for surgical field edits to existing observations.
+
 ### 3. CODEBASE INTELLIGENCE & BLAST RADIUS
-- Before refactoring or renaming symbols, use filtered \`cortex_get_code_symbols(project, kind, file_path)\` plus bounded source reads. \`cortex_get_blast_radius\` accepts a numeric observation ID and is a cognitive graph tool, not a code-symbol impact oracle.
-- Call \`cortex_detect_cycles(project)\` to ensure no circular import dependencies or architectural violations.
+- Query indexed symbols using \`cortex_get_code_symbols(project, kind, file, query)\`.
+- Use \`cortex_get_blast_radius(node_id, depth)\` to calculate downstream impact of modifying code entities or observations.
+- Call \`cortex_detect_cycles(project)\` to detect circular dependencies and import cycles.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
-- Use \`cortex_relate\` to link related observations (references, relates_to, follows, supersedes, contradicts).
+- Use \`cortex_get_agent_context(project)\` to retrieve structured project context.
 
-### 4. UNIFIED SEARCH & QUERY RESOLUTION
+### 4. KNOWLEDGE GRAPH & RELATIONS
+- Link related observations using \`cortex_relate(from_id, to_id, relation_type)\` (references, relates_to, follows, supersedes, contradicts).
+- Call \`cortex_graph(observation_id, depth)\` to traverse connected observations.
+- Call \`cortex_graph_subgraph(observation_id, depth, max_nodes)\` to retrieve bounded heterogeneous graphs (observations, entities, actors, sessions).
+
+### 5. UNIFIED SEARCH & QUERY RESOLUTION
 - For complex questions or domain lookups, call \`cortex_resolve_query(query, project)\` for a unified retrieval across corporate rules, skills, and observations.
-- Call \`cortex_search\` for keyword/FTS search, or \`cortex_context\` for recent session history.
-- If you find an observation match, call \`cortex_get_observation(id)\` to read its complete full text.
+- Call \`cortex_search(query, project)\` for hybrid semantic and keyword retrieval.
+- Call \`cortex_context\` for recent session history.
+- Call \`cortex_get_observation(id)\` to read the complete full-text observation.
+- Call \`cortex_get_status\` to verify server mode, capabilities, and health.
 
-### 5. SESSION CLOSE PROTOCOL (Orchestrator only)
+### 6. DURABLE HANDOFF & COLLABORATION
+- Call \`cortex_handoff(idempotency_key, observation, relation)\` for idempotent handoffs between agents with cryptographic lineage.
+
+### 7. SESSION CLOSE PROTOCOL (Orchestrator only)
 If and only if the current role is the root orchestrator, before saying "done" or finishing a session:
 1. Call \`cortex_session_summary\` with: Goal, Discoveries, Accomplished, Next Steps, Relevant Files.
 Subagents and external leaves must never call session lifecycle or session summary tools.
 
-### 6. AFTER COMPACTION
+### 8. AFTER COMPACTION
 1. The root orchestrator may call \`cortex_session_summary\` with compacted context.
 2. Subagents only call \`cortex_context\` when needed and never take session ownership.`
   }
@@ -342,13 +373,14 @@ TRANSPORT IDENTIFIERS:
 
 ### 2. CODEBASE AST & INTELLIGENCE
 - Call \`cortex_ingest_code(path, project)\` with the **absolute workspace root path** (e.g. \`d:/cortex-ia\`, never \`.\`) to scan local files with the Zero-CGO Static AST Extractor and index symbols into the knowledge graph.
-- Call \`cortex_code_map(path, budget)\` or \`cortex_get_code_map\` to retrieve a token-budgeted PageRank repository map.
-- Call \`cortex_code_tests(target, project, hops)\` or \`cortex_get_impacted_tests\` to pinpoint precisely which test suites are impacted by modified symbols or files.
-- Call \`cortex_code_find(query, project)\` or \`cortex_find_symbols\` to search AST symbols across the repository.
-- Call \`cortex_get_agent_context(project, format)\` to export structured architecture & memory context for agent prompts.
-- Call \`cortex_get_blast_radius(observation_id, depth)\` to traverse related cognitive observations.
+- Call \`cortex_get_code_symbols(project, kind, file, query)\` to query indexed symbols (functions, structs, classes, interfaces).
+- Call \`cortex_code_map(path, budget)\` to retrieve a token-budgeted PageRank repository map.
+- Call \`cortex_code_tests(target, project, hops)\` to pinpoint precisely which test suites are impacted by modified symbols or files (essential for Fast-TDD).
+- Call \`cortex_get_blast_radius(node_id, depth)\` to calculate downstream impact before refactoring (supports \`include_tests: true\`).
 - Call \`cortex_detect_cycles(project)\` to find circular dependencies across modules.
 - Call \`cortex_analyze_architecture(project)\` to inspect code communities and god nodes.
+- Call \`cortex_get_agent_context(project, format)\` to export structured architecture & memory context for agent prompts.
+- Call \`cortex_get_status()\` to inspect active operational mode and capabilities.
 
 ### 3. WHEN TO SAVE (Mandatory after completing work)
 Call \`cortex_save\` IMMEDIATELY after any of these:
@@ -366,19 +398,21 @@ Format for \`cortex_save\`:
 - **topic_key** (optional, recommended): stable key like \`architecture/auth-model\`
 - **content**: What was done, Why, Where (files affected), and Gotchas.
 
+Use \`cortex_update(id, ...)\` for surgical field edits to existing observations.
+
 ### 4. KNOWLEDGE GRAPH & RELATIONS
-- After saving related observations, call \`cortex_relate\` (references, relates_to, follows, supersedes, contradicts).
-- Call \`cortex_graph\` to traverse connections from any observation.
-- Call \`cortex_score\` to recalculate observation importance.
+- After saving related observations, call \`cortex_relate(from_id, to_id, relation_type)\` (references, relates_to, follows, supersedes, contradicts).
+- Call \`cortex_graph(observation_id, depth)\` to traverse connections from any observation (pass \`format: "relationships"\` for typed edge lists).
+- Call \`cortex_graph_path(from_id, to_id)\` to find the shortest knowledge graph path between two observations.
 
-### 5. SEARCH & RETRIEVAL
+### 5. SEARCH & RETRIEVAL (SOTA Hybrid RAG)
 1. First call \`cortex_context\` to check recent session history.
-2. If not found, call \`cortex_search\` with keywords (FTS5).
-3. If needed, call \`cortex_search_hybrid\` for combined vector + FTS search.
-4. Call \`cortex_get_observation(id)\` to fetch the complete full-text observation.
+2. If not found, call \`cortex_search\` with query and optional mode (\`auto\`, \`direct\`, \`semantic\`, \`multi_hop\`).
+3. Call \`cortex_get_observation(id)\` to fetch the complete full-text observation.
 
-### 6. REVISION HISTORY & HYGIENE
-- \`cortex_revision_history(id)\`: View evolution across upserts.
+### 6. REVISION HISTORY, LINEAGE & DURABLE HANDOFF
+- Call \`cortex_revision_history(id)\` to inspect structured historical snapshots across upserts.
+- Call \`cortex_handoff(idempotency_key, observation, relation)\` for idempotent handoffs between agents with cryptographic receipts.
 - Administrative timeline, archive, and delete tools are not available in the agent profile. Never invent them; an operator must use an admin profile explicitly.
 
 ### 7. SESSION CLOSE PROTOCOL (Orchestrator only)

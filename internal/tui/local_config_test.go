@@ -51,7 +51,7 @@ func TestLocalSettingsSectionNavigationAndReview(t *testing.T) {
 	for _, step := range []struct {
 		key   string
 		field int
-	}{{"tab", 2}, {"tab", 5}, {"right", 8}, {"l", 11}, {"l", 15}} {
+	}{{"tab", 2}, {"tab", 5}, {"right", 8}, {"tab", 12}, {"tab", 16}} {
 		updated, _ := m.handleLocalConfigKeys(step.key)
 		m = updated.(Model)
 		if m.LocalCfgFocusField != step.field {
@@ -59,10 +59,100 @@ func TestLocalSettingsSectionNavigationAndReview(t *testing.T) {
 		}
 	}
 	view := m.View()
-	for _, want := range []string{"Review & Apply", "Storage", "HTTP API", "MCP Proxy", "Sync", "Validate & Save"} {
+	for _, want := range []string{"Review & Apply", "Storage", "HTTP API", "MCP Profile", "MCP Proxy", "Sync", "Validate & Save"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("review missing %q", want)
 		}
+	}
+}
+
+func TestLocalConfigMCPProfileCycle(t *testing.T) {
+	m := New(&Deps{Config: testLocalConfig(t)}).openLocalConfig()
+	m.LocalCfgFocusField = 8 // Tool profile cycler
+
+	if m.LocalCfgMCPProfile != "agent" {
+		t.Fatalf("expected initial profile agent, got %q", m.LocalCfgMCPProfile)
+	}
+
+	// Cycle forward with 'l'
+	updated, _ := m.handleLocalConfigKeys("l")
+	m = updated.(Model)
+	if m.LocalCfgMCPProfile != "dev" {
+		t.Fatalf("expected profile dev, got %q", m.LocalCfgMCPProfile)
+	}
+
+	// Cycle forward with 'right'
+	updated, _ = m.handleLocalConfigKeys("right")
+	m = updated.(Model)
+	if m.LocalCfgMCPProfile != "minimal" {
+		t.Fatalf("expected profile minimal, got %q", m.LocalCfgMCPProfile)
+	}
+
+	// Cycle forward with space
+	updated, _ = m.handleLocalConfigKeys(" ")
+	m = updated.(Model)
+	if m.LocalCfgMCPProfile != "agent" {
+		t.Fatalf("expected profile agent, got %q", m.LocalCfgMCPProfile)
+	}
+
+	// Cycle backward with 'h'
+	updated, _ = m.handleLocalConfigKeys("h")
+	m = updated.(Model)
+	if m.LocalCfgMCPProfile != "minimal" {
+		t.Fatalf("expected profile minimal, got %q", m.LocalCfgMCPProfile)
+	}
+
+	// Cycle backward with 'left'
+	updated, _ = m.handleLocalConfigKeys("left")
+	m = updated.(Model)
+	if m.LocalCfgMCPProfile != "dev" {
+		t.Fatalf("expected profile dev, got %q", m.LocalCfgMCPProfile)
+	}
+}
+
+func TestNewWithScreen(t *testing.T) {
+	cfg := testLocalConfig(t)
+	m := NewWithScreen(&Deps{Config: cfg}, ScreenLocalConfig)
+	if m.Screen != ScreenLocalConfig {
+		t.Fatalf("expected ScreenLocalConfig, got %v", m.Screen)
+	}
+	if m.ActiveWorkspace() != 3 {
+		t.Fatalf("expected workspace 3, got %d", m.ActiveWorkspace())
+	}
+	if m.ControlDeckTab != 1 {
+		t.Fatalf("expected ControlDeckTab 1, got %d", m.ControlDeckTab)
+	}
+	if m.LocalCfgMCPProfile != "agent" {
+		t.Fatalf("expected LocalCfgMCPProfile agent, got %q", m.LocalCfgMCPProfile)
+	}
+}
+
+func TestSaveLocalConfigPersistsMCPProfile(t *testing.T) {
+	cfg := testLocalConfig(t)
+	deps := &Deps{Config: cfg}
+	values := localConfigValues{
+		databasePath: "next.db",
+		httpEnabled:  true,
+		httpHost:     "localhost",
+		httpPort:     "7438",
+		mcpProfile:   "minimal",
+		syncInterval: "30s",
+	}
+	msg := saveLocalConfig(deps, values)().(localConfigSavedMsg)
+	if msg.err != nil {
+		t.Fatalf("saveLocalConfig failed: %v", msg.err)
+	}
+	if deps.Config.MCP.Profile != "minimal" {
+		t.Fatalf("expected deps.Config.MCP.Profile to be minimal, got %q", deps.Config.MCP.Profile)
+	}
+
+	// Verify persistence on disk
+	reloaded, err := config.Load(cfg.LoadedFrom)
+	if err != nil {
+		t.Fatalf("failed to reload config from %q: %v", cfg.LoadedFrom, err)
+	}
+	if reloaded.MCP.Profile != "minimal" {
+		t.Fatalf("expected reloaded.MCP.Profile to be minimal, got %q", reloaded.MCP.Profile)
 	}
 }
 

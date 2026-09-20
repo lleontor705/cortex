@@ -34,6 +34,25 @@ type serverInvocation struct {
 	configPath string
 	reindex    bool
 	projectID  string
+	help       bool
+	version    bool
+}
+
+func printServerHelp(w io.Writer) {
+	const serverHelp = `Cortex Server Mode
+
+Usage:
+  cortex --mode server [options]
+  cortex --mode server reindex --project-id <uuid> [options]
+
+Options:
+  --config <path>         Path to server YAML configuration file
+  reindex                 Run offline synchronous reindexing for a project
+  --project-id <uuid>     Target project UUID for reindexing (required with reindex)
+  -h, --help              Show server help
+  -v, --version           Show version
+`
+	_, _ = fmt.Fprint(w, serverHelp)
 }
 
 func parseServerInvocation(args []string) (serverInvocation, error) {
@@ -41,6 +60,10 @@ func parseServerInvocation(args []string) (serverInvocation, error) {
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "-h" || arg == "--help" || arg == "help":
+			inv.help = true
+		case arg == "-v" || arg == "--version" || arg == "version":
+			inv.version = true
 		case arg == "--config":
 			if i+1 >= len(args) || args[i+1] == "" {
 				return inv, fmt.Errorf("--config requires a path")
@@ -65,6 +88,9 @@ func parseServerInvocation(args []string) (serverInvocation, error) {
 		default:
 			return inv, fmt.Errorf("unknown server argument %q", arg)
 		}
+	}
+	if inv.help || inv.version {
+		return inv, nil
 	}
 	if inv.reindex {
 		project, err := uuid.Parse(inv.projectID)
@@ -118,6 +144,14 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "cortex: server arguments: %v\n", err)
 			return 2
+		}
+		if invocation.help {
+			printServerHelp(stdout)
+			return 0
+		}
+		if invocation.version {
+			_, _ = fmt.Fprintf(stdout, "cortex %s\n", version)
+			return 0
 		}
 		cfg, err := config.Load(invocation.configPath)
 		if err != nil {

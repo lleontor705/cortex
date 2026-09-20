@@ -13,10 +13,10 @@ export function Dialog({ open, onOpenChange, children, className }: DialogProps)
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in-0 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-in fade-in-0 duration-150">
       <div
         className={cn(
-          "relative w-full max-w-lg rounded-xl border border-border bg-card p-6 text-card-foreground shadow-2xl animate-in zoom-in-95 duration-200",
+          "relative w-full max-w-lg rounded-lg border border-border bg-card p-6 text-card-foreground shadow-md animate-in zoom-in-95 duration-150",
           className
         )}
       >

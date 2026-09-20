@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -678,3 +679,77 @@ func TestRunStatusAndMode(t *testing.T) {
 		t.Fatalf("expected server mode, got: %s", stdout.String())
 	}
 }
+
+func TestConfigWizardAndTUIFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	// 1. Wizard with --cli outputs text summary with MCP Profile
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	if code := Run([]string{"cortex", "config", "wizard", "--cli"}, stdout, stderr); code != 0 {
+		t.Fatalf("config wizard --cli code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Cortex Configuration Wizard") {
+		t.Errorf("expected wizard title, got %q", out)
+	}
+	if !strings.Contains(out, "MCP Profile:") {
+		t.Errorf("expected MCP Profile line, got %q", out)
+	}
+	if !strings.Contains(out, "cortex tui --config") {
+		t.Errorf("expected tui --config tip, got %q", out)
+	}
+
+	// 2. Wizard without interactive tty defaults to CLI output
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "config", "wizard"}, stdout, stderr); code != 0 {
+		t.Fatalf("config wizard code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Cortex Configuration Wizard") {
+		t.Errorf("expected wizard title in non-tty default, got %q", stdout.String())
+	}
+
+	// 3. Wizard with --tui delegates to runTUI with --config
+	origRunTUI := runTUIFn
+	var capturedArgs []string
+	runTUIFn = func(args []string, out, err io.Writer) int {
+		capturedArgs = append([]string{}, args...)
+		return 42
+	}
+	defer func() { runTUIFn = origRunTUI }()
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "config", "wizard", "--tui"}, stdout, stderr); code != 42 {
+		t.Fatalf("config wizard --tui expected exit code 42 from mocked runTUI, got %d", code)
+	}
+	if len(capturedArgs) != 1 || capturedArgs[0] != "--config" {
+		t.Fatalf("expected args [--config] passed to runTUI, got %v", capturedArgs)
+	}
+
+	// 4. cortex tui --config delegates to runTUI with --config
+	capturedArgs = nil
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "tui", "--config"}, stdout, stderr); code != 42 {
+		t.Fatalf("cortex tui --config expected code 42, got %d", code)
+	}
+	if len(capturedArgs) != 1 || capturedArgs[0] != "--config" {
+		t.Fatalf("expected args [--config] passed to runTUI, got %v", capturedArgs)
+	}
+
+	// 5. cortex tui without flags passes empty args
+	capturedArgs = nil
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"cortex", "tui"}, stdout, stderr); code != 42 {
+		t.Fatalf("cortex tui expected code 42, got %d", code)
+	}
+	if len(capturedArgs) != 0 {
+		t.Fatalf("expected empty args passed to runTUI, got %v", capturedArgs)
+	}
+}
+

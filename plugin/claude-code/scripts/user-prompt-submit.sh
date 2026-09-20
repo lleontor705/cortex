@@ -40,7 +40,7 @@ main() {
     # First message — inject the static ToolSearch + cortex_context instruction
     touch "$STATE_FILE" 2>/dev/null || true
 
-    TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__cortex_save,mcp__plugin_cortex_cortex__cortex_search,mcp__plugin_cortex_cortex__cortex_context,mcp__plugin_cortex_cortex__cortex_session_summary,mcp__plugin_cortex_cortex__cortex_get_observation,mcp__plugin_cortex_cortex__cortex_save_prompt,mcp__plugin_cortex_cortex__cortex_relate,mcp__plugin_cortex_cortex__cortex_graph,mcp__plugin_cortex_cortex__cortex_search_hybrid,mcp__plugin_cortex_cortex__cortex_revision_history"$'\n\n'"After loading tools, call cortex_context to check for prior session history before responding."
+    TOOL_MSG="CRITICAL FIRST ACTION — Execute this ToolSearch NOW before responding to the user:"$'\n'"select:mcp__plugin_cortex_cortex__cortex_save,mcp__plugin_cortex_cortex__cortex_search,mcp__plugin_cortex_cortex__cortex_context,mcp__plugin_cortex_cortex__cortex_session_summary,mcp__plugin_cortex_cortex__cortex_get_observation,mcp__plugin_cortex_cortex__cortex_update,mcp__plugin_cortex_cortex__cortex_relate,mcp__plugin_cortex_cortex__cortex_graph,mcp__plugin_cortex_cortex__cortex_get_agent_context,mcp__plugin_cortex_cortex__cortex_revision_history"$'\n\n'"After loading tools, call cortex_context to check for prior session history before responding."
     OUTPUT=$(jq -n --arg msg "$TOOL_MSG" '{"systemMessage": $msg}')
 
     printf '%s\n' "$OUTPUT"

@@ -698,3 +698,30 @@ func TestSplitPreviewToggle(t *testing.T) {
 		t.Fatal("expected PreviewVisible to be false after second 'v'")
 	}
 }
+
+func TestSetupProfileCycle(t *testing.T) {
+	m := New(&Deps{})
+	m.Screen = ScreenSetup
+	m.SetupProfile = "agent"
+
+	// Press 'p' -> dev
+	updated, _ := m.handleSetupKeys("p")
+	m = updated.(Model)
+	if m.SetupProfile != "dev" {
+		t.Fatalf("expected profile dev, got %q", m.SetupProfile)
+	}
+
+	// Press 'p' -> minimal
+	updated, _ = m.handleSetupKeys("p")
+	m = updated.(Model)
+	if m.SetupProfile != "minimal" {
+		t.Fatalf("expected profile minimal, got %q", m.SetupProfile)
+	}
+
+	// Press 'p' -> agent
+	updated, _ = m.handleSetupKeys("p")
+	m = updated.(Model)
+	if m.SetupProfile != "agent" {
+		t.Fatalf("expected profile agent, got %q", m.SetupProfile)
+	}
+}

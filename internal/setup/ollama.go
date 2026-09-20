@@ -73,9 +73,10 @@ func SetupOllama(baseURL string, model string) (*OllamaSetupResult, error) {
 	cfg.Search.EmbeddingProvider = "ollama"
 	cfg.Search.EmbeddingModel = model
 	cfg.Search.EmbeddingBaseURL = baseURL
-	cfg.AI.Provider = "ollama"
-	cfg.AI.Model = model
-	cfg.AI.BaseURL = baseURL
+	if cfg.AI.Provider == "" {
+		cfg.AI.Provider = "ollama"
+		cfg.AI.BaseURL = baseURL
+	}
 
 	targetPath := cfg.LoadedFrom
 	if targetPath == "" {

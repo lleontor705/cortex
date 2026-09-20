@@ -971,5 +971,123 @@ func TestMCP_ArgHelpers(t *testing.T) {
 	}
 }
 
+func TestBlastRadius_SchemaAndTargetResolution(t *testing.T) {
+	stores := setupTestStores(t)
+	srv := NewServerWithTools(stores, ProfileDev)
+
+	tool := srv.GetTool("cortex_get_blast_radius")
+	if tool == nil {
+		t.Fatal("cortex_get_blast_radius not registered in ProfileDev")
+	}
+
+	// 1. Verify schema: target is required, observation_id is optional
+	var targetRequired bool
+	var obsIDRequired bool
+	for _, r := range tool.Tool.InputSchema.Required {
+		if r == "target" {
+			targetRequired = true
+		}
+		if r == "observation_id" {
+			obsIDRequired = true
+		}
+	}
+	if !targetRequired {
+		t.Errorf("expected 'target' to be required in cortex_get_blast_radius schema")
+	}
+	if obsIDRequired {
+		t.Errorf("expected 'observation_id' to be optional in cortex_get_blast_radius schema")
+	}
+
+	targetProp, ok := tool.Tool.InputSchema.Properties["target"].(map[string]any)
+	if !ok || targetProp["type"] != "string" {
+		t.Errorf("expected 'target' property to have type 'string', got %#v", targetProp)
+	}
+
+	obsIDProp, ok := tool.Tool.InputSchema.Properties["observation_id"].(map[string]any)
+	if !ok || obsIDProp["type"] != "number" {
+		t.Errorf("expected 'observation_id' property to have type 'number', got %#v", obsIDProp)
+	}
+
+	// 2. Test code graph blast radius with ONLY target (no observation_id)
+	tempDir := t.TempDir()
+	goFile := filepath.Join(tempDir, "service.go")
+	if err := os.WriteFile(goFile, []byte(`package service
+
+func ExecuteAction() {
+	Helper()
+}
+
+func Helper() {}
+`), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	ingestHandler := handleIngestCode(stores)
+	callTool(t, ingestHandler, map[string]interface{}{
+		"path":    tempDir,
+		"project": "blast-test",
+	})
+
+	blastHandler := handleGetBlastRadius(stores)
+
+	// Call with ONLY target (code symbol), no observation_id
+	res1 := callTool(t, blastHandler, map[string]interface{}{
+		"project": "blast-test",
+		"target":  "ExecuteAction",
+	})
+	txt1 := resultText(res1)
+	if !strings.Contains(txt1, "ExecuteAction") {
+		t.Fatalf("expected ExecuteAction in blast radius output, got: %s", txt1)
+	}
+
+	// Call with target and max_depth
+	res2 := callTool(t, blastHandler, map[string]interface{}{
+		"project":   "blast-test",
+		"target":    "ExecuteAction",
+		"max_depth": float64(2),
+	})
+	txt2 := resultText(res2)
+	if !strings.Contains(txt2, "ExecuteAction") {
+		t.Fatalf("expected ExecuteAction with max_depth, got: %s", txt2)
+	}
+
+	// 3. Test observation blast radius with target as numeric ID string
+	_ = stores.Sessions.Create(context.Background(), &domain.Session{
+		ID:        "blast-session",
+		Project:   "blast-test",
+		Directory: ".",
+	})
+
+	obs := &domain.Observation{
+		Project:   "blast-test",
+		SessionID: "blast-session",
+		Title:     "Root Observation",
+		Content:   "Root content",
+		Type:      "discovery",
+	}
+	if err := stores.Observations.Save(context.Background(), obs); err != nil {
+		t.Fatalf("failed to save observation: %v", err)
+	}
+
+	resObs := callTool(t, blastHandler, map[string]interface{}{
+		"project": "blast-test",
+		"target":  fmt.Sprintf("%d", obs.ID),
+	})
+	txtObs := resultText(resObs)
+	if !strings.Contains(txtObs, "root_node") {
+		t.Fatalf("expected observation blast radius with root_node, got: %s", txtObs)
+	}
+
+	// 4. Test observation blast radius with observation_id (backward compatibility)
+	resLegacy := callTool(t, blastHandler, map[string]interface{}{
+		"project":        "blast-test",
+		"observation_id": float64(obs.ID),
+	})
+	txtLegacy := resultText(resLegacy)
+	if !strings.Contains(txtLegacy, "root_node") {
+		t.Fatalf("expected observation blast radius with observation_id, got: %s", txtLegacy)
+	}
+}
+
 // Ensure unused imports don't cause issues.
 var _ = (*sql.DB)(nil)

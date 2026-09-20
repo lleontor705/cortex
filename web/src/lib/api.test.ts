@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { APIError, CortexClient, type AgentRetrieval } from "./api";
+import { APIError, CortexClient, type AgentRetrieval, type ParsedAgentSSEEvent } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();

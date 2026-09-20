@@ -451,7 +451,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.LocalCfgSaved, m.LocalCfgDirty, m.LocalCfgError = true, false, ""
-		m.LocalCfgFocusField = 11
+		m.LocalCfgFocusField = 16
 		return m, nil
 
 	case reindexProgressMsg:
@@ -1513,10 +1513,22 @@ func (m Model) handleHealthKeys(key string) (tea.Model, tea.Cmd) {
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 var installAgentFn = setup.Install
+var installAgentWithOptionsFn = setup.InstallWithOptions
 var addClaudeCodeAllowlistFn = setup.AddClaudeCodeAllowlist
 
 func installAgent(agentName string) tea.Cmd {
 	return func() tea.Msg {
+		result, err := installAgentFn(agentName)
+		return setupInstallMsg{result: result, err: err}
+	}
+}
+
+func installAgentWithProfile(agentName, profile string) tea.Cmd {
+	return func() tea.Msg {
+		if profile != "" && profile != "agent" && installAgentWithOptionsFn != nil {
+			result, err := installAgentWithOptionsFn(agentName, setup.Options{Profile: profile})
+			return setupInstallMsg{result: result, err: err}
+		}
 		result, err := installAgentFn(agentName)
 		return setupInstallMsg{result: result, err: err}
 	}
@@ -1563,6 +1575,16 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
+	case "p", "P":
+		switch m.SetupProfile {
+		case "agent":
+			m.SetupProfile = "dev"
+		case "dev":
+			m.SetupProfile = "minimal"
+		default:
+			m.SetupProfile = "agent"
+		}
+		return m, nil
 	case "up", "k":
 		if m.Cursor > 0 {
 			m.Cursor--
@@ -1576,7 +1598,11 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 			agent := m.SetupAgents[m.Cursor]
 			m.SetupInstalling = true
 			m.SetupInstallingName = agent.Name
-			return m, tea.Batch(m.SetupSpinner.Tick, installAgent(agent.Name))
+			profile := m.SetupProfile
+			if profile == "" {
+				profile = "agent"
+			}
+			return m, tea.Batch(m.SetupSpinner.Tick, installAgentWithProfile(agent.Name, profile))
 		}
 	case "c", "C":
 		return m.openLocalConfig(), nil
@@ -1590,6 +1616,28 @@ func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
 
 // ──�� Embedding Config ───────────────────────────────────────────────────────
 
+func nextMCPProfile(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "dev":
+		return "minimal"
+	case "minimal":
+		return "agent"
+	default:
+		return "dev"
+	}
+}
+
+func prevMCPProfile(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "minimal":
+		return "dev"
+	case "dev":
+		return "agent"
+	default:
+		return "minimal"
+	}
+}
+
 func (m Model) openLocalConfig() Model {
 	m.PrevScreen, m.Screen, m.LocalCfgFocusField = ScreenDashboard, ScreenLocalConfig, 0
 	m.LocalCfgDirty, m.LocalCfgSaving, m.LocalCfgSaved, m.LocalCfgError = false, false, false, ""
@@ -1602,6 +1650,12 @@ func (m Model) openLocalConfig() Model {
 	m.LocalCfgHTTPEnabled = cfg.HTTP.Enabled
 	m.LocalCfgHTTPHost.SetValue(cfg.HTTP.Host)
 	m.LocalCfgHTTPPort.SetValue(fmt.Sprintf("%d", cfg.HTTP.Port))
+	m.LocalCfgMCPProfile = "agent"
+	if p := strings.ToLower(strings.TrimSpace(cfg.MCP.Profile)); p != "" {
+		if p == "agent" || p == "dev" || p == "minimal" {
+			m.LocalCfgMCPProfile = p
+		}
+	}
 	m.LocalCfgMCPRemote = cfg.MCP.Remote.Enabled
 	m.LocalCfgMCPURL.SetValue(cfg.MCP.Remote.URL)
 	m.LocalCfgMCPTokenEnv.SetValue(cfg.MCP.Remote.TokenEnv)
@@ -1624,15 +1678,15 @@ func (m Model) localConfigInputFocused() bool {
 		return m.LocalCfgHTTPHost.Focused()
 	case 7:
 		return m.LocalCfgHTTPPort.Focused()
-	case 9:
-		return m.LocalCfgMCPURL.Focused()
 	case 10:
+		return m.LocalCfgMCPURL.Focused()
+	case 11:
 		return m.LocalCfgMCPTokenEnv.Focused()
-	case 12:
-		return m.LocalCfgSyncURL.Focused()
 	case 13:
-		return m.LocalCfgSyncTokenEnv.Focused()
+		return m.LocalCfgSyncURL.Focused()
 	case 14:
+		return m.LocalCfgSyncTokenEnv.Focused()
+	case 15:
 		return m.LocalCfgSyncInterval.Focused()
 	default:
 		return false
@@ -1652,15 +1706,15 @@ func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.LocalCfgHTTPHost.Blur()
 		case 7:
 			m.LocalCfgHTTPPort.Blur()
-		case 9:
-			m.LocalCfgMCPURL.Blur()
 		case 10:
+			m.LocalCfgMCPURL.Blur()
+		case 11:
 			m.LocalCfgMCPTokenEnv.Blur()
-		case 12:
-			m.LocalCfgSyncURL.Blur()
 		case 13:
-			m.LocalCfgSyncTokenEnv.Blur()
+			m.LocalCfgSyncURL.Blur()
 		case 14:
+			m.LocalCfgSyncTokenEnv.Blur()
+		case 15:
 			m.LocalCfgSyncInterval.Blur()
 		}
 		return m, nil
@@ -1678,15 +1732,15 @@ func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.LocalCfgHTTPHost, cmd = m.LocalCfgHTTPHost.Update(msg)
 	case 7:
 		m.LocalCfgHTTPPort, cmd = m.LocalCfgHTTPPort.Update(msg)
-	case 9:
-		m.LocalCfgMCPURL, cmd = m.LocalCfgMCPURL.Update(msg)
 	case 10:
+		m.LocalCfgMCPURL, cmd = m.LocalCfgMCPURL.Update(msg)
+	case 11:
 		m.LocalCfgMCPTokenEnv, cmd = m.LocalCfgMCPTokenEnv.Update(msg)
-	case 12:
-		m.LocalCfgSyncURL, cmd = m.LocalCfgSyncURL.Update(msg)
 	case 13:
-		m.LocalCfgSyncTokenEnv, cmd = m.LocalCfgSyncTokenEnv.Update(msg)
+		m.LocalCfgSyncURL, cmd = m.LocalCfgSyncURL.Update(msg)
 	case 14:
+		m.LocalCfgSyncTokenEnv, cmd = m.LocalCfgSyncTokenEnv.Update(msg)
+	case 15:
 		m.LocalCfgSyncInterval, cmd = m.LocalCfgSyncInterval.Update(msg)
 	}
 	return m, cmd
@@ -1716,6 +1770,9 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		case 2:
 			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 7) % 8
 			m.LocalCfgDirty = true
+		case 8:
+			m.LocalCfgMCPProfile = prevMCPProfile(m.LocalCfgMCPProfile)
+			m.LocalCfgDirty = true
 		default:
 			m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
 		}
@@ -1727,6 +1784,9 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		case 2:
 			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
 			m.LocalCfgDirty = true
+		case 8:
+			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
+			m.LocalCfgDirty = true
 		default:
 			m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
 		}
@@ -1735,7 +1795,7 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 			m.LocalCfgFocusField--
 		}
 	case "down", "j":
-		if m.LocalCfgFocusField < 15 {
+		if m.LocalCfgFocusField < 16 {
 			m.LocalCfgFocusField++
 		}
 	case " ":
@@ -1747,8 +1807,10 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 		case 5:
 			m.LocalCfgHTTPEnabled = !m.LocalCfgHTTPEnabled
 		case 8:
+			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
+		case 9:
 			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
-		case 11:
+		case 12:
 			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
 		default:
 			return m, nil
@@ -1772,17 +1834,26 @@ func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
 			m.LocalCfgHTTPHost.Focus()
 		case 7:
 			m.LocalCfgHTTPPort.Focus()
+		case 8:
+			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
+			m.LocalCfgDirty = true
 		case 9:
-			m.LocalCfgMCPURL.Focus()
+			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
+			m.LocalCfgDirty = true
 		case 10:
+			m.LocalCfgMCPURL.Focus()
+		case 11:
 			m.LocalCfgMCPTokenEnv.Focus()
 		case 12:
-			m.LocalCfgSyncURL.Focus()
+			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
+			m.LocalCfgDirty = true
 		case 13:
-			m.LocalCfgSyncTokenEnv.Focus()
+			m.LocalCfgSyncURL.Focus()
 		case 14:
-			m.LocalCfgSyncInterval.Focus()
+			m.LocalCfgSyncTokenEnv.Focus()
 		case 15:
+			m.LocalCfgSyncInterval.Focus()
+		case 16:
 			return m.startLocalConfigSave()
 		}
 	case "t", "T":
@@ -1817,9 +1888,9 @@ func localConfigSection(field int) int {
 		return 1 // AI & LLM (provider, model, base_url)
 	case field <= 7:
 		return 2 // HTTP API (enabled, host, port)
-	case field <= 10:
-		return 3 // MCP (remote, url, token_env)
-	case field <= 14:
+	case field <= 11:
+		return 3 // MCP (profile, remote, url, token_env)
+	case field <= 15:
 		return 4 // Sync (enabled, url, token_env, interval)
 	default:
 		return 5 // Review & Save (save button)
@@ -1827,7 +1898,7 @@ func localConfigSection(field int) int {
 }
 
 func localConfigSectionStart(section int) int {
-	return []int{0, 2, 5, 8, 11, 15}[section]
+	return []int{0, 2, 5, 8, 12, 16}[section]
 }
 
 func (m Model) startLocalConfigSave() (tea.Model, tea.Cmd) {
@@ -1841,6 +1912,7 @@ func (m Model) startLocalConfigSave() (tea.Model, tea.Cmd) {
 		httpEnabled:  m.LocalCfgHTTPEnabled,
 		httpHost:     m.LocalCfgHTTPHost.Value(),
 		httpPort:     m.LocalCfgHTTPPort.Value(),
+		mcpProfile:   m.LocalCfgMCPProfile,
 		mcpRemote:    m.LocalCfgMCPRemote,
 		mcpURL:       m.LocalCfgMCPURL.Value(),
 		mcpTokenEnv:  m.LocalCfgMCPTokenEnv.Value(),

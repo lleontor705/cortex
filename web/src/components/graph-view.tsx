@@ -845,21 +845,21 @@ function GraphPageContent() {
   return (
     <div className="flex flex-col h-[calc(100vh-4.5rem)] space-y-3">
       {/* Top Header & Layer Selector */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] shadow-lg shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-lg bg-card border border-border shadow-sm shrink-0">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
-            <Network className="h-5 w-5 text-blue-500" />
-            <h1 className="text-sm sm:text-base font-bold text-[var(--text-primary)]">
+            <Network className="h-5 w-5 text-primary" />
+            <h1 className="text-sm sm:text-base font-bold text-foreground">
               Grafo Cortex
             </h1>
-            <Badge variant="purple" className="text-[10px] uppercase font-mono">
+            <Badge variant="secondary" className="text-[10px] uppercase font-mono">
               Sigma.js WebGL
             </Badge>
           </div>
 
           {/* Project Selector */}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-[var(--text-muted)] font-medium">Proyecto:</span>
+            <span className="text-xs text-muted-foreground font-medium">Proyecto:</span>
             <Select
               value={selectedProject}
               onChange={(e) => setSelectedProject(e.target.value)}
@@ -875,14 +875,14 @@ function GraphPageContent() {
           </div>
 
           {/* Layer Selector Tabs */}
-          <div className="flex items-center p-1 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg">
+          <div className="flex items-center p-0.5 bg-secondary border border-border rounded-lg">
             <button
               type="button"
               onClick={() => setGraphLayer("knowledge")}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                 graphLayer === "knowledge"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <Brain className="h-3.5 w-3.5" />
@@ -895,8 +895,8 @@ function GraphPageContent() {
               onClick={() => setGraphLayer("code")}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                 graphLayer === "code"
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <Code2 className="h-3.5 w-3.5" />
@@ -909,8 +909,8 @@ function GraphPageContent() {
               onClick={() => setGraphLayer("all")}
               className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                 graphLayer === "all"
-                  ? "bg-purple-600 text-white shadow-sm"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <Globe2 className="h-3.5 w-3.5" />
@@ -921,7 +921,7 @@ function GraphPageContent() {
 
           {/* Search Node */}
           <div className="relative min-w-[170px] sm:min-w-[210px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               type="text"
               placeholder="Buscar nodos o conceptos..."
@@ -933,7 +933,7 @@ function GraphPageContent() {
               <button
                 type="button"
                 onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-white"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -1030,13 +1030,13 @@ function GraphPageContent() {
       </div>
 
       {/* Filter Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-card border border-border text-xs shrink-0 shadow-xs">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mr-1 flex items-center gap-1">
-            <Filter className="h-3 w-3 text-blue-400" /> Filtrar Tipos:
+          <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mr-1 flex items-center gap-1">
+            <Filter className="h-3 w-3 text-primary" /> Filtrar Tipos:
           </span>
 
-          <div className="flex items-center gap-1 mr-1.5 border-r border-[var(--border-subtle)] pr-2">
+          <div className="flex items-center gap-1 mr-1.5 border-r border-border pr-2">
             <button
               type="button"
               onClick={() => {
@@ -1044,7 +1044,7 @@ function GraphPageContent() {
                 Object.keys(KIND_COLORS).forEach((k) => (allTrue[k] = true));
                 setTypeFilters(allTrue);
               }}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] hover:bg-[var(--bg-surface-hover)] text-[var(--text-secondary)] font-mono transition-colors"
+              className="text-[10px] px-1.5 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-foreground font-mono transition-colors"
             >
               Todos
             </button>
@@ -1055,7 +1055,7 @@ function GraphPageContent() {
                 Object.keys(KIND_COLORS).forEach((k) => (allFalse[k] = false));
                 setTypeFilters(allFalse);
               }}
-              className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] hover:bg-[var(--bg-surface-hover)] text-[var(--text-secondary)] font-mono transition-colors"
+              className="text-[10px] px-1.5 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-foreground font-mono transition-colors"
             >
               Ninguno
             </button>
@@ -1074,13 +1074,13 @@ function GraphPageContent() {
                   }
                   className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border transition-all cursor-pointer select-none ${
                     isActive
-                      ? "opacity-100 shadow-sm"
+                      ? "opacity-100 shadow-xs"
                       : "opacity-35 grayscale border-transparent bg-transparent line-through"
                   }`}
                   style={{
                     backgroundColor: isActive ? info.bg : undefined,
                     borderColor: isActive ? info.border : undefined,
-                    color: isActive ? info.text : "var(--text-muted)",
+                    color: isActive ? info.text : "hsl(var(--muted-foreground))",
                   }}
                 >
                   <span
@@ -1093,16 +1093,16 @@ function GraphPageContent() {
             })}
         </div>
 
-        <div className="flex items-center gap-3 text-[11px] text-[var(--text-muted)]">
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground font-mono">
           <span>
             Nodos en Grafo:{" "}
-            <b className="text-[var(--text-primary)]">
+            <b className="text-foreground">
               {sigmaRef.current?.getGraph()?.order || 0}
             </b>
           </span>
           <span>
             Aristas:{" "}
-            <b className="text-[var(--text-primary)]">
+            <b className="text-foreground">
               {sigmaRef.current?.getGraph()?.size || 0}
             </b>
           </span>
@@ -1110,11 +1110,11 @@ function GraphPageContent() {
       </div>
 
       {/* Main Canvas & Inspector Area */}
-      <div className="relative flex-1 rounded-xl bg-[#090d16] border border-[var(--border-subtle)] overflow-hidden shadow-inner flex">
+      <div className="relative flex-1 rounded-lg bg-slate-950 border border-border overflow-hidden shadow-xs flex">
         {/* Loading Spinner */}
         {loading && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm gap-2">
-            <span className="h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 gap-2">
+            <span className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             <span className="text-xs text-slate-300">Cargando Grafo WebGL...</span>
           </div>
         )}
@@ -1133,11 +1133,11 @@ function GraphPageContent() {
         <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
         {/* Floating Zoom & Camera Controls */}
-        <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1.5 bg-[var(--bg-secondary)]/90 backdrop-blur-md p-1.5 rounded-lg border border-[var(--border-subtle)] shadow-xl">
+        <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1.5 bg-card/95 p-1.5 rounded-lg border border-border shadow-md">
           <button
             type="button"
             onClick={handleZoomIn}
-            className="p-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-white rounded transition-colors"
+            className="p-1.5 hover:bg-secondary text-muted-foreground hover:text-foreground rounded transition-colors"
             title="Acercar (Zoom In)"
           >
             <ZoomIn className="h-4 w-4" />
@@ -1145,7 +1145,7 @@ function GraphPageContent() {
           <button
             type="button"
             onClick={handleZoomOut}
-            className="p-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-white rounded transition-colors"
+            className="p-1.5 hover:bg-secondary text-muted-foreground hover:text-foreground rounded transition-colors"
             title="Alejar (Zoom Out)"
           >
             <ZoomOut className="h-4 w-4" />
@@ -1153,7 +1153,7 @@ function GraphPageContent() {
           <button
             type="button"
             onClick={handleResetCamera}
-            className="p-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-white rounded transition-colors"
+            className="p-1.5 hover:bg-secondary text-muted-foreground hover:text-foreground rounded transition-colors"
             title="Restablecer Vista Centrada"
           >
             <RotateCcw className="h-4 w-4" />
@@ -1161,8 +1161,8 @@ function GraphPageContent() {
         </div>
 
         {/* Relation Legend */}
-        <div className="absolute bottom-4 right-4 z-20 hidden lg:flex flex-col gap-1 bg-[var(--bg-secondary)]/90 backdrop-blur-md px-3 py-2 rounded-lg border border-[var(--border-subtle)] shadow-xl text-[11px]">
-          <span className="font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-0.5">
+        <div className="absolute bottom-4 right-4 z-20 hidden lg:flex flex-col gap-1 bg-card/95 px-3 py-2 rounded-lg border border-border shadow-md text-[11px]">
+          <span className="font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">
             Relaciones Semánticas
           </span>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1">
@@ -1177,26 +1177,26 @@ function GraphPageContent() {
 
         {/* Node Detail Inspector Drawer */}
         {selectedNodeData && (
-          <div className="absolute top-3 right-3 bottom-3 z-30 w-80 sm:w-96 flex flex-col rounded-xl bg-[var(--bg-secondary)]/95 backdrop-blur-md border border-[var(--border-subtle)] shadow-2xl overflow-hidden animate-in slide-in-from-right duration-200">
+          <div className="absolute top-3 right-3 bottom-3 z-30 w-80 sm:w-96 flex flex-col rounded-lg bg-card border border-border shadow-md overflow-hidden animate-in slide-in-from-right duration-200">
             {/* Header */}
-            <div className="flex items-center justify-between p-3.5 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+            <div className="flex items-center justify-between p-3.5 border-b border-border bg-secondary/50">
               <div className="flex items-center gap-2 overflow-hidden">
                 <span
                   className="h-3 w-3 rounded-full shrink-0"
                   style={{
                     backgroundColor:
                       KIND_COLORS[(selectedNodeData.kind || "observation").toLowerCase()]?.hex ||
-                      "#3b82f6",
+                      "#2563EB",
                   }}
                 />
-                <h3 className="text-xs font-bold text-[var(--text-primary)] truncate">
+                <h3 className="text-xs font-bold text-foreground truncate">
                   {selectedNodeData.label || `Nodo ${selectedNodeData.id}`}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedNodeId(null)}
-                className="text-[var(--text-muted)] hover:text-white p-1"
+                className="text-muted-foreground hover:text-foreground p-1"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1238,7 +1238,7 @@ function GraphPageContent() {
                       </Badge>
                     )}
                     {selectedNodeFullObs?.scope && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary border border-border text-muted-foreground font-mono">
                         {selectedNodeFullObs.scope}
                       </span>
                     )}
@@ -1246,11 +1246,11 @@ function GraphPageContent() {
 
                   {/* Topic Key if any */}
                   {Boolean(topicKey) && (
-                    <div className="p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-                      <span className="text-[10px] text-[var(--text-muted)] block uppercase font-mono mb-0.5">
+                    <div className="p-2 rounded-lg bg-secondary/40 border border-border">
+                      <span className="text-[10px] text-muted-foreground block uppercase font-mono mb-0.5">
                         Topic Key / Path
                       </span>
-                      <span className="font-mono text-[11px] text-indigo-400 font-semibold break-all">
+                      <span className="font-mono text-[11px] text-primary font-semibold break-all">
                         {topicKey}
                       </span>
                     </div>
@@ -1259,8 +1259,8 @@ function GraphPageContent() {
                   {/* Node Content / Description with Copy */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <label className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider flex items-center gap-1">
-                        <FileText className="h-3 w-3 text-blue-400" />
+                      <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1">
+                        <FileText className="h-3 w-3 text-primary" />
                         Descripción / Contenido Completo
                       </label>
                       <button
@@ -1270,12 +1270,12 @@ function GraphPageContent() {
                           setCopiedNodeContent(true);
                           setTimeout(() => setCopiedNodeContent(false), 2000);
                         }}
-                        className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-medium transition-colors"
+                        className="text-[11px] text-primary hover:text-primary/80 flex items-center gap-1 font-medium transition-colors"
                       >
                         {copiedNodeContent ? (
                           <>
-                            <Check className="h-3 w-3 text-emerald-400" />
-                            <span className="text-emerald-400">¡Copiado!</span>
+                            <Check className="h-3 w-3 text-emerald-500" />
+                            <span className="text-emerald-500">¡Copiado!</span>
                           </>
                         ) : (
                           <>
@@ -1285,9 +1285,9 @@ function GraphPageContent() {
                         )}
                       </button>
                     </div>
-                    <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-primary)] leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto font-mono text-[11px] select-text">
+                    <div className="p-3 rounded-lg bg-secondary/40 border border-border text-foreground leading-relaxed whitespace-pre-wrap max-h-56 overflow-y-auto font-mono text-[11px] select-text">
                       {loadingNodeObs ? (
-                        <span className="text-[var(--text-muted)] italic">Cargando detalles completos...</span>
+                        <span className="text-muted-foreground italic">Cargando detalles completos...</span>
                       ) : (
                         rawContent
                       )}
@@ -1297,12 +1297,12 @@ function GraphPageContent() {
                   {/* Tags Badges */}
                   {nodeTags.length > 0 && (
                     <div className="space-y-1">
-                      <label className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+                      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block">
                         Etiquetas ({nodeTags.length})
                       </label>
                       <div className="flex flex-wrap gap-1">
                         {nodeTags.map((tag: any, idx: number) => (
-                          <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono">
+                          <span key={idx} className="text-[10px] px-2 py-0.5 rounded-md bg-secondary border border-border text-muted-foreground font-mono">
                             #{String(tag)}
                           </span>
                         ))}
@@ -1313,13 +1313,13 @@ function GraphPageContent() {
                   {/* Direct Connected Neighbors */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
+                      <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
                         Conexiones Directas ({connectedEdges.length})
                       </label>
                     </div>
 
                     {connectedEdges.length === 0 ? (
-                      <p className="text-[11px] text-[var(--text-muted)] italic">
+                      <p className="text-[11px] text-muted-foreground italic">
                         Nodo aislado sin aristas directas en este proyecto.
                       </p>
                     ) : (
@@ -1334,13 +1334,13 @@ function GraphPageContent() {
                             <div
                               key={idx}
                               onClick={() => setSelectedNodeId(otherId)}
-                              className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500 cursor-pointer transition-colors"
+                              className="flex items-center justify-between p-2 rounded-lg bg-secondary/40 border border-border hover:border-primary/50 cursor-pointer transition-colors"
                             >
                               <div className="flex items-center gap-1.5 truncate">
-                                <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                                <span className="text-[10px] font-mono text-muted-foreground">
                                   {isOutgoing ? "→" : "←"}
                                 </span>
-                                <span className="font-medium text-[var(--text-primary)] truncate">
+                                <span className="font-medium text-foreground truncate">
                                   {otherId}
                                 </span>
                               </div>
@@ -1365,7 +1365,7 @@ function GraphPageContent() {
             })()}
 
             {/* Footer Action Buttons */}
-            <div className="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] flex flex-col gap-2">
+            <div className="p-3 border-t border-border bg-card flex flex-col gap-2">
               <div className="grid grid-cols-2 gap-2">
                 <Button
                   size="sm"
@@ -1420,35 +1420,35 @@ function GraphPageContent() {
           ) : analyticsReport ? (
             <div className="space-y-4">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-                  <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase block">
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border">
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase block">
                     Total Nodos
                   </span>
-                  <span className="text-lg font-bold text-white font-mono">
+                  <span className="text-lg font-bold text-foreground font-mono">
                     {analyticsReport.total_nodes}
                   </span>
                 </div>
-                <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-                  <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase block">
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border">
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase block">
                     Total Aristas
                   </span>
-                  <span className="text-lg font-bold text-white font-mono">
+                  <span className="text-lg font-bold text-foreground font-mono">
                     {analyticsReport.total_edges}
                   </span>
                 </div>
-                <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-                  <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase block">
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border">
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase block">
                     Densidad
                   </span>
-                  <span className="text-lg font-bold text-emerald-400 font-mono">
+                  <span className="text-lg font-bold text-emerald-500 dark:text-emerald-400 font-mono">
                     {analyticsReport.density.toFixed(4)}
                   </span>
                 </div>
-                <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-                  <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase block">
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border">
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase block">
                     Comunidades
                   </span>
-                  <span className="text-lg font-bold text-blue-400 font-mono">
+                  <span className="text-lg font-bold text-primary font-mono">
                     {analyticsReport.communities?.length || 0}
                   </span>
                 </div>
@@ -1456,16 +1456,16 @@ function GraphPageContent() {
 
               {analyticsReport.god_nodes && analyticsReport.god_nodes.length > 0 && (
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
                     Nodos Críticos / Centrales (God Nodes)
                   </label>
                   <div className="space-y-1 max-h-48 overflow-y-auto">
                     {analyticsReport.god_nodes.map((n, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] font-mono text-[11px]"
+                        className="flex items-center justify-between p-2 rounded-lg bg-secondary/40 border border-border font-mono text-[11px]"
                       >
-                        <span className="text-slate-200 truncate">{n.label || n.id}</span>
+                        <span className="text-foreground truncate">{n.label || n.id}</span>
                         <Badge variant="purple" className="text-[10px]">
                           Grado: {n.degree} (in: {n.in_degree}, out: {n.out_degree})
                         </Badge>
@@ -1478,7 +1478,7 @@ function GraphPageContent() {
               {/* LightRAG Hierarchical Community Summaries */}
               {analyticsReport.community_summaries && analyticsReport.community_summaries.length > 0 && (
                 <div className="space-y-2">
-                  <label className="text-[11px] font-semibold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <label className="text-[11px] font-semibold text-primary uppercase tracking-wider flex items-center gap-1.5">
                     <Sparkles className="h-3.5 w-3.5" />
                     Resúmenes Jerárquicos de Módulos (LightRAG)
                   </label>
@@ -1486,21 +1486,21 @@ function GraphPageContent() {
                     {analyticsReport.community_summaries.map((s, idx) => (
                       <div
                         key={idx}
-                        className="p-3 rounded-lg bg-blue-950/20 border border-blue-500/30 space-y-1.5 text-[11px]"
+                        className="p-3 rounded-lg bg-secondary/40 border border-border space-y-1.5 text-[11px]"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-blue-300">
+                          <span className="font-semibold text-foreground">
                             Comunidad #{s.community_id}: {s.label}
                           </span>
-                          <Badge variant="outline" className="text-[9px] font-mono text-emerald-400 border-emerald-500/30">
+                          <Badge variant="outline" className="text-[9px] font-mono text-emerald-500 border-emerald-500/30">
                             Cohesión: {s.cohesion_score.toFixed(2)}
                           </Badge>
                         </div>
-                        <p className="text-[11px] text-slate-300 leading-relaxed font-mono">
-                          Hub: <span className="text-amber-300">{s.hub_node_label}</span> | Elementos: {s.member_count}
+                        <p className="text-[11px] text-muted-foreground leading-relaxed font-mono">
+                          Hub: <span className="text-amber-500 dark:text-amber-400 font-semibold">{s.hub_node_label}</span> | Elementos: {s.member_count}
                         </p>
                         {s.key_symbols.length > 0 && (
-                          <div className="text-[10px] text-slate-400 truncate">
+                          <div className="text-[10px] text-muted-foreground truncate">
                             Componentes: {s.key_symbols.join(", ")}
                           </div>
                         )}
@@ -1511,7 +1511,7 @@ function GraphPageContent() {
               )}
             </div>
           ) : (
-            <p className="text-slate-400">Sin datos de analítica disponibles.</p>
+            <p className="text-muted-foreground">Sin datos de analítica disponibles.</p>
           )}
         </div>
       </Dialog>
@@ -1528,33 +1528,33 @@ function GraphPageContent() {
 
         <div className="space-y-4 mt-3 text-xs">
           {blastLoading ? (
-            <div className="flex items-center justify-center py-8 gap-2 text-slate-400">
+            <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-rose-500 border-t-transparent" />
               <span>Calculando propagación de impacto...</span>
             </div>
           ) : blastData ? (
             <div className="space-y-3">
-              <div className="p-3 rounded-lg bg-rose-950/20 border border-rose-900/40">
-                <span className="text-slate-400 block mb-1">
-                  Nodos afectados por cambios en <b className="text-white">{blastData.root_node}</b>:
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                <span className="text-muted-foreground block mb-1">
+                  Nodos afectados por cambios en <b className="text-foreground">{blastData.root_node}</b>:
                 </span>
-                <span className="text-xl font-bold text-rose-400 font-mono">
+                <span className="text-xl font-bold text-destructive font-mono">
                   {blastData.total_impacted?.length || 0} nodos ({blastData.blast_radius_pct?.toFixed(1) || 0}% del proyecto)
                 </span>
               </div>
 
               {blastData.total_impacted && blastData.total_impacted.length > 0 && (
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
                     Nodos en la Cascada de Dependencias
                   </label>
                   <div className="space-y-1 max-h-48 overflow-y-auto">
                     {blastData.total_impacted.map((nodeName, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between p-2 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] font-mono text-[11px]"
+                        className="flex items-center justify-between p-2 rounded-lg bg-secondary/40 border border-border font-mono text-[11px]"
                       >
-                        <span className="text-slate-200 truncate">{nodeName}</span>
+                        <span className="text-foreground truncate">{nodeName}</span>
                         <Badge
                           variant={blastData.direct_impact?.includes(nodeName) ? "destructive" : "secondary"}
                           className="text-[10px]"
@@ -1568,7 +1568,7 @@ function GraphPageContent() {
               )}
             </div>
           ) : (
-            <p className="text-slate-400">Selecciona un nodo para iniciar el cálculo.</p>
+            <p className="text-muted-foreground">Selecciona un nodo para iniciar el cálculo.</p>
           )}
         </div>
       </Dialog>
@@ -1577,19 +1577,19 @@ function GraphPageContent() {
       <Dialog open={isConnectModalOpen} onOpenChange={setIsConnectModalOpen}>
         <DialogHeader>
           <DialogTitle>
-            <LinkIcon className="h-4 w-4 text-blue-400" />
+            <LinkIcon className="h-4 w-4 text-primary" />
             Crear Conexión Semántica en el Grafo
           </DialogTitle>
           <DialogClose onClick={() => setIsConnectModalOpen(false)} />
         </DialogHeader>
 
         <form onSubmit={handleConnectSubmit} className="space-y-3.5 mt-3 text-xs">
-          <p className="text-slate-400">
+          <p className="text-muted-foreground">
             Crea una nueva arista semántica dirigida desde el nodo seleccionado.
           </p>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               OBSERVACIÓN DESTINO (TARGET)
             </label>
             <Select
@@ -1610,7 +1610,7 @@ function GraphPageContent() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               TIPO DE RELACIÓN
             </label>
             <Select
@@ -1629,7 +1629,7 @@ function GraphPageContent() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               JUSTIFICACIÓN / MOTIVO (OPCIONAL)
             </label>
             <Input
@@ -1645,7 +1645,7 @@ function GraphPageContent() {
             <Button type="button" variant="outline" size="sm" onClick={() => setIsConnectModalOpen(false)}>
               Cancelar
             </Button>
-            <Button type="submit" size="sm" disabled={isConnecting} className="bg-blue-600 hover:bg-blue-500 text-white">
+            <Button type="submit" size="sm" disabled={isConnecting} className="bg-primary hover:bg-primary/90 text-primary-foreground">
               {isConnecting ? "Conectando..." : "Crear Conexión"}
             </Button>
           </div>
@@ -1656,19 +1656,19 @@ function GraphPageContent() {
       <Dialog open={isResolveModalOpen} onOpenChange={setIsResolveModalOpen}>
         <DialogHeader>
           <DialogTitle>
-            <Zap className="h-4 w-4 text-amber-400" />
+            <Zap className="h-4 w-4 text-amber-500" />
             Resolución de Conflicto en el Grafo
           </DialogTitle>
           <DialogClose onClick={() => setIsResolveModalOpen(false)} />
         </DialogHeader>
 
         <form onSubmit={handleResolveSubmit} className="space-y-3.5 mt-3 text-xs">
-          <p className="text-slate-400">
+          <p className="text-muted-foreground">
             Marca el nodo seleccionado como la versión vigente que supera o invalida a una observación previa.
           </p>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               OBSERVACIÓN OBSOLETA A REEMPLAZAR
             </label>
             <Select
@@ -1689,7 +1689,7 @@ function GraphPageContent() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               MOTIVO DE RESOLUCIÓN
             </label>
             <Input
@@ -1720,9 +1720,9 @@ export default function GraphView() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-[60vh] items-center justify-center text-xs text-[var(--text-muted)]">
+        <div className="flex h-[60vh] items-center justify-center text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             <span>Cargando Grafo Sigma.js WebGL...</span>
           </div>
         </div>

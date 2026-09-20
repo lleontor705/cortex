@@ -341,29 +341,29 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
 
   return (
     <div className="space-y-6">
-      {/* Top Banner: Explanatory & Utility Header with Global LLM Status */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-2xl bg-gradient-to-r from-blue-600/10 via-purple-600/10 to-transparent border border-blue-500/20 shadow-xl">
+      {/* Top Banner: Enterprise Calm Card */}
+      <Card className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-lg bg-card border-border shadow-sm">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-blue-400 shrink-0" />
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+            <Sparkles className="h-5 w-5 text-primary shrink-0" />
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
               Centro de Extracción, Síntesis & Captura Inteligente con IA
             </h1>
           </div>
-          <p className="text-xs text-[var(--text-secondary)] max-w-3xl leading-relaxed">
+          <p className="text-xs text-muted-foreground max-w-3xl leading-relaxed">
             Convierte transcripciones desestructuradas de terminal, chats de IA (Claude Code, Cursor), incidentes de producción o logs de commits en <b>observaciones atómicas indexables</b> y <b>relaciones de grafo</b> para alimentar la memoria compartida del equipo.
           </p>
         </div>
 
         {/* Global LLM Configuration Status */}
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs shadow-sm">
-            <Cpu className="h-4 w-4 text-purple-400 shrink-0" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-xs">
+            <Cpu className="h-4 w-4 text-primary shrink-0" />
             <div className="flex flex-col sm:flex-row sm:items-center sm:gap-1.5">
-              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
                 LLM General:
               </span>
-              <span className="font-mono font-bold text-purple-300">
+              <span className="font-mono font-bold text-foreground">
                 {(llmProvider || "gemini").toUpperCase()} / {llmModel || "gemini-2.5-flash"}
               </span>
             </div>
@@ -373,19 +373,19 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
             <Button
               variant="outline"
               size="sm"
-              className="gap-1.5 text-xs border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-hover)]"
+              className="gap-1.5 text-xs border-border bg-secondary/50 hover:bg-secondary"
               title="Ir a Configuración para cambiar el proveedor de IA o API Key general"
             >
-              <Settings className="h-3.5 w-3.5 text-purple-400" />
+              <Settings className="h-3.5 w-3.5 text-muted-foreground" />
               <span>Configuración LLM</span>
             </Button>
           </Link>
         </div>
-      </div>
+      </Card>
 
       {/* Success Notification */}
       {saveSuccessMessage && (
-        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-xl text-xs flex items-center justify-between gap-2.5">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 p-4 rounded-lg text-xs flex items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5">
             <CheckCircle className="h-5 w-5 shrink-0" />
             <span>{saveSuccessMessage}</span>
@@ -395,7 +395,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
               size="sm"
               variant="outline"
               onClick={() => router.push("/memory")}
-              className="h-7 text-[11px] text-emerald-300 border-emerald-500/30"
+              className="h-7 text-[11px] border-emerald-500/30"
             >
               Ver en Memoria
             </Button>
@@ -403,7 +403,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
               size="sm"
               variant="outline"
               onClick={() => router.push(`/graph?project=${encodeURIComponent(project)}`)}
-              className="h-7 text-[11px] text-emerald-300 border-emerald-500/30"
+              className="h-7 text-[11px] border-emerald-500/30"
             >
               Ver en Grafo
             </Button>
@@ -412,15 +412,15 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
       )}
 
       {/* Mode Navigation Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setActiveMode("extract")}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors ${
               activeMode === "extract"
-                ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
-                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-border"
             }`}
           >
             <Sparkles className="h-4 w-4" />
@@ -430,10 +430,10 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
           <button
             type="button"
             onClick={() => setActiveMode("synthesis")}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors ${
               activeMode === "synthesis"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
-                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-border"
             }`}
           >
             <Layers className="h-4 w-4" />
@@ -443,10 +443,10 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
           <button
             type="button"
             onClick={() => setActiveMode("quick_log")}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+            className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors ${
               activeMode === "quick_log"
-                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
-                : "bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-subtle)]"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-border"
             }`}
           >
             <BookOpen className="h-4 w-4" />
@@ -455,13 +455,13 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
         </div>
 
         {/* Global Project Context Selector */}
-        <div className="flex items-center gap-2 bg-[var(--bg-surface)] border border-[var(--border-subtle)] px-3 py-1 rounded-xl shadow-sm">
-          <FolderKanban className="h-4 w-4 text-blue-400 shrink-0" />
-          <span className="text-[11px] text-[var(--text-muted)] font-medium">Proyecto:</span>
+        <div className="flex items-center gap-2 bg-secondary/50 border border-border px-3 py-1 rounded-lg">
+          <FolderKanban className="h-4 w-4 text-primary shrink-0" />
+          <span className="text-[11px] text-muted-foreground font-medium">Proyecto:</span>
           <Select
             value={project}
             onChange={(e) => setProject(e.target.value)}
-            className="bg-transparent border-0 font-semibold text-xs text-[var(--text-primary)] focus:ring-0 cursor-pointer min-w-[140px]"
+            className="bg-transparent border-0 font-semibold text-xs text-foreground focus:ring-0 cursor-pointer min-w-[140px]"
           >
             {projectsList.map((p) => (
               <option key={p} value={p}>
@@ -475,39 +475,39 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
       {/* MODE 1: EXTRACTOR */}
       {activeMode === "extract" && (
         <div className="space-y-6">
-          <Card className="p-5 sm:p-6 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+          <Card className="p-5 sm:p-6 bg-card border-border shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border">
               <div>
-                <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-blue-400" />
+                <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-primary" />
                   <span>Ingesta de Texto Desestructurado</span>
                 </h3>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                <p className="text-xs text-muted-foreground mt-0.5">
                   Pega texto libre o selecciona una plantilla de ejemplo para probar la extracción automática.
                 </p>
               </div>
 
               {/* Template Quick Actions */}
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] text-[var(--text-muted)] font-medium">Plantillas:</span>
+                <span className="text-[11px] text-muted-foreground font-medium">Plantillas:</span>
                 <button
                   type="button"
                   onClick={() => handleApplyTemplate("bugfix")}
-                  className="px-2.5 py-1 rounded-lg bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-hover)] border border-[var(--border-subtle)] text-[11px] text-red-400 font-medium transition-all"
+                  className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary border border-border text-[11px] text-red-500 dark:text-red-400 font-medium transition-colors"
                 >
                   🐛 Bugfix
                 </button>
                 <button
                   type="button"
                   onClick={() => handleApplyTemplate("architecture")}
-                  className="px-2.5 py-1 rounded-lg bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-hover)] border border-[var(--border-subtle)] text-[11px] text-blue-400 font-medium transition-all"
+                  className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary border border-border text-[11px] text-primary font-medium transition-colors"
                 >
                   🏗️ Arquitectura
                 </button>
                 <button
                   type="button"
                   onClick={() => handleApplyTemplate("pr_log")}
-                  className="px-2.5 py-1 rounded-lg bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-hover)] border border-[var(--border-subtle)] text-[11px] text-purple-400 font-medium transition-all"
+                  className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary border border-border text-[11px] text-foreground font-medium transition-colors"
                 >
                   🚀 Pull Request
                 </button>
@@ -515,7 +515,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
             </div>
 
             <textarea
-              className="flex min-h-[160px] w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 font-mono leading-relaxed"
+              className="flex min-h-[160px] w-full rounded-lg border border-input bg-background p-3.5 text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono leading-relaxed"
               rows={7}
               placeholder="Pega aquí transcripciones de chats de Claude/Cursor, explicaciones técnicas de incidentes, notas de reunión o código..."
               value={rawText}
@@ -523,8 +523,8 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
             />
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-              <label className="flex items-center gap-2 text-xs text-[var(--text-muted)] cursor-pointer hover:text-[var(--text-primary)]">
-                <Upload className="h-4 w-4 text-blue-400" />
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                <Upload className="h-4 w-4 text-primary" />
                 <span>Cargar archivo .md / .txt</span>
                 <input
                   type="file"
@@ -540,7 +540,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                     variant="ghost"
                     size="sm"
                     onClick={() => setRawText("")}
-                    className="text-xs text-[var(--text-muted)]"
+                    className="text-xs text-muted-foreground"
                   >
                     Limpiar
                   </Button>
@@ -549,7 +549,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                   onClick={handleExtract}
                   size="sm"
                   disabled={isExtracting || !rawText.trim()}
-                  className="gap-2 shadow-lg shadow-blue-600/20 text-xs bg-blue-600 hover:bg-blue-500 text-white px-5"
+                  className="gap-2 shadow-xs text-xs px-5"
                 >
                   <Sparkles className="h-4 w-4" />
                   <span>{isExtracting ? "Analizando y Extrayendo..." : "Ejecutar Extracción IA"}</span>
@@ -561,17 +561,17 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
           {/* Extracted Drafts Reviewer */}
           {drafts.length > 0 && (
             <div className="space-y-4 animate-in fade-in">
-              <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="p-4 rounded-lg bg-secondary/50 border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                    <h3 className="text-sm font-bold text-foreground">
                       Revisión de Observaciones Extraídas ({drafts.length})
                     </h3>
                     <Badge variant="outline" className="text-[10px] uppercase font-mono">
                       {sourceMethod}
                     </Badge>
                   </div>
-                  <p className="text-xs text-[var(--text-muted)]">{extractionSummary}</p>
+                  <p className="text-xs text-muted-foreground">{extractionSummary}</p>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -579,7 +579,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                     variant="outline"
                     size="sm"
                     onClick={toggleSelectAllDrafts}
-                    className="text-xs border-[var(--border-subtle)]"
+                    className="text-xs border-border"
                   >
                     {drafts.every((d) => d.selected) ? "Deseleccionar Todos" : "Seleccionar Todos"}
                   </Button>
@@ -587,7 +587,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                     onClick={handleSaveSelectedToCortex}
                     size="sm"
                     disabled={isSaving || drafts.filter((d) => d.selected).length === 0}
-                    className="gap-2 shadow-lg shadow-emerald-600/20 text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
+                    className="gap-2 shadow-xs text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
                   >
                     <Database className="h-4 w-4" />
                     <span>
@@ -604,10 +604,10 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                 {drafts.map((draft, idx) => (
                   <Card
                     key={idx}
-                    className={`p-4 bg-[var(--bg-secondary)] border transition-all space-y-3 ${
+                    className={`p-4 bg-card border transition-all space-y-3 rounded-lg ${
                       draft.selected
-                        ? "border-blue-500/50 shadow-md shadow-blue-500/5"
-                        : "border-[var(--border-subtle)] opacity-60"
+                        ? "border-primary shadow-xs"
+                        : "border-border opacity-60"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -615,12 +615,12 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                         <button
                           type="button"
                           onClick={() => updateDraft(idx, "selected", !draft.selected)}
-                          className="text-blue-400 hover:text-blue-300"
+                          className="text-primary hover:text-primary/80"
                         >
                           {draft.selected ? (
                             <CheckSquare className="h-4 w-4" />
                           ) : (
-                            <Square className="h-4 w-4 text-[var(--text-muted)]" />
+                            <Square className="h-4 w-4 text-muted-foreground" />
                           )}
                         </button>
                         <Input
@@ -633,7 +633,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                       <Select
                         value={draft.type}
                         onChange={(e) => updateDraft(idx, "type", e.target.value)}
-                        className="h-6 text-[10px] w-24 bg-[var(--bg-surface)]"
+                        className="h-6 text-[10px] w-24 bg-secondary/50 border-border"
                       >
                         <option value="decision">decision</option>
                         <option value="bugfix">bugfix</option>
@@ -647,7 +647,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                       rows={3}
                       value={draft.content}
                       onChange={(e) => updateDraft(idx, "content", e.target.value)}
-                      className="w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2 text-xs text-[var(--text-secondary)] focus:outline-none focus:ring-1 focus:ring-blue-500 leading-relaxed font-mono"
+                      className="w-full rounded-lg border border-input bg-background p-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring leading-relaxed font-mono"
                     />
 
                     {draft.tags && draft.tags.length > 0 && (
@@ -655,7 +655,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                         {draft.tags.map((tag, tIdx) => (
                           <span
                             key={tIdx}
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-muted)] font-mono"
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-secondary border border-border text-muted-foreground font-mono"
                           >
                             #{tag}
                           </span>
@@ -668,28 +668,28 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
 
               {/* Detected Edges */}
               {extractedEdges.length > 0 && (
-                <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3 shadow-lg">
-                  <CardTitle className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-2">
-                    <Share2 className="h-4 w-4 text-blue-400" />
+                <Card className="p-5 bg-card border-border space-y-3 shadow-sm">
+                  <CardTitle className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
+                    <Share2 className="h-4 w-4 text-primary" />
                     <span>Relaciones Detectadas para el Grafo ({extractedEdges.length})</span>
                   </CardTitle>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                     {extractedEdges.map((e, idx) => (
                       <div
                         key={idx}
-                        className="p-3 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl flex flex-col justify-between gap-1 text-xs"
+                        className="p-3 bg-secondary/50 border border-border rounded-lg flex flex-col justify-between gap-1 text-xs"
                       >
                         <div className="flex flex-wrap items-center gap-1.5 font-medium">
-                          <span className="text-[var(--text-primary)]">{e.from_title}</span>
-                          <span className="text-[var(--text-muted)]">➔</span>
-                          <Badge variant="outline" className="text-[10px] font-mono text-blue-400">
+                          <span className="text-foreground">{e.from_title}</span>
+                          <span className="text-muted-foreground">➔</span>
+                          <Badge variant="outline" className="text-[10px] font-mono text-primary">
                             {e.relation_type}
                           </Badge>
-                          <span className="text-[var(--text-muted)]">➔</span>
-                          <span className="text-[var(--text-primary)]">{e.to_title}</span>
+                          <span className="text-muted-foreground">➔</span>
+                          <span className="text-foreground">{e.to_title}</span>
                         </div>
                         {e.reasoning && (
-                          <span className="text-[11px] text-[var(--text-muted)] italic">
+                          <span className="text-[11px] text-muted-foreground italic">
                             {e.reasoning}
                           </span>
                         )}
@@ -706,14 +706,14 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
       {/* MODE 2: SYNTHESIS */}
       {activeMode === "synthesis" && (
         <div className="space-y-6">
-          <Card className="p-5 sm:p-6 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+          <Card className="p-5 sm:p-6 bg-card border-border shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border">
               <div>
-                <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                  <Layers className="h-4 w-4 text-purple-400" />
+                <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-primary" />
                   <span>Generador de Ficha y Síntesis de Arquitectura</span>
                 </h3>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                <p className="text-xs text-muted-foreground mt-0.5">
                   El LLM analiza todo el historial de observaciones del proyecto <b>{project}</b> para sintetizar el estado del software.
                 </p>
               </div>
@@ -722,7 +722,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                 onClick={handleSynthesize}
                 disabled={isSynthesizing}
                 size="sm"
-                className="gap-2 bg-purple-600 hover:bg-purple-500 text-white text-xs shadow-lg shadow-purple-600/20 px-5 shrink-0"
+                className="gap-2 text-xs shadow-xs px-5 shrink-0"
               >
                 <Sparkles className="h-4 w-4" />
                 <span>{isSynthesizing ? "Sintetizando Proyecto..." : "Generar Síntesis"}</span>
@@ -731,12 +731,12 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
 
             {synthesisResult ? (
               <div className="space-y-6 animate-in fade-in pt-2">
-                <div className="flex items-center justify-between p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
+                <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50 border border-border">
                   <div>
-                    <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                    <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
                       Resumen Ejecutivo del Proyecto
                     </h4>
-                    <p className="text-xs text-[var(--text-secondary)] mt-1 leading-relaxed">
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                       {synthesisResult.summary}
                     </p>
                   </div>
@@ -744,7 +744,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                     variant="outline"
                     size="sm"
                     onClick={copySynthesisMarkdown}
-                    className="text-xs gap-1.5 shrink-0 border-[var(--border-subtle)] ml-3"
+                    className="text-xs gap-1.5 shrink-0 border-border ml-3"
                   >
                     {copiedSynthesis ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                     <span>{copiedSynthesis ? "¡Copiado!" : "Copiar Markdown"}</span>
@@ -753,17 +753,17 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {/* Key Decisions */}
-                  <Card className="p-4 bg-[var(--bg-surface)] border-blue-500/30 space-y-2.5">
-                    <div className="flex items-center gap-2 pb-2 border-b border-[var(--border-subtle)]">
-                      <Cpu className="h-4 w-4 text-blue-400" />
-                      <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                  <Card className="p-4 bg-card border-border space-y-2.5 shadow-xs">
+                    <div className="flex items-center gap-2 pb-2 border-b border-border">
+                      <Cpu className="h-4 w-4 text-primary" />
+                      <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
                         Decisiones Clave ({synthesisResult.key_decisions.length})
                       </h4>
                     </div>
-                    <ul className="space-y-2 text-xs text-[var(--text-secondary)]">
+                    <ul className="space-y-2 text-xs text-muted-foreground">
                       {synthesisResult.key_decisions.map((d, i) => (
                         <li key={i} className="flex items-start gap-2">
-                          <span className="text-blue-400 font-bold">•</span>
+                          <span className="text-primary font-bold">•</span>
                           <span className="leading-relaxed">{d}</span>
                         </li>
                       ))}
@@ -771,17 +771,17 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                   </Card>
 
                   {/* Patterns */}
-                  <Card className="p-4 bg-[var(--bg-surface)] border-purple-500/30 space-y-2.5">
-                    <div className="flex items-center gap-2 pb-2 border-b border-[var(--border-subtle)]">
-                      <Code2 className="h-4 w-4 text-purple-400" />
-                      <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                  <Card className="p-4 bg-card border-border space-y-2.5 shadow-xs">
+                    <div className="flex items-center gap-2 pb-2 border-b border-border">
+                      <Code2 className="h-4 w-4 text-primary" />
+                      <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
                         Patrones de Código ({synthesisResult.patterns.length})
                       </h4>
                     </div>
-                    <ul className="space-y-2 text-xs text-[var(--text-secondary)]">
+                    <ul className="space-y-2 text-xs text-muted-foreground">
                       {synthesisResult.patterns.map((p, i) => (
                         <li key={i} className="flex items-start gap-2">
-                          <span className="text-purple-400 font-bold">•</span>
+                          <span className="text-primary font-bold">•</span>
                           <span className="leading-relaxed">{p}</span>
                         </li>
                       ))}
@@ -789,17 +789,17 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                   </Card>
 
                   {/* Open Issues */}
-                  <Card className="p-4 bg-[var(--bg-surface)] border-amber-500/30 space-y-2.5">
-                    <div className="flex items-center gap-2 pb-2 border-b border-[var(--border-subtle)]">
-                      <Bug className="h-4 w-4 text-amber-400" />
-                      <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider">
+                  <Card className="p-4 bg-card border-border space-y-2.5 shadow-xs">
+                    <div className="flex items-center gap-2 pb-2 border-b border-border">
+                      <Bug className="h-4 w-4 text-amber-500" />
+                      <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
                         Problemas / Deuda ({synthesisResult.open_issues.length})
                       </h4>
                     </div>
-                    <ul className="space-y-2 text-xs text-[var(--text-secondary)]">
+                    <ul className="space-y-2 text-xs text-muted-foreground">
                       {synthesisResult.open_issues.map((issue, i) => (
                         <li key={i} className="flex items-start gap-2">
-                          <span className="text-amber-400 font-bold">•</span>
+                          <span className="text-amber-500 font-bold">•</span>
                           <span className="leading-relaxed">{issue}</span>
                         </li>
                       ))}
@@ -808,8 +808,8 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                 </div>
               </div>
             ) : (
-              <div className="py-12 text-center text-[var(--text-muted)] space-y-3 bg-[var(--bg-surface)] rounded-xl border border-[var(--border-subtle)]">
-                <Layers className="h-8 w-8 mx-auto text-[var(--text-muted)] opacity-50" />
+              <div className="py-12 text-center text-muted-foreground space-y-3 bg-secondary/30 rounded-lg border border-border">
+                <Layers className="h-8 w-8 mx-auto text-muted-foreground opacity-50" />
                 <div className="text-xs">
                   Haz clic en <b>"Generar Síntesis"</b> para que la IA elabore el informe consolidado de <b>{project}</b>.
                 </div>
@@ -821,13 +821,13 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
 
       {/* MODE 3: QUICK GUIDED CAPTURE */}
       {activeMode === "quick_log" && (
-        <Card className="p-5 sm:p-7 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
-          <div className="pb-3 border-b border-[var(--border-subtle)]">
-            <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-              <BookOpen className="h-4 w-4 text-emerald-400" />
+        <Card className="p-5 sm:p-7 bg-card border-border shadow-sm space-y-4">
+          <div className="pb-3 border-b border-border">
+            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-primary" />
               <span>Captura Rápida de Conocimiento (Quick Log)</span>
             </h3>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5">
               Registra directamente una decisión o solución arquitectónica en el proyecto <b>{project}</b> sin pasar por transcripciones.
             </p>
           </div>
@@ -835,7 +835,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
           <form onSubmit={handleQuickSave} className="space-y-4 text-xs">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-2 space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   TÍTULO CONCISO *
                 </label>
                 <Input
@@ -848,7 +848,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   TIPO DE OBSERVACIÓN
                 </label>
                 <Select
@@ -866,7 +866,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                 CONTENIDO / EXPLICACIÓN TÉCNICA *
               </label>
               <textarea
@@ -875,12 +875,12 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
                 placeholder="Describe la decisión tomada, contexto, causas o reglas a respetar por los agentes..."
                 value={quickContent}
                 onChange={(e) => setQuickContent(e.target.value)}
-                className="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono leading-relaxed"
+                className="w-full rounded-lg border border-input bg-background p-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono leading-relaxed"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                 TAGS (SEPARADOS POR COMA)
               </label>
               <Input
@@ -895,7 +895,7 @@ ${synthesisResult.open_issues.map((i) => `- ${i}`).join("\n")}
               <Button
                 type="submit"
                 disabled={isQuickSaving}
-                className="gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-6 shadow-md shadow-emerald-600/20"
+                className="gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-6 shadow-xs"
               >
                 <CheckCircle className="h-4 w-4" />
                 <span>{isQuickSaving ? "Guardando..." : "Guardar Observación"}</span>

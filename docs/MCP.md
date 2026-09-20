@@ -4,13 +4,23 @@ Cortex uses the `cortex_*` namespace. Local stdio and server Streamable HTTP are
 
 ## Local Profiles
 
-| Profile | Tools |
-|---|---|
-| `agent` | `save`, `search`, `context`, `session_summary`, `session_start`, `session_end`, `get_observation`, `suggest_topic_key`, `capture_passive`, `save_prompt`, `update`, `relate`, `graph`, `graph_relationships`, `graph_path`, `score`, `search_hybrid`, `revision_history`, `consolidate`, `project_dna` |
-| `admin` | `delete`, `stats`, `timeline`, `archive`, `merge_projects` |
-| `temporal` | `temporal_create_edge`, `temporal_get_edges`, `temporal_get_relevant`, `temporal_create_snapshot`, `temporal_record_operation`, `temporal_evaluate_quality`, `temporal_system_metrics`, `temporal_health_check`, `temporal_evolution_path`, `temporal_fact_state`, `search_temporal` |
+Cortex MCP is strictly focused on **agentic capabilities** — tools that an AI coding agent can autonomously reason about, provide valid inputs for, and consume within its cognitive loop:
 
-Use `cortex mcp --tools=agent`, `--tools=admin`, or `--tools=temporal`. An empty `--tools` value loads all local tools. Local observations, prompts, and edges use integer IDs; local sessions use opaque agent-provided strings.
+| Profile | Description | Tools | Count |
+|---|---|---|---|
+| `agent` | Canonical AI coding agent suite (default) | `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search`, `cortex_get_agent_context`, `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_get_rules`, `cortex_save_rule`, `cortex_ingest_code`, `cortex_get_blast_radius`, `cortex_code_tests`, `cortex_get_code_symbols`, `cortex_detect_cycles`, `cortex_analyze_architecture`, `cortex_code_map`, `cortex_get_status`, `cortex_revision_history`, `cortex_handoff` | 22 |
+| `dev` | Golden suite for local software development | `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`, `cortex_get_agent_context`, `cortex_relate`, `cortex_get_rules`, `cortex_ingest_code`, `cortex_get_blast_radius`, `cortex_code_tests` | 11 |
+| `minimal` | Ultra-low footprint for fast inference | `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation` | 5 |
+
+Use `cortex mcp` (defaults to `agent`), or specify `--tools=dev` or `--tools=minimal`. Local observations, prompts, and edges use integer IDs; local sessions use opaque agent-provided strings.
+
+### Architectural Note: Retiring Non-Agentic Tools from MCP
+The `admin` (destructive deletion, project merging, compaction) and `temporal` (execution duration, memory telemetry, manual RFC3339 timestamps) toolsets are **deprecated and retired from standard agent discovery**:
+- **Why?** An autonomous agent should never be exposed to destructive operations (`cortex_delete`) or asked to record infrastructure memory telemetry (`cortex_temporal_record_operation`). Exposing 40+ tools imposes a massive ~6,000-token prompt tax and degrades tool-calling accuracy.
+- **Where did they go?**
+  - Administrative operations belong to the **CLI** (`cortex gc`, `cortex merge-projects`, `cortex doctor`), the **TUI**, and the **Web Dashboard**.
+  - Telemetry and health checks belong to internal middleware and the `/health` REST endpoint.
+  - Temporal evolution is handled natively and automatically via `topic_key` upserts in `cortex_save` and `cortex_revision_history`.
 
 ## Global Remote Proxy
 
@@ -37,7 +47,7 @@ Server MCP exposes the authenticated catalog:
 | `cortex_save` | Save durable observation | `title`, `content`, `session_id`, `project`, `type`, `source` |
 | `cortex_handoff` | Idempotent durable memory handoff | `idempotency_key`, `observation`, `relation` |
 | `cortex_session_start` | Start memory session | `project`, `summary` |
-| `cortex_search` | Search observations | `query`, `type`, `project`, `scope`, `limit` |
+| `cortex_search` | Search observations (hybrid semantic + FTS5) | `query`, `type`, `project`, `scope`, `limit` |
 | `cortex_get_observation` | Get observation by public UUID | `id` |
 | `cortex_update` | Update observation fields | `id`, `title`, `content`, `type`, `project`, `scope` |
 | `cortex_delete` | Delete observation | `id` |
@@ -45,8 +55,13 @@ Server MCP exposes the authenticated catalog:
 | `cortex_graph` | Get related observations | `observation_id`, `depth` |
 | `cortex_graph_subgraph` | Get heterogeneous bounded graph | `observation_id`, `depth`, `max_nodes` |
 | `cortex_get_blast_radius` | Calculate blast radius & impacted files | `node_id`, `depth` |
+| `cortex_ingest_code` | Ingest codebase AST symbols and dependencies | `path`, `project`, `max_files` |
+| `cortex_get_code_symbols` | Query indexed AST symbols with regex | `project`, `file`, `kind`, `package`, `query`, `limit` |
+| `cortex_get_code_graph` | Structural code graph with callers/callees | `project` |
 | `cortex_analyze_architecture` | Full graph architecture & Louvain communities | `project` |
 | `cortex_detect_cycles` | Detect circular dependencies (Tarjan SCC) | `project` |
+| `cortex_get_agent_context` | Structured context pack for agent prompts | `project`, `format`, `max_tokens` |
+| `cortex_get_compact_context` | Bounded high-density prompt context pack | `project`, `max_tokens` |
 | `cortex_score` | Get observation importance score | `observation_id` |
 | `cortex_get_project_context` | Get corporate governance & project rules | `project` |
 | `cortex_list_skills` | List corporate and project skills | `project` |

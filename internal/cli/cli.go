@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -74,7 +75,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		return runServe(args[2:], stdout, stderr)
 	case "tui":
-		return runTUI(stdout, stderr)
+		return runTUI(args[2:], stdout, stderr)
 	case "search":
 		exitCode = runSearch(args[2:], stdout, stderr)
 	case "save":
@@ -138,15 +139,15 @@ Usage:
   cortex <command> [arguments]
 
 Commands:
-  mcp [--tools=PROFILE]  Start MCP server (stdio)
-  search <query>         Search memories
+  mcp [--tools=PROFILE]  Start MCP server (stdio; defaults to agent: agent|dev|minimal)
+  search <query>         Search memories (supports --mode=auto|direct|semantic|multi_hop)
   save <title> <content> Save a memory
   ingest [path]          Scan and index codebase AST symbols and knowledge graph
   timeline <obs_id>      Show chronological context around an observation
   revisions <obs_id>     Show revision history for an observation
   context [project]      Show recent memory context
   stats                  Show memory statistics
-  setup [agent]          Install agent integration
+  setup [agent] [--profile=P] Install agent integration (profiles: dev, minimal, agent)
   import --from-json     Import observations from a JSON file
   export [--project P]   Export observations to JSON
   export --to-obsidian --vault PATH  Export a read-only Obsidian projection
@@ -157,12 +158,12 @@ Commands:
   gc [--days N]          Garbage collect archived observations (default: 90 days)
   backup [path]          Create an atomic online backup snapshot of the SQLite database
   watch [path]           Watch repository for real-time incremental AST indexing
-  config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard)
+  config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard [--cli|--tui])
   status                 Display operational mode (local, hybrid, server) and status
   mode                   Alias for status
   code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph, map)
   migrate <up|down|status> Manage database migrations
-  tui                    Launch terminal UI
+  tui [--config]         Launch terminal UI (use --config to open configuration center)
   serve                  Start HTTP REST API server
   update [--check]       Update Cortex to the latest release
   version                Print version
@@ -176,13 +177,21 @@ func openApp() (*app.App, error) {
 
 func runSearch(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		writeln(stderr, "usage: cortex search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
+		writeln(stderr, "usage: cortex search <query> [--mode auto|direct|semantic|multi_hop] [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
 		return 1
 	}
 	var queryParts []string
 	opts := domain.SearchOptions{Limit: 10}
+	mode := "auto"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--mode":
+			if i+1 < len(args) {
+				mode = strings.ToLower(args[i+1])
+				i++
+			}
+		case "--graph-expand":
+			opts.GraphExpand = true
 		case "--type":
 			if i+1 < len(args) {
 				opts.Type = args[i+1]
@@ -209,8 +218,18 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 				i++
 			}
 		default:
-			queryParts = append(queryParts, args[i])
+			if strings.HasPrefix(args[i], "--mode=") {
+				mode = strings.ToLower(strings.TrimPrefix(args[i], "--mode="))
+			} else {
+				queryParts = append(queryParts, args[i])
+			}
 		}
+	}
+	switch mode {
+	case "multi_hop":
+		opts.GraphExpand = true
+	case "direct":
+		opts.GraphExpand = false
 	}
 	query := strings.Join(queryParts, " ")
 	if strings.TrimSpace(query) == "" {
@@ -232,7 +251,11 @@ func runSearch(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "No memories found for: %q\n", query)
 		return 0
 	}
-	writef(stdout, "Found %d memories:\n\n", len(results))
+	if mode != "auto" {
+		writef(stdout, "Found %d memories (mode: %s):\n\n", len(results), mode)
+	} else {
+		writef(stdout, "Found %d memories:\n\n", len(results))
+	}
 	for i, r := range results {
 		project := ""
 		if r.Project != "" {
@@ -645,7 +668,15 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		} else if args[i] == "--tools" && i+1 < len(args) {
 			toolsFilter = args[i+1]
 			i++
+		} else if strings.HasPrefix(args[i], "--profile=") {
+			toolsFilter = strings.TrimPrefix(args[i], "--profile=")
+		} else if args[i] == "--profile" && i+1 < len(args) {
+			toolsFilter = args[i+1]
+			i++
 		}
+	}
+	if toolsFilter == "" && cfg.MCP.Profile != "" {
+		toolsFilter = cfg.MCP.Profile
 	}
 	var srv *server.MCPServer
 	if toolsFilter != "" {
@@ -661,7 +692,20 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runTUI(stdout, stderr io.Writer) int {
+var runTUIFn = runTUIReal
+
+func runTUI(args []string, stdout, stderr io.Writer) int {
+	return runTUIFn(args, stdout, stderr)
+}
+
+func runTUIReal(args []string, stdout, stderr io.Writer) int {
+	initialScreen := tui.ScreenDashboard
+	for _, arg := range args {
+		if arg == "--config" {
+			initialScreen = tui.ScreenLocalConfig
+		}
+	}
+
 	a, err := openApp()
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -682,7 +726,7 @@ func runTUI(stdout, stderr io.Writer) int {
 		Version:      Version,
 	}
 
-	model := tui.New(deps)
+	model := tui.NewWithScreen(deps, initialScreen)
 	p := tea.NewProgram(model, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		writef(stderr, "cortex: %v\n", err)
@@ -733,8 +777,17 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 
 func runSetup(args []string, stdout, stderr io.Writer) int {
 	agent := ""
-	if len(args) > 0 {
-		agent = args[0]
+	profile := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "--profile=") {
+			profile = strings.TrimPrefix(arg, "--profile=")
+		} else if (arg == "--profile" || arg == "-p") && i+1 < len(args) {
+			profile = args[i+1]
+			i++
+		} else if !strings.HasPrefix(arg, "-") && agent == "" {
+			agent = arg
+		}
 	}
 	if agent == "" {
 		writeln(stdout, "Cortex Agent Integrations & Setup Wizard")
@@ -755,9 +808,10 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		}
 		writeln(stdout, "")
 		writeln(stdout, "Quick Commands:")
-		writeln(stdout, "  cortex setup <agent>          Install integration (e.g. 'cortex setup claude-code')")
-		writeln(stdout, "  cortex setup ollama           Configure local Ollama embeddings")
-		writeln(stdout, "  cortex tui                    Open interactive terminal dashboard")
+		writeln(stdout, "  cortex setup <agent> [--profile=P]  Install integration (e.g. 'cortex setup claude-code --profile=dev')")
+		writeln(stdout, "                                      Available profiles: dev (11 tools), minimal (5 tools), agent (22 tools)")
+		writeln(stdout, "  cortex setup ollama                 Configure local Ollama embeddings")
+		writeln(stdout, "  cortex tui                          Open interactive terminal dashboard")
 		return 0
 	}
 	if agent == "ollama" {
@@ -792,12 +846,22 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	result, err := setup.Install(agent)
+	if profile == "" {
+		if cfg, err := config.Load(""); err == nil && cfg != nil && cfg.MCP.Profile != "" {
+			profile = cfg.MCP.Profile
+		}
+	}
+
+	result, err := setup.InstallWithOptions(agent, setup.Options{Profile: profile})
 	if err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	writef(stdout, "Installed Cortex integration for %s (%d files)\n  -> %s\n", result.Agent, result.Files, result.Destination)
+	appliedProfile := profile
+	if appliedProfile == "" {
+		appliedProfile = "agent (default)"
+	}
+	writef(stdout, "Installed Cortex integration for %s [profile: %s] (%d files)\n  -> %s\n", result.Agent, appliedProfile, result.Files, result.Destination)
 	return 0
 }
 
@@ -1546,6 +1610,23 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "  [INFO] Ollama daemon: offline (optional: run 'ollama serve' for local embeddings)\n")
 	}
 
+	// 9. Vendor API Key Isolation Notice
+	cortexLLMKey := strings.TrimSpace(os.Getenv("CORTEX_LLM_API_KEY"))
+	cortexEmbKey := strings.TrimSpace(os.Getenv("CORTEX_EMBEDDING_API_KEY"))
+	if cortexLLMKey == "" || cortexEmbKey == "" {
+		var detectedVendorKeys []string
+		if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+			detectedVendorKeys = append(detectedVendorKeys, "OPENAI_API_KEY")
+		}
+		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "" {
+			detectedVendorKeys = append(detectedVendorKeys, "ANTHROPIC_API_KEY")
+		}
+		if len(detectedVendorKeys) > 0 {
+			writef(stdout, "  [INFO] Detected vendor environment variable(s) (%s). Cortex deliberately uses CORTEX_LLM_API_KEY and CORTEX_EMBEDDING_API_KEY to prevent credential leaks across subsystems.\n",
+				strings.Join(detectedVendorKeys, ", "))
+		}
+	}
+
 	writeln(stdout, "")
 	if issues > 0 {
 		writef(stdout, "%d issue(s) found.\n", issues)
@@ -1925,7 +2006,7 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "wizard", "interactive":
-		return runConfigWizard(stdout, stderr)
+		return runConfigWizard(args[1:], stdout, stderr)
 
 	default:
 		writef(stderr, "unknown config subcommand: %s (valid: get, set, show, validate, path, init, wizard)\n", args[0])
@@ -1933,7 +2014,33 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runConfigWizard(stdout, stderr io.Writer) int {
+func isTerminal(w io.Writer) bool {
+	if f, ok := w.(*os.File); ok {
+		return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
+	}
+	return false
+}
+
+func runConfigWizard(args []string, stdout, stderr io.Writer) int {
+	forceTUI := false
+	forceCLI := false
+	for _, arg := range args {
+		switch arg {
+		case "--tui":
+			forceTUI = true
+		case "--cli":
+			forceCLI = true
+		}
+	}
+
+	if forceTUI || (!forceCLI && isTerminal(stdout)) {
+		return runTUI([]string{"--config"}, stdout, stderr)
+	}
+
+	return runConfigWizardCLI(stdout, stderr)
+}
+
+func runConfigWizardCLI(stdout, stderr io.Writer) int {
 	cfg, err := config.Load("")
 	if err != nil {
 		writef(stderr, "error loading existing config: %v\n", err)
@@ -1944,9 +2051,14 @@ func runConfigWizard(stdout, stderr io.Writer) int {
 	writef(stdout, "Current active config: %s\n", cfg.LoadedFrom)
 	writef(stdout, "Storage: %s\n", cfg.Database.Path)
 	writef(stdout, "HTTP Port: %d (enabled: %t)\n", cfg.HTTP.Port, cfg.HTTP.Enabled)
+	mcpProf := cfg.MCP.Profile
+	if mcpProf == "" {
+		mcpProf = "agent"
+	}
+	writef(stdout, "MCP Profile: %s\n", mcpProf)
 	writef(stdout, "Embedding Provider: %s\n", cfg.Search.EmbeddingProvider)
 	writef(stdout, "LLM / AI Provider: %s\n", cfg.AI.Provider)
-	writef(stdout, "\nTip: Use 'cortex config set <key> <value>' for instant CLI updates, or 'cortex tui' for full visual navigation.\n\n")
+	writef(stdout, "\nTip: Use 'cortex config set <key> <value>' for instant CLI updates, or 'cortex tui --config' for full visual navigation.\n\n")
 	return 0
 }
 

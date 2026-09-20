@@ -149,6 +149,7 @@ export default function AdminPage() {
   // Integration Hub Interactive State
   const [selectedAgentProfileId, setSelectedAgentProfileId] = useState<string>("claude-desktop");
   const [exportMode, setExportMode] = useState<"hybrid" | "remote">("hybrid");
+  const [exportProfile, setExportProfile] = useState<"agent" | "dev" | "minimal">("agent");
   const [scriptOs, setScriptOs] = useState<"sh" | "ps1">("ps1");
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
@@ -307,6 +308,7 @@ export default function AdminPage() {
       tokenName: customToken?.name || selectedTokenForExport?.name,
       projectName: exportProject,
       mode: exportMode,
+      profile: exportProfile,
     };
   };
 
@@ -326,7 +328,7 @@ export default function AdminPage() {
     } catch (e: any) {
       return `// Error generando configuración: ${e.message}`;
     }
-  }, [selectedProfile, serverUrl, exportProject, exportMode]);
+  }, [selectedProfile, serverUrl, exportProject, exportMode, exportProfile]);
 
   const currentQuickstartScript = useMemo(() => {
     try {
@@ -342,13 +344,13 @@ export default function AdminPage() {
         <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
           <ShieldCheck className="h-7 w-7" />
         </div>
-        <h2 className="text-xl font-bold text-[var(--text-primary)]">Acceso Restringido</h2>
-        <p className="text-xs text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed">
+        <h2 className="text-xl font-bold text-foreground">Acceso Restringido</h2>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
           La gestión de identidades, agentes autónomos y generación de tokens de infraestructura están reservados para administradores.
         </p>
         <div className="pt-3">
           <Link href="/">
-            <Button variant="outline" className="border-[var(--border-subtle)] text-xs">
+            <Button variant="outline" className="border-border text-xs">
               Volver al Dashboard
             </Button>
           </Link>
@@ -360,17 +362,17 @@ export default function AdminPage() {
   return (
     <div className="space-y-6">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] shadow-xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-lg bg-card border border-border shadow-sm">
         <div>
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
+            <div className="p-2 rounded-lg bg-primary/10 border border-primary/20 text-primary">
               <ShieldCheck className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
                 Centro de Administración y Agentes
               </h1>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              <p className="text-xs text-muted-foreground mt-0.5">
                 Control de identidades, perfiles de Coding Agents, emisión de tokens y configuraciones MCP
               </p>
             </div>
@@ -399,7 +401,7 @@ export default function AdminPage() {
             size="sm"
             className="h-9 gap-1.5 text-xs"
           >
-            <Users className="h-3.5 w-3.5 text-blue-400" />
+            <Users className="h-3.5 w-3.5 text-primary" />
             <span>+ Usuario</span>
           </Button>
 
@@ -412,14 +414,14 @@ export default function AdminPage() {
             size="sm"
             className="h-9 gap-1.5 text-xs"
           >
-            <Bot className="h-3.5 w-3.5 text-purple-400" />
+            <Bot className="h-3.5 w-3.5 text-primary" />
             <span>+ Agente</span>
           </Button>
 
           <Button
             onClick={() => setIsTokenModalOpen(true)}
             size="sm"
-            className="h-9 gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20"
+            className="h-9 gap-1.5 text-xs shadow-xs"
           >
             <Key className="h-3.5 w-3.5" />
             <span>Emitir Token</span>
@@ -429,77 +431,77 @@ export default function AdminPage() {
 
       {/* KPI Metrics Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="p-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex items-center justify-between shadow-sm">
+        <div className="p-4 rounded-lg bg-card border border-border flex items-center justify-between shadow-xs">
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Usuarios Humanos
             </span>
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-[var(--text-primary)] font-mono">
+              <span className="text-2xl font-bold text-foreground font-mono">
                 {stats.humanUsers}
               </span>
-              <span className="text-[11px] text-[var(--text-muted)]">registrados</span>
+              <span className="text-[11px] text-muted-foreground">registrados</span>
             </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
+          <div className="p-2.5 rounded-lg bg-primary/10 border border-primary/20 text-primary">
             <Users className="h-5 w-5" />
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex items-center justify-between shadow-sm">
+        <div className="p-4 rounded-lg bg-card border border-border flex items-center justify-between shadow-xs">
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Agentes de IA
             </span>
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-purple-400 font-mono">
+              <span className="text-2xl font-bold text-primary font-mono">
                 {stats.aiAgents}
               </span>
-              <span className="text-[11px] text-[var(--text-muted)]">autónomos</span>
+              <span className="text-[11px] text-muted-foreground">autónomos</span>
             </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400">
+          <div className="p-2.5 rounded-lg bg-primary/10 border border-primary/20 text-primary">
             <Bot className="h-5 w-5" />
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex items-center justify-between shadow-sm">
+        <div className="p-4 rounded-lg bg-card border border-border flex items-center justify-between shadow-xs">
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Tokens Activos
             </span>
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-emerald-400 font-mono">
+              <span className="text-2xl font-bold text-emerald-500 font-mono">
                 {stats.activeTokens}
               </span>
-              <span className="text-[11px] text-[var(--text-muted)]">credenciales</span>
+              <span className="text-[11px] text-muted-foreground">credenciales</span>
             </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+          <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-500">
             <Key className="h-5 w-5" />
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex items-center justify-between shadow-sm">
+        <div className="p-4 rounded-lg bg-card border border-border flex items-center justify-between shadow-xs">
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider block">
+            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Tokens Revocados
             </span>
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-slate-400 font-mono">
+              <span className="text-2xl font-bold text-muted-foreground font-mono">
                 {stats.revokedTokens}
               </span>
-              <span className="text-[11px] text-[var(--text-muted)]">inactivos</span>
+              <span className="text-[11px] text-muted-foreground">inactivos</span>
             </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-500/10 border border-slate-500/20 text-slate-400">
+          <div className="p-2.5 rounded-lg bg-secondary border border-border text-muted-foreground">
             <Lock className="h-5 w-5" />
           </div>
         </div>
       </div>
 
       {/* Navigation Tabs Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-1.5 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-1.5 bg-card border border-border rounded-lg shadow-xs">
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -507,10 +509,10 @@ export default function AdminPage() {
               setActiveTab("users");
               setRoleFilter("all");
             }}
-            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
               activeTab === "users"
-                ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]"
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
             }`}
           >
             <Users className="h-4 w-4" />
@@ -529,16 +531,16 @@ export default function AdminPage() {
               setActiveTab("agents");
               setRoleFilter("all");
             }}
-            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
               activeTab === "agents"
-                ? "bg-purple-600 text-white shadow-md shadow-purple-600/20"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]"
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
             }`}
           >
             <Bot className="h-4 w-4" />
             <span>Agentes de IA</span>
             <Badge
-              variant={activeTab === "agents" ? "purple" : "secondary"}
+              variant={activeTab === "agents" ? "default" : "secondary"}
               className="text-[10px] px-1.5 py-0"
             >
               {stats.aiAgents}
@@ -548,16 +550,16 @@ export default function AdminPage() {
           <button
             type="button"
             onClick={() => setActiveTab("tokens")}
-            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
               activeTab === "tokens"
-                ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/20"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]"
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
             }`}
           >
             <Key className="h-4 w-4" />
             <span>Tokens & Credenciales MCP</span>
             <Badge
-              variant={activeTab === "tokens" ? "success" : "secondary"}
+              variant={activeTab === "tokens" ? "default" : "secondary"}
               className="text-[10px] px-1.5 py-0"
             >
               {stats.activeTokens}
@@ -567,13 +569,13 @@ export default function AdminPage() {
           <button
             type="button"
             onClick={() => setActiveTab("integrations")}
-            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
               activeTab === "integrations"
-                ? "bg-amber-600 text-white shadow-md shadow-amber-600/20"
-                : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)]"
+                ? "bg-primary text-primary-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
             }`}
           >
-            <Sparkles className="h-4 w-4 text-amber-300" />
+            <Sparkles className="h-4 w-4 text-primary" />
             <span>Hub de Integración MCP</span>
           </button>
         </div>
@@ -581,19 +583,19 @@ export default function AdminPage() {
         {/* Global Search Bar when in list tabs */}
         {activeTab !== "integrations" && (
           <div className="relative min-w-[200px] sm:min-w-[260px] mr-1">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               type="text"
               placeholder={`Buscar en ${activeTab === "users" ? "usuarios" : activeTab === "agents" ? "agentes" : "tokens"}...`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-8 pl-8 pr-7 text-xs bg-[var(--bg-surface)]"
+              className="h-8 pl-8 pr-7 text-xs bg-background border-input"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-white"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -604,20 +606,20 @@ export default function AdminPage() {
 
       {/* TAB 1: USUARIOS HUMANOS */}
       {activeTab === "users" && (
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+        <Card className="p-5 bg-card border-border shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
             <div>
-              <h2 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                <Users className="h-4 w-4 text-blue-400" />
+              <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <Users className="h-4 w-4 text-primary" />
                 <span>Usuarios y Desarrolladores del Sistema</span>
               </h2>
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[11px] text-muted-foreground">
                 Cuentas de desarrolladores y administradores con acceso a la plataforma Cortex
               </p>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-[var(--text-muted)]">Rol:</span>
+              <span className="text-[11px] text-muted-foreground">Rol:</span>
               <Select
                 value={roleFilter}
                 onChange={(e) => setRoleFilter(e.target.value)}
@@ -631,14 +633,14 @@ export default function AdminPage() {
           </div>
 
           {loading ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+            <div className="py-12 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-xs">Cargando usuarios...</span>
             </div>
           ) : filteredUsers.length === 0 ? (
             <div className="py-12 text-center space-y-2">
-              <Users className="h-8 w-8 text-slate-600 mx-auto" />
-              <p className="text-xs text-[var(--text-muted)]">
+              <Users className="h-8 w-8 text-muted-foreground mx-auto" />
+              <p className="text-xs text-muted-foreground">
                 {searchQuery ? "No se encontraron usuarios que coincidan con la búsqueda." : "No hay usuarios registrados."}
               </p>
               <Button
@@ -648,7 +650,7 @@ export default function AdminPage() {
                   setUserRole("developer");
                   setIsUserModalOpen(true);
                 }}
-                className="text-xs mt-2"
+                className="text-xs mt-2 shadow-xs"
               >
                 + Crear Primer Usuario
               </Button>
@@ -660,18 +662,18 @@ export default function AdminPage() {
                 return (
                   <div
                     key={u.id}
-                    className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:border-blue-500/50 transition-all flex flex-col justify-between space-y-3"
+                    className="p-4 rounded-lg bg-card border border-border hover:border-primary/50 transition-colors flex flex-col justify-between space-y-3 shadow-xs"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-center gap-2.5">
-                        <div className="h-9 w-9 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase">
+                        <div className="h-9 w-9 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center font-bold text-xs uppercase">
                           {u.display_name.slice(0, 2)}
                         </div>
                         <div className="overflow-hidden">
-                          <h3 className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                          <h3 className="font-semibold text-xs text-foreground truncate">
                             {u.display_name}
                           </h3>
-                          <p className="text-[11px] text-[var(--text-muted)] truncate font-mono">
+                          <p className="text-[11px] text-muted-foreground truncate font-mono">
                             {u.email}
                           </p>
                         </div>
@@ -682,7 +684,7 @@ export default function AdminPage() {
                       </Badge>
                     </div>
 
-                    <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+                    <div className="pt-2 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
                       <span className="font-mono truncate">ID: {u.id.slice(0, 12)}...</span>
                       <Button
                         size="sm"
@@ -692,7 +694,7 @@ export default function AdminPage() {
                           setTokenName(`${u.display_name} CLI Token`);
                           setIsTokenModalOpen(true);
                         }}
-                        className="h-6 px-2 text-[10px] text-blue-400 hover:text-blue-300 gap-1"
+                        className="h-6 px-2 text-[10px] text-primary hover:text-primary/80 gap-1"
                       >
                         <Key className="h-3 w-3" />
                         <span>Emitir Token</span>
@@ -708,14 +710,14 @@ export default function AdminPage() {
 
       {/* TAB 2: AGENTES DE IA AUTÓNOMOS */}
       {activeTab === "agents" && (
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+        <Card className="p-5 bg-card border-border shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
             <div>
-              <h2 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                <Bot className="h-4 w-4 text-purple-400" />
+              <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <Bot className="h-4 w-4 text-primary" />
                 <span>Agentes de IA y Asistentes de Codificación</span>
               </h2>
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[11px] text-muted-foreground">
                 Identidades dedicadas para agentes autónomos (Claude Code, Cursor, Windsurf, OpenCode)
               </p>
             </div>
@@ -726,7 +728,7 @@ export default function AdminPage() {
                 setIsUserModalOpen(true);
               }}
               size="sm"
-              className="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white gap-1.5"
+              className="h-8 text-xs gap-1.5 shadow-xs"
             >
               <Bot className="h-3.5 w-3.5" />
               <span>Registrar Nuevo Agente</span>
@@ -734,14 +736,14 @@ export default function AdminPage() {
           </div>
 
           {loading ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-purple-500 border-t-transparent" />
+            <div className="py-12 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-xs">Cargando agentes de IA...</span>
             </div>
           ) : filteredUsers.length === 0 ? (
             <div className="py-12 text-center space-y-2">
-              <Bot className="h-8 w-8 text-purple-600 mx-auto" />
-              <p className="text-xs text-[var(--text-muted)]">
+              <Bot className="h-8 w-8 text-muted-foreground mx-auto" />
+              <p className="text-xs text-muted-foreground">
                 {searchQuery ? "No se encontraron agentes que coincidan con la búsqueda." : "No hay agentes de IA registrados aún."}
               </p>
               <Button
@@ -751,7 +753,7 @@ export default function AdminPage() {
                   setUserRole("agent");
                   setIsUserModalOpen(true);
                 }}
-                className="text-xs mt-2 text-purple-400 border-purple-800"
+                className="text-xs mt-2 shadow-xs"
               >
                 + Registrar Primer Agente
               </Button>
@@ -761,39 +763,39 @@ export default function AdminPage() {
               {filteredUsers.map((a) => (
                 <div
                   key={a.id}
-                  className="p-4 rounded-xl bg-[var(--bg-surface)] border border-purple-900/30 hover:border-purple-500/50 transition-all flex flex-col justify-between space-y-3"
+                  className="p-4 rounded-lg bg-card border border-border hover:border-primary/50 transition-colors flex flex-col justify-between space-y-3 shadow-xs"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2.5">
-                      <div className="h-9 w-9 rounded-full bg-purple-600/15 border border-purple-500/30 text-purple-300 flex items-center justify-center font-bold text-xs">
+                      <div className="h-9 w-9 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center font-bold text-xs">
                         <Bot className="h-4 w-4" />
                       </div>
                       <div className="overflow-hidden">
-                        <h3 className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                        <h3 className="font-semibold text-xs text-foreground truncate">
                           {a.display_name}
                         </h3>
-                        <p className="text-[11px] text-purple-300/70 truncate font-mono">
+                        <p className="text-[11px] text-muted-foreground truncate font-mono">
                           {a.email}
                         </p>
                       </div>
                     </div>
 
-                    <Badge variant="purple" className="text-[10px] shrink-0 font-mono">
+                    <Badge variant="secondary" className="text-[10px] shrink-0 font-mono">
                       Autonomous Agent
                     </Badge>
                   </div>
 
-                  <div className="p-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)] text-[11px] space-y-1">
-                    <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+                  <div className="p-2.5 rounded-lg bg-secondary/40 border border-border text-[11px] space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                       <span>Scopes Autorizados:</span>
-                      <span className="text-emerald-400 font-mono">Full MCP Streamable</span>
+                      <span className="text-emerald-500 font-mono">Full MCP Streamable</span>
                     </div>
-                    <div className="text-[10px] text-[var(--text-muted)] font-mono truncate">
+                    <div className="text-[10px] text-muted-foreground font-mono truncate">
                       Subject: {a.id}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between">
+                  <div className="pt-2 border-t border-border flex items-center justify-between">
                     <Button
                       size="sm"
                       variant="outline"
@@ -802,9 +804,9 @@ export default function AdminPage() {
                         setTokenName(`${a.display_name} MCP Bearer`);
                         setIsTokenModalOpen(true);
                       }}
-                      className="h-7 text-[11px] gap-1"
+                      className="h-7 text-[11px] gap-1 shadow-xs"
                     >
-                      <Key className="h-3 w-3 text-purple-400" />
+                      <Key className="h-3 w-3 text-primary" />
                       <span>Emitir Token</span>
                     </Button>
 
@@ -825,7 +827,7 @@ export default function AdminPage() {
                       }}
                       className="h-7 text-[11px] gap-1"
                     >
-                      <Download className="h-3 w-3 text-blue-400" />
+                      <Download className="h-3 w-3 text-primary" />
                       <span>Config MCP</span>
                     </Button>
                   </div>
@@ -838,20 +840,20 @@ export default function AdminPage() {
 
       {/* TAB 3: TOKENS & CREDENCIALES MCP */}
       {activeTab === "tokens" && (
-        <Card className="p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+        <Card className="p-5 bg-card border-border shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
             <div>
-              <h2 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                <Key className="h-4 w-4 text-emerald-400" />
+              <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <Key className="h-4 w-4 text-primary" />
                 <span>Tokens de Acceso y Credenciales MCP</span>
               </h2>
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[11px] text-muted-foreground">
                 Bearer tokens autenticados para llamadas a la API y servidores de contexto MCP
               </p>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-[var(--text-muted)]">Estado:</span>
+              <span className="text-[11px] text-muted-foreground">Estado:</span>
               <Select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
@@ -865,21 +867,21 @@ export default function AdminPage() {
           </div>
 
           {loading ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+            <div className="py-12 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-xs">Cargando tokens...</span>
             </div>
           ) : filteredTokens.length === 0 ? (
             <div className="py-12 text-center space-y-2">
-              <Key className="h-8 w-8 text-slate-600 mx-auto" />
-              <p className="text-xs text-[var(--text-muted)]">
+              <Key className="h-8 w-8 text-muted-foreground mx-auto" />
+              <p className="text-xs text-muted-foreground">
                 {searchQuery ? "No se encontraron tokens que coincidan con la búsqueda." : "No hay tokens emitidos."}
               </p>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => setIsTokenModalOpen(true)}
-                className="text-xs mt-2"
+                className="text-xs mt-2 shadow-xs"
               >
                 + Emitir Primer Token
               </Button>
@@ -891,50 +893,50 @@ export default function AdminPage() {
                 return (
                   <div
                     key={tok.id}
-                    className={`p-4 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                    className={`p-4 rounded-lg border transition-colors shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3 ${
                       isRevoked
-                        ? "bg-[var(--bg-surface)]/50 border-red-900/30 opacity-70"
-                        : "bg-[var(--bg-surface)] border-[var(--border-subtle)] hover:border-emerald-500/40"
+                        ? "bg-secondary/40 border-border opacity-70"
+                        : "bg-card border-border hover:border-primary/40"
                     }`}
                   >
                     <div className="space-y-1.5 overflow-hidden">
                       <div className="flex items-center gap-2">
-                        <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                        <span className="font-semibold text-xs text-foreground truncate">
                           {tok.name}
                         </span>
                         <Badge
-                          variant={isRevoked ? "destructive" : "success"}
+                          variant={isRevoked ? "destructive" : "secondary"}
                           className="text-[10px] font-mono shrink-0"
                         >
                           {isRevoked ? "Revocado" : "Activo"}
                         </Badge>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-muted)]">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
                         <span className="flex items-center gap-1 font-mono">
                           Prefijo:{" "}
-                          <code className="text-emerald-400 font-semibold px-1 py-0.5 bg-black/30 rounded">
+                          <code className="text-emerald-500 font-semibold px-1 py-0.5 bg-secondary rounded border border-border">
                             {tok.prefix}...
                           </code>
                           <button
                             type="button"
                             onClick={() => copyToClipboard(tok.prefix, tok.id)}
-                            className="text-slate-400 hover:text-white p-0.5"
+                            className="text-muted-foreground hover:text-foreground p-0.5"
                             title="Copiar prefijo"
                           >
-                            {copiedText === tok.id ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                            {copiedText === tok.id ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
                           </button>
                         </span>
 
                         <span>•</span>
                         <span>
-                          Subject: <code className="font-mono text-[var(--text-secondary)]">{tok.subject.slice(0, 10)}...</code>
+                          Subject: <code className="font-mono text-muted-foreground">{tok.subject.slice(0, 10)}...</code>
                         </span>
 
                         {tok.scopes && tok.scopes.length > 0 && (
                           <>
                             <span>•</span>
-                            <span className="text-[10px] text-slate-400">
+                            <span className="text-[10px] text-muted-foreground">
                               Scopes: {tok.scopes.join(", ")}
                             </span>
                           </>
@@ -942,14 +944,14 @@ export default function AdminPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[var(--border-subtle)]">
+                    <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-border">
                       <Button
                         onClick={() => openExportModal(tok)}
                         variant="secondary"
                         size="sm"
                         className="h-8 text-xs gap-1.5"
                       >
-                        <Download className="h-3.5 w-3.5 text-blue-400" />
+                        <Download className="h-3.5 w-3.5 text-primary" />
                         <span>Exportar Config</span>
                       </Button>
 
@@ -958,7 +960,7 @@ export default function AdminPage() {
                           onClick={() => handleRevokeToken(tok.id, tok.name)}
                           variant="outline"
                           size="sm"
-                          className="h-8 text-xs gap-1.5 text-red-400 border-red-900/50 hover:bg-red-950/40"
+                          className="h-8 text-xs gap-1.5 text-destructive hover:bg-destructive/10 border-destructive/30"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                           <span>Revocar</span>
@@ -978,10 +980,10 @@ export default function AdminPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Left Column: Client Selector List */}
           <div className="space-y-3">
-            <Card className="p-4 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                <span className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-1.5">
-                  <SlidersHorizontal className="h-3.5 w-3.5 text-amber-400" />
+            <Card className="p-4 bg-card border-border shadow-xs space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-border">
+                <span className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <SlidersHorizontal className="h-3.5 w-3.5 text-primary" />
                   Seleccionar Cliente / IDE
                 </span>
               </div>
@@ -994,19 +996,19 @@ export default function AdminPage() {
                       key={profile.id}
                       type="button"
                       onClick={() => setSelectedAgentProfileId(profile.id)}
-                      className={`w-full text-left p-3 rounded-xl border transition-all flex items-start justify-between gap-2 ${
+                      className={`w-full text-left p-3 rounded-lg border transition-colors shadow-xs flex items-start justify-between gap-2 ${
                         isSelected
-                          ? "bg-amber-500/10 border-amber-500/50 shadow-sm"
-                          : "bg-[var(--bg-surface)] border-[var(--border-subtle)] hover:border-amber-500/30"
+                          ? "bg-primary/10 border-primary shadow-xs"
+                          : "bg-card border-border hover:border-primary/40"
                       }`}
                     >
                       <div className="flex items-start gap-2.5">
                         <span className="text-lg leading-none">{profile.icon}</span>
                         <div>
-                          <div className="font-semibold text-xs text-[var(--text-primary)]">
+                          <div className="font-semibold text-xs text-foreground">
                             {profile.name}
                           </div>
-                          <div className="text-[10px] text-[var(--text-muted)] line-clamp-1">
+                          <div className="text-[10px] text-muted-foreground line-clamp-1">
                             {profile.description}
                           </div>
                         </div>
@@ -1021,8 +1023,8 @@ export default function AdminPage() {
               </div>
 
               {/* Project parameter for config generation */}
-              <div className="pt-2 border-t border-[var(--border-subtle)] space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-muted)] block uppercase">
+              <div className="pt-2 border-t border-border space-y-1">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   Proyecto Objetivo:
                 </label>
                 <Input
@@ -1039,13 +1041,13 @@ export default function AdminPage() {
           {/* Right Column: Code Preview and Setup Scripts */}
           <div className="lg:col-span-2 space-y-4">
             {/* Architecture Tip Banner */}
-            <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-start gap-3 text-xs">
-              <Sparkles className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
+            <div className="p-3.5 rounded-lg bg-primary/10 border border-primary/20 flex items-start gap-3 text-xs">
+              <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <div className="font-semibold text-blue-300">
+                <div className="font-semibold text-foreground">
                   Recomendación: Modo Híbrido (Local-First + Sync)
                 </div>
-                <div className="text-slate-300 text-[11px] leading-relaxed">
+                <div className="text-muted-foreground text-[11px] leading-relaxed">
                   El modo <strong>Híbrido</strong> ejecuta Cortex de forma local en tu máquina con SQLite zero-CGO. Esto permite que el <strong>Zero-CGO Static AST Extractor</strong> analice tu código fuente en disco, calcule el <em>Blast Radius</em> y detecte dependencias circulares con latencia cero, mientras sincroniza memorias y grafos en segundo plano con este servidor.
                 </div>
               </div>
@@ -1058,8 +1060,8 @@ export default function AdminPage() {
                 onClick={() => setExportMode("hybrid")}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
                   exportMode === "hybrid"
-                    ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-sm"
-                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                    ? "bg-primary/20 border-primary text-primary shadow-xs"
+                    : "bg-secondary/40 border-border text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <span>⚡</span>
@@ -1070,8 +1072,8 @@ export default function AdminPage() {
                 onClick={() => setExportMode("remote")}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5 ${
                   exportMode === "remote"
-                    ? "bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm"
-                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                    ? "bg-primary/20 border-primary text-primary shadow-xs"
+                    : "bg-secondary/40 border-border text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <span>🌐</span>
@@ -1079,16 +1081,58 @@ export default function AdminPage() {
               </button>
             </div>
 
+            {/* Profile Selector (Hybrid Mode) */}
+            {exportMode === "hybrid" && (
+              <div className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-card border border-border">
+                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider pl-1">
+                  Perfil de Tools:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setExportProfile("agent")}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
+                    exportProfile === "agent"
+                      ? "bg-primary/20 border-primary text-primary"
+                      : "bg-card border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Agent (22 tools)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportProfile("dev")}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
+                    exportProfile === "dev"
+                      ? "bg-primary/20 border-primary text-primary"
+                      : "bg-card border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Dev (11 tools)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportProfile("minimal")}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
+                    exportProfile === "minimal"
+                      ? "bg-primary/20 border-primary text-primary"
+                      : "bg-card border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Minimal (5 tools)
+                </button>
+              </div>
+            )}
+
             {/* Configuration File Box */}
-            <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[var(--border-subtle)]">
+            <Card className="p-4 sm:p-5 bg-card border-border shadow-xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border">
                 <div className="flex items-center gap-2">
                   <span className="text-base">{selectedProfile.icon}</span>
                   <div>
-                    <h3 className="font-bold text-xs text-[var(--text-primary)]">
+                    <h3 className="font-bold text-xs text-foreground">
                       Archivo de Configuración para {selectedProfile.name}
                     </h3>
-                    <p className="text-[10px] text-[var(--text-muted)] font-mono">
+                    <p className="text-[10px] text-muted-foreground font-mono">
                       {selectedProfile.filename}
                     </p>
                   </div>
@@ -1127,37 +1171,37 @@ export default function AdminPage() {
               </div>
 
               {/* Code block */}
-              <div className="relative rounded-xl bg-[#090d16] border border-[var(--border-subtle)] p-3.5 overflow-x-auto font-mono text-[11px] text-slate-200 leading-relaxed max-h-72">
+              <div className="relative rounded-lg bg-[#090d16] border border-border p-3.5 overflow-x-auto font-mono text-[11px] text-slate-200 leading-relaxed max-h-72">
                 <pre>{currentGeneratedConfig}</pre>
               </div>
 
-              <p className="text-[11px] text-slate-400 italic">
+              <p className="text-[11px] text-muted-foreground italic">
                 * Nota de Seguridad: Este archivo utiliza variables de entorno (<code className="text-amber-400">CORTEX_REMOTE_TOKEN</code>) para no almacenar secretos en texto plano.
               </p>
             </Card>
 
             {/* Quickstart Script Box */}
-            <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[var(--border-subtle)]">
+            <Card className="p-4 sm:p-5 bg-card border-border shadow-xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border">
                 <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-emerald-400" />
+                  <Terminal className="h-4 w-4 text-primary" />
                   <div>
-                    <h3 className="font-bold text-xs text-[var(--text-primary)]">
+                    <h3 className="font-bold text-xs text-foreground">
                       Script de Inicio Rápido & Verificación
                     </h3>
-                    <p className="text-[10px] text-[var(--text-muted)]">
+                    <p className="text-[10px] text-muted-foreground">
                       Prueba de conexión y configuración del entorno de terminal
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center p-0.5 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg">
+                  <div className="flex items-center p-0.5 bg-secondary border border-border rounded-lg">
                     <button
                       type="button"
                       onClick={() => setScriptOs("ps1")}
                       className={`px-2 py-0.5 text-[10px] font-mono rounded ${
-                        scriptOs === "ps1" ? "bg-blue-600 text-white" : "text-slate-400"
+                        scriptOs === "ps1" ? "bg-primary text-primary-foreground" : "text-muted-foreground"
                       }`}
                     >
                       PowerShell
@@ -1166,7 +1210,7 @@ export default function AdminPage() {
                       type="button"
                       onClick={() => setScriptOs("sh")}
                       className={`px-2 py-0.5 text-[10px] font-mono rounded ${
-                        scriptOs === "sh" ? "bg-blue-600 text-white" : "text-slate-400"
+                        scriptOs === "sh" ? "bg-primary text-primary-foreground" : "text-muted-foreground"
                       }`}
                     >
                       Bash
@@ -1180,7 +1224,7 @@ export default function AdminPage() {
                     className="h-7 text-xs gap-1.5"
                   >
                     {copiedText === "script-code" ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
+                      <Check className="h-3 w-3 text-emerald-500" />
                     ) : (
                       <Copy className="h-3 w-3" />
                     )}
@@ -1205,7 +1249,7 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <div className="relative rounded-xl bg-[#090d16] border border-[var(--border-subtle)] p-3.5 overflow-x-auto font-mono text-[11px] text-emerald-300 leading-relaxed max-h-56">
+              <div className="relative rounded-lg bg-[#090d16] border border-border p-3.5 overflow-x-auto font-mono text-[11px] text-emerald-400 leading-relaxed max-h-56">
                 <pre>{currentQuickstartScript}</pre>
               </div>
             </Card>
@@ -1218,9 +1262,9 @@ export default function AdminPage() {
         <DialogHeader>
           <DialogTitle>
             {userRole === "agent" ? (
-              <Bot className="h-4 w-4 text-purple-400" />
+              <Bot className="h-4 w-4 text-primary" />
             ) : (
-              <Users className="h-4 w-4 text-blue-400" />
+              <Users className="h-4 w-4 text-primary" />
             )}
             <span>{userRole === "agent" ? "Registrar Nuevo Agente de IA" : "Crear Nuevo Usuario"}</span>
           </DialogTitle>
@@ -1229,7 +1273,7 @@ export default function AdminPage() {
 
         <form onSubmit={handleCreateUser} className="space-y-3.5 mt-4 text-xs">
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               {userRole === "agent" ? "NOMBRE DEL AGENTE" : "NOMBRE COMPLETO"}
             </label>
             <Input
@@ -1242,7 +1286,7 @@ export default function AdminPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               CORREO ELECTRÓNICO / IDENTIFICADOR
             </label>
             <Input
@@ -1255,7 +1299,7 @@ export default function AdminPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+            <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
               ROL EN EL SISTEMA
             </label>
             <Select value={userRole} onChange={(e) => setUserRole(e.target.value)}>
@@ -1265,11 +1309,11 @@ export default function AdminPage() {
             </Select>
           </div>
 
-          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
+          <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-border">
             <Button type="button" variant="outline" size="sm" onClick={() => setIsUserModalOpen(false)}>
               Cancelar
             </Button>
-            <Button type="submit" size="sm" className="bg-blue-600 hover:bg-blue-500 text-white">
+            <Button type="submit" size="sm" className="shadow-xs">
               {userRole === "agent" ? "Registrar Agente" : "Crear Usuario"}
             </Button>
           </div>
@@ -1286,7 +1330,7 @@ export default function AdminPage() {
       >
         <DialogHeader>
           <DialogTitle>
-            <Key className="h-4 w-4 text-emerald-400" />
+            <Key className="h-4 w-4 text-emerald-500" />
             <span>Emitir Nuevo Bearer Token MCP</span>
           </DialogTitle>
           <DialogClose
@@ -1299,19 +1343,19 @@ export default function AdminPage() {
 
         {issuedSecret ? (
           <div className="space-y-4 mt-4 text-xs">
-            <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-xl space-y-2">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 p-4 rounded-lg space-y-2">
               <span className="font-semibold block flex items-center gap-1.5">
                 <CheckCircle className="h-4 w-4" /> ¡Token emitido con éxito!
               </span>
-              <p className="text-[11px] text-[var(--text-secondary)]">
+              <p className="text-[11px] text-muted-foreground">
                 Copia este secreto ahora. Por seguridad, no volverá a mostrarse en la plataforma:
               </p>
-              <div className="p-3 bg-black/50 rounded-lg border border-emerald-500/40 font-mono text-[11px] text-emerald-300 break-all select-all shadow-inner">
+              <div className="p-3 bg-secondary/80 rounded-lg border border-emerald-500/40 font-mono text-[11px] text-emerald-500 dark:text-emerald-400 break-all select-all shadow-xs">
                 {issuedSecret}
               </div>
             </div>
 
-            <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
+            <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-border">
               <Button
                 type="button"
                 variant="secondary"
@@ -1333,7 +1377,7 @@ export default function AdminPage() {
                   setIsTokenModalOpen(false);
                   setIssuedSecret(null);
                 }}
-                className="bg-blue-600 hover:bg-blue-500 text-white"
+                className="shadow-xs"
               >
                 Listo
               </Button>
@@ -1342,7 +1386,7 @@ export default function AdminPage() {
         ) : (
           <form onSubmit={handleIssueToken} className="space-y-3.5 mt-4 text-xs">
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 USUARIO O AGENTE ASIGNADO (SUBJECT)
               </label>
               <Select
@@ -1361,7 +1405,7 @@ export default function AdminPage() {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 NOMBRE DESCRIPTIVO DEL TOKEN
               </label>
               <Input
@@ -1374,7 +1418,7 @@ export default function AdminPage() {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 PERFIL DE PERMISOS (SCOPES)
               </label>
               <Select
@@ -1386,7 +1430,7 @@ export default function AdminPage() {
               </Select>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-[var(--border-subtle)]">
+            <div className="flex justify-end gap-2 pt-2 border-t border-border">
               <Button
                 type="button"
                 variant="outline"
@@ -1443,28 +1487,28 @@ export default function AdminPage() {
                 onClick={() => setExportMode("hybrid")}
                 className={`p-2 rounded-lg text-left border transition-all ${
                   exportMode === "hybrid"
-                    ? "bg-blue-600/20 border-blue-500 text-blue-300 shadow-sm"
-                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                    ? "bg-primary/20 border-primary text-primary shadow-xs"
+                    : "bg-secondary/40 border-border text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <div className="font-semibold text-[11px] flex items-center gap-1">
                   <span>⚡</span> Hybrid (Local-First)
                 </div>
-                <div className="text-[9px] text-slate-400">AST local + Cloud Sync (Recomendado)</div>
+                <div className="text-[9px] text-muted-foreground">AST local + Cloud Sync (Recomendado)</div>
               </button>
               <button
                 type="button"
                 onClick={() => setExportMode("remote")}
                 className={`p-2 rounded-lg text-left border transition-all ${
                   exportMode === "remote"
-                    ? "bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm"
-                    : "bg-[var(--bg-surface)] border-[var(--border-subtle)] text-slate-400 hover:text-slate-200"
+                    ? "bg-primary/20 border-primary text-primary shadow-xs"
+                    : "bg-secondary/40 border-border text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <div className="font-semibold text-[11px] flex items-center gap-1">
                   <span>🌐</span> Remote MCP
                 </div>
-                <div className="text-[9px] text-slate-400">Proxy directo a servidor</div>
+                <div className="text-[9px] text-muted-foreground">Proxy directo a servidor</div>
               </button>
             </div>
           </div>
@@ -1549,7 +1593,7 @@ export default function AdminPage() {
             </Button>
           </div>
 
-          <div className="flex justify-end pt-2 border-t border-[var(--border-subtle)]">
+          <div className="flex justify-end pt-2 border-t border-border">
             <Button onClick={() => setIsDownloadModalOpen(false)} size="sm">
               Cerrar
             </Button>

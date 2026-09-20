@@ -108,21 +108,20 @@ func TestRemovedBareTemporalNamesReturnUnknownTool(t *testing.T) {
 
 // Tools required in the ordinary agent profile (design Part 2 §9).
 var requiredOrdinaryAgentTools = []string{
-	"cortex_save", "cortex_search", "cortex_context",
-	"cortex_session_summary", "cortex_session_start", "cortex_session_end",
-	"cortex_get_observation", "cortex_suggest_topic_key", "cortex_capture_passive",
-	"cortex_save_prompt", "cortex_update", "cortex_relate",
-	"cortex_graph", "cortex_score", "cortex_search_hybrid",
-	"cortex_revision_history", "cortex_graph_relationships", "cortex_graph_path",
-	"cortex_handoff", "cortex_get_rules", "cortex_save_rule",
-	"cortex_ingest_code", "cortex_get_blast_radius", "cortex_detect_cycles",
-	"cortex_analyze_architecture",
+	"cortex_save", "cortex_update", "cortex_get_observation",
+	"cortex_context", "cortex_session_summary", "cortex_search",
+	"cortex_get_agent_context", "cortex_relate", "cortex_graph",
+	"cortex_graph_path", "cortex_get_rules", "cortex_save_rule",
+	"cortex_ingest_code", "cortex_get_blast_radius", "cortex_code_tests",
+	"cortex_get_code_symbols", "cortex_detect_cycles",
+	"cortex_analyze_architecture", "cortex_code_map", "cortex_get_status",
+	"cortex_revision_history", "cortex_handoff",
 }
 
-// The 5 tools required in the admin profile (design Part 2 §9).
+// The tools required in the admin profile (design Part 2 §9).
 var requiredAdminTools = []string{
 	"cortex_delete", "cortex_stats", "cortex_timeline",
-	"cortex_archive", "cortex_merge_projects",
+	"cortex_score", "cortex_consolidate", "cortex_merge_projects",
 }
 
 // All cortex_temporal_* tools that MUST be in the temporal profile and MUST NOT
@@ -475,5 +474,98 @@ func TestAllToolsMarshalJSONWithoutSchemaConflict(t *testing.T) {
 		if len(data) == 0 {
 			t.Errorf("tool %s produced empty JSON", tool.Tool.Name)
 		}
+	}
+}
+
+// TestMinimalProfile asserts that the minimal profile contains exactly the 5 essential tools.
+func TestMinimalProfile(t *testing.T) {
+	if len(ProfileMinimal) != 5 {
+		t.Errorf("ProfileMinimal length = %d, want 5", len(ProfileMinimal))
+	}
+	expected := []string{
+		"cortex_save", "cortex_search", "cortex_context",
+		"cortex_session_summary", "cortex_get_observation",
+	}
+	for _, tool := range expected {
+		if !ProfileMinimal[tool] {
+			t.Errorf("ProfileMinimal missing tool: %q", tool)
+		}
+	}
+	for _, name := range requiredAdminTools {
+		if ProfileMinimal[name] {
+			t.Errorf("ProfileMinimal should not contain admin tool: %q", name)
+		}
+	}
+	for _, name := range requiredTemporalTools {
+		if ProfileMinimal[name] {
+			t.Errorf("ProfileMinimal should not contain temporal tool: %q", name)
+		}
+	}
+
+	stores := setupTestStores(t)
+	srv := NewServerWithTools(stores, ProfileMinimal)
+	tools := srv.ListTools()
+	if len(tools) != 5 {
+		t.Errorf("minimal server tool count = %d, want 5", len(tools))
+	}
+}
+
+// TestDevProfile asserts that the dev profile contains exactly the 11 golden development tools.
+func TestDevProfile(t *testing.T) {
+	if len(ProfileDev) != 11 {
+		t.Errorf("ProfileDev length = %d, want 11", len(ProfileDev))
+	}
+	expected := []string{
+		"cortex_save", "cortex_search", "cortex_context",
+		"cortex_session_summary", "cortex_get_observation",
+		"cortex_get_agent_context", "cortex_relate", "cortex_get_rules",
+		"cortex_ingest_code", "cortex_get_blast_radius", "cortex_code_tests",
+	}
+	for _, tool := range expected {
+		if !ProfileDev[tool] {
+			t.Errorf("ProfileDev missing tool: %q", tool)
+		}
+	}
+	for _, name := range requiredAdminTools {
+		if ProfileDev[name] {
+			t.Errorf("ProfileDev should not contain admin tool: %q", name)
+		}
+	}
+	for _, name := range requiredTemporalTools {
+		if ProfileDev[name] {
+			t.Errorf("ProfileDev should not contain temporal tool: %q", name)
+		}
+	}
+
+	stores := setupTestStores(t)
+	srv := NewServerWithTools(stores, ProfileDev)
+	tools := srv.ListTools()
+	// Note: cortex_ingest_code and cortex_get_blast_radius register aliases (cortex_code_scan, cortex_code_impact)
+	if len(tools) < 11 {
+		t.Errorf("dev server tool count = %d, want >= 11", len(tools))
+	}
+}
+
+// TestResolveTools_ModularProfiles asserts that ResolveTools correctly resolves minimal, dev, and coder.
+func TestResolveTools_ModularProfiles(t *testing.T) {
+	minTools := ResolveTools("minimal")
+	if len(minTools) != 5 {
+		t.Errorf("ResolveTools(minimal) count = %d, want 5", len(minTools))
+	}
+	if !minTools["cortex_save"] || !minTools["cortex_search"] {
+		t.Error("ResolveTools(minimal) missing core tools")
+	}
+
+	devTools := ResolveTools("dev")
+	if len(devTools) != 11 {
+		t.Errorf("ResolveTools(dev) count = %d, want 11", len(devTools))
+	}
+	if !devTools["cortex_get_blast_radius"] || !devTools["cortex_code_tests"] {
+		t.Error("ResolveTools(dev) missing AST impact tools")
+	}
+
+	coderTools := ResolveTools("coder")
+	if len(coderTools) != 11 {
+		t.Errorf("ResolveTools(coder) count = %d, want 11", len(coderTools))
 	}
 }

@@ -126,9 +126,9 @@ main() {
 You have cortex memory tools. This protocol is MANDATORY and ALWAYS ACTIVE.
 
 ### CORE TOOLS — always available, no ToolSearch needed
-cortex_save, cortex_search, cortex_context, cortex_session_summary, cortex_get_observation, cortex_save_prompt
+cortex_save, cortex_search, cortex_context, cortex_session_summary, cortex_get_observation, cortex_update
 
-Use ToolSearch for other tools: cortex_update, cortex_suggest_topic_key, cortex_session_start, cortex_session_end, cortex_stats, cortex_delete, cortex_timeline, cortex_capture_passive, cortex_relate, cortex_graph, cortex_score, cortex_archive, cortex_search_hybrid
+Use ToolSearch for other tools: cortex_relate, cortex_graph, cortex_graph_path, cortex_get_rules, cortex_save_rule, cortex_ingest_code, cortex_get_blast_radius, cortex_code_tests, cortex_get_code_symbols, cortex_detect_cycles, cortex_analyze_architecture, cortex_code_map, cortex_get_status, cortex_revision_history, cortex_handoff, cortex_get_agent_context
 
 ### PROACTIVE SAVE — do NOT wait for user to ask
 Call `cortex_save` IMMEDIATELY after ANY of these:

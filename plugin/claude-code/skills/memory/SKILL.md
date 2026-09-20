@@ -9,62 +9,57 @@ You have access to Cortex, a persistent memory system with knowledge graph, impo
 full-text search, revision history, and temporal tracking that survives across sessions and compactions.
 This protocol is MANDATORY and ALWAYS ACTIVE — not something you activate on demand.
 
-## AVAILABLE TOOLS
+## AVAILABLE TOOLS & PROFILES
 
-The available tools depend on the configured MCP profile. See the repository
-[MCP reference](../../../../docs/MCP.md) for the authoritative local and server
-catalogs.
+The available tools depend on the configured MCP profile (`cortex mcp --tools=<profile>`).
 
-Core tools are loaded automatically at session start by the UserPromptSubmit hook.
-They are available immediately — no manual ToolSearch needed.
+### Supported Agent Profiles
+- **`agent`** (22 tools, default): Complete suite for AI coding agents — core memory, AST intelligence, knowledge graph, blast radius, and durable handoffs.
+- **`dev`** (11 tools): Streamlined suite for local development — core memory, code ingestion, symbols, test impact, and rules.
+- **`minimal`** (5 tools): Ultra-low footprint for fast inference — `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`.
 
-**Core memory:**
-- `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`
-- `cortex_get_observation`, `cortex_suggest_topic_key`, `cortex_update`
-- `cortex_session_start`, `cortex_session_end`, `cortex_save_prompt`
-- `cortex_stats`, `cortex_delete`, `cortex_timeline`, `cortex_capture_passive`
+*Note: Database administration (hard deletions, project merges, compaction) is handled strictly by human operators via CLI (`cortex gc`, `cortex merge-projects`) and the Web UI, never by autonomous agents.*
+
+### Canonical Agent Tools (ProfileAgent — 22 tools)
+
+**Core Memory & Retrieval:**
+- `cortex_save` — save decisions, bug fixes, discoveries, patterns, configs (type: bugfix, decision, pattern, discovery, config, learning)
+- `cortex_update` — surgical field edits to existing observations by ID
+- `cortex_get_observation` — full untruncated content of an observation by ID
+- `cortex_context` — recent session activity and retrieved context
+- `cortex_session_summary` — structured end-of-session summary (Goal, Discoveries, Accomplished, Next Steps, Relevant Files)
+- `cortex_search` — unified intelligent hybrid search (FTS5 + Vector + Adaptive-RAG + HippoRAG)
+- `cortex_get_agent_context` — structured prompt-ready architecture and memory context pack (XML, Markdown, JSON, compact mode)
 
 **Rules & Directives:**
 - `cortex_get_rules` — retrieve active project and global directives, guidelines, and behavioral rules
 - `cortex_save_rule` — create or update a persistent project or global directive/rule in Cortex
 
-**Codebase AST & Graphify Intelligence:**
+**Codebase AST & Test Impact:**
 - `cortex_ingest_code` — scan local files using Zero-CGO 2-Pass Static AST Extractor into dedicated tables (`code_symbols`, `code_relations`)
+- `cortex_get_code_symbols` — query indexed code symbols (functions, structs, interfaces, classes) with filters and regex
 - `cortex_code_map` — generate token-budgeted PageRank repository map for code structure
-- `cortex_code_tests` — map impacted test suites for target symbols/files before refactoring
-- `cortex_code_find` — fast AST symbol search across repository
-- `cortex_get_agent_context` — export structured project context for agents (XML, Markdown, JSON)
-- `cortex_get_code_symbols` — query indexed code symbols (functions, structs, classes, interfaces) with filtering by kind, package, file, or pattern
-- `cortex_get_code_graph` — retrieve complete structural call and reference graph for a project
-- `cortex_get_blast_radius` — calculate downstream impact of modifying symbols/files before refactoring
-- `cortex_detect_cycles` — detect circular dependencies and import/call cycles in codebase
-- `cortex_analyze_architecture` — analyze code communities, god nodes (centrality score), and modular cohesion
+- `cortex_code_tests` — reverse call-graph to locate precisely which test suites are impacted by modified symbols/files (Fast-TDD)
+- `cortex_get_blast_radius` — calculate downstream impact of modifying code entities or observations (supports `include_tests: true`)
+- `cortex_detect_cycles` — detect circular dependencies and import/call cycles across modules
+- `cortex_analyze_architecture` — analyze code communities (Louvain), god nodes (centrality score), and modular cohesion
+- `cortex_get_status` — operational mode (SQLite Local vs PostgreSQL Server) and capabilities check
+
+**Knowledge Graph:**
+- `cortex_relate` — create typed relationships between observations (references, relates_to, follows, supersedes, contradicts)
+- `cortex_graph` — traverse the knowledge graph from an observation (supports `format: "relationships"`)
+- `cortex_graph_path` — find shortest path between two observations in the knowledge graph
+
+**Lineage & Durable Handoff:**
+- `cortex_revision_history` — structured revision snapshots for observations (track evolution across upserts)
+- `cortex_handoff` — idempotent durable memory handoff with receipts between agents
 
 **Transport IDs:** Follow the active MCP tool schema. Local observations and graph records use numeric IDs; Cortex Server uses public UUID strings. Never convert or reuse IDs across transports.
 
-**Knowledge graph (Cortex-exclusive):**
-- `cortex_relate` — create typed relationships between observations
-- `cortex_graph` — traverse the knowledge graph from an observation
-- `cortex_score` — get/recalculate importance score
-- `cortex_archive` — archive low-importance observations
-- `cortex_search_hybrid` — FTS5 + vector search with RRF fusion
-
-**Cortex additions:**
-- `cortex_revision_history` — structured revision snapshots for observations (track upsert evolution)
-- `cortex_merge_projects` — consolidate fragmented project name variants into one canonical name
-
-**Temporal tools (advanced):**
-- `cortex_temporal_create_edge`, `cortex_temporal_get_edges`, `cortex_temporal_get_relevant`, `cortex_temporal_create_snapshot`
-- `cortex_temporal_record_operation`, `cortex_temporal_evaluate_quality`, `cortex_temporal_system_metrics`
-- `cortex_temporal_health_check`, `cortex_temporal_evolution_path`, `cortex_temporal_fact_state`
-
 **Fallback**: If tools are unexpectedly unavailable, trigger ToolSearch manually:
 ```
-select:mcp__plugin_cortex_cortex__cortex_save,mcp__plugin_cortex_cortex__cortex_search,mcp__plugin_cortex_cortex__cortex_context,mcp__plugin_cortex_cortex__cortex_session_summary,mcp__plugin_cortex_cortex__cortex_get_observation,mcp__plugin_cortex_cortex__cortex_suggest_topic_key,mcp__plugin_cortex_cortex__cortex_update,mcp__plugin_cortex_cortex__cortex_session_start,mcp__plugin_cortex_cortex__cortex_session_end,mcp__plugin_cortex_cortex__cortex_save_prompt
+select:mcp__plugin_cortex_cortex__cortex_save,mcp__plugin_cortex_cortex__cortex_search,mcp__plugin_cortex_cortex__cortex_context,mcp__plugin_cortex_cortex__cortex_session_summary,mcp__plugin_cortex_cortex__cortex_get_observation,mcp__plugin_cortex_cortex__cortex_update,mcp__plugin_cortex_cortex__cortex_relate,mcp__plugin_cortex_cortex__cortex_graph,mcp__plugin_cortex_cortex__cortex_get_agent_context,mcp__plugin_cortex_cortex__cortex_revision_history
 ```
-
-Admin tools (deferred — use ToolSearch only if needed):
-- `cortex_stats`, `cortex_delete`, `cortex_timeline`, `cortex_capture_passive`
 
 ## PROACTIVE SAVE TRIGGERS (mandatory — do NOT wait for user to ask)
 
@@ -110,9 +105,8 @@ Format for `cortex_save`:
 ### Topic update rules (mandatory)
 
 - Different topics MUST NOT overwrite each other
-- If the same topic evolves, call `cortex_save` with the same `topic_key` (upsert)
-- If unsure about the key, call `cortex_suggest_topic_key` first
-- If you already know the exact ID to fix, use `cortex_update`
+- If the same topic evolves, call `cortex_save` with the same `topic_key` (automated upsert with versioned lineage)
+- If you already know the exact ID to fix surgically, use `cortex_update`
 
 ## KNOWLEDGE GRAPH
 
@@ -124,6 +118,7 @@ After saving related observations, use `cortex_relate` to connect them:
 - `contradicts` — conflicting information
 
 Use `cortex_graph` to explore connections: `cortex_graph(observation_id, depth=2)`
+Use `cortex_graph_path` to find shortest path: `cortex_graph_path(from_id, to_id)`
 
 ## SEARCH & RETRIEVAL (SOTA Adaptive-RAG & HippoRAG)
 
@@ -134,26 +129,23 @@ When the user asks to recall something — any variation of "remember", "recall"
    - `mode="direct"`: Fast FTS5 exact lexical match
    - `mode="semantic"`: FTS5 + Dense Vector RRF fusion with ColBERT MaxSim re-ranking
    - `mode="multi_hop"`: HippoRAG Personalized PageRank (PPR) knowledge graph activation
-3. If still not found, try `cortex_search_hybrid` for FTS5 + vector combined search
-4. If you find a match, use `cortex_get_observation` for full untruncated content (search returns 300-char previews only)
+3. If you find a match, use `cortex_get_observation` for full untruncated content (search returns 300-char previews only)
 
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
 - The user mentions a topic you have no context on
 - The user's FIRST message references the project — call `cortex_search` with keywords
 
-## REVISION HISTORY & TIMELINE
+## REVISION HISTORY & LINEAGE
 
 - `cortex_revision_history(observation_id)` — see how an observation evolved across topic_key upserts
-- `cortex_timeline(observation_id, before, after)` — chronological context around an observation
 - Use when: artifact seems stale, auditing changes, investigating what happened around a specific event
 
-## PROJECT HYGIENE
+## DATA HYGIENE & EVOLUTION
 
-- If project name is fragmented (e.g., "my-project" vs "my_project"): `cortex_merge_projects(from: "my_project,myproject", to: "my-project")`
-- To archive obsolete observations: `cortex_archive(observation_id)` (soft-delete, still findable with include_archived)
-- To permanently delete: `cortex_delete(id, hard_delete: true)` (admin only, irreversible)
-- To check system stats: `cortex_stats()` (total observations, sessions, top projects)
+- **Evolving Knowledge**: If an existing decision or discovery evolves, call `cortex_save` with the same `topic_key`. Cortex automatically manages versioned history and lineage without destructive updates.
+- **Surgical Field Updates**: Use `cortex_update(id, ...)` when fixing specific typos or fields on an existing record.
+- **Operator Maintenance**: Permanent deletions, project key reconciliation, and garbage collection are performed by operators via CLI commands (`cortex gc`, `cortex merge-projects`) and the Web Dashboard. Autonomous agents do not perform hard deletions.
 
 ## SESSION CLOSE PROTOCOL (mandatory)
 

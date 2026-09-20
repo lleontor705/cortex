@@ -30,13 +30,13 @@ const modes: Array<{ value: SearchMode; label: string; description: string }> = 
 
 function BranchMessage({ status, empty, unavailable }: { status: BranchStatus; empty: string; unavailable: string }) {
   if (status === "loading") {
-    return <p className="rounded-xl border border-dashed border-[var(--border-subtle)] p-5 text-sm text-[var(--text-muted)]" role="status">Consultando este índice…</p>;
+    return <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground" role="status">Consultando este índice…</p>;
   }
   if (status === "unavailable") {
-    return <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400" role="status"><AlertCircle className="mr-2 inline h-4 w-4" aria-hidden="true" />{unavailable}</p>;
+    return <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-500 dark:text-amber-400" role="status"><AlertCircle className="mr-2 inline h-4 w-4" aria-hidden="true" />{unavailable}</p>;
   }
   if (status === "ready") {
-    return <p className="rounded-xl border border-dashed border-[var(--border-subtle)] p-5 text-sm text-[var(--text-muted)]" role="status">{empty}</p>;
+    return <p className="rounded-lg border border-dashed border-border p-5 text-sm text-muted-foreground" role="status">{empty}</p>;
   }
   return null;
 }
@@ -45,12 +45,12 @@ function MemoryResults({ items, status, projectLabel }: { items: Observation[]; 
     <section className="min-w-0 space-y-3" aria-labelledby="memory-results-title">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 id="memory-results-title" className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-            <Database className="h-4 w-4 text-sky-400" aria-hidden="true" />
+          <h2 id="memory-results-title" className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Database className="h-4 w-4 text-primary" aria-hidden="true" />
             Memoria híbrida
             <Badge variant="secondary">{items.length}</Badge>
           </h2>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">Coincidencia lexical y vectorial fusionada por el servidor.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Coincidencia lexical y vectorial fusionada por el servidor.</p>
         </div>
         <Badge variant="outline">{projectLabel}</Badge>
       </div>
@@ -63,16 +63,16 @@ function MemoryResults({ items, status, projectLabel }: { items: Observation[]; 
       ) : (
         <div className="grid min-w-0 gap-3">
           {items.map((item) => (
-            <Card key={item.id} className="min-w-0 border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 sm:p-5">
+            <Card key={item.id} className="min-w-0 border-border bg-card shadow-xs p-4 sm:p-5">
               <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <h3 className="min-w-0 break-words text-sm font-semibold text-[var(--text-primary)]">{item.title}</h3>
+                <h3 className="min-w-0 break-words text-sm font-semibold text-foreground">{item.title}</h3>
                 <div className="flex shrink-0 gap-2">
                   <Badge variant="secondary" className="text-[10px]">{item.type}</Badge>
                   {item.has_embedding ? <Badge variant="outline" className="text-[10px]">vector</Badge> : null}
                 </div>
               </div>
-              <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-secondary)]">{item.content}</p>
-              <p className="mt-3 border-t border-[var(--border-subtle)] pt-3 text-xs text-[var(--text-muted)]">
+              <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground">{item.content}</p>
+              <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
                 Fuente: memoria · {item.project}
               </p>
             </Card>
@@ -88,12 +88,12 @@ function CodeResults({ items, status, projectLabel }: { items: CodeSymbol[]; sta
     <section className="min-w-0 space-y-3" aria-labelledby="code-results-title">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 id="code-results-title" className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-            <Code2 className="h-4 w-4 text-violet-400" aria-hidden="true" />
+          <h2 id="code-results-title" className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Code2 className="h-4 w-4 text-primary" aria-hidden="true" />
             Índice estructural
             <Badge variant="secondary">{items.length}</Badge>
           </h2>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">Símbolos, firmas y rutas extraídos del AST.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Símbolos, firmas y rutas extraídos del AST.</p>
         </div>
         <Badge variant="outline">{projectLabel}</Badge>
       </div>
@@ -106,14 +106,14 @@ function CodeResults({ items, status, projectLabel }: { items: CodeSymbol[]; sta
       ) : (
         <div className="grid min-w-0 gap-3 sm:grid-cols-2">
           {items.map((symbol) => (
-            <Card key={symbol.id} tabIndex={0} className="min-w-0 border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]">
+            <Card key={symbol.id} tabIndex={0} className="min-w-0 border-border bg-card shadow-xs p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary">
               <div className="flex min-w-0 items-start justify-between gap-2">
-                <h3 className="min-w-0 break-words text-sm font-semibold text-[var(--text-primary)]">{symbol.name}</h3>
-                <Badge variant="purple" className="shrink-0 text-[10px]">{symbol.kind}</Badge>
+                <h3 className="min-w-0 break-words text-sm font-semibold text-foreground">{symbol.name}</h3>
+                <Badge variant="secondary" className="shrink-0 text-[10px] font-mono">{symbol.kind}</Badge>
               </div>
-              <p className="mt-3 break-all font-mono text-xs text-[var(--text-secondary)]">{symbol.file_path}:{symbol.line_number}</p>
-              {symbol.signature ? <p className="mt-3 break-words font-mono text-xs leading-5 text-[var(--text-muted)]">{symbol.signature}</p> : null}
-              <p className="mt-3 border-t border-[var(--border-subtle)] pt-3 text-xs text-[var(--text-muted)]">Fuente: código · {projectLabel}</p>
+              <p className="mt-3 break-all font-mono text-xs text-muted-foreground">{symbol.file_path}:{symbol.line_number}</p>
+              {symbol.signature ? <p className="mt-3 break-words font-mono text-xs leading-5 text-muted-foreground">{symbol.signature}</p> : null}
+              <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">Fuente: código · {projectLabel}</p>
             </Card>
           ))}
         </div>
@@ -255,8 +255,8 @@ export default function SearchPage() {
           <Sparkles className="h-4 w-4" aria-hidden="true" />
           Explorador de conocimiento
         </p>
-        <h1 className="mt-2 text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl">Encuentra memoria y código</h1>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+        <h1 className="mt-2 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Encuentra memoria y código</h1>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
           La memoria usa recuperación híbrida y vectorial; el código consulta símbolos AST. Cada rama muestra su disponibilidad por separado.
         </p>
       </header>
@@ -275,19 +275,19 @@ export default function SearchPage() {
         disabled={projectsLoading || isSearching}
       />
 
-      {projectsError ? <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">{projectsError}</p> : null}
+      {projectsError ? <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{projectsError}</p> : null}
 
-      <Card className="min-w-0 space-y-4 border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 sm:p-5">
+      <Card className="min-w-0 space-y-4 border-border bg-card p-4 sm:p-5 shadow-sm">
         <div className="grid gap-2 sm:grid-cols-3" aria-label="Fuentes de búsqueda">
           {modes.map((item) => (
             <button
               key={item.value}
               type="button"
               aria-pressed={mode === item.value}
-              className={`min-w-0 rounded-xl border p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] ${
+              className={`min-w-0 rounded-lg border p-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
                 mode === item.value
-                  ? "border-sky-500/50 bg-sky-500/10 text-[var(--text-primary)]"
-                  : "border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)]"
+                  ? "border-primary/40 bg-primary/10 text-foreground font-medium"
+                  : "border-border bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
               onClick={() => {
                 activeSearch.current?.abort();
@@ -298,7 +298,7 @@ export default function SearchPage() {
               }}
             >
               <span className="block text-sm font-semibold">{item.label}</span>
-              <span className="mt-1 block text-xs text-[var(--text-muted)]">{item.description}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{item.description}</span>
             </button>
           ))}
         </div>
@@ -311,7 +311,7 @@ export default function SearchPage() {
           }}
         >
           <div className="relative min-w-0 flex-1">
-            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" aria-hidden="true" />
+            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <Input
               ref={searchInput}
               type="search"
@@ -319,7 +319,7 @@ export default function SearchPage() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Ej.: ApplicationDbContext.cs, aislamiento tenant o decisión PostgreSQL"
-              className="h-11 w-full min-w-0 bg-[var(--bg-surface)] pl-10 text-sm"
+              className="h-11 w-full min-w-0 bg-background pl-10 text-sm"
               disabled={!selectedProject || isSearching}
               required
             />
@@ -333,9 +333,9 @@ export default function SearchPage() {
       </Card>
 
       {hasSearched ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-[var(--text-muted)]">
-          <p><strong className="text-[var(--text-primary)]">{total}</strong> resultados para “{query.trim()}”</p>
-          <p>{selectedProject?.label}</p>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+          <p><strong className="text-foreground">{total}</strong> resultados para “{query.trim()}”</p>
+          <p className="font-mono text-xs">{selectedProject?.label}</p>
         </div>
       ) : null}
 
@@ -345,11 +345,11 @@ export default function SearchPage() {
       </div>
 
       {!hasSearched ? (
-        <Card className="grid min-h-48 place-items-center border-dashed border-[var(--border-subtle)] bg-transparent p-6 text-center">
+        <Card className="grid min-h-48 place-items-center border-dashed border-border bg-card/40 p-6 text-center">
           <div>
-            <Braces className="mx-auto h-6 w-6 text-[var(--text-muted)]" aria-hidden="true" />
-            <p className="mt-3 text-sm font-medium text-[var(--text-primary)]">Selecciona un proyecto y formula una consulta</p>
-            <p className="mt-1 text-xs text-[var(--text-muted)]">Los resultados nunca mezclan proyectos ni workspaces.</p>
+            <Braces className="mx-auto h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            <p className="mt-3 text-sm font-medium text-foreground">Selecciona un proyecto y formula una consulta</p>
+            <p className="mt-1 text-xs text-muted-foreground">Los resultados nunca mezclan proyectos ni workspaces.</p>
           </div>
         </Card>
       ) : null}

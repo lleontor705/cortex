@@ -40,7 +40,7 @@ plugin/claude-code/
 1. Ensures cortex HTTP server is running
 2. Creates session via HTTP API
 3. Fetches memory context for the project
-4. Injects Memory Protocol + context into Claude
+4. Injects Memory Protocol + context into Claude, detailing CORE tools (`cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`, `cortex_update`) and deferred tools via `ToolSearch`.
 
 #### SessionStart (compact)
 1. Ensures session exists
@@ -48,7 +48,7 @@ plugin/claude-code/
 3. Instructs agent to: save compacted summary → load context → then continue
 
 #### UserPromptSubmit
-- **First message**: Injects ToolSearch to load all cortex MCP tools
+- **First message**: Injects `ToolSearch` selection to load the core tools and initial context tools (`cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`, `cortex_update`, `cortex_relate`, `cortex_graph`, `cortex_get_agent_context`, `cortex_revision_history`).
 - **Subsequent**: If > 15 min since last save and session > 5 min old, nudges agent to save
 
 #### SubagentStop (async)
@@ -59,15 +59,17 @@ plugin/claude-code/
 
 All hooks use `CORTEX_HTTP_PORT` (default `7438`). `CORTEX_PORT` is not supported.
 
-### Memory Protocol
+### Memory Protocol & Profiles
 
-The SKILL.md file defines mandatory behaviors for the agent:
+The `skills/memory/SKILL.md` file defines mandatory behaviors for the agent across supported profiles:
 
-- **Proactive saves**: After decisions, bugfixes, discoveries, patterns, preferences
-- **Search triggers**: When user recalls, when starting related work, on first message
-- **Session close**: Mandatory `cortex_session_summary` with Goal/Discoveries/Accomplished/Next Steps/Relevant Files
-- **Knowledge graph**: Use `cortex_relate` to connect related observations
-- **Compaction recovery**: 4-step mandatory protocol
+- **Profiles Supported**: `agent` (22 tools, default), `dev` (11 tools), and `minimal` (5 tools). Administrative and temporal operations are handled via CLI/REST, keeping the agent context zero-bloat.
+- **Proactive saves**: After decisions, bugfixes, discoveries, patterns, preferences.
+- **Search triggers**: When user recalls, when starting related work, on first message (`auto`, `direct`, `semantic`, `multi_hop`).
+- **Knowledge graph**: Use `cortex_relate` and `cortex_graph_path` to map and traverse relationships.
+- **Codebase AST & Impact**: Query symbols via `cortex_get_code_symbols`, map impacted tests with `cortex_code_tests`, and evaluate blast radius with `cortex_get_blast_radius`.
+- **Session close**: Mandatory `cortex_session_summary` with Goal/Discoveries/Accomplished/Next Steps/Relevant Files.
+- **Compaction recovery**: 4-step mandatory protocol.
 
 ## OpenCode Plugin
 
@@ -80,10 +82,18 @@ The TypeScript plugin (`plugin/opencode/cortex.ts`) connects OpenCode's event sy
 - **Session lifecycle**: Ends primary sessions on `session.deleted`
 - **Sub-agent suppression**: Detects Task() sub-agents and skips session registration
 - **User prompt capture**: Saves prompts to `user_prompts` via `chat.message`
-- **Tool tracking**: Counts non-Cortex tool calls per session
+- **Tool tracking**: Counts non-Cortex tool calls per session using an exhaustive `CORTEX_TOOLS` allowlist
 - **Passive capture**: Extracts learnings from Task tool output
-- **Memory Protocol injection**: Appends to system prompt via `experimental.chat.system.transform`
+- **Mode-Aware Memory Instructions**: Dynamically injects instructions based on the active mode:
+  - **Server Mode (PostgreSQL)**: UUID transport IDs, corporate governance (`cortex_get_project_context`), domain skills (`cortex_list_skills`, `cortex_get_skill`), and unified resolution (`cortex_resolve_query`).
+  - **Local / Hybrid Mode (SQLite Zero-CGO)**: Numeric integer IDs, AST intelligence (`cortex_get_code_symbols`, `cortex_code_map`, `cortex_code_tests`), and knowledge graph paths (`cortex_graph_path`).
 - **Compaction recovery**: Injects context + instructions via `experimental.session.compacting`
+
+### Setup and Modular Profiles
+
+`cortex setup opencode [--profile=agent|dev|minimal]` installs both the MCP registration (`~/.config/opencode/cortex-mcp.json`) and the managed plugin (`~/.config/opencode/plugins/cortex.ts`).
+
+The TypeScript source is embedded in every Cortex binary, including release archives and `go install` builds. Running setup again replaces the managed plugin with the version embedded in the current binary.
 
 ### Binary Path Resolution
 
@@ -91,8 +101,6 @@ The plugin uses a 3-tier fallback for the cortex binary:
 1. `CORTEX_BIN` environment variable (explicit override)
 2. `Bun.which("cortex")` (runtime PATH lookup)
 3. Absolute baked-in path (headless/systemd fallback)
-
-`cortex setup opencode` installs both the MCP registration and the managed `plugins/cortex.ts`. The TypeScript source is embedded in every Cortex binary, including release archives and `go install` builds. Running setup again replaces the managed plugin with the version embedded in the current binary.
 
 ### Local Model Compatibility
 

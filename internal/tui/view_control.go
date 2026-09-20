@@ -108,7 +108,21 @@ func (m Model) viewSetup() string {
 	// Agent selection
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("  Select an agent to set up"))
-	b.WriteString("\n\n")
+
+	profile := m.SetupProfile
+	if profile == "" {
+		profile = "agent"
+	}
+	profileBadge := "agent (22 tools)"
+	switch profile {
+	case "dev":
+		profileBadge = "dev (11 tools)"
+	case "minimal":
+		profileBadge = "minimal (5 tools)"
+	}
+	fmt.Fprintf(&b, "  Profile: %s %s\n\n",
+		lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(profileBadge),
+		lipgloss.NewStyle().Foreground(colorSubtext).Render("(press [p] to cycle profile)"))
 
 	for i, agent := range m.SetupAgents {
 		badge := ""
@@ -136,7 +150,7 @@ func (m Model) viewSetup() string {
 			timestampStyle.Render(agent.InstallDir))
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter install • c local config • esc back"))
+	b.WriteString(helpStyle.Render("\n  j/k navigate • enter install • p profile • c local config • esc back"))
 
 	return b.String()
 }
@@ -159,10 +173,10 @@ func (m Model) viewLocalConfig() string {
 	} else if m.LocalCfgSyncEnabled {
 		mode, modeDetail, modeColor = "LOCAL-FIRST + SYNC", "SQLite stays local; changes flow both ways in the background.", colorGreen
 	}
-	b.WriteString("\n  " + lipgloss.NewStyle().Background(modeColor).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(mode))
+	b.WriteString("\n  " + lipgloss.NewStyle().Background(modeColor).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(mode))
 	b.WriteString("  " + lipgloss.NewStyle().Foreground(colorText).Render(modeDetail))
 	if m.LocalCfgDirty {
-		b.WriteString("  " + lipgloss.NewStyle().Background(colorAmber).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render("● UNSAVED"))
+		b.WriteString("  " + lipgloss.NewStyle().Background(colorAmber).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render("● UNSAVED"))
 	}
 	b.WriteString("\n\n")
 
@@ -170,9 +184,9 @@ func (m Model) viewLocalConfig() string {
 	tabs := []string{"1 Storage", "2 AI & LLM", "3 HTTP API", "4 MCP Proxy", "5 Sync", "6 Review"}
 	for i, tab := range tabs {
 		if i == section {
-			b.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("▸ " + tab))
+			b.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 2).Render("▸ " + tab))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Background(lipgloss.Color("#1e293b")).Foreground(colorSubtext).Padding(0, 2).Render(tab))
+			b.WriteString(lipgloss.NewStyle().Background(activePalette.Overlay).Foreground(colorSubtext).Padding(0, 2).Render(tab))
 		}
 		if i < len(tabs)-1 {
 			b.WriteString(" ")
@@ -227,7 +241,7 @@ func (m Model) viewLocalConfig() string {
 		var fmtOpts strings.Builder
 		for i, f := range formats {
 			if i == m.LocalCfgFormat {
-				fmtOpts.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(f) + " ")
+				fmtOpts.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(f) + " ")
 			} else {
 				fmtOpts.WriteString(dim.Render("["+f+"]") + " ")
 			}
@@ -243,7 +257,7 @@ func (m Model) viewLocalConfig() string {
 		var provOpts strings.Builder
 		for i, p := range providers {
 			if i == m.LocalCfgLLMProvider {
-				provOpts.WriteString(lipgloss.NewStyle().Background(colorPurple).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 1).Render(p) + " ")
+				provOpts.WriteString(lipgloss.NewStyle().Background(colorPurple).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(p) + " ")
 			} else {
 				provOpts.WriteString(dim.Render("["+p+"]") + " ")
 			}
@@ -275,18 +289,41 @@ func (m Model) viewLocalConfig() string {
 	case 3:
 		panel.WriteString(sectionTitleStyle.Render("🔌 MCP Transport (Model Context Protocol)") + "\n")
 		panel.WriteString(dim.Render("Choose where agent tool calls execute (local SQLite vs remote server).") + "\n\n")
-		toggleLineTo(&panel, marker, label, dim, 8, "Remote proxy:", m.LocalCfgMCPRemote)
-		textLineTo(&panel, marker, label, value, dim, 9, "MCP endpoint:", m.LocalCfgMCPURL)
-		textLineTo(&panel, marker, label, value, dim, 10, "Token env name:", m.LocalCfgMCPTokenEnv)
-		panel.WriteString("\n" + dim.Render("When enabled, MCP tool calls bypass local SQLite."))
+
+		// Tool profile cycler line (field 8)
+		profiles := []struct {
+			name  string
+			badge string
+		}{
+			{"agent", "agent (22 tools)"},
+			{"dev", "dev (11 tools)"},
+			{"minimal", "minimal (5 tools)"},
+		}
+		var profOpts strings.Builder
+		curProfile := strings.ToLower(strings.TrimSpace(m.LocalCfgMCPProfile))
+		if curProfile == "" {
+			curProfile = "agent"
+		}
+		for _, p := range profiles {
+			if p.name == curProfile {
+				profOpts.WriteString(lipgloss.NewStyle().Background(colorMauve).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(p.badge) + " ")
+			} else {
+				profOpts.WriteString(dim.Render("["+p.badge+"]") + " ")
+			}
+		}
+		panel.WriteString(marker(8) + label.Render("Tool profile:") + " " + profOpts.String() + "\n")
+		toggleLineTo(&panel, marker, label, dim, 9, "Remote proxy:", m.LocalCfgMCPRemote)
+		textLineTo(&panel, marker, label, value, dim, 10, "MCP endpoint:", m.LocalCfgMCPURL)
+		textLineTo(&panel, marker, label, value, dim, 11, "Token env name:", m.LocalCfgMCPTokenEnv)
+		panel.WriteString("\n" + dim.Render("Press [Space], [h], [l] on Tool profile to cycle agent/dev/minimal. Remote proxy bypasses local SQLite."))
 
 	case 4:
 		panel.WriteString(sectionTitleStyle.Render("🔄 Bidirectional Synchronization") + "\n")
 		panel.WriteString(dim.Render("Work locally while sharing memories in real-time with Cortex Server.") + "\n\n")
-		toggleLineTo(&panel, marker, label, dim, 11, "Background sync:", m.LocalCfgSyncEnabled)
-		textLineTo(&panel, marker, label, value, dim, 12, "Server URL:", m.LocalCfgSyncURL)
-		textLineTo(&panel, marker, label, value, dim, 13, "Token env name:", m.LocalCfgSyncTokenEnv)
-		textLineTo(&panel, marker, label, value, dim, 14, "Sync interval:", m.LocalCfgSyncInterval)
+		toggleLineTo(&panel, marker, label, dim, 12, "Background sync:", m.LocalCfgSyncEnabled)
+		textLineTo(&panel, marker, label, value, dim, 13, "Server URL:", m.LocalCfgSyncURL)
+		textLineTo(&panel, marker, label, value, dim, 14, "Token env name:", m.LocalCfgSyncTokenEnv)
+		textLineTo(&panel, marker, label, value, dim, 15, "Sync interval:", m.LocalCfgSyncInterval)
 		panel.WriteString("\n" + dim.Render("Only the environment variable name is saved, never the secret token."))
 
 	case 5:
@@ -301,15 +338,21 @@ func (m Model) viewLocalConfig() string {
 		if m.LocalCfgLLMProvider >= 0 && m.LocalCfgLLMProvider < len(providers) {
 			curProv = providers[m.LocalCfgLLMProvider]
 		}
+		curProf := strings.ToLower(strings.TrimSpace(m.LocalCfgMCPProfile))
+		if curProf == "" {
+			curProf = "agent"
+		}
+		profBadge := curProf + " (" + profileToolCount(curProf) + ")"
 
 		panel.WriteString(configSummaryLine("Storage", m.LocalCfgDatabasePath.Value()+" ("+curFmt+")"))
 		panel.WriteString(configSummaryLine("AI / LLM", curProv+" · "+m.LocalCfgLLMModel.Value()))
 		panel.WriteString(configSummaryLine("HTTP API", enabledSummary(m.LocalCfgHTTPEnabled, m.LocalCfgHTTPHost.Value()+":"+m.LocalCfgHTTPPort.Value())))
+		panel.WriteString(configSummaryLine("MCP Profile", profBadge))
 		panel.WriteString(configSummaryLine("MCP Proxy", enabledSummary(m.LocalCfgMCPRemote, m.LocalCfgMCPURL.Value())))
 		panel.WriteString(configSummaryLine("Sync", enabledSummary(m.LocalCfgSyncEnabled, m.LocalCfgSyncURL.Value()+" ("+m.LocalCfgSyncInterval.Value()+")")))
 		panel.WriteString("\n")
-		if m.LocalCfgFocusField == 15 {
-			panel.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 3).Render("✔ Validate & Save Configuration"))
+		if m.LocalCfgFocusField == 16 {
+			panel.WriteString(lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 3).Render("✔ Validate & Save Configuration"))
 		} else {
 			panel.WriteString(lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorOverlay).Padding(0, 3).Render("Validate & Save Configuration"))
 		}
@@ -369,6 +412,17 @@ func enabledSummary(enabled bool, detail string) string {
 		return "On"
 	}
 	return "On · " + detail
+}
+
+func profileToolCount(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "dev":
+		return "11 tools"
+	case "minimal":
+		return "5 tools"
+	default:
+		return "22 tools"
+	}
 }
 
 // ─── Embedding Config ──────────────────────────────────────────────────────
@@ -434,7 +488,7 @@ func (m Model) viewEmbeddingConfig() string {
 
 	// Save button (field 4)
 	if m.EmbCfgFocusField == 4 {
-		b.WriteString("  " + lipgloss.NewStyle().Background(colorCyan).Foreground(lipgloss.Color("#16161e")).Bold(true).Padding(0, 2).Render("Save"))
+		b.WriteString("  " + lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 2).Render("Save"))
 	} else {
 		b.WriteString("  " + lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorOverlay).Padding(0, 2).Render("Save"))
 	}

@@ -328,6 +328,7 @@ type Model struct {
 	SetupAllowlistPrompt  bool
 	SetupAllowlistApplied bool
 	SetupAllowlistError   string
+	SetupProfile          string // "agent", "dev", "minimal"
 	SetupSpinner          spinner.Model
 
 	// Animation & Testing State
@@ -371,6 +372,7 @@ type Model struct {
 	LocalCfgHTTPEnabled  bool
 	LocalCfgHTTPHost     textinput.Model
 	LocalCfgHTTPPort     textinput.Model
+	LocalCfgMCPProfile   string // "agent", "dev", "minimal"
 	LocalCfgMCPRemote    bool
 	LocalCfgMCPURL       textinput.Model
 	LocalCfgMCPTokenEnv  textinput.Model
@@ -444,6 +446,11 @@ type Model struct {
 
 // New creates a new TUI model connected to the given stores.
 func New(deps *Deps) Model {
+	return NewWithScreen(deps, ScreenDashboard)
+}
+
+// NewWithScreen creates a new TUI model starting on initialScreen.
+func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search memories..."
 	ti.CharLimit = 256
@@ -596,10 +603,39 @@ func New(deps *Deps) Model {
 		uploadToCortex = deps.Config.Sync.Enabled
 	}
 
+	activeWorkspace := 0
+	controlDeckTab := 0
+	switch initialScreen {
+	case ScreenGraph:
+		activeWorkspace = 1
+	case ScreenHealth, ScreenArchive:
+		activeWorkspace = 2
+	case ScreenSetup:
+		activeWorkspace = 3
+		controlDeckTab = 0
+	case ScreenLocalConfig:
+		activeWorkspace = 3
+		controlDeckTab = 1
+	case ScreenEmbeddingConfig:
+		activeWorkspace = 3
+		controlDeckTab = 2
+	}
+
+	localCfgMCPProfile := "agent"
+	if deps != nil && deps.Config != nil {
+		if p := strings.ToLower(strings.TrimSpace(deps.Config.MCP.Profile)); p != "" {
+			if p == "agent" || p == "dev" || p == "minimal" {
+				localCfgMCPProfile = p
+			}
+		}
+	}
+
 	return Model{
 		deps:                 deps,
 		Version:              deps.Version,
-		Screen:               ScreenDashboard,
+		Screen:               initialScreen,
+		ActiveDeckWorkspace:  activeWorkspace,
+		ControlDeckTab:       controlDeckTab,
 		IsDarkTheme:          true,
 		AuthToken:            authToken,
 		CurrentUser:          currentUser,
@@ -623,6 +659,7 @@ func New(deps *Deps) Model {
 		LocalCfgHTTPEnabled:  deps.Config != nil && deps.Config.HTTP.Enabled,
 		LocalCfgHTTPHost:     httpHost,
 		LocalCfgHTTPPort:     httpPort,
+		LocalCfgMCPProfile:   localCfgMCPProfile,
 		LocalCfgMCPRemote:    deps.Config != nil && deps.Config.MCP.Remote.Enabled,
 		LocalCfgMCPURL:       mcpURL,
 		LocalCfgMCPTokenEnv:  mcpTokenEnv,

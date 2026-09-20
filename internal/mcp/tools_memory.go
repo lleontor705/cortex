@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	domainentity "github.com/lleontor705/cortex/v2/internal/domain/entity"
+	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	projectpkg "github.com/lleontor705/cortex/v2/internal/project"
@@ -141,10 +144,19 @@ The local namespace returns observation_ref.local_id only.`),
 					mcp.Description("Filter by project name"),
 				),
 				mcp.WithString("scope",
-					mcp.Description("Filter by scope: project (default) or personal"),
+					mcp.Description("Filter by scope: auto (default: local with CRAG escalation), local (SQLite only), project, personal, team, or global"),
+				),
+				mcp.WithString("mode",
+					mcp.Description("Retrieval mode: 'auto' (Adaptive-RAG with HippoRAG and CRAG gating), 'direct' (fast factual), 'semantic' (hybrid vectors), 'multi_hop' (HippoRAG graph reasoning)"),
+				),
+				mcp.WithNumber("lexical_weight",
+					mcp.Description("Optional weight multiplier for FTS5 lexical matching in RRF (default: 1.0)"),
+				),
+				mcp.WithNumber("vector_weight",
+					mcp.Description("Optional weight multiplier for vector semantic similarity in RRF (default: 1.0)"),
 				),
 				mcp.WithNumber("limit",
-					mcp.Description("Max results (default: 10, max: 20)"),
+					mcp.Description("Max results (default: 10, max: 50)"),
 				),
 				mcp.WithBoolean("graph_expand",
 					mcp.Description("Include graph-connected observations in results (default: false)"),
@@ -248,31 +260,6 @@ GUIDELINES:
 			handleGetObservation(stores),
 		)
 	}
-
-	// --- cortex_save_prompt (eager) ---
-	if shouldRegister("cortex_save_prompt", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_save_prompt",
-				mcp.WithDescription("Save a user prompt to persistent memory. Use this to record what the user asked  -- their intent, questions, and requests  -- so future sessions have context about the user's goals."),
-				mcp.WithTitleAnnotation("Save User Prompt"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(false),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("content",
-					mcp.Required(),
-					mcp.Description("The user's prompt text"),
-				),
-				mcp.WithString("session_id",
-					mcp.Description("Session ID to associate with (default: manual-save-{project})"),
-				),
-				mcp.WithString("project",
-					mcp.Description("Project name"),
-				),
-			),
-			handleSavePrompt(stores),
-		)
-	}
 }
 
 // registerDeferredMemoryTools registers tools loaded on demand (update, delete, stats, etc.).
@@ -309,81 +296,6 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				),
 			),
 			handleUpdate(stores),
-		)
-	}
-
-	// --- cortex_suggest_topic_key (deferred) ---
-	if shouldRegister("cortex_suggest_topic_key", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_suggest_topic_key",
-				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before cortex_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Suggest Topic Key"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("type",
-					mcp.Description("Observation type/category, e.g. architecture, decision, bugfix"),
-				),
-				mcp.WithString("title",
-					mcp.Description("Observation title (preferred input for stable keys)"),
-				),
-				mcp.WithString("content",
-					mcp.Description("Observation content used as fallback if title is empty"),
-				),
-			),
-			handleSuggestTopicKey(),
-		)
-	}
-
-	// --- cortex_session_start (deferred) ---
-	if shouldRegister("cortex_session_start", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_session_start",
-				mcp.WithDescription("Register the start of a new coding session. Call this at the beginning of a session to track activity."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Start Session"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("id",
-					mcp.Required(),
-					mcp.Description("Unique session identifier"),
-				),
-				mcp.WithString("project",
-					mcp.Required(),
-					mcp.Description("Project name"),
-				),
-				mcp.WithString("directory",
-					mcp.Description("Working directory"),
-				),
-			),
-			handleSessionStart(stores),
-		)
-	}
-
-	// --- cortex_session_end (deferred) ---
-	if shouldRegister("cortex_session_end", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_session_end",
-				mcp.WithDescription("Mark a coding session as completed with an optional summary."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("End Session"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("id",
-					mcp.Required(),
-					mcp.Description("Session identifier to close"),
-				),
-				mcp.WithString("summary",
-					mcp.Description("Summary of what was accomplished"),
-				),
-			),
-			handleSessionEnd(stores),
 		)
 	}
 
@@ -462,39 +374,6 @@ func registerDeferredMemoryTools(srv *server.MCPServer, stores *Stores, allowlis
 				),
 			),
 			handleRevisionHistory(stores),
-		)
-	}
-
-	// cortex_capture_passive (deferred)
-	if shouldRegister("cortex_capture_passive", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("cortex_capture_passive",
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Capture Learnings"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithDescription(`Extract and save structured learnings from text output. Use this at the end of a task to capture knowledge automatically.
-
-The tool looks for sections like "## Key Learnings:" or "## Aprendizajes Clave:" and extracts numbered or bulleted items. Each item is saved as a separate observation.
-
-Duplicates are automatically detected and skipped  -- safe to call multiple times with the same content.`),
-				mcp.WithString("content",
-					mcp.Required(),
-					mcp.Description("The text output containing a '## Key Learnings:' section with numbered or bulleted items"),
-				),
-				mcp.WithString("session_id",
-					mcp.Description("Session ID (default: manual-save-{project})"),
-				),
-				mcp.WithString("project",
-					mcp.Description("Project name"),
-				),
-				mcp.WithString("source",
-					mcp.Description("Source identifier (e.g. 'subagent-stop', 'session-end')"),
-				),
-			),
-			handleCapturePassive(stores),
 		)
 	}
 }
@@ -1122,14 +1001,31 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 		query := stringArg(req, "query")
 		typ := stringArg(req, "type")
 		project := stringArg(req, "project")
-		scope := stringArg(req, "scope")
+		scope := strings.ToLower(strings.TrimSpace(stringArg(req, "scope")))
+		if scope == "" {
+			scope = "auto"
+		}
 		limit := intArg(req, "limit", 10)
 		graphExpand := boolArg(req, "graph_expand", false)
+		lexicalWeight := floatArg(req, "lexical_weight", 1.0)
+		vectorWeight := floatArg(req, "vector_weight", 1.0)
+
+		if limit <= 0 {
+			limit = 10
+		}
+		if limit > 50 {
+			limit = 50
+		}
+
+		localScope := ""
+		if scope != "auto" && scope != "local" {
+			localScope = scope
+		}
 
 		results, err := stores.Search.Search(ctx, query, domain.SearchOptions{
 			Type:        typ,
 			Project:     project,
-			Scope:       scope,
+			Scope:       localScope,
 			Limit:       limit,
 			GraphExpand: graphExpand,
 		})
@@ -1137,20 +1033,121 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("Search error: %s. Try simpler keywords.", localErrorText(err))
 		}
 
-		// When vector index is healthy and embeddings are configured, enrich with semantic search via RRF
-		if stores.Embeddings != nil && domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
-			if queryVec, embedErr := stores.Embeddings.Embed(ctx, query); embedErr == nil && len(queryVec) > 0 {
+		var tier retrieval.QueryTier
+		switch stringArg(req, "mode") {
+		case "direct":
+			tier = retrieval.TierDirectFactual
+		case "multi_hop":
+			tier = retrieval.TierMultiHopGraph
+		case "semantic":
+			tier = retrieval.TierSemanticHybrid
+		default:
+			tier = retrieval.ClassifyQueryComplexity(query)
+		}
+
+		// Vector search (when available and not in pure direct mode).
+		if tier != retrieval.TierDirectFactual && domain.IsVectorIndexHealthy(ctx, stores.Vectors) {
+			var queryVec []float32
+
+			if stores.Embeddings != nil {
+				var embedErr error
+				queryVec, embedErr = stores.Embeddings.Embed(ctx, query)
+				if embedErr != nil {
+					log.Printf("warning: search embed failed, falling back to FTS5: %v", embedErr)
+				}
+			}
+
+			if len(queryVec) > 0 {
 				vecQuery := domain.VectorQuery{
 					Vector:    queryVec,
 					Limit:     limit,
 					Threshold: 0.3,
 					Filters: map[string]any{
 						"project": project,
-						"scope":   scope,
+						"scope":   localScope,
 					},
 				}
-				if vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations); vecErr == nil && len(vecResults) > 0 {
-					results = retrieval.FuseResults(results, vecResults, limit)
+				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
+				if vecErr == nil && len(vecResults) > 0 {
+					results = retrieval.FuseResultsWithOptions(results, vecResults, retrieval.FuseOptions{
+						Limit:         limit,
+						LexicalWeight: lexicalWeight,
+						VectorWeight:  vectorWeight,
+					})
+				}
+			}
+		}
+
+		// HippoRAG Multi-Hop Graph Reasoning Path
+		if (tier == retrieval.TierMultiHopGraph || graphExpand) && stores.Graph != nil && len(results) > 0 {
+			var graphNodes []graphdomain.GraphAnalyticsNode
+			var graphEdges []graphdomain.GraphAnalyticsEdge
+			var seeds = make(map[string]float64)
+			seenNodes := make(map[int64]bool)
+
+			for _, r := range results {
+				seeds[fmt.Sprintf("%d", r.ID)] += r.Rank
+				if !seenNodes[r.ID] {
+					seenNodes[r.ID] = true
+					graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
+						ID:    fmt.Sprintf("%d", r.ID),
+						Label: r.Title,
+					})
+				}
+
+				edges, _ := stores.Graph.GetEdgesForObservation(ctx, r.ID)
+				for _, e := range edges {
+					graphEdges = append(graphEdges, graphdomain.GraphAnalyticsEdge{
+						Source: fmt.Sprintf("%d", e.FromObsID),
+						Target: fmt.Sprintf("%d", e.ToObsID),
+						Weight: e.Weight,
+					})
+					if !seenNodes[e.ToObsID] {
+						seenNodes[e.ToObsID] = true
+						graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
+							ID: fmt.Sprintf("%d", e.ToObsID),
+						})
+					}
+				}
+			}
+
+			if len(graphEdges) > 0 && len(seeds) > 0 {
+				pprScores := graphdomain.ComputePersonalizedPageRank(graphNodes, graphEdges, seeds, graphdomain.DefaultPPROptions())
+				for _, r := range results {
+					if boost, ok := pprScores[fmt.Sprintf("%d", r.ID)]; ok {
+						r.Rank += boost * 2.0
+					}
+				}
+			}
+		}
+
+		// CRAG Confidence Gating
+		cragEval := retrieval.EvaluateCRAG(results, retrieval.DefaultCRAGConfig())
+		if len(cragEval.FilteredResults) > 0 {
+			results = cragEval.FilteredResults
+		}
+
+		// Tiered Escalation Gate with CRAG
+		if scope != "local" && stores.RemoteSearch != nil {
+			shouldEscalate := scope == "team" || scope == "global" ||
+				cragEval.Grade == retrieval.ConfidenceGradeLow ||
+				cragEval.NeedsRefinement ||
+				len(results) == 0
+
+			if shouldEscalate {
+				remoteOpts := domain.SearchOptions{
+					Query:       query,
+					Type:        typ,
+					Project:     project,
+					Scope:       scope,
+					Limit:       limit,
+					GraphExpand: graphExpand,
+				}
+				remoteResults, remoteErr := stores.RemoteSearch.SearchHybrid(ctx, query, remoteOpts)
+				if remoteErr != nil {
+					log.Printf("warning: remote search hybrid escalation failed; falling back to local: %v", remoteErr)
+				} else if len(remoteResults) > 0 {
+					results = fuseSearchResults(results, remoteResults, limit)
 				}
 			}
 		}
@@ -1172,8 +1169,12 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 				anyTruncated = true
 				preview += " [preview]"
 			}
-			fmt.Fprintf(&b, "[%d] #%d (%s)  -- %s\n    %s\n    %s%s | scope: %s\n",
-				i+1, r.ID, r.Type, r.Title,
+			idStr := fmt.Sprintf("#%d", r.ID)
+			if r.ID == 0 && r.PublicID != "" {
+				idStr = "#" + r.PublicID
+			}
+			fmt.Fprintf(&b, "[%d] %s (%s)  -- %s\n    %s\n    %s%s | scope: %s\n",
+				i+1, idStr, r.Type, r.Title,
 				preview,
 				r.CreatedAt.Format(time.RFC3339), projectInfo, r.Scope)
 			if explanation := formatSearchBreakdown(r.ScoreBreakdown); explanation != "" {
@@ -1186,6 +1187,112 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 		}
 
 		return textResult("%s", b.String())
+	}
+}
+
+// fuseSearchResults combines and deduplicates local and remote search results using Reciprocal Rank Fusion (k=60).
+func fuseSearchResults(local, remote []*domain.SearchResult, limit int) []*domain.SearchResult {
+	if len(local) == 0 {
+		for _, r := range remote {
+			markRemoteResult(r)
+		}
+		if limit > 0 && len(remote) > limit {
+			return remote[:limit]
+		}
+		return remote
+	}
+	if len(remote) == 0 {
+		if limit > 0 && len(local) > limit {
+			return local[:limit]
+		}
+		return local
+	}
+
+	for _, r := range remote {
+		markRemoteResult(r)
+	}
+
+	type scoredItem struct {
+		result *domain.SearchResult
+		score  float64
+	}
+
+	const rrfK = 60.0
+	var items []*scoredItem
+
+	findMatch := func(target *domain.SearchResult) *scoredItem {
+		for _, item := range items {
+			cur := item.result
+			if target.PublicID != "" && cur.PublicID != "" && target.PublicID == cur.PublicID {
+				return item
+			}
+			if target.ID > 0 && cur.ID > 0 && target.ID == cur.ID {
+				return item
+			}
+			if target.Project != "" && target.Project == cur.Project {
+				if target.TopicKey != "" && target.TopicKey == cur.TopicKey {
+					return item
+				}
+				if target.Title != "" && strings.EqualFold(target.Title, cur.Title) {
+					return item
+				}
+			}
+		}
+		return nil
+	}
+
+	// Score local results with RRF
+	for rank, r := range local {
+		s := 1.0 / (rrfK + float64(rank+1))
+		items = append(items, &scoredItem{result: r, score: s})
+	}
+
+	// Fuse remote results with RRF
+	for rank, r := range remote {
+		s := 1.0 / (rrfK + float64(rank+1))
+		match := findMatch(r)
+		if match != nil {
+			match.score += s
+			if match.result.PublicID == "" && r.PublicID != "" {
+				match.result.PublicID = r.PublicID
+			}
+			if match.result.ScoreBreakdown.Strategy == "" {
+				match.result.ScoreBreakdown.Strategy = "local+remote"
+			} else if !strings.Contains(match.result.ScoreBreakdown.Strategy, "remote") {
+				match.result.ScoreBreakdown.Strategy += "+remote"
+			}
+		} else {
+			items = append(items, &scoredItem{result: r, score: s})
+		}
+	}
+
+	// Sort stably descending by RRF fusion score
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].score > items[j].score
+	})
+
+	if limit <= 0 {
+		limit = 10
+	}
+	fused := make([]*domain.SearchResult, 0, limit)
+	for i, item := range items {
+		if i >= limit {
+			break
+		}
+		item.result.ScoreBreakdown.FusionScore = item.score
+		fused = append(fused, item.result)
+	}
+	return fused
+}
+
+func markRemoteResult(r *domain.SearchResult) {
+	if r == nil {
+		return
+	}
+	if r.ScoreBreakdown.Strategy == "" {
+		r.ScoreBreakdown.Strategy = "remote"
+	} else if !strings.Contains(r.ScoreBreakdown.Strategy, "remote") {
+		r.ScoreBreakdown.Strategy += "+remote"
 	}
 }
 

@@ -81,7 +81,14 @@ var (
 	_ domain.Storage           = mockStorage{}
 	_ domain.EmbeddingProvider = mockEmbeddingProvider{}
 	_ domain.VectorIndex       = mockVectorIndex{}
+	_ domain.RemoteSearcher    = mockRemoteSearcher{}
 )
+
+type mockRemoteSearcher struct{}
+
+func (mockRemoteSearcher) SearchHybrid(ctx context.Context, query string, opts domain.SearchOptions) ([]*domain.SearchResult, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -96,6 +103,7 @@ func TestPortsCompile(t *testing.T) {
 	var _ domain.Storage = mockStorage{}
 	var _ domain.EmbeddingProvider = mockEmbeddingProvider{}
 	var _ domain.VectorIndex = mockVectorIndex{}
+	var _ domain.RemoteSearcher = mockRemoteSearcher{}
 }
 
 // TestNilTenantContextSafety verifies that a nil *TenantContext can be threaded

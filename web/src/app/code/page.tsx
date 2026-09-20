@@ -16,6 +16,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
+import { PageHeader } from "@/components/shared/PageHeader";
+import { StatCard } from "@/components/shared/StatCard";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { StatusBadge } from "@/components/shared/StatusBadge";
 import {
   Terminal,
   Code2,
@@ -35,6 +39,8 @@ import {
   ArrowRight,
   Copy,
   Check,
+  SlidersHorizontal,
+  X,
 } from "lucide-react";
 
 export default function CodeExplorerPage() {
@@ -58,6 +64,7 @@ export default function CodeExplorerPage() {
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"name" | "line" | "kind">("name");
   const [selectedSymbol, setSelectedSymbol] = useState<CodeSymbol | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -127,10 +134,10 @@ export default function CodeExplorerPage() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Filtered symbols
+  // Filtered and sorted symbols
   const filteredSymbols = useMemo(() => {
     if (!Array.isArray(symbols)) return [];
-    return symbols.filter((s) => {
+    const list = symbols.filter((s) => {
       if (!s) return false;
       const name = s.name || "";
       const filePath = s.file_path || "";
@@ -143,7 +150,14 @@ export default function CodeExplorerPage() {
       const matchesKind = kindFilter === "all" || s.kind === kindFilter;
       return matchesSearch && matchesKind;
     });
-  }, [symbols, searchQuery, kindFilter]);
+
+    return list.sort((a, b) => {
+      if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
+      if (sortBy === "line") return (a.line_number || 0) - (b.line_number || 0);
+      if (sortBy === "kind") return (a.kind || "").localeCompare(b.kind || "");
+      return 0;
+    });
+  }, [symbols, searchQuery, kindFilter, sortBy]);
 
   const symbolKinds = useMemo(() => {
     if (!Array.isArray(symbols)) return [];
@@ -173,126 +187,95 @@ export default function CodeExplorerPage() {
   };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6">
-        <div>
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary">
-              <Terminal className="h-6 w-6" />
+      <PageHeader
+        title="Código & AST Explorer"
+        badge={
+          <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-xs font-mono">
+            Graphify Engine
+          </Badge>
+        }
+        description="Grafo determinista de símbolos, Hubs Arquitectónicos (God Nodes), Ciclos y Cohesión de módulos."
+        actions={
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-2.5 py-1 shadow-xs">
+              <Folder className="h-3.5 w-3.5 text-muted-foreground" />
+              <select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="bg-transparent text-xs font-medium focus:outline-none cursor-pointer"
+              >
+                {projects.map((p) => (
+                  <option key={p} value={p} className="bg-popover text-popover-foreground">
+                    {p}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
-                Código & AST Explorer
-                <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-xs">
-                  Graphify Engine
-                </Badge>
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Grafo determinista de símbolos, Hubs Arquitectónicos (God Nodes), Ciclos y Cohesión de módulos.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Project Selector & Refresh */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-1.5 shadow-sm">
-            <Folder className="h-4 w-4 text-muted-foreground" />
-            <select
-              value={selectedProject}
-              onChange={(e) => setSelectedProject(e.target.value)}
-              className="bg-transparent text-sm font-medium focus:outline-none cursor-pointer"
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadCodeData}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 h-8 text-xs"
             >
-              {projects.map((p) => (
-                <option key={p} value={p} className="bg-popover text-popover-foreground">
-                  {p}
-                </option>
-              ))}
-            </select>
+              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              <span>Actualizar</span>
+            </Button>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={loadCodeData}
-            disabled={isLoading}
-            className="flex items-center gap-2"
-          >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-            Actualizar
-          </Button>
-        </div>
-      </div>
+        }
+      />
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Símbolos AST</span>
-              <Code2 className="h-4 w-4 text-blue-400" />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_symbols ?? symbols?.length ?? 0}</div>
-            <p className="text-[10px] text-muted-foreground mt-1">Funciones, tipos, tablas</p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+        <StatCard
+          title="Símbolos AST"
+          value={analytics?.total_symbols ?? symbols?.length ?? 0}
+          icon={Code2}
+          iconClassName="text-primary"
+          subtext="Funciones, tipos, tablas"
+        />
 
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Relaciones</span>
-              <Share2 className="h-4 w-4 text-purple-400" />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_relations ?? graph?.relations?.length ?? 0}</div>
-            <p className="text-[10px] text-muted-foreground mt-1">Llamadas y usos resueltos</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="Relaciones"
+          value={analytics?.total_relations ?? graph?.relations?.length ?? 0}
+          icon={Share2}
+          iconClassName="text-purple-500 dark:text-purple-400"
+          subtext="Llamadas y usos resueltos"
+        />
 
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Archivos Código</span>
-              <FileCode className="h-4 w-4 text-emerald-400" />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.total_files ?? 0}</div>
-            <p className="text-[10px] text-muted-foreground mt-1">Módulos escaneados</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="Archivos Código"
+          value={analytics?.total_files ?? 0}
+          icon={FileCode}
+          iconClassName="text-emerald-500 dark:text-emerald-400"
+          subtext="Módulos escaneados"
+        />
 
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Cohesión Promedio</span>
-              <Layers className="h-4 w-4 text-cyan-400" />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">
-              {analytics?.average_cohesion ? (analytics.average_cohesion * 100).toFixed(0) + "%" : "N/A"}
-            </div>
-            <p className="text-[10px] text-muted-foreground mt-1">Densidad modular</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="Cohesión Promedio"
+          value={analytics?.average_cohesion ? (analytics.average_cohesion * 100).toFixed(0) + "%" : "N/A"}
+          icon={Layers}
+          iconClassName="text-cyan-500 dark:text-cyan-400"
+          subtext="Densidad modular"
+        />
 
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">God Nodes</span>
-              <Zap className="h-4 w-4 text-amber-400" />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.god_nodes?.length ?? 0}</div>
-            <p className="text-[10px] text-muted-foreground mt-1">Hubs arquitectónicos</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="God Nodes"
+          value={analytics?.god_nodes?.length ?? 0}
+          icon={Zap}
+          iconClassName="text-amber-500 dark:text-amber-400"
+          subtext="Hubs arquitectónicos"
+        />
 
-        <Card className="bg-card/50 border-border/60">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Ciclos</span>
-              <AlertTriangle className={`h-4 w-4 ${(analytics?.import_cycles?.length || 0) > 0 ? "text-red-400" : "text-emerald-400"}`} />
-            </div>
-            <div className="text-2xl font-bold text-foreground mt-2">{analytics?.import_cycles?.length ?? 0}</div>
-            <p className="text-[10px] text-muted-foreground mt-1">Dependencias circulares</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          title="Ciclos"
+          value={analytics?.import_cycles?.length ?? 0}
+          icon={AlertTriangle}
+          iconClassName={(analytics?.import_cycles?.length || 0) > 0 ? "text-destructive" : "text-emerald-500"}
+          subtext="Dependencias circulares"
+        />
       </div>
 
       {/* Ingestion Trigger Bar */}
@@ -449,13 +432,11 @@ export default function CodeExplorerPage() {
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center bg-card/30 border-dashed">
-              <Zap className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-50" />
-              <p className="text-sm text-muted-foreground">No se detectaron God Nodes aún.</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Ejecuta <strong>Escanear AST</strong> para indexar la estructura del proyecto.
-              </p>
-            </Card>
+            <EmptyState
+              icon={Zap}
+              title="No se detectaron God Nodes aún"
+              description="Ejecuta 'Escanear AST' para indexar la estructura del proyecto e identificar los hubs con mayor acoplamiento."
+            />
           )}
         </div>
       )}
@@ -475,7 +456,7 @@ export default function CodeExplorerPage() {
           {Array.isArray(analytics?.import_cycles) && analytics.import_cycles.length > 0 ? (
             <div className="space-y-3">
               {analytics.import_cycles.map((cyc, idx) => (
-                <Card key={idx} className="bg-destructive/5 border-destructive/30 shadow-sm">
+                <Card key={idx} className="bg-destructive/5 border-destructive/30 shadow-xs">
                   <CardContent className="p-4">
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
@@ -503,8 +484,8 @@ export default function CodeExplorerPage() {
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center bg-emerald-500/5 border-emerald-500/20 border">
-              <CheckCircle2 className="h-8 w-8 text-emerald-400 mx-auto mb-2" />
+            <Card className="p-8 text-center bg-emerald-500/5 border-emerald-500/20 border rounded-lg">
+              <CheckCircle2 className="h-8 w-8 text-emerald-500 mx-auto mb-2" />
               <h3 className="text-sm font-semibold text-foreground">¡Arquitectura Limpia!</h3>
               <p className="text-xs text-muted-foreground mt-1">
                 No se detectaron ciclos de importación o llamadas recursivas entre paquetes.
@@ -529,11 +510,11 @@ export default function CodeExplorerPage() {
           {Array.isArray(analytics?.communities) && analytics.communities.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {analytics.communities.map((com, idx) => (
-                <Card key={idx} className="bg-card border-border/60 shadow-sm">
+                <Card key={idx} className="bg-card border-border shadow-xs">
                   <CardHeader className="p-4 pb-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Box className="h-4 w-4 text-cyan-400" />
+                        <Box className="h-4 w-4 text-primary" />
                         <CardTitle className="text-sm font-mono font-bold truncate text-foreground">
                           {com.name}
                         </CardTitle>
@@ -542,10 +523,10 @@ export default function CodeExplorerPage() {
                         variant="outline"
                         className={`text-xs font-mono font-bold ${
                           com.cohesion_score >= 0.6
-                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                            ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
                             : com.cohesion_score >= 0.3
-                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                            : "bg-zinc-500/10 text-zinc-400 border-zinc-500/20"
+                            ? "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                            : "bg-zinc-500/10 text-muted-foreground border-zinc-500/20"
                         }`}
                       >
                         Cohesión: {(com.cohesion_score * 100).toFixed(0)}%
@@ -553,7 +534,7 @@ export default function CodeExplorerPage() {
                     </div>
                   </CardHeader>
                   <CardContent className="p-4 pt-2 space-y-3">
-                    <div className="w-full bg-secondary/50 rounded-full h-2 overflow-hidden">
+                    <div className="w-full bg-secondary rounded-full h-2 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
                           com.cohesion_score >= 0.6
@@ -574,10 +555,11 @@ export default function CodeExplorerPage() {
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center bg-card/30 border-dashed">
-              <Layers className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-50" />
-              <p className="text-sm text-muted-foreground">No hay comunidades calculadas aún.</p>
-            </Card>
+            <EmptyState
+              icon={Layers}
+              title="No hay comunidades calculadas aún"
+              description="Escanea el AST para calcular la densidad de relaciones internas y la cohesión modular."
+            />
           )}
         </div>
       )}
@@ -585,71 +567,133 @@ export default function CodeExplorerPage() {
       {/* Tab 4: Symbol Explorer */}
       {activeTab === "symbols" && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             <div className="relative w-full sm:w-80">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Buscar símbolo, archivo o firma..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 bg-card text-xs h-9"
+                className="pl-9 pr-8 bg-card text-xs h-9"
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto">
-              <Button
-                variant={kindFilter === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setKindFilter("all")}
-                className="text-xs h-8"
-              >
-                Todos ({symbols?.length ?? 0})
-              </Button>
-              {symbolKinds.map((k) => (
-                <Button
-                  key={k}
-                  variant={kindFilter === k ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setKindFilter(k)}
-                  className="text-xs h-8 capitalize"
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 bg-secondary/50 border border-border px-2.5 py-1 rounded-lg text-xs">
+                <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground mr-1" />
+                <span className="text-muted-foreground font-medium mr-1">Orden:</span>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("name")}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                    sortBy === "name" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
                 >
-                  {k}
+                  Nombre
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("line")}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                    sortBy === "line" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Línea
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("kind")}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                    sortBy === "kind" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Tipo
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto">
+                <Button
+                  variant={kindFilter === "all" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setKindFilter("all")}
+                  className="text-xs h-8"
+                >
+                  Todos ({symbols?.length ?? 0})
                 </Button>
+                {symbolKinds.map((k) => (
+                  <Button
+                    key={k}
+                    variant={kindFilter === k ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setKindFilter(k)}
+                    className="text-xs h-8 capitalize"
+                  >
+                    {k}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {filteredSymbols.length === 0 ? (
+            <EmptyState
+              icon={Code2}
+              title={searchQuery ? "Sin coincidencias de símbolos" : "No hay símbolos indexados"}
+              description={
+                searchQuery
+                  ? `No se encontró ningún símbolo que coincida con "${searchQuery}". Intenta con otro término o limpia la búsqueda.`
+                  : "Ejecuta 'Escanear AST' para descubrir funciones, structs, interfaces y tablas en el proyecto."
+              }
+              action={
+                searchQuery ? (
+                  <Button variant="outline" size="sm" onClick={() => setSearchQuery("")} className="text-xs">
+                    Limpiar Búsqueda
+                  </Button>
+                ) : null
+              }
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {filteredSymbols.map((sym) => (
+                <Card
+                  key={sym.id}
+                  className="bg-card hover:bg-card/80 border-border transition cursor-pointer hover:border-primary/40 shadow-xs"
+                  onClick={() => setSelectedSymbol(sym)}
+                >
+                  <CardHeader className="p-4 pb-2">
+                    <div className="flex items-center justify-between">
+                      <Badge variant="outline" className={`text-xs capitalize ${getKindColor(sym.kind)}`}>
+                        {sym.kind}
+                      </Badge>
+                      <span className="text-[10px] font-mono text-muted-foreground">Línea {sym.line_number}</span>
+                    </div>
+                    <CardTitle className="text-sm font-mono font-bold mt-1.5 truncate text-foreground">
+                      {sym.name}
+                    </CardTitle>
+                    <CardDescription className="text-xs font-mono truncate text-muted-foreground">
+                      {sym.file_path}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="p-4 pt-1">
+                    {sym.signature && (
+                      <div className="text-[11px] font-mono bg-secondary/50 p-2 rounded border border-border text-foreground/90 truncate">
+                        {sym.signature}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               ))}
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {Array.isArray(filteredSymbols) && filteredSymbols.map((sym) => (
-              <Card
-                key={sym.id}
-                className="bg-card hover:bg-card/80 border-border/60 transition cursor-pointer hover:border-primary/40 shadow-sm"
-                onClick={() => setSelectedSymbol(sym)}
-              >
-                <CardHeader className="p-4 pb-2">
-                  <div className="flex items-center justify-between">
-                    <Badge variant="outline" className={`text-xs capitalize ${getKindColor(sym.kind)}`}>
-                      {sym.kind}
-                    </Badge>
-                    <span className="text-[10px] font-mono text-muted-foreground">Línea {sym.line_number}</span>
-                  </div>
-                  <CardTitle className="text-sm font-mono font-bold mt-1.5 truncate text-foreground">
-                    {sym.name}
-                  </CardTitle>
-                  <CardDescription className="text-xs font-mono truncate text-muted-foreground">
-                    {sym.file_path}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="p-4 pt-1">
-                  {sym.signature && (
-                    <div className="text-[11px] font-mono bg-background/60 p-2 rounded border border-border/40 text-foreground/80 truncate">
-                      {sym.signature}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          )}
         </div>
       )}
 
@@ -661,31 +705,31 @@ export default function CodeExplorerPage() {
               <span className={`px-2 py-0.5 rounded text-xs uppercase font-mono border ${getKindColor(selectedSymbol.kind)}`}>
                 {selectedSymbol.kind}
               </span>
-              <span className="font-mono text-base font-bold ml-2 text-white">{selectedSymbol.name}</span>
+              <span className="font-mono text-base font-bold ml-2 text-foreground">{selectedSymbol.name}</span>
             </DialogTitle>
             <DialogClose onClick={() => setSelectedSymbol(null)} />
           </DialogHeader>
 
           <div className="space-y-4 pt-2">
-            <div className="text-xs font-mono text-slate-400">
+            <div className="text-xs font-mono text-muted-foreground">
               {selectedSymbol.file_path}:{selectedSymbol.line_number}
             </div>
 
             {selectedSymbol.signature && (
               <div>
-                <div className="text-xs font-semibold text-slate-400 mb-1">Firma / Tipo:</div>
-                <div className="p-3 bg-slate-950 font-mono text-xs rounded-lg border border-slate-800 text-slate-200 flex items-center justify-between">
-                  <code className="text-blue-300">{selectedSymbol.signature}</code>
+                <div className="text-xs font-semibold text-muted-foreground mb-1">Firma / Tipo:</div>
+                <div className="p-3 bg-secondary/40 font-mono text-xs rounded-lg border border-border text-foreground flex items-center justify-between">
+                  <code className="text-primary font-semibold">{selectedSymbol.signature}</code>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => handleCopy(selectedSymbol.signature || "", selectedSymbol.id)}
-                    className="h-7 w-7 p-0 shrink-0 hover:bg-slate-800"
+                    className="h-7 w-7 p-0 shrink-0 hover:bg-secondary"
                   >
                     {copiedId === selectedSymbol.id ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
                     ) : (
-                      <Copy className="h-3.5 w-3.5 text-slate-400" />
+                      <Copy className="h-3.5 w-3.5 text-muted-foreground" />
                     )}
                   </Button>
                 </div>
@@ -694,26 +738,26 @@ export default function CodeExplorerPage() {
 
             {selectedSymbol.doc_summary && (
               <div>
-                <div className="text-xs font-semibold text-slate-400 mb-1">Descripción:</div>
-                <p className="text-sm text-slate-300 bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+                <div className="text-xs font-semibold text-muted-foreground mb-1">Descripción:</div>
+                <p className="text-sm text-foreground bg-secondary/40 p-3 rounded-lg border border-border">
                   {selectedSymbol.doc_summary}
                 </p>
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 text-xs font-mono bg-slate-950/40 p-3 rounded-lg border border-slate-800">
+            <div className="grid grid-cols-2 gap-3 text-xs font-mono bg-secondary/40 p-3 rounded-lg border border-border">
               <div>
-                <span className="text-slate-400">Paquete:</span>{" "}
-                <span className="text-slate-200 font-semibold">{selectedSymbol.package_name || "main"}</span>
+                <span className="text-muted-foreground">Paquete:</span>{" "}
+                <span className="text-foreground font-semibold">{selectedSymbol.package_name || "main"}</span>
               </div>
               <div>
-                <span className="text-slate-400">Proyecto:</span>{" "}
-                <span className="text-slate-200 font-semibold">{selectedSymbol.project}</span>
+                <span className="text-muted-foreground">Proyecto:</span>{" "}
+                <span className="text-foreground font-semibold">{selectedSymbol.project}</span>
               </div>
               {selectedSymbol.file_hash && (
                 <div className="col-span-2 truncate">
-                  <span className="text-slate-400">SHA-256 Hash:</span>{" "}
-                  <span className="text-slate-500 text-[10px]">{selectedSymbol.file_hash}</span>
+                  <span className="text-muted-foreground">SHA-256 Hash:</span>{" "}
+                  <span className="text-muted-foreground text-[10px]">{selectedSymbol.file_hash}</span>
                 </div>
               )}
             </div>

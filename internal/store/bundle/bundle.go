@@ -67,6 +67,10 @@ type Stores struct {
 	// it directly via NewSQLiteUnitOfWork. When non-nil, callers that need
 	// multi-participant atomicity SHOULD use Do() instead of per-store Save().
 	UnitOfWork domain.UnitOfWork
+
+	// RemoteSearch is the optional remote hybrid search client used for tiered
+	// CRAG escalation when operating in hybrid mode or querying remote scopes.
+	RemoteSearch domain.RemoteSearcher
 }
 
 // ---------------------------------------------------------------------------

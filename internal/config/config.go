@@ -75,7 +75,13 @@ type ServerConfig struct {
 	TenantID                string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
 	WorkspaceID             string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
 	PrincipalSubject        string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
+	// GrantDigest is retained for backward compatibility only.
+	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
+	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	GrantDigest             string               `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
+	// GrantVersion is retained for backward compatibility only.
+	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
+	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	GrantVersion            int64                `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
 	Roles                   []string             `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
 	Scopes                  []string             `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
@@ -132,6 +138,7 @@ type PragmaConfig struct {
 // MCPConfig holds MCP (Model Context Protocol) configuration
 type MCPConfig struct {
 	Enabled bool            `yaml:"enabled,omitempty" json:"enabled,omitempty" toml:"enabled,omitempty" mapstructure:"enabled"`
+	Profile string          `yaml:"profile,omitempty" json:"profile,omitempty" toml:"profile,omitempty" mapstructure:"profile"`
 	Remote  MCPRemoteConfig `yaml:"remote,omitempty" json:"remote,omitempty" toml:"remote,omitempty" mapstructure:"remote"`
 }
 
@@ -255,6 +262,7 @@ var defaults = Config{
 	},
 	MCP: MCPConfig{
 		Enabled: true,
+		Profile: "agent",
 		Remote:  MCPRemoteConfig{TokenEnv: "CORTEX_REMOTE_TOKEN", Timeout: 30 * time.Second},
 	},
 	HTTP: HTTPConfig{
@@ -492,6 +500,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.pragma.mmap_size", defaults.Database.Pragma.MmapSize)
 
 	v.SetDefault("mcp.enabled", defaults.MCP.Enabled)
+	v.SetDefault("mcp.profile", defaults.MCP.Profile)
 	v.SetDefault("mcp.remote.enabled", defaults.MCP.Remote.Enabled)
 	v.SetDefault("mcp.remote.url", defaults.MCP.Remote.URL)
 	v.SetDefault("mcp.remote.token_env", defaults.MCP.Remote.TokenEnv)
@@ -581,6 +590,13 @@ func validate(cfg *Config) error {
 	// Validate HTTP port
 	if cfg.HTTP.Enabled && (cfg.HTTP.Port < 1 || cfg.HTTP.Port > 65535) {
 		return fmt.Errorf("invalid HTTP port: %d (must be 1-65535)", cfg.HTTP.Port)
+	}
+
+	if cfg.MCP.Profile != "" {
+		p := strings.ToLower(cfg.MCP.Profile)
+		if p != "agent" && p != "dev" && p != "minimal" {
+			return fmt.Errorf("invalid mcp.profile %q: must be one of 'agent', 'dev', 'minimal'", cfg.MCP.Profile)
+		}
 	}
 
 	if cfg.MCP.Remote.Enabled {
@@ -729,6 +745,8 @@ func (cfg *Config) GetProperty(key string) (string, error) {
 		return fmt.Sprintf("%t", cfg.Search.OllamaAutoStart), nil
 	case "mcp.enabled":
 		return fmt.Sprintf("%t", cfg.MCP.Enabled), nil
+	case "mcp.profile":
+		return cfg.MCP.Profile, nil
 	case "mcp.remote.enabled":
 		return fmt.Sprintf("%t", cfg.MCP.Remote.Enabled), nil
 	case "mcp.remote.url":
@@ -807,6 +825,14 @@ func (cfg *Config) SetProperty(key, value string) error {
 		cfg.Search.OllamaAutoStart = parseBool(value)
 	case "mcp.enabled":
 		cfg.MCP.Enabled = parseBool(value)
+	case "mcp.profile":
+		p := strings.ToLower(value)
+		switch p {
+		case "agent", "dev", "minimal":
+			cfg.MCP.Profile = p
+		default:
+			return fmt.Errorf("invalid mcp.profile %q: must be one of 'agent', 'dev', 'minimal'", value)
+		}
 	case "mcp.remote.enabled":
 		cfg.MCP.Remote.Enabled = parseBool(value)
 	case "mcp.remote.url":

@@ -382,6 +382,7 @@ type localConfigValues struct {
 	llmBaseURL            string
 	httpEnabled           bool
 	httpHost, httpPort    string
+	mcpProfile            string
 	mcpRemote             bool
 	mcpURL, mcpTokenEnv   string
 	syncEnabled           bool
@@ -420,6 +421,9 @@ func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
 			next.Search.EmbeddingBaseURL = strings.TrimSpace(values.llmBaseURL)
 		}
 
+		if strings.TrimSpace(values.mcpProfile) != "" {
+			next.MCP.Profile = strings.ToLower(strings.TrimSpace(values.mcpProfile))
+		}
 		next.HTTP.Enabled, next.HTTP.Host, next.HTTP.Port = values.httpEnabled, strings.TrimSpace(values.httpHost), port
 		next.MCP.Remote.Enabled, next.MCP.Remote.URL, next.MCP.Remote.TokenEnv = values.mcpRemote, strings.TrimSpace(values.mcpURL), strings.TrimSpace(values.mcpTokenEnv)
 		next.Sync.Enabled, next.Sync.URL, next.Sync.TokenEnv, next.Sync.Interval = values.syncEnabled, strings.TrimSpace(values.syncURL), strings.TrimSpace(values.syncTokenEnv), interval
@@ -443,6 +447,7 @@ func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
 			return localConfigSavedMsg{err: err}
 		}
 		next.LoadedFrom = targetPath
+		*d.Config = next
 		d.Config = &next
 		return localConfigSavedMsg{}
 	}

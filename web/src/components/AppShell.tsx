@@ -233,17 +233,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   if (!isConnected && !isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4 relative overflow-hidden">
-        {/* Background glow ambient effects */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-blue-500/10 dark:bg-blue-600/15 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-1/4 right-1/3 w-80 h-80 bg-indigo-500/10 dark:bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
-
-        <Card className="max-w-md w-full p-8 shadow-2xl backdrop-blur-xl relative z-10 border-border bg-card text-card-foreground">
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
+        <Card className="max-w-md w-full p-6 sm:p-8 shadow-sm border-border bg-card text-card-foreground">
           <div className="text-center mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/30 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/10">
-              <BrainCircuit className="h-7 w-7" />
+            <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 text-primary flex items-center justify-center mx-auto mb-4">
+              <BrainCircuit className="h-6 w-6" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-card-foreground">CORTEX CONTROL ROOM</h1>
+            <h1 className="text-lg font-bold tracking-tight text-card-foreground uppercase">Cortex Control Room</h1>
             <p className="text-xs text-muted-foreground mt-1">
               Memoria persistente y arquitectura cognitiva para coding agents
             </p>
@@ -258,9 +254,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           <form onSubmit={handleConnect} className="space-y-4 text-xs">
             {managedServerEndpoint ? (
-              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2.5">
+              <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
                 <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Servidor Cortex</p>
-                <p className="mt-1 font-mono text-xs text-blue-600 dark:text-blue-300 break-all">{serverUrl}</p>
+                <p className="mt-1 font-mono text-xs text-primary break-all">{serverUrl}</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">Configurado automáticamente por Docker Compose.</p>
               </div>
             ) : (
@@ -274,7 +270,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   onChange={(e) => setInputUrl(e.target.value)}
                   placeholder="http://localhost:7438"
                   required
-                  className="h-10 text-xs"
+                  className="h-10 text-xs font-mono"
                 />
               </div>
             )}
@@ -291,14 +287,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 }
                 placeholder="cortex_sec_..."
                 required
-                className="h-10 text-xs"
+                className="h-10 text-xs font-mono"
               />
             </div>
 
             <Button
               type="submit"
               disabled={isSubmitting}
-              className="w-full h-10 mt-2 text-xs font-semibold shadow-lg shadow-blue-600/20"
+              className="w-full h-10 mt-2 text-xs font-semibold shadow-sm"
             >
               {isSubmitting ? "Conectando..." : "Conectar con Token"}
             </Button>
@@ -326,17 +322,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const renderNavContent = () => (
     <>
       {/* Brand Header */}
-      <div className="p-4 sm:p-5 border-b border-[var(--border-subtle)] flex items-center justify-between">
+      <div className="p-4 sm:p-5 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-lg shadow-blue-500/20">
+          <div className="w-9 h-9 rounded-lg bg-primary text-primary-foreground flex items-center justify-center shadow-sm">
             <BrainCircuit className="h-5 w-5" />
           </div>
           <div>
             <div className="font-bold text-sm tracking-tight flex items-center gap-1.5">
               <span>CORTEX</span>
-              <Badge variant="purple" className="text-[9px] px-1.5 py-0 h-4">v2.0</Badge>
+              <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 font-mono">v2.0</Badge>
             </div>
-            <div className="text-[10px] text-[var(--text-muted)] font-medium">Cognitive Memory Plane</div>
+            <div className="text-[10px] text-muted-foreground font-medium">Cognitive Memory Plane</div>
           </div>
         </div>
 
@@ -346,7 +342,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             onClick={toggleTheme}
             variant="ghost"
             size="sm"
-            className="h-8 w-8 p-0 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
             title={isLightMode ? "Cambiar a Modo Oscuro" : "Cambiar a Modo Claro"}
           >
             {isLightMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4 text-amber-400" />}
@@ -358,7 +354,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             onClick={() => setMobileMenuOpen(false)}
             variant="ghost"
             size="sm"
-            className="h-8 w-8 p-0 md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="h-8 w-8 p-0 md:hidden text-muted-foreground hover:text-foreground"
             aria-label="Cerrar navegación"
           >
             <X className="h-5 w-5" />
@@ -367,14 +363,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* User Identity Card */}
-      <div className="px-3.5 py-2.5 mx-3 mt-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between">
+      <div className="px-3.5 py-2.5 mx-3 mt-3 rounded-lg bg-secondary/60 border border-border flex items-center justify-between">
         <div className="flex items-center gap-2 overflow-hidden">
-          <div className="w-7 h-7 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+          <div className="w-7 h-7 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
             <User className="h-3.5 w-3.5" />
           </div>
           <div className="overflow-hidden">
             <div className="text-xs font-semibold truncate">{displayName}</div>
-            <div className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">
               {primaryRole}
             </div>
           </div>
@@ -391,7 +387,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Navegación principal">
         {navGroups.map((group) => (
           <section key={group.label} className="mb-4 last:mb-0" aria-labelledby={`nav-${group.label}`}>
-            <h2 id={`nav-${group.label}`} className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            <h2 id={`nav-${group.label}`} className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
               {group.label}
             </h2>
             <div className="space-y-1">
@@ -404,19 +400,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     href={item.href}
                     aria-current={isActive ? "page" : undefined}
                     onClick={() => setMobileMenuOpen(false)}
-                    className={`flex items-center justify-between rounded-lg px-3.5 py-2.5 text-xs font-medium transition-all duration-150 ${
+                    className={`flex items-center justify-between rounded-lg px-3.5 py-2.5 text-xs font-medium transition-colors duration-150 ${
                       isActive
-                        ? "bg-[var(--accent-primary)] font-semibold text-white shadow-md shadow-blue-600/20"
-                        : "text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]"
+                        ? "bg-primary font-semibold text-primary-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
                     }`}
                   >
                     <span className="flex items-center gap-2.5">
-                      <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-white" : "text-[var(--text-secondary)]"}`} aria-hidden="true" />
+                      <Icon className={`h-4 w-4 shrink-0 ${isActive ? "text-primary-foreground" : "text-muted-foreground"}`} aria-hidden="true" />
                       <span>{item.label}</span>
                     </span>
                     {item.badge ? (
-                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9px] font-semibold ${
-                        isActive ? "bg-white/20 text-white" : "border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)]"
+                      <span className={`shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[9px] font-semibold ${
+                        isActive ? "bg-primary-foreground/20 text-primary-foreground" : "border border-border bg-secondary text-muted-foreground"
                       }`}>{item.badge}</span>
                     ) : null}
                   </Link>
@@ -428,20 +424,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Sidebar Footer / System Status */}
-      <div className="p-3.5 border-t border-[var(--border-subtle)] space-y-3">
+      <div className="p-3.5 border-t border-border space-y-3">
         {/* User Identity & Role Card */}
-        <div className="p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] space-y-2">
+        <div className="p-3 rounded-lg bg-secondary/60 border border-border space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-xs shrink-0">
+              <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold text-xs shrink-0">
                 {displayName.charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0">
-                <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                <div className="text-xs font-semibold text-foreground truncate">
                   {displayName}
                 </div>
                 {userEmail ? (
-                  <div className="text-[10px] text-[var(--text-muted)] truncate">
+                  <div className="text-[10px] text-muted-foreground truncate">
                     {userEmail}
                   </div>
                 ) : null}
@@ -451,25 +447,25 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               variant="outline"
               className={`text-[9px] px-1.5 py-0 uppercase font-mono tracking-wider shrink-0 ${
                 isAdmin
-                  ? "border-purple-500/40 text-purple-600 dark:text-purple-400 bg-purple-500/10"
+                  ? "border-slate-600/40 text-slate-300 bg-slate-800/60"
                   : isDeveloper
-                  ? "border-blue-500/40 text-blue-600 dark:text-blue-400 bg-blue-500/10"
-                  : "border-slate-500/40 text-slate-600 dark:text-slate-400 bg-slate-500/10"
+                  ? "border-primary/30 text-primary bg-primary/10"
+                  : "border-border text-muted-foreground bg-secondary"
               }`}
             >
               {primaryRole}
             </Badge>
           </div>
 
-          <div className="pt-1 border-t border-[var(--border-subtle)]/50 flex items-center justify-between text-[10px]">
+          <div className="pt-1 border-t border-border/40 flex items-center justify-between text-[10px]">
             <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-emerald-600 dark:text-emerald-400 font-medium">
                 {serverUrl.includes("railway") || serverUrl.includes("http") ? "PostgreSQL Cloud Node" : "Local SQLite Node"}
               </span>
             </div>
             {principal?.id ? (
-              <span className="text-[9px] text-[var(--text-muted)] font-mono">
+              <span className="text-[9px] text-muted-foreground font-mono">
                 {principal.id.slice(0, 6)}...
               </span>
             ) : null}
@@ -480,7 +476,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onClick={logout}
           variant="ghost"
           size="sm"
-          className="w-full justify-center text-xs text-[var(--text-secondary)] hover:text-destructive hover:bg-destructive/10 h-8"
+          className="w-full justify-center text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8"
         >
           <LogOut className="h-3.5 w-3.5 mr-1.5" />
           <span>Cerrar Sesión</span>
@@ -490,11 +486,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <div className="flex min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] antialiased font-sans transition-colors duration-200">
+    <div className="flex min-h-screen bg-background text-foreground antialiased font-sans transition-colors duration-200">
       {/* Mobile Drawer Backdrop & Overlay */}
       {mobileMenuOpen && (
         <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
+          className="fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
@@ -507,7 +503,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         aria-modal="true"
         aria-label="Navegación móvil"
         inert={!mobileMenuOpen}
-        className={`fixed top-0 bottom-0 left-0 w-72 max-w-[85vw] bg-[var(--bg-secondary)] border-r border-[var(--border-subtle)] flex flex-col z-50 md:hidden transition-transform duration-300 ease-in-out ${
+        className={`fixed top-0 bottom-0 left-0 w-72 max-w-[85vw] bg-card border-r border-border flex flex-col z-50 md:hidden transition-transform duration-300 ease-in-out ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -515,14 +511,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Desktop Sleek Sidebar */}
-      <aside className="hidden md:flex w-64 bg-[var(--bg-secondary)] border-r border-[var(--border-subtle)] flex-col shrink-0 sticky top-0 h-screen backdrop-blur-md z-30">
+      <aside className="hidden md:flex w-64 bg-card border-r border-border flex-col shrink-0 sticky top-0 h-screen z-30">
         {renderNavContent()}
       </aside>
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         {/* Top Bar */}
-        <header className="min-h-16 py-2.5 bg-[var(--bg-secondary)] backdrop-blur-md border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between px-3 sm:px-5 md:px-7 sticky top-0 z-20 gap-2">
+        <header className="min-h-16 py-2.5 bg-card border-b border-border flex flex-wrap items-center justify-between px-3 sm:px-5 md:px-7 sticky top-0 z-20 gap-2">
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             {/* Mobile Hamburger Toggle */}
             <Button
@@ -530,7 +526,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               onClick={() => setMobileMenuOpen(true)}
               variant="ghost"
               size="sm"
-              className="h-8 w-8 p-0 md:hidden text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              className="h-8 w-8 p-0 md:hidden text-muted-foreground hover:text-foreground"
               title="Abrir Menú"
               aria-label="Abrir navegación"
               aria-controls="mobile-navigation"
@@ -539,24 +535,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <Menu className="h-5 w-5" />
             </Button>
 
-            <Badge variant="secondary" className="gap-1.5 bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] max-w-[260px] sm:max-w-sm truncate">
-              <Server className="h-3 w-3 text-blue-400 shrink-0" />
+            <Badge variant="secondary" className="gap-1.5 bg-secondary border-border text-muted-foreground max-w-[260px] sm:max-w-sm truncate">
+              <Server className="h-3 w-3 text-primary shrink-0" />
               <span className="font-mono text-[11px] truncate">{serverUrl}</span>
               {latencyMs !== null ? (
-                <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-400 pl-1.5 border-l border-[var(--border-subtle)]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-500 dark:text-emerald-400 pl-1.5 border-l border-border">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                   {latencyMs}ms
                 </span>
               ) : null}
             </Badge>
 
             {grantedWorkspaces.length ? (
-              <label className="hidden sm:flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">
+              <label className="hidden sm:flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-[10px] text-muted-foreground">
                 <span className="font-semibold uppercase tracking-wide">Workspace</span>
                 <select
                   value={selectedWorkspace}
                   onChange={changeWorkspace}
-                  className="max-w-36 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                  className="max-w-36 bg-transparent font-mono text-[11px] text-foreground outline-none"
                   aria-label="Workspace activo"
                 >
                   {grantedWorkspaces.map((id) => (
@@ -583,7 +579,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               onClick={toggleTheme}
               variant="outline"
               size="sm"
-              className="h-8 px-2 sm:px-2.5 text-xs gap-1.5 bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              className="h-8 px-2 sm:px-2.5 text-xs gap-1.5 bg-secondary border-border text-muted-foreground hover:text-foreground"
             >
               {isLightMode ? (
                 <>
@@ -592,7 +588,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </>
               ) : (
                 <>
-                  <Sun className="h-3.5 w-3.5 text-amber-400" />
+                  <Sun className="h-3.5 w-3.5 text-amber-500" />
                   <span className="hidden sm:inline">Claro</span>
                 </>
               )}
@@ -602,7 +598,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               onClick={() => refreshState()}
               variant="outline"
               size="sm"
-              className="h-8 px-2 sm:px-2.5 text-xs gap-1.5 bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              className="h-8 px-2 sm:px-2.5 text-xs gap-1.5 bg-secondary border-border text-muted-foreground hover:text-foreground"
               title="Refrescar estado"
             >
               <RefreshCw className="h-3.5 w-3.5" />

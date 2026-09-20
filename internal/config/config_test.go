@@ -1439,3 +1439,52 @@ func TestGetSetProperty_StandardizedAliases(t *testing.T) {
 		t.Errorf("GetProperty(embedding.model) = %q, want nomic-embed-text", v)
 	}
 }
+
+func TestGetSetProperty_MCPProfile(t *testing.T) {
+	cfg := defaults
+	cfg.Database.InMemory = true
+
+	// Initial default should be "agent"
+	val, err := cfg.GetProperty("mcp.profile")
+	if err != nil {
+		t.Fatalf("GetProperty(mcp.profile) error: %v", err)
+	}
+	if val != "agent" {
+		t.Errorf("initial mcp.profile = %q, want %q", val, "agent")
+	}
+
+	// Valid values (case-insensitive)
+	validCases := []struct {
+		input string
+		want  string
+	}{
+		{"agent", "agent"},
+		{"dev", "dev"},
+		{"minimal", "minimal"},
+		{"Agent", "agent"},
+		{"DEV", "dev"},
+		{"Minimal", "minimal"},
+	}
+
+	for _, tc := range validCases {
+		if err := cfg.SetProperty("mcp.profile", tc.input); err != nil {
+			t.Errorf("SetProperty(mcp.profile, %q) unexpected error: %v", tc.input, err)
+		}
+		got, err := cfg.GetProperty("mcp.profile")
+		if err != nil {
+			t.Errorf("GetProperty(mcp.profile) unexpected error: %v", err)
+		}
+		if got != tc.want {
+			t.Errorf("GetProperty(mcp.profile) after setting %q = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	// Invalid values
+	invalidCases := []string{"", "unknown", "all", "admin", "temporal", "coder", "123"}
+	for _, invalid := range invalidCases {
+		if err := cfg.SetProperty("mcp.profile", invalid); err == nil {
+			t.Errorf("SetProperty(mcp.profile, %q) expected error, got nil", invalid)
+		}
+	}
+}
+

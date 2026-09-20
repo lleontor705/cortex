@@ -17,6 +17,8 @@ import {
   LogOut,
   Save,
   CheckCircle,
+  CheckCircle2,
+  AlertTriangle,
   Sparkles,
   Sliders,
   Eye,
@@ -305,16 +307,16 @@ export default function SettingsPage() {
   if (!isAdmin) {
     return (
       <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
-        <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
-          <AlertCircle className="h-7 w-7" />
+        <div className="w-12 h-12 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center mx-auto">
+          <AlertCircle className="h-6 w-6" />
         </div>
-        <h2 className="text-xl font-bold text-[var(--text-primary)]">Acceso Restringido</h2>
-        <p className="text-xs text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed">
+        <h2 className="text-xl font-bold text-foreground">Acceso Restringido</h2>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
           La configuración avanzada del servidor, llaves de infraestructura y los agentes autónomos de mantenimiento están reservados para usuarios con rol de Administrador.
         </p>
         <div className="pt-3">
           <Link href="/">
-            <Button variant="outline" className="border-[var(--border-subtle)] text-xs">
+            <Button variant="outline" className="border-border text-xs">
               Volver al Dashboard
             </Button>
           </Link>
@@ -328,11 +330,11 @@ export default function SettingsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)] flex items-center gap-2.5">
-            <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-blue-500 shrink-0" />
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground flex items-center gap-2.5">
+            <Sliders className="h-5 w-5 sm:h-6 sm:w-6 text-primary shrink-0" />
             <span>Configuración de Servidor & Motores de IA</span>
           </h1>
-          <p className="text-xs text-[var(--text-muted)] mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             Información del runtime gestionado en el servidor (Ollama / Cloud LLM / Vector Embeddings) y pruebas de conexión en vivo.
           </p>
         </div>
@@ -351,10 +353,10 @@ export default function SettingsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
         {/* Cortex Server Connection Settings */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
-            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
-              <Server className="h-4 w-4 text-blue-400" />
+        <Card className="p-4 sm:p-5 bg-card border-border shadow-sm">
+          <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
+            <CardTitle className="text-sm text-foreground flex items-center gap-2">
+              <Server className="h-4 w-4 text-primary" />
               <span>Conexión Cortex Server</span>
             </CardTitle>
             <Button
@@ -362,7 +364,7 @@ export default function SettingsPage() {
               variant="outline"
               size="sm"
               onClick={logout}
-              className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-950/30 border-rose-900/50"
+              className="text-xs text-destructive hover:bg-destructive/10 border-destructive/30"
             >
               <LogOut className="h-3.5 w-3.5 mr-1" />
               Desconectar
@@ -371,14 +373,14 @@ export default function SettingsPage() {
 
           <form onSubmit={handleSaveServer} className="space-y-4 text-xs">
             {managedServerEndpoint ? (
-              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-                <span className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">Servidor Cortex administrado</span>
-                <span className="mt-1 block break-all font-mono text-xs text-blue-300">{serverUrl}</span>
-                <span className="mt-1 block text-[11px] text-[var(--text-muted)]">La composición Docker administra este endpoint.</span>
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <span className="text-[11px] font-semibold text-muted-foreground block uppercase">Servidor Cortex administrado</span>
+                <span className="mt-1 block break-all font-mono text-xs text-primary">{serverUrl}</span>
+                <span className="mt-1 block text-[11px] text-muted-foreground">La composición Docker administra este endpoint.</span>
               </div>
             ) : (
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-foreground block uppercase">
                   URL DEL SERVIDOR CORTEX
                 </label>
                 <Input
@@ -393,9 +395,9 @@ export default function SettingsPage() {
             )}
 
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+              <label className="text-[11px] font-semibold text-foreground block uppercase">
                 BEARER TOKEN
-                <span className="font-normal text-[var(--text-muted)] lowercase">
+                <span className="font-normal text-muted-foreground lowercase">
                   {" "}(en memoria de sesión; nunca persistido en disco)
                 </span>
               </label>
@@ -412,7 +414,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => setShowBearer(!showBearer)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
                   {showBearer ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -427,7 +429,7 @@ export default function SettingsPage() {
             )}
 
             <div className="flex justify-end pt-2">
-              <Button type="submit" size="sm" className="gap-1.5 shadow-lg shadow-blue-600/20 text-xs">
+              <Button type="submit" size="sm" className="gap-1.5 shadow-sm text-xs">
                 <Save className="h-3.5 w-3.5" />
                 <span>Actualizar Conexión</span>
               </Button>
@@ -436,56 +438,56 @@ export default function SettingsPage() {
         </Card>
 
         {/* Server LLM Engine Runtime Card */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-blue-400" />
+        <Card className="p-4 sm:p-5 bg-card border-border shadow-sm space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-border">
+            <CardTitle className="text-sm text-foreground flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
               <span>Motor LLM del Servidor</span>
             </CardTitle>
             {aiStatus?.llm.configured ? (
-              <Badge variant="default" className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+              <Badge variant="default" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25">
                 ● Servidor Activo
               </Badge>
             ) : (
-              <Badge variant="secondary" className="text-[10px] text-[var(--text-muted)]">
+              <Badge variant="secondary" className="text-[10px] text-muted-foreground">
                 No Configurado
               </Badge>
             )}
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
-            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">PROVEEDOR</span>
-              <span className="text-sm font-semibold text-[var(--text-primary)] mt-0.5 block font-mono">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">PROVEEDOR</span>
+              <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
                 {aiStatus?.llm.provider || "Cargando..."}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">MODELO</span>
-              <span className="text-sm font-semibold text-blue-400 mt-0.5 block font-mono">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">MODELO</span>
+              <span className="text-sm font-semibold text-primary mt-0.5 block font-mono">
                 {aiStatus?.llm.model || "Cargando..."}
               </span>
             </div>
           </div>
 
-          <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs space-y-1">
-            <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">ENDPOINT BASE / BASE URL</span>
-            <span className="text-xs text-[var(--text-secondary)] font-mono block break-all">
+          <div className="p-3 rounded-lg bg-secondary/50 border border-border text-xs space-y-1">
+            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">ENDPOINT BASE / BASE URL</span>
+            <span className="text-xs text-muted-foreground font-mono block break-all">
               {aiStatus?.llm.base_url || "Configuración por defecto del proveedor"}
             </span>
           </div>
 
           {/* LLM Test Action & Results */}
-          <div className="pt-2 border-t border-[var(--border-subtle)] space-y-3">
+          <div className="pt-2 border-t border-border space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--text-muted)]">
+              <span className="text-xs text-muted-foreground">
                 Prueba de latencia y disponibilidad con el modelo configurado.
               </span>
               <Button
                 onClick={handleTestLLM}
                 disabled={isTestingLLM || !client}
                 size="sm"
-                className="text-xs gap-1.5 bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-600/20 text-white"
+                className="text-xs gap-1.5 shadow-sm"
               >
                 <Zap className={`h-3.5 w-3.5 ${isTestingLLM ? "animate-pulse text-amber-300" : ""}`} />
                 <span>{isTestingLLM ? "Probando LLM..." : "Probar Conexión LLM"}</span>
@@ -494,98 +496,92 @@ export default function SettingsPage() {
 
             {llmTestResult && (
               <div
-                className={`p-3 rounded-xl text-xs space-y-1.5 border ${
+                className={`p-3 rounded-lg text-xs space-y-1.5 border ${
                   llmTestResult.status === "ok"
-                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-200"
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-300"
                     : llmTestResult.status === "not_configured"
-                    ? "bg-amber-950/30 border-amber-500/40 text-amber-200"
-                    : "bg-rose-950/30 border-rose-500/40 text-rose-200"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300"
+                    : "bg-destructive/10 border-destructive/30 text-destructive"
                 }`}
               >
                 <div className="flex items-center justify-between font-semibold">
                   <span className="flex items-center gap-1.5">
-                    {llmTestResult.status === "ok" && <CheckCircle className="h-4 w-4 text-emerald-400" />}
-                    {llmTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-rose-400" />}
-                    {llmTestResult.status === "not_configured" && <AlertCircle className="h-4 w-4 text-amber-400" />}
-                    <span>
-                      {llmTestResult.status === "ok"
-                        ? "LLM Conectado y Operativo"
-                        : llmTestResult.status === "not_configured"
-                        ? "LLM No Configurado en el Servidor"
-                        : "Error al Conectar con el LLM"}
-                    </span>
+                    {llmTestResult.status === "ok" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                    {llmTestResult.status === "not_configured" && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                    {llmTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-destructive" />}
+                    {llmTestResult.status === "ok" ? "Respuesta OK" : llmTestResult.status === "not_configured" ? "No Configurado" : "Fallo de Inferencia"}
                   </span>
-                  <span className="font-mono text-[11px] opacity-80">{llmTestResult.latency_ms} ms</span>
+                  {llmTestResult.latency_ms && (
+                    <span className="font-mono text-[11px] opacity-80">{llmTestResult.latency_ms}ms</span>
+                  )}
                 </div>
                 {llmTestResult.response && (
-                  <p className="font-mono text-[11px] bg-black/30 p-2 rounded-lg text-slate-200">
-                    &quot;{llmTestResult.response}&quot;
-                  </p>
+                  <p className="font-mono text-xs opacity-90 break-words mt-1">{llmTestResult.response}</p>
                 )}
-                {llmTestResult.error && <p className="font-mono text-[11px] text-rose-300">{llmTestResult.error}</p>}
-                {llmTestResult.message && <p className="text-[11px] text-amber-300">{llmTestResult.message}</p>}
+                {llmTestResult.error && <p className="font-mono text-[11px] text-destructive">{llmTestResult.error}</p>}
+                {llmTestResult.message && <p className="text-[11px] text-amber-600 dark:text-amber-300">{llmTestResult.message}</p>}
               </div>
             )}
           </div>
         </Card>
 
         {/* Server Vector Embedding Runtime Card */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
-              <Bot className="h-4 w-4 text-purple-400" />
+        <Card className="p-4 sm:p-5 bg-card border-border shadow-sm space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-border">
+            <CardTitle className="text-sm text-foreground flex items-center gap-2">
+              <Bot className="h-4 w-4 text-primary" />
               <span>Motor de Embeddings & Vectores</span>
             </CardTitle>
             {aiStatus?.embedding.configured ? (
-              <Badge variant="purple" className="text-[10px]">
+              <Badge variant="secondary" className="text-[10px] font-mono">
                 ● {aiStatus.embedding.model} ({aiStatus.embedding.dimensions || 2560}d)
               </Badge>
             ) : (
-              <Badge variant="secondary" className="text-[10px] text-[var(--text-muted)]">
+              <Badge variant="secondary" className="text-[10px] text-muted-foreground">
                 No Configurado
               </Badge>
             )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">PROVEEDOR</span>
-              <span className="text-sm font-semibold text-[var(--text-primary)] mt-0.5 block font-mono">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">PROVEEDOR</span>
+              <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
                 {aiStatus?.embedding.provider || "Ollama"}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">MODELO</span>
-              <span className="text-sm font-semibold text-purple-400 mt-0.5 block font-mono">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">MODELO</span>
+              <span className="text-sm font-semibold text-primary mt-0.5 block font-mono">
                 {aiStatus?.embedding.model || "bge-m3"}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]">
-              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">DIMENSIONES</span>
-              <span className="text-sm font-semibold text-emerald-400 mt-0.5 block font-mono">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">DIMENSIONES</span>
+              <span className="text-sm font-semibold text-emerald-500 dark:text-emerald-400 mt-0.5 block font-mono">
                 {aiStatus?.embedding.dimensions || 1024} floats
               </span>
             </div>
           </div>
 
-          <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs space-y-1">
-            <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">ENDPOINT DE OLLAMA / EMBEDDINGS</span>
-            <span className="text-xs text-[var(--text-secondary)] font-mono block break-all">
+          <div className="p-3 rounded-lg bg-secondary/50 border border-border text-xs space-y-1">
+            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">ENDPOINT DE OLLAMA / EMBEDDINGS</span>
+            <span className="text-xs text-muted-foreground font-mono block break-all">
               {aiStatus?.embedding.base_url || "http://ollama.railway.internal:11434"}
             </span>
           </div>
 
           {/* Embedding Test Action & Results */}
-          <div className="pt-2 border-t border-[var(--border-subtle)] space-y-3">
+          <div className="pt-2 border-t border-border space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--text-muted)]">
+              <span className="text-xs text-muted-foreground">
                 Genera un vector en vivo para validar dimensiones y latencia.
               </span>
               <Button
                 onClick={handleTestEmbedding}
                 disabled={isTestingEmbedding || !client}
                 size="sm"
-                className="text-xs gap-1.5 bg-purple-600 hover:bg-purple-500 shadow-md shadow-purple-600/20 text-white"
+                className="text-xs gap-1.5 shadow-xs"
               >
                 <Layers className={`h-3.5 w-3.5 ${isTestingEmbedding ? "animate-pulse text-amber-300" : ""}`} />
                 <span>{isTestingEmbedding ? "Generando Vector..." : "Probar Embeddings"}</span>
@@ -594,19 +590,19 @@ export default function SettingsPage() {
 
             {embeddingTestResult && (
               <div
-                className={`p-3 rounded-xl text-xs space-y-1.5 border ${
+                className={`p-3 rounded-lg text-xs space-y-1.5 border ${
                   embeddingTestResult.status === "ok"
-                    ? "bg-purple-950/30 border-purple-500/40 text-purple-200"
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
                     : embeddingTestResult.status === "not_configured"
-                    ? "bg-amber-950/30 border-amber-500/40 text-amber-200"
-                    : "bg-rose-950/30 border-rose-500/40 text-rose-200"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400"
+                    : "bg-destructive/10 border-destructive/30 text-destructive"
                 }`}
               >
                 <div className="flex items-center justify-between font-semibold">
                   <span className="flex items-center gap-1.5">
-                    {embeddingTestResult.status === "ok" && <CheckCircle className="h-4 w-4 text-purple-400" />}
-                    {embeddingTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-rose-400" />}
-                    {embeddingTestResult.status === "not_configured" && <AlertCircle className="h-4 w-4 text-amber-400" />}
+                    {embeddingTestResult.status === "ok" && <CheckCircle className="h-4 w-4 text-emerald-500" />}
+                    {embeddingTestResult.status === "error" && <AlertCircle className="h-4 w-4 text-destructive" />}
+                    {embeddingTestResult.status === "not_configured" && <AlertCircle className="h-4 w-4 text-amber-500" />}
                     <span>
                       {embeddingTestResult.status === "ok"
                         ? `Vector Generado: ${embeddingTestResult.dimensions} Dimensiones`
@@ -618,22 +614,22 @@ export default function SettingsPage() {
                   <span className="font-mono text-[11px] opacity-80">{embeddingTestResult.latency_ms} ms</span>
                 </div>
                 {embeddingTestResult.sample_vector && (
-                  <p className="font-mono text-[10px] bg-black/30 p-2 rounded-lg text-purple-200 break-all">
+                  <p className="font-mono text-[10px] bg-secondary/50 p-2 rounded-lg text-foreground break-all border border-border">
                     Muestra del vector: [{embeddingTestResult.sample_vector.map((v) => v.toFixed(4)).join(", ")}, ...]
                   </p>
                 )}
-                {embeddingTestResult.error && <p className="font-mono text-[11px] text-rose-300">{embeddingTestResult.error}</p>}
-                {embeddingTestResult.message && <p className="text-[11px] text-amber-300">{embeddingTestResult.message}</p>}
+                {embeddingTestResult.error && <p className="font-mono text-[11px] text-destructive">{embeddingTestResult.error}</p>}
+                {embeddingTestResult.message && <p className="text-[11px] text-amber-600 dark:text-amber-400">{embeddingTestResult.message}</p>}
               </div>
             )}
           </div>
         </Card>
 
         {/* Hybrid Search Weights & Retrieval Tuning */}
-        <Card className="p-4 sm:p-5 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)] mb-4">
-            <CardTitle className="text-sm text-[var(--text-primary)] flex items-center gap-2">
-              <Sliders className="h-4 w-4 text-emerald-400" />
+        <Card className="p-4 sm:p-5 bg-card border-border shadow-sm">
+          <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
+            <CardTitle className="text-sm text-foreground flex items-center gap-2">
+              <Sliders className="h-4 w-4 text-emerald-500 dark:text-emerald-400" />
               <span>Sintonización de Búsqueda Híbrida</span>
             </CardTitle>
           </div>
@@ -641,7 +637,7 @@ export default function SettingsPage() {
           <form onSubmit={handleSaveSearchWeights} className="space-y-3.5 text-xs">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   PESO BM25 ({Math.round(bm25Weight * 100)}%)
                 </label>
                 <Input
@@ -656,7 +652,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   PESO VECTOR ({Math.round(vectorWeight * 100)}%)
                 </label>
                 <Input
@@ -671,7 +667,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--text-secondary)] block uppercase">
+                <label className="text-[11px] font-semibold text-muted-foreground block uppercase">
                   PESO GRAFO ({Math.round(graphWeight * 100)}%)
                 </label>
                 <Input
@@ -687,8 +683,8 @@ export default function SettingsPage() {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <span className="text-[11px] text-[var(--text-muted)]">
-                Límite por consulta: <b>{defaultLimit}</b> resultados
+              <span className="text-[11px] text-muted-foreground">
+                Límite por consulta: <b className="font-mono text-foreground">{defaultLimit}</b> resultados
               </span>
               <Button type="submit" size="sm" variant="outline" className="text-xs">
                 {searchSavedMessage ? "¡Guardado!" : "Guardar Ponderación"}
@@ -699,20 +695,20 @@ export default function SettingsPage() {
       </div>
 
       {/* Autonomous AI Background Maintenance Worker Hub */}
-      <Card className="p-4 sm:p-6 bg-[var(--bg-secondary)] border-[var(--border-subtle)] shadow-2xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+      <Card className="p-4 sm:p-6 bg-card border-border shadow-sm space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
           <div>
-            <CardTitle className="text-base text-[var(--text-primary)] flex items-center gap-2">
-              <Bot className="h-5 w-5 text-indigo-400" />
+            <CardTitle className="text-base text-foreground flex items-center gap-2">
+              <Bot className="h-5 w-5 text-primary" />
               <span>Hub de Mantenimiento Autónomo con IA (Background Workers)</span>
             </CardTitle>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5">
               Ejecuta agentes en background utilizando los modelos configurados en el servidor para optimizar la base de conocimiento.
             </p>
           </div>
           {isWorkerRunning && (
-            <span className="flex items-center gap-2 text-xs text-amber-400 font-mono animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="flex items-center gap-2 text-xs text-amber-500 font-mono animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-amber-500" />
               Agente en ejecución...
             </span>
           )}
@@ -720,12 +716,12 @@ export default function SettingsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
           {/* Job 1: Graph Auto Reorganizer */}
-          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border flex flex-col justify-between space-y-3">
             <div>
-              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
-                <span>⚡ Reorganizar Grafo Semántico</span>
+              <div className="flex items-center gap-2 font-semibold text-xs text-foreground mb-1">
+                <span>Reorganizar Grafo Semántico</span>
               </div>
-              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
                 Descubre enlaces ocultos entre observaciones huérfanas y crea relaciones estructuradas (relates_to, supersedes).
               </p>
             </div>
@@ -733,19 +729,19 @@ export default function SettingsPage() {
               onClick={runBackgroundGraphReorganization}
               disabled={isWorkerRunning}
               size="sm"
-              className="w-full text-xs gap-1.5 shadow-md shadow-blue-600/10"
+              className="w-full text-xs gap-1.5 shadow-sm"
             >
               <span>Ejecutar Reorganización</span>
             </Button>
           </div>
 
           {/* Job 2: Conflict & Contradiction Resolver */}
-          <div className="p-4 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex flex-col justify-between space-y-3">
+          <div className="p-4 rounded-lg bg-secondary/50 border border-border flex flex-col justify-between space-y-3">
             <div>
-              <div className="flex items-center gap-2 font-semibold text-xs text-[var(--text-primary)] mb-1">
-                <span>🛡️ Resolver Conflictos & Contradicciones</span>
+              <div className="flex items-center gap-2 font-semibold text-xs text-foreground mb-1">
+                <span>Resolver Conflictos & Contradicciones</span>
               </div>
-              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
                 Detecta decisiones de código contradictorias u obsoletas y genera superaciones automáticas con razonamiento.
               </p>
             </div>
@@ -763,13 +759,13 @@ export default function SettingsPage() {
 
         {/* Live Background Logs Console */}
         {workerLogs.length > 0 && (
-          <div className="mt-4 p-3.5 rounded-lg bg-black/50 border border-[var(--border-subtle)] font-mono text-[11px] space-y-1">
-            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between">
+          <div className="mt-4 p-3.5 rounded-lg bg-secondary/80 border border-border font-mono text-[11px] space-y-1">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center justify-between">
               <span>Registro de Operaciones en Background:</span>
               <button
                 type="button"
                 onClick={() => setWorkerLogs([])}
-                className="text-[10px] text-[var(--text-muted)] hover:text-white"
+                className="text-[10px] text-muted-foreground hover:text-foreground"
               >
                 Limpiar
               </button>

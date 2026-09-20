@@ -60,8 +60,8 @@ type AgentPageViewProps = {
 function AnswerEvidence({ message }: { message: AgentChatMessage }) {
   if (message.role !== "assistant") return null;
   return (
-    <details className="mt-4 border-t border-[var(--border-subtle)] pt-3">
-      <summary className="cursor-pointer text-xs font-semibold text-[var(--accent-primary)]">
+    <details className="mt-4 border-t border-border pt-3">
+      <summary className="cursor-pointer text-xs font-semibold text-primary hover:text-primary/80">
         Ver trazabilidad y evidencia
       </summary>
       <div className="mt-3 space-y-3">
@@ -77,16 +77,16 @@ function ConversationMessage({ message, index }: { message: AgentChatMessage; in
   return (
     <div className={`flex min-w-0 gap-3 ${assistant ? "justify-start" : "justify-end"}`}>
       {assistant ? (
-        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-500/10 text-sky-400">
+        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary border border-primary/20">
           <Bot className="h-4 w-4" aria-hidden="true" />
         </span>
       ) : null}
       <article
         aria-label={assistant ? `Respuesta ${index + 1}` : `Pregunta ${index + 1}`}
-        className={`min-w-0 max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 sm:max-w-[82%] ${
+        className={`min-w-0 max-w-[92%] rounded-lg px-4 py-3 text-sm leading-6 sm:max-w-[82%] ${
           assistant
-            ? "border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)]"
-            : "bg-[var(--accent-primary)] text-white"
+            ? "border border-border bg-card text-foreground shadow-sm"
+            : "bg-primary text-primary-foreground shadow-sm"
         }`}
       >
         <p className="whitespace-pre-wrap break-words">{message.content}</p>
@@ -118,10 +118,10 @@ function AgentPageView(props: AgentPageViewProps) {
             <Sparkles className="h-4 w-4" aria-hidden="true" />
             Conocimiento del proyecto
           </p>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight text-[var(--text-primary)] sm:text-3xl">
+          <h1 className="mt-2 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
             Pregunta, comprende, decide
           </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
             El agente combina búsqueda híbrida, vectores, AST y grafos únicamente dentro del proyecto que tienes autorizado.
           </p>
         </div>
@@ -182,24 +182,44 @@ function AgentPageView(props: AgentPageViewProps) {
       />
 
       {props.projectsError ? (
-        <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400" role="alert">
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
           {props.projectsError}
         </p>
       ) : null}
 
       <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <section className="flex min-h-[34rem] min-w-0 flex-col overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)]" aria-label="Conversación del proyecto">
+        <section className="flex min-h-[34rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm" aria-label="Conversación del proyecto">
           <div className="flex-1 space-y-5 overflow-y-auto p-3 sm:p-5">
             {!props.messages.length && !props.pendingQuestion && !props.error ? (
               <div className="grid min-h-72 place-items-center px-3 text-center">
-                <div>
-                  <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-sky-500/25 bg-sky-500/10 text-sky-400">
+                <div className="max-w-lg">
+                  <span className="mx-auto grid h-14 w-14 place-items-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
                     <MessageCircleQuestion className="h-6 w-6" aria-hidden="true" />
                   </span>
-                  <h2 className="mt-4 text-base font-semibold text-[var(--text-primary)]">Explora lo que Cortex ya sabe</h2>
-                  <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--text-muted)]">
+                  <h2 className="mt-4 text-base font-semibold text-foreground">Explora lo que Cortex ya sabe</h2>
+                  <p className="mx-auto mt-2 text-sm leading-6 text-muted-foreground">
                     Pregunta por decisiones, dependencias, implementaciones, riesgos o archivos como ApplicationDbContext.cs.
                   </p>
+
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    {[
+                      "¿Qué decisiones clave de arquitectura rigen este proyecto?",
+                      "¿Cuáles son los módulos críticos y dependencias?",
+                      "¿Qué reglas y convenciones de codificación aplican?",
+                    ].map((suggestion, sIdx) => (
+                      <button
+                        key={sIdx}
+                        type="button"
+                        onClick={() => {
+                          props.onQuestionChange(suggestion);
+                          props.composerRef.current?.focus();
+                        }}
+                        className="rounded-lg border border-border bg-secondary/50 px-3 py-1.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors text-left"
+                      >
+                        💡 {suggestion}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -210,7 +230,7 @@ function AgentPageView(props: AgentPageViewProps) {
 
             {props.pendingQuestion ? (
               <div className="flex justify-end">
-                <div className="max-w-[92%] rounded-2xl bg-[var(--accent-primary)] px-4 py-3 text-sm leading-6 text-white sm:max-w-[82%]">
+                <div className="max-w-[92%] rounded-lg bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm sm:max-w-[82%]">
                   <p className="whitespace-pre-wrap break-words">{props.pendingQuestion}</p>
                 </div>
               </div>
@@ -218,19 +238,19 @@ function AgentPageView(props: AgentPageViewProps) {
 
             {props.draftAnswer || busy ? (
               <div className="flex min-w-0 gap-3">
-                <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-sky-500/10 text-sky-400">
+                <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-secondary border border-border text-muted-foreground">
                   <Bot className="h-4 w-4" aria-hidden="true" />
                 </span>
-                <div className="min-w-0 max-w-[92%] rounded-2xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm leading-6 sm:max-w-[82%]">
+                <div className="min-w-0 max-w-[92%] rounded-lg border border-border bg-secondary/50 px-4 py-3 text-sm leading-6 text-foreground sm:max-w-[82%]">
                   <p className="whitespace-pre-wrap break-words">{props.draftAnswer || "Recuperando evidencia autorizada…"}</p>
                 </div>
               </div>
             ) : null}
 
             {props.error ? (
-              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400" role="alert">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive" role="alert">
                 <p>{props.error}</p>
-                <Button type="button" variant="ghost" size="sm" className="mt-2 text-red-300" onClick={props.onRetry}>
+                <Button type="button" variant="ghost" size="sm" className="mt-2 text-destructive hover:bg-destructive/10" onClick={props.onRetry}>
                   <RotateCcw className="h-4 w-4" aria-hidden="true" />
                   Reintentar
                 </Button>
@@ -238,7 +258,7 @@ function AgentPageView(props: AgentPageViewProps) {
             ) : null}
           </div>
 
-          <form className="sticky bottom-0 border-t border-[var(--border-subtle)] bg-[var(--bg-secondary)]/95 p-3 backdrop-blur sm:p-4" onSubmit={props.onSubmit}>
+          <form className="sticky bottom-0 border-t border-border bg-card p-3 sm:p-4" onSubmit={props.onSubmit}>
             <label htmlFor="agent-question" className="sr-only">Pregunta sobre el proyecto autorizado</label>
             <textarea
               ref={props.composerRef}
@@ -255,10 +275,10 @@ function AgentPageView(props: AgentPageViewProps) {
               maxLength={8192}
               rows={3}
               placeholder={selectedIsGranted ? "Pregunta por una decisión, símbolo, archivo o dependencia…" : "Selecciona un proyecto autorizado"}
-              className="w-full min-w-0 resize-none rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-3 text-sm text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] disabled:opacity-60"
+              className="w-full min-w-0 resize-none rounded-lg border border-border bg-background px-3 py-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60"
             />
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-[var(--text-muted)]">Enter envía · Shift+Enter crea una línea</p>
+              <p className="text-xs text-muted-foreground">Enter envía · Shift+Enter crea una línea</p>
               {busy ? (
                 <Button type="button" variant="destructive" onClick={props.onStop}>
                   <CircleStop className="h-4 w-4" aria-hidden="true" />
@@ -276,7 +296,7 @@ function AgentPageView(props: AgentPageViewProps) {
         </section>
 
         <aside className="min-w-0 space-y-3 lg:sticky lg:top-4 lg:self-start" aria-label="Trazabilidad de la respuesta actual">
-          <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-400">
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs font-mono text-emerald-600 dark:text-emerald-400">
             <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
             Evidencia limitada al alcance autorizado
           </div>

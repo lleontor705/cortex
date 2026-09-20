@@ -34,7 +34,7 @@ cat <<'PROTOCOL'
 You have cortex memory tools. This protocol is MANDATORY and ALWAYS ACTIVE.
 
 ### CORE TOOLS — always available
-cortex_save, cortex_search, cortex_context, cortex_session_summary, cortex_get_observation, cortex_save_prompt
+cortex_save, cortex_search, cortex_context, cortex_session_summary, cortex_get_observation, cortex_update
 
 ### PROACTIVE SAVE — do NOT wait for user to ask
 Call `cortex_save` IMMEDIATELY after decisions, bugfixes, discoveries, patterns, preferences.

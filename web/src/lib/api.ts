@@ -46,6 +46,7 @@ export type ServerStats = {
   active_sessions: number;
   edges: number;
   projects: number;
+  total_observations?: number;
 };
 
 export type Principal = {
@@ -475,8 +476,9 @@ export class CortexClient {
     return this.request<Principal>("/api/me");
   }
 
-  stats() {
-    return this.request<ServerStats>("/api/stats");
+  stats(project?: string) {
+    const qs = project ? `?project=${encodeURIComponent(project)}` : "";
+    return this.request<ServerStats>(`/api/stats${qs}`);
   }
 
   projects() {
@@ -977,7 +979,7 @@ export type CodeAnalyticsReport = {
   generated_at: string;
 };
 
-type ParsedAgentSSEEvent = (AgentStreamEvent & { id?: string }) | {
+export type ParsedAgentSSEEvent = (AgentStreamEvent & { id?: string }) | {
   type: "error";
   id?: string;
   data: { status?: number; code?: string; message?: string };

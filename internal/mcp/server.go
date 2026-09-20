@@ -7,6 +7,8 @@
 //
 //	cortex mcp                        -> all tools (default)
 //	cortex mcp --tools=agent          -> ordinary agent tools (cortex_* namespace)
+//	cortex mcp --tools=dev            -> golden dev suite (11 tools: memory + AST impact)
+//	cortex mcp --tools=minimal        -> essential core memory (5 tools: minimal token footprint)
 //	cortex mcp --tools=admin          -> admin/diagnostic tools
 //	cortex mcp --tools=temporal       -> temporal/advanced tools
 package mcp
@@ -27,67 +29,64 @@ type Stores = bundle.Stores
 
 // --- Tool Profiles ---
 
-// ProfileAgent contains the ordinary agent tool set in the cortex_* namespace.
-// These are the tools an AI agent needs for proactive memory, search, context,
-// and knowledge-graph workflows. Temporal and admin tools are intentionally
-// absent — they belong to separate profiles (REQ-MCP-002).
+// ProfileAgent contains the consolidated agent tool set in the cortex_* namespace.
+// These are the orthogonal, unified tools an AI agent needs for proactive memory,
+// intelligent hybrid search, context packs, knowledge graphs, and codebase AST intelligence.
 var ProfileAgent = map[string]bool{
-	"cortex_save":                true,
-	"cortex_search":              true,
-	"cortex_context":             true,
-	"cortex_session_summary":     true,
-	"cortex_session_start":       true,
-	"cortex_session_end":         true,
-	"cortex_get_observation":     true,
-	"cortex_suggest_topic_key":   true,
-	"cortex_capture_passive":     true,
-	"cortex_save_prompt":         true,
-	"cortex_update":              true,
-	"cortex_relate":              true,
-	"cortex_graph":               true,
-	"cortex_graph_relationships": true,
-	"cortex_graph_path":          true,
-	"cortex_score":               true,
-	"cortex_search_hybrid":       true,
-	"cortex_revision_history":    true,
-	"cortex_handoff":             true,
-	// Directives, Rules & Codebase Intelligence (Canonical Set)
-	"cortex_get_rules":            true,
-	"cortex_save_rule":            true,
-	"cortex_ingest_code":          true,
-	"cortex_get_blast_radius":     true,
-	"cortex_detect_cycles":        true,
+	// Core Memory (5)
+	"cortex_save":            true,
+	"cortex_update":          true,
+	"cortex_get_observation": true,
+	"cortex_context":         true,
+	"cortex_session_summary": true,
+
+	// Retrieval & Prompt Context (2)
+	"cortex_search":            true,
+	"cortex_get_agent_context": true,
+
+	// Knowledge Graph (3)
+	"cortex_relate":     true,
+	"cortex_graph":      true,
+	"cortex_graph_path": true,
+
+	// Directives & Governance (2)
+	"cortex_get_rules": true,
+	"cortex_save_rule": true,
+
+	// Codebase AST & Test Impact (5)
+	"cortex_ingest_code":      true,
+	"cortex_get_blast_radius": true,
+	"cortex_code_tests":       true,
+	"cortex_get_code_symbols": true,
+	"cortex_detect_cycles":    true,
+
+	// Architecture & Repository Status (3)
 	"cortex_analyze_architecture": true,
-	"cortex_get_code_symbols":     true,
-	"cortex_get_code_graph":       true,
 	"cortex_code_map":             true,
-	"cortex_code_tests":           true,
-	"cortex_code_find":            true,
-	"cortex_get_agent_context":    true,
-	"cortex_get_compact_context":  true,
-	// Additional agent-useful tools (no orphans — REQ-MCP-002).
-	"cortex_consolidate":   true,
-	"cortex_project_dna":   true,
-	"cortex_resolve_query": true,
-	"cortex_get_status":    true,
-	// Context Optimization & Sandbox Execution
-	"cortex_execute":        true,
-	"cortex_search_payload": true,
+	"cortex_get_status":           true,
+
+	// Durable Lineage & Multi-agent Handoff (2)
+	"cortex_revision_history": true,
+	"cortex_handoff":          true,
 }
 
-// ProfileAdmin contains admin/diagnostic tools for manual curation
-// (TUI, CLI, dashboards). Destructive tools carry destructive-hint annotations.
+// ProfileAdmin contains administrative maintenance tools.
+// DEPRECATED FOR AGENTS: Destructive and administrative operations (cortex_delete,
+// cortex_merge_projects, cortex_consolidate) belong to operator interfaces (CLI, TUI, Web UI)
+// and must NOT be exposed to autonomous agents.
 var ProfileAdmin = map[string]bool{
 	"cortex_delete":         true,
 	"cortex_stats":          true,
 	"cortex_timeline":       true,
-	"cortex_archive":        true,
+	"cortex_score":          true,
+	"cortex_consolidate":    true,
 	"cortex_merge_projects": true,
 }
 
-// ProfileTemporal contains temporal/advanced tools for bi-temporal graph
-// queries, observability, and point-in-time analysis. These MUST NOT appear
-// in ordinary agent discovery (REQ-MCP-002).
+// ProfileTemporal contains bi-temporal graph queries and telemetry tools.
+// DEPRECATED FOR AGENTS: Infrastructure telemetry (memory usage, execution duration)
+// and manual bitemporal timestamps belong to internal middleware and APM,
+// not agentic LLM context. Use topic_key upserts and cortex_revision_history instead.
 var ProfileTemporal = map[string]bool{
 	"cortex_temporal_create_edge":      true,
 	"cortex_temporal_create_snapshot":  true,
@@ -103,20 +102,50 @@ var ProfileTemporal = map[string]bool{
 	"cortex_search_temporal": true,
 }
 
+// ProfileMinimal contains the 5 core memory tools for ultra-low token
+// footprint and fast model inference (e.g. local models, Haiku, Flash).
+var ProfileMinimal = map[string]bool{
+	"cortex_save":            true,
+	"cortex_search":          true,
+	"cortex_context":         true,
+	"cortex_session_summary": true,
+	"cortex_get_observation": true,
+}
+
+// ProfileDev contains the golden 11-tool suite for local software development:
+// essential memory plus codebase AST analysis, blast radius, and test impact.
+var ProfileDev = map[string]bool{
+	"cortex_save":              true,
+	"cortex_search":            true,
+	"cortex_context":           true,
+	"cortex_session_summary":   true,
+	"cortex_get_observation":   true,
+	"cortex_get_agent_context": true,
+	"cortex_relate":            true,
+	"cortex_get_rules":         true,
+	"cortex_ingest_code":       true,
+	"cortex_get_blast_radius":  true,
+	"cortex_code_tests":        true,
+}
+
 // Profiles maps profile names to their tool sets.
+// Canonical agentic profiles are "agent", "dev", "coder", and "minimal".
 var Profiles = map[string]map[string]bool{
 	"agent":    ProfileAgent,
-	"admin":    ProfileAdmin,
-	"temporal": ProfileTemporal,
+	"dev":      ProfileDev,
+	"coder":    ProfileDev,
+	"minimal":  ProfileMinimal,
+	"admin":    ProfileAdmin,    // Deprecated non-agentic profile
+	"temporal": ProfileTemporal, // Deprecated non-agentic profile
 }
 
 // ResolveTools takes a comma-separated string of profile names and/or
 // individual tool names and returns the set of tool names to register.
-// An empty input or "all" means register everything.
+// An empty input or "all" resolves to ProfileAgent (the full canonical agent suite).
 func ResolveTools(input string) map[string]bool {
 	input = strings.TrimSpace(input)
 	if input == "" || input == "all" {
-		return nil
+		return ProfileAgent
 	}
 
 	result := make(map[string]bool)
@@ -126,7 +155,7 @@ func ResolveTools(input string) map[string]bool {
 			continue
 		}
 		if token == "all" {
-			return nil
+			return ProfileAgent
 		}
 		if profile, ok := Profiles[token]; ok {
 			for tool := range profile {
@@ -142,52 +171,43 @@ func ResolveTools(input string) map[string]bool {
 // serverVersion is the MCP server version reported to clients.
 const serverVersion = "2.0.0"
 
-const serverInstructions = `Cortex provides persistent memory for AI coding assistants.
+const serverInstructions = `Cortex provides persistent memory and codebase intelligence for AI coding assistants.
 
-CORE MEMORY:
-  cortex_save - save decisions, bugs, discoveries PROACTIVELY
-  cortex_search - find past work via FTS5 full-text search
-  cortex_context - recent session history
-  cortex_session_summary - MANDATORY before ending session
-  cortex_get_observation - full content by ID
-  cortex_save_prompt - save user prompt
+CORE MEMORY & RETRIEVAL:
+  cortex_save - save decisions, bugs, discoveries, patterns (type: prompt, bugfix, decision, etc.)
+  cortex_update - surgical updates to existing observations by ID
+  cortex_get_observation - full content of an observation by ID
+  cortex_search - unified intelligent hybrid search (FTS5 + Vector + Adaptive-RAG + HippoRAG)
+  cortex_context - recent session activity and context
+  cortex_session_summary - structured end-of-session summary (Goal, Discoveries, Accomplished)
+  cortex_get_agent_context - prompt-ready context pack (supports max_tokens for compact mode)
 
 RULES & DIRECTIVES:
   cortex_get_rules - retrieve active project and global rules/directives
   cortex_save_rule - save/update persistent project or global rules
 
-CODEBASE AST & INTELLIGENCE:
-  cortex_ingest_code - scan local files with Zero-CGO Static AST Extractor
-  cortex_get_blast_radius - calculate downstream impact of modifying symbols
-  cortex_detect_cycles - detect circular dependencies and import cycles
-  cortex_analyze_architecture - analyze code communities and god nodes
-  cortex_code_map - generate compact token-budgeted repo map of key symbols
-  cortex_code_tests - reverse call-graph to locate impacted tests for Fast-TDD
-  cortex_code_find - substring and regex search across indexed code symbols
-  cortex_get_agent_context - prompt-ready pack of rules, decisions, bugfixes, and hubs
-  cortex_get_compact_context - ultra-dense, token-budgeted prompt-ready pack
-
-
-KNOWLEDGE GRAPH & SCORING:
-  cortex_relate - create relationship between observations
-  cortex_graph - traverse knowledge graph from an observation
-  cortex_graph_relationships - inspect typed incoming and outgoing edges
-  cortex_graph_path - find a bounded shortest path between observations
-  cortex_score - get/recalculate importance score
-  cortex_search_hybrid - FTS5 + vector search with Reciprocal Rank Fusion
+KNOWLEDGE GRAPH:
+  cortex_relate - create typed relationship between observations
+  cortex_graph - traverse knowledge graph or inspect relationships (format: summary | relationships)
+  cortex_graph_path - find shortest path between observations
   cortex_revision_history - structured revision snapshots for an observation
 
-ADDITIONAL TOOLS (use ToolSearch):
-  cortex_suggest_topic_key, cortex_capture_passive, cortex_session_start,
-  cortex_session_end, cortex_update, cortex_consolidate, cortex_project_dna
+CODEBASE AST & INTELLIGENCE:
+  cortex_ingest_code - scan local files with Zero-CGO Static AST Extractor
+  cortex_get_code_symbols - query symbols with filters or regex pattern
+  cortex_get_blast_radius - calculate downstream impact (supports include_tests: true)
+  cortex_code_tests - reverse call-graph to locate impacted tests for Fast-TDD
+  cortex_detect_cycles - detect circular dependencies and import cycles
+  cortex_analyze_architecture - analyze code communities and god nodes
+  cortex_code_map - token-budgeted structural map of key repo symbols
+  cortex_get_status - active mode and capabilities
 
 DURABLE HANDOFF:
-  cortex_handoff - exactly-once handoff with receipts; same key+payload
-  replays the same observation, differing payload conflicts`
+  cortex_handoff - exactly-once handoff with receipts between agents`
 
-// NewServer creates an MCP server with ALL tools registered.
+// NewServer creates an MCP server with ProfileAgent tools registered by default.
 func NewServer(stores *Stores) *server.MCPServer {
-	return NewServerWithTools(stores, nil)
+	return NewServerWithTools(stores, ProfileAgent)
 }
 
 // NewServerWithTools creates an MCP server registering only the tools in

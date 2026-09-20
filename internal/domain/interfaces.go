@@ -64,6 +64,11 @@ type SearchRepository interface {
 	Search(ctx context.Context, query string, opts SearchOptions) ([]*SearchResult, error)
 }
 
+// RemoteSearcher defines the interface for executing remote hybrid search queries.
+type RemoteSearcher interface {
+	SearchHybrid(ctx context.Context, query string, opts SearchOptions) ([]*SearchResult, error)
+}
+
 // GraphRepository defines the interface for knowledge graph operations.
 // This enables semantic relationships between observations.
 type GraphRepository interface {

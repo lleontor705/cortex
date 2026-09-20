@@ -38,6 +38,9 @@ func setCLIEnv(t *testing.T) string {
 	t.Setenv("CORTEX_EMBEDDING_PROVIDER", "none")
 	t.Setenv("CORTEX_SEARCH_OLLAMA_AUTO_START", "false")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CORTEX_LLM_API_KEY", "")
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "")
 	t.Setenv("OLLAMA_BASE_URL", "")
 	t.Setenv("OLLAMA_HOST", "")
 	return dbPath
