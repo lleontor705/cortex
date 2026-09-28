@@ -31,12 +31,11 @@ services:
       CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://${POSTGRES_USER:-cortex_bootstrap}:${POSTGRES_PASSWORD:-cortex_bootstrap}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
       CORTEX_SERVER_AUTO_BOOTSTRAP: "${CORTEX_SERVER_AUTO_BOOTSTRAP:-true}"
       CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-true}"
-      CORTEX_SERVER_MULTI_TENANT: "${CORTEX_SERVER_MULTI_TENANT:-false}"
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: "${CORTEX_HTTP_HOST:-0.0.0.0}"
       CORTEX_HTTP_PORT: "${CORTEX_HTTP_PORT:-7438}"
       CORTEX_HTTP_TOKEN: "${CORTEX_HTTP_TOKEN:-}"
-      CORTEX_HTTP_ALLOWED_ORIGINS: "${CORTEX_HTTP_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:80,http://localhost:5173,http://127.0.0.1:3000}"
+      CORTEX_HTTP_ALLOWED_ORIGINS: "${CORTEX_HTTP_ALLOWED_ORIGINS:-http://localhost:7438,http://localhost:80,http://localhost:5173,http://127.0.0.1:7438}"
       # External Vector Adapter
       CORTEX_VECTOR_PROVIDER: "${CORTEX_VECTOR_PROVIDER:-none}"
       # Embeddings
@@ -55,30 +54,6 @@ services:
       - cortex-server-state:/home/cortex/.cortex
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7438/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-
-  cortex-ui:
-    image: ghcr.io/lleontor705/cortex-web:latest
-    restart: unless-stopped
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.web
-      args:
-        NEXT_PUBLIC_CORTEX_MANAGED_ENDPOINT: "true"
-        NEXT_PUBLIC_CORTEX_SERVER_URL: "http://localhost:7438"
-    depends_on:
-      cortex-server:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      PORT: "3000"
-      HOSTNAME: "0.0.0.0"
-    ports:
-      - "3000:3000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12

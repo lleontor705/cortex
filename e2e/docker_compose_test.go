@@ -38,10 +38,11 @@ test "$(stat -c %a /home/cortex/.cortex/server-bootstrap.env)" = 600
 set -a
 . /home/cortex/.cortex/server-bootstrap.env
 set +a
-status=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $CORTEX_HTTP_TOKEN" http://127.0.0.1:7438/api/me)
-test "$status" = 200
-status=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $CORTEX_HTTP_TOKEN" -H "X-Cortex-Workspace: 00000000-0000-0000-0000-000000000000" http://127.0.0.1:7438/api/me)
-test "$status" = 403
+# Single-tenant contract: /api/me is bearer-only. No request-supplied header
+# selects a workspace, so the authenticated bearer resolves to the configured
+# default workspace.
+me=$(curl -fsS -H "Authorization: Bearer $CORTEX_HTTP_TOKEN" http://127.0.0.1:7438/api/me)
+printf '%s' "$me" | grep -q "\"workspace_id\":\"$CORTEX_SERVER_WORKSPACE_ID\""
 
 session=$(curl -fsS -H "Authorization: Bearer $CORTEX_HTTP_TOKEN" -H "Content-Type: application/json" -d '{"project":"e2e-search","directory":"/workspace/e2e-search"}' http://127.0.0.1:7438/api/sessions)
 session_id=$(printf '%s' "$session" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -51,7 +52,16 @@ result=$(curl -fsS -H "Authorization: Bearer $CORTEX_HTTP_TOKEN" 'http://127.0.0
 printf '%s' "$result" | grep -q 'ApplicationDbContext.cs E2E'
 echo SERVER_E2E_OK
 `)
-	stack.run("exec", "-T", "cortex-ui", "wget", "-q", "--spider", "http://127.0.0.1:3000")
+	stack.runInServer(`
+set -eu
+# Embedded UI health: the cortex container serves the web shell at its published port.
+status=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:7438/)
+test "$status" = 200
+# Asset surface: confirm the shell HTML is served (not a bare 404 or redirect).
+body=$(curl -sS http://127.0.0.1:7438/)
+printf '%s' "$body" | grep -qi '<!DOCTYPE html>\|<html'
+echo EMBEDDED_UI_OK
+`)
 
 	stack.run("restart", "cortex-server")
 	stack.waitForServerHealth()

@@ -1,7 +1,6 @@
-# The E2E test reaches each service from its container. Removing host mappings
-# avoids collisions with a developer's running Cortex stack.
+# The E2E test reaches the server from inside its own container; the embedded UI
+# is served by cortex-server itself. Removing the host mapping avoids collisions
+# with a developer's running Cortex stack.
 services:
   cortex-server:
-    ports: !override []
-  cortex-ui:
     ports: !override []

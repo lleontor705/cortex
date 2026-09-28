@@ -92,8 +92,6 @@ type ServerConfig struct {
 	// allowed to serve embeddings over HTTP. An empty value keeps the default
 	// policy, which rejects every non-loopback HTTP destination.
 	RailwayInternalEmbeddingHost string `yaml:"railway_internal_embedding_host,omitempty" json:"railway_internal_embedding_host,omitempty" toml:"railway_internal_embedding_host,omitempty" mapstructure:"railway_internal_embedding_host"`
-	// MultiTenant enables SaaS request scoping. Tenant and workspace are derived from a verified bearer and an authorized workspace selection.
-	MultiTenant bool `yaml:"multi_tenant,omitempty" json:"multi_tenant,omitempty" toml:"multi_tenant,omitempty" mapstructure:"multi_tenant"`
 }
 
 // ServerStorageConfig contains server-only PostgreSQL connection settings.
@@ -480,7 +478,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.classification_clearance", []string{})
 	v.SetDefault("server.bootstrap_development", false)
 	v.SetDefault("server.railway_internal_embedding_host", "")
-	v.SetDefault("server.multi_tenant", false)
 	v.SetDefault("server.workspace_id", "")
 	v.SetDefault("server.principal_subject", "")
 	v.SetDefault("server.secrets.signing_key", "")

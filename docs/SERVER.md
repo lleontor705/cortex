@@ -24,12 +24,12 @@ For a full reference of all supported environment variables, see [.env.example](
 
 - PostgreSQL 16 or newer supported by the deployment policy.
 - Separate privileged migration DSN and non-privileged runtime DSN.
-- Verified principal grants for tenant, workspace, projects, roles, scopes, and classification.
-- A secret-managed bearer token or an upstream authenticated gateway.
+- Configured `server.tenant_id`, `server.workspace_id`, and `server.principal_subject` constants for the synthetic service principal.
+- A secret-managed static bearer token (`http.token`), or an upstream authenticated gateway that injects it.
 - Explicit `http.allowed_origins` for browser clients.
 - TLS at the deployment boundary.
 
-Server persistence remains behind `AuthorizedStore`; transports never receive raw repositories, transactions, or client-selected tenant authority. `/health` is public, while `/api/*` and `/mcp` require bearer authentication.
+Server persistence remains behind `AuthorizedStore`; transports never receive raw repositories, transactions, or client-selected tenant authority. Every authenticated request is the single synthetic service principal built from the configured `server.tenant_id`, `server.workspace_id`, and `server.principal_subject` constants, so tenant and workspace never come from client input. `/health` is public, while `/api/*` and `/mcp` require the static bearer.
 
 ### PostgreSQL role boundary
 
@@ -143,16 +143,16 @@ as not ready for production.
 ## Rollout Order And Stage Gates
 
 The server schema is embedded in the binary (`migrations/v2/100_server.sql` …
-`109_scoped_code_index.sql`). Rollout always advances in this exact order; each
+`112_static_bind_contract.sql`). Rollout always advances in this exact order; each
 stage has explicit advance, abort, and retry criteria, and no stage starts
 before the previous one advances.
 
 ### Stage 1 — Migrations (database)
 
-1. Provision PostgreSQL 16 and bootstrap the non-superuser application and authorization roles with `scripts/postgres/bootstrap-authz.sql` through a privileged DSN.
+1. Bootstrap PostgreSQL 16 and create the non-superuser application and authorization roles with `scripts/postgres/bootstrap-authz.sql` through a privileged DSN.
 2. Configure the runtime and migration DSNs simultaneously, using distinct roles, then start the new runtime. Each migration applies in strict version order inside one transaction guarded by the `pg_advisory_xact_lock(hashtext('cortex:v2:server-migrations'))` lock and is recorded in the `cortex_server_migrations` ledger with its SHA-256 checksum.
 
-- **Advance when** the ledger records every expected version (100…109) with matching checksums, migration 109 post-apply verification confirms scoped tables/RLS/grants, and startup completes without `ErrFutureMigration`.
+- **Advance when** the ledger records every expected version (100…112) with matching checksums, migration 109 post-apply verification confirms scoped tables/RLS/grants, and startup completes without `ErrFutureMigration`.
 - **Abort when** any preflight fails (orphan rows, unledgered artifacts, checksum mismatch, future ledger version): the transaction rolls back, the ledger keeps no partial entry, and the runtime refuses to serve.
 - **Retry** by restarting the same binary: applied migrations are checksum-verified and skipped, so a retry is always idempotent. Never hand-edit schema or ledger rows to "get past" an abort.
 
@@ -161,7 +161,7 @@ before the previous one advances.
 1. Confirm the long-lived pool uses the non-privileged runtime DSN; the startup migration handle uses the separately configured migration DSN and is closed before traffic is served.
 2. Put the deployment behind TLS at the boundary and wire the secret-managed bearer token or authenticated gateway.
 
-- **Advance when** `/health` answers 200 and an authenticated `/api/me` round-trip returns the expected verified principal.
+- **Advance when** `/health` answers 200 and an authenticated `/api/me` round-trip returns the configured synthetic service principal.
 - **Abort when** startup validation or authentication smoke checks fail: the process exits fail-closed without serving; the database is never mutated at this stage.
 - **Retry** by restarting after fixing configuration; re-entering Stage 1 is unnecessary because migrations are already ledgered.
 

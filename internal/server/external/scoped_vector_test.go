@@ -106,24 +106,3 @@ func TestServerScopedVectorIndexAllowsBroadTenantWorkspaceSearch(t *testing.T) {
 		t.Fatalf("broad search filters=%v", inner.query.Filters)
 	}
 }
-func TestRequestScopedVectorIndexRequiresVerifiedContextAndOverwritesFilters(t *testing.T) {
-	inner := &scopedRecordingIndex{}
-	idx, err := NewRequestScopedVectorIndex(inner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := idx.Search(context.Background(), domain.VectorQuery{Vector: []float32{1}}); err == nil {
-		t.Fatal("unscoped request vector search succeeded")
-	}
-
-	ctx := WithRequestVectorScope(context.Background(), "tenant-authority", "workspace-authority")
-	_, err = idx.Search(ctx, domain.VectorQuery{Vector: []float32{1}, Filters: map[string]any{
-		"tenant_id": "caller-controlled", "workspace_id": "caller-controlled",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inner.query.Filters["tenant_id"] != "tenant-authority" || inner.query.Filters["workspace_id"] != "workspace-authority" {
-		t.Fatalf("request scope filters=%v", inner.query.Filters)
-	}
-}

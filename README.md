@@ -7,14 +7,14 @@
 <p align="center">
   <a href="#features"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go" alt="Go Version"/></a>
   <a href="#features"><img src="https://img.shields.io/badge/Next.js-15-000000?style=flat&logo=next.js" alt="Next.js"/></a>
-  <a href="#features"><img src="https://img.shields.io/badge/PostgreSQL-16%20RLS-336791?style=flat&logo=postgresql" alt="Postgres RLS"/></a>
+  <a href="#features"><img src="https://img.shields.io/badge/PostgreSQL-16%20Self--Hosted-336791?style=flat&logo=postgresql" alt="Self-Hosted Postgres"/></a>
   <a href="#features"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-8B5CF6?style=flat" alt="MCP Protocol"/></a>
   <a href="#features"><img src="https://img.shields.io/badge/Zero--CGO-Pure%20Go-10B981?style=flat" alt="Zero CGO"/></a>
 </p>
 
-**Cortex** es una plataforma enterprise de **memoria episódica autónoma, gobernanza de proyectos y grafo de conocimiento de código** diseñada para agentes de IA (Cursor, Claude Code, Cline, Windsurf) y equipos de desarrollo.
+**Cortex** es una plataforma autoalojada de **memoria episódica autónoma, gobernanza de proyectos y grafo de conocimiento de código** diseñada para agentes de IA (Cursor, Claude Code, Cline, Windsurf) y equipos de desarrollo.
 
-Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotlin, Rust, C/C++, PHP, Ruby, Swift, Go, TS/JS, Python, SQL), clustering de comunidades (Louvain/Leiden), análisis de blast radius, gobernanza corporativa, búsqueda híbrida (BM25 + Vectores) y persistencia segura Multi-Tenant respaldada por PostgreSQL con Row-Level Security (RLS) y SQLite local.
+Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotlin, Rust, C/C++, PHP, Ruby, Swift, Go, TS/JS, Python, SQL), clustering de comunidades (Louvain/Leiden), análisis de blast radius, gobernanza de proyectos, búsqueda híbrida (BM25 + Vectores) y persistencia segura respaldada por PostgreSQL autoalojado de instancia única y SQLite local.
 
 ---
 
@@ -41,8 +41,8 @@ Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotl
   <img src="docs/assets/memory_lifecycle.svg" alt="Cortex Memory Lifecycle" width="100%" />
 </p>
 
-### 3. 🛡️ Gobernanza Corporativa & Multi-Tenancy
-- **PostgreSQL RLS (Row-Level Security):** Aislamiento estricto por Tenant, Workspace y Proyecto.
+### 3. 🛡️ Gobernanza de Proyectos & Autoalojamiento
+- **PostgreSQL Autoalojado (RLS de Instancia Única):** El servidor single-tenant fija `tenant_id` y `workspace_id` por configuración y ejecuta cada operación bajo RLS forzado.
 - **Reglas de Proyecto & Prompts del Sistema:** Inyección dinámica de reglas corporativas y skills en cada consulta de los agentes.
 
 ---
@@ -95,46 +95,65 @@ cortex search "decisión de arquitectura" --mode=auto
 cortex tui
 ```
 
-### 2. Modo Servidor & Web UI con Docker (GHCR Oficial)
+### 2. Embedded Web UI & Server Mode
 
-Puedes levantar todo el stack (PostgreSQL + Cortex Server + Cortex Web UI) directamente usando las imágenes oficiales de **GitHub Container Registry (`ghcr.io`)**:
+The web UI is compiled into the `cortex` binary and served on the **same host and
+port as the HTTP API**. There is no separate web container or second port: the UI
+ships inside the server image.
+
+#### Local (single binary, SQLite)
 
 ```bash
-# 1. Configurar variables de entorno (opcional)
+cortex serve
+```
+
+On the first boot Cortex prints the web access key **once**. Open
+[http://localhost:7438](http://localhost:7438), paste the key into the UI, and it
+is remembered in the browser. Later rotations use:
+
+```bash
+cortex web key show        # location, presence, and prefix (never the plaintext)
+cortex web key regenerate  # mint a replacement and print it once
+```
+
+See [Embedded Web UI](docs/embedded-web.md) for the at-rest key format (0600,
+prefix + HMAC digest), rotation semantics, runtime `/config.js` endpoint
+injection, and the per-mode (`local`/`hybrid`/`server`) capabilities.
+
+The local `serve` mux also serves the five web-critical parity endpoints
+(`/api/me`, `/api/stats`, `/api/projects`, `/api/agent/projects`,
+`/api/graph/project-graph`) behind the same `http.token` gate.
+
+#### Server mode (self-hosted, single-tenant PostgreSQL)
+
+```bash
+cortex --mode server
+```
+
+`--mode server` runs the self-hosted single-tenant composition: a PostgreSQL 16+
+backing store with one static bearer (`http.token`) authenticating a synthetic
+constant principal assembled from `server.tenant_id`, `server.workspace_id`, and
+`server.principal_subject`. It serves the same embedded UI at `/`, the
+authenticated REST API at `/api/`, and Streamable HTTP MCP at `/mcp`; the web
+access key stays an independent UI credential.
+
+The official image runs the same binary. The bundled Compose stack brings up
+PostgreSQL plus the server (UI and API on `:7438`):
+
+```bash
+# 1. Configure environment variables (optional)
 cp .env.example .env
 
-# 2. Iniciar stack completo (PostgreSQL, Cortex Server en :7438 y Web UI en :3000)
+# 2. Start PostgreSQL + Cortex server
 docker compose up -d
 ```
 
 > [!TIP]
-> En el primer arranque, Docker genera automáticamente un tenant, un workspace, un sujeto `owner` y un Bearer token. Obtén tu token ejecutando:
+> On first boot the server prints the web access key once; paste it into the UI. To
+> read it from the container logs run:
 > ```bash
 > docker compose logs cortex-server
 > ```
-
-#### Ejecución con Imágenes Individuales de Docker (`ghcr.io`):
-
-```bash
-# 1. Servidor Cortex (Backend en http://localhost:7438)
-docker run -d \
-  --name cortex-server \
-  -p 7438:7438 \
-  -v cortex-state:/home/cortex/.cortex \
-  -e CORTEX_SERVER_AUTO_BOOTSTRAP=true \
-  -e CORTEX_SERVER_STORAGE_DRIVER=postgres \
-  -e CORTEX_SERVER_STORAGE_DSN="postgres://usuario:pass@host:5432/cortex?sslmode=disable" \
-  -e CORTEX_SERVER_STORAGE_MIGRATION_DSN="postgres://admin:pass@host:5432/cortex?sslmode=disable" \
-  ghcr.io/lleontor705/cortex:latest
-
-# 2. Interfaz Web (Control Room en http://localhost:3000)
-docker run -d \
-  --name cortex-web \
-  -p 3000:3000 \
-  ghcr.io/lleontor705/cortex-web:latest
-```
-
-Abre [http://localhost:3000](http://localhost:3000) e ingresa la URL de Cortex Server (`http://localhost:7438`) y tu Bearer Token.
 
 ---
 
@@ -175,6 +194,7 @@ Cortex organiza su catálogo en perfiles modulares (`--tools=agent|dev|minimal|a
 - [Configuración Multi-Formato](docs/CONFIGURATION.md)
 - [Exportación a Obsidian](docs/OBSIDIAN_EXPORT.md)
 - [Despliegue en Producción (Server & Docker)](docs/SERVER.md)
+- [Embedded Web UI & Key Lifecycle](docs/embedded-web.md)
 
 ---
 
@@ -191,8 +211,8 @@ go test -v -count=1 ./...
 # Linter oficial
 golangci-lint run ./...
 
-# Compilar frontend Web
-cd web && npm run build
+# Compilar y embeber la web ANTES de make build (ver docs/embedded-web.md)
+make web-build
 ```
 
 ---

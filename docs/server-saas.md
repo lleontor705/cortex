@@ -1,37 +1,65 @@
-# Server SaaS data plane
+# Self-Hosted Server Deployment
 
-`cortex --mode server` keeps its existing single-tenant deployment as the default. Set `server.multi_tenant: true` (or `CORTEX_SERVER_MULTI_TENANT=true`) to enable the SaaS data plane after PostgreSQL migration 111 is available.
+`cortex --mode server` is a single-tenant PostgreSQL composition. One deployment owns exactly one tenant and one workspace, both fixed by trusted administrator configuration; there is no request-time tenant or workspace selection, no tenant or workspace creation API, and no hosted control plane. Every authenticated request acts as one synthetic service principal assembled from those configured constants.
 
-```yaml
-server:
-  multi_tenant: true
-  tenant_id: <bootstrap-tenant-uuid>
-  workspace_id: <bootstrap-workspace-uuid>
-  principal_subject: <bootstrap-service-principal-uuid>
-http:
-  token: <bootstrap-service-bearer>
-```
+For the general server guide — container images, rollout stages, agent configuration, and client surfaces — see [SERVER.md](SERVER.md).
 
-The configured tenant, workspace, subject, and bearer remain required. They provision and authenticate the server's **bootstrap service principal** and allow startup/reindex operations. They are not a global administrator credential and must never be given to a browser or used as a cross-tenant API token.
+## Configuration constants
 
-## Request boundary
+Startup validates the configuration and fails closed, naming the missing or malformed key, before any database pool or HTTP handler exists. The three identity constants are required and must be valid UUIDs.
 
-1. A bearer is verified by `cortex_verify_token_principal_global`. PostgreSQL derives the candidate tenant from the stored token-prefix head and proves the tenant-bound HMAC before returning a principal. No HTTP field selects a tenant. Ambiguous prefix matches fail closed.
-2. `X-Cortex-Workspace` is considered only after bearer verification. It must be an exact UUID in the verified principal's workspace grants. Missing headers default to the principal's first grant; invalid, whitespace-padded, or foreign selections return `403 workspace_not_granted`.
-3. The authenticated request creates an `AuthorizedContext` with the verified tenant and selected workspace. Server HTTP, MCP, graph operations, and project RAG use that context rather than configured workspace values.
-4. The vector adapter receives the same context at its final boundary. Caller-supplied `tenant_id` and `workspace_id` filters are overwritten; a vector operation without request scope fails closed. Reindexing binds its already-authorized source scope before indexing.
+| Configuration key | Environment variable | Purpose |
+| --- | --- | --- |
+| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` | Tenant UUID owned by this deployment; installed as the row-level-security tenant for every transaction. |
+| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` | Workspace UUID owned by this deployment; the default and only workspace scope. |
+| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Subject UUID of the synthetic service principal every authenticated request acts as. |
+| `server.grant_digest` | `CORTEX_SERVER_GRANT_DIGEST` | Optional and deprecated. Grant integrity is derived inside PostgreSQL from the bootstrapped actor row; a configured value is accepted only for backward compatibility. |
+| `http.token` | `CORTEX_HTTP_TOKEN` | The single static bearer. Required, secret-managed, canonical (no leading or trailing whitespace and no control characters), and at least 12 characters. |
 
-The web client obtains `workspace_id` from `/api/me`, sends the selector on normal HTTP and agent SSE requests, and only displays the token's returned workspace grants. The browser is a convenience layer, not the authority.
+Startup additionally requires `server.storage.driver: postgres`, a runtime DSN, and a migration DSN using a distinct role (see [PostgreSQL bootstrap](#postgresql-bootstrap-three-dsns)).
 
-## Operational rollout
+## Static bearer authentication
 
-- Apply the normal server migration flow with the migration DSN; migration 111 is forward-only and ledgered.
-- Start with one tenant and test a second tenant using separate bearer tokens. Verify that a token from tenant A cannot request tenant B's workspace UUID.
-- Monitor `workspace_not_granted`, authentication failures, vector health, RAG degradation, and tenant/workspace dimensions in the existing audit/structured logs. Never log bearer tokens or prompt text.
-- Keep the runtime PostgreSQL role separate from the migration role. Only the migration role may provision/reconcile the bootstrap service principal.
+The server composes one static bearer verifier:
 
-## Deliberate next control-plane increment
+- It compares the presented `Authorization: Bearer` secret against `http.token` with a constant-time comparison. A mismatch, an empty secret, or a whitespace-padded secret returns the same opaque `401`, so no rejection path echoes credential material.
+- A matching secret yields one synthetic principal built once from `tenant_id`, `workspace_id`, and `principal_subject`: the subject is `principal_subject`, the tenant is `tenant_id`, and the workspace grant list contains only `workspace_id`.
+- The verifier holds no database capability. There is no per-request tenant or workspace derivation from request fields; `tenant_id` and `workspace_id` come only from configuration, never from client input.
 
-This release is a secure SaaS **data-plane** cut. Tenant and workspace provisioning, billing/quotas, domain/SSO lifecycle, workspace display names, and a cross-tenant operator control plane are intentionally not exposed through the tenant API or the web UI yet.
+Rotating the configured bearer is the operator control. The verifier assembles its principal once at startup, so a rotation takes effect after a restart.
 
-Before enabling self-service tenant creation, add a separate control-plane service and database role, normalized tenant/workspace memberships, lifecycle/audit retention policies, and transaction-level workspace binding plus core-table RLS coverage. Do not emulate a global administrator by minting a tenant bearer with broad browser access.
+The embedded web control room authenticates against the server with the same static bearer. The first-boot web access key managed by `cortex web key show|regenerate` is a local-mode credential and is never accepted by server `/api/*`; the two must not be conflated.
+
+## PostgreSQL bootstrap (three DSNs)
+
+A self-hosted deployment uses three distinct connection paths during setup. The runtime and migration DSNs are configuration keys; the administrative path is used once to create the non-superuser roles before any migration runs.
+
+1. **Administrative DSN** — a privileged login that executes the shared role bootstrap:
+
+   ```bash
+   psql "$CORTEX_BOOTSTRAP_DSN" -f scripts/postgres/bootstrap-authz.sql
+   ```
+
+   `scripts/postgres/bootstrap-authz.sql` idempotently creates the non-login owner role `cortex_admin`, the LOGIN runtime role `cortex_test` (`NOSUPERUSER NOBYPASSRLS`), and the LOGIN migration role `cortex_admin_login` (`NOSUPERUSER NOBYPASSRLS`) that inherits `cortex_admin`.
+2. **Migration DSN** — `server.storage.migration_dsn` / `CORTEX_SERVER_STORAGE_MIGRATION_DSN`, using the privileged migration login. The migration handle applies the embedded server schema in strict version order and reconciles the bootstrap service principal, then closes before traffic is served.
+3. **Runtime DSN** — `server.storage.dsn` / `CORTEX_SERVER_STORAGE_DSN`, using the long-lived non-superuser application login with no `BYPASSRLS`.
+
+The runtime and migration roles must differ; startup rejects a deployment where both DSNs name the same role. DSN contents and passwords are never included in boundary-validation errors. Only local development may set `server.bootstrap_development: true` to reuse the runtime DSN for migrations and omit the migration DSN; never enable that switch in a shared deployment.
+
+On startup the migration handle reconciles the configured service principal, its canonical grants, and the reserved bootstrap token through `cortex_bootstrap_service_principal`, keyed by `tenant_id`, `workspace_id`, `principal_subject`, and the configured bearer. The bearer reaches PostgreSQL only as a bound parameter and never appears in error text.
+
+## Row-level-security posture
+
+Tenant isolation is enforced by PostgreSQL, not by the HTTP layer:
+
+- Every core server table forces row-level security and is keyed on `cortex_current_tenant()`, which reads the transaction's bound tenant from `cortex_tenant_context`.
+- `cortex_bind_principal` installs that context for the current backend and transaction. After migration 112 it accepts two provenance shapes: the `v1:` token-bound proof minted by token verification, and the `static:<hex>` proof the single-tenant composition derives from the bootstrapped actor's persisted grant digest. The tenant, actor, and grant version are re-read from the actor's own row under the shared advisory gate, so a caller cannot bind an arbitrary tenant, a different actor, or a stale version.
+- The application role holds only the EXECUTE matrix granted to `cortex_app` and no direct identity-table privileges; the migration role alone reconciles the bootstrap principal.
+
+Because the tenant and workspace are deployment constants, the SQL-level tenant and workspace isolation probes and the `cortex_app`-only EXECUTE boundary remain the verified posture. Redeploying the previous runtime binary is the rollback story: the migration line is forward-only and no schema or ledger row is hand-edited.
+
+## See also
+
+- [SERVER.md](SERVER.md) — server deployment, container images, rollout stages, and client surfaces.
+- [CONFIGURATION.md](CONFIGURATION.md) — the full configuration reference.
+- [project-context-protocol-identity-privilege.md](project-context-protocol-identity-privilege.md) — migration ledger rollout runbook.

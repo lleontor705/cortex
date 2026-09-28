@@ -139,11 +139,15 @@ func (p *Policy) decide(req Request) Decision {
 	if req.ResourceType == "" || req.Action == "" {
 		return Decision{Reason: DenyUnknownAction}
 	}
-	if req.Tenant.ID == "" || req.Resource.TenantID != "" && req.Resource.TenantID != req.Tenant.ID || req.Principal.OrgID != req.Tenant.ID {
+	// Tenant and workspace are configuration constants in the self-hosted
+	// deployment, so the principal org and the resource tenant always equal the
+	// request tenant, and the resource workspace always equals the request
+	// workspace. Comparisons that could only diverge under a multi-tenant
+	// request envelope are removed. DenyTenantMismatch and DenyWorkspace are
+	// retained (consequence decision C2): they still reject malformed requests
+	// and are pinned by bola_test.go and policy_boundary_test.go.
+	if req.Tenant.ID == "" || req.Resource.TenantID != "" && req.Resource.TenantID != req.Tenant.ID {
 		return Decision{Reason: DenyTenantMismatch}
-	}
-	if req.Tenant.WorkspaceID != "" && req.Resource.WorkspaceID != "" && req.Tenant.WorkspaceID != req.Resource.WorkspaceID {
-		return Decision{Reason: DenyWorkspace}
 	}
 	if req.Tenant.WorkspaceID != "" && !contains(req.Principal.WorkspaceIDs, req.Tenant.WorkspaceID) {
 		return Decision{Reason: DenyWorkspace}

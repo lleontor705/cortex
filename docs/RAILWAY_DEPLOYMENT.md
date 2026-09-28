@@ -1,6 +1,6 @@
 # Despliegue de Cortex Server en Railway
 
-Esta guía detalla el despliegue de **Cortex Server (Modo PostgreSQL Multi-Tenant + Streamable MCP + Next.js Web Dashboard)** en [Railway.app](https://railway.app) utilizando las imágenes Docker públicas de GitHub Container Registry (`ghcr.io`).
+Esta guía detalla el despliegue de **Cortex Server (Modo PostgreSQL Single-Tenant self-hosted + Streamable MCP + Next.js Web Dashboard)** en [Railway.app](https://railway.app) utilizando las imágenes Docker públicas de GitHub Container Registry (`ghcr.io`).
 
 ---
 
@@ -54,10 +54,9 @@ railway service source connect --image ghcr.io/lleontor705/cortex-web:latest --s
 | `CORTEX_SERVER_STORAGE_DRIVER` | Driver de persistencia | `postgres` |
 | `CORTEX_SERVER_STORAGE_DSN` | DSN del rol runtime sin privilegios (`cortex_app`, con RLS) | `postgresql://cortex_app:password@postgres.railway.internal:5432/railway?sslmode=require` |
 | `CORTEX_SERVER_STORAGE_MIGRATION_DSN`| DSN del rol privilegiado para migraciones (`cortex_migration`) | `postgresql://cortex_migration:password@postgres.railway.internal:5432/railway` |
-| `CORTEX_SERVER_MULTI_TENANT` | Activa aislamiento multi-tenant | `true` |
-| `CORTEX_SERVER_TENANT_ID` | UUID del tenant principal | `00000000-0000-0000-0000-000000000001` |
-| `CORTEX_SERVER_WORKSPACE_ID` | UUID del workspace por defecto | `00000000-0000-0000-0000-000000000002` |
-| `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Subject del token administrador | `00000000-0000-0000-0000-000000000003` |
+| `CORTEX_SERVER_TENANT_ID` | Constante de despliegue: UUID del tenant único | `00000000-0000-0000-0000-000000000001` |
+| `CORTEX_SERVER_WORKSPACE_ID` | Constante de despliegue: UUID del workspace por defecto | `00000000-0000-0000-0000-000000000002` |
+| `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Constante de despliegue: subject del principal sintético del bearer | `00000000-0000-0000-0000-000000000003` |
 | `CORTEX_EMBEDDING_PROVIDER` | Proveedor de embeddings | `ollama` / `openai` / `gemini` / `none` |
 | `CORTEX_EMBEDDING_MODEL` | Modelo de embeddings | `qwen3-embedding:4b` / `text-embedding-3-small` |
 | `CORTEX_EMBEDDING_BASE_URL` | URL del proveedor de embeddings | `http://ollama.railway.internal:11434` |

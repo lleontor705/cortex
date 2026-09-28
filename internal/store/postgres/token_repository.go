@@ -138,43 +138,6 @@ type TokenPrincipalVerifier struct {
 
 var _ preCompositionVerifier = (*TokenPrincipalVerifier)(nil)
 
-// MultiTenantTokenPrincipalVerifier is the SaaS data-plane verifier. It
-// authenticates a bearer through one migration-owned SECURITY DEFINER routine
-// that derives the candidate tenant from the stored, non-secret token prefix
-// and verifies the tenant-bound HMAC before returning a principal. Requests
-// never provide or select a tenant identifier.
-type MultiTenantTokenPrincipalVerifier struct {
-	pool *pgxpool.Pool
-}
-
-var _ preCompositionVerifier = (*MultiTenantTokenPrincipalVerifier)(nil)
-
-func NewMultiTenantTokenPrincipalVerifier(pool *pgxpool.Pool) (*MultiTenantTokenPrincipalVerifier, error) {
-	if pool == nil {
-		return nil, errors.New("postgres verifier: nil pool")
-	}
-	return &MultiTenantTokenPrincipalVerifier{pool: pool}, nil
-}
-
-func (v *MultiTenantTokenPrincipalVerifier) VerifyToken(ctx context.Context, secret, requiredScope string) (identity.Principal, error) {
-	if err := validatePresentedSecret(secret); err != nil {
-		return identity.Principal{}, err
-	}
-	tx, err := v.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return identity.Principal{}, fmt.Errorf("postgres verifier: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	principal, err := verifyTokenPrincipalGlobal(ctx, tx, secret, requiredScope)
-	if err != nil {
-		return identity.Principal{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return identity.Principal{}, fmt.Errorf("postgres verifier: commit: %w", err)
-	}
-	return principal, nil
-}
-
 // NewTokenPrincipalVerifier builds the fixed-tenant verifier over an
 // application-role pool. The tenant comes from configuration, never from a
 // request; pool and tenant id are validated fail-closed before any
@@ -242,19 +205,6 @@ func verifyTokenPrincipal(ctx context.Context, tx pgx.Tx, tenantID, secret, requ
 	return scanVerifiedPrincipal(ctx, tx,
 		`SELECT token_public_id::text,token_name,token_prefix,subject_public_id::text,principal_type,tenant_id::text,token_scopes,token_workspace_ids::text[],expires_at,revoked_at,last_used_at,roles,workspaces,projects,classification,grant_scopes,grant_version,rate_limit_tier,binding_provenance FROM public.cortex_verify_token_principal_v2($1,$2::bytea,$3)`,
 		secret[:12], tenantDigest(tenantID, secret), requiredScope,
-	)
-}
-
-// verifyTokenPrincipalGlobal keeps the tenant lookup and credential proof in
-// PostgreSQL. The caller receives only a fully verified principal, never a
-// tenant selected from request metadata.
-func verifyTokenPrincipalGlobal(ctx context.Context, tx pgx.Tx, secret, requiredScope string) (identity.Principal, error) {
-	if len(secret) < 12 {
-		return identity.Principal{}, identity.ErrInvalidToken
-	}
-	return scanVerifiedPrincipal(ctx, tx,
-		`SELECT token_public_id::text,token_name,token_prefix,subject_public_id::text,principal_type,tenant_id::text,token_scopes,token_workspace_ids::text[],expires_at,revoked_at,last_used_at,roles,workspaces,projects,classification,grant_scopes,grant_version,rate_limit_tier,binding_provenance FROM public.cortex_verify_token_principal_global($1,$2)`,
-		secret, requiredScope,
 	)
 }
 

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mattn/go-isatty"
 	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -33,7 +32,10 @@ import (
 	cortsync "github.com/lleontor705/cortex/v2/internal/sync"
 	"github.com/lleontor705/cortex/v2/internal/tui"
 	"github.com/lleontor705/cortex/v2/internal/update"
+	"github.com/lleontor705/cortex/v2/internal/web"
+	"github.com/lleontor705/cortex/v2/internal/webkey"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mattn/go-isatty"
 )
 
 // Version is set by main at startup from the ldflags-injected value.
@@ -110,6 +112,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runConfig(args[2:], stdout, stderr)
 	case "auth":
 		exitCode = runAuth(args[2:], stdout, stderr)
+	case "web":
+		exitCode = runWeb(args[2:], stdout, stderr)
 	case "status", "mode":
 		exitCode = runStatus(args[2:], stdout, stderr)
 	case "ingest":
@@ -159,6 +163,7 @@ Commands:
   backup [path]          Create an atomic online backup snapshot of the SQLite database
   watch [path]           Watch repository for real-time incremental AST indexing
   config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard [--cli|--tui])
+  web <subcommand>       Manage the embedded web UI credential (key show, key regenerate)
   status                 Display operational mode (local, hybrid, server) and status
   mode                   Alias for status
   code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph, map)
@@ -736,6 +741,15 @@ func runTUIReal(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// serveListenAndServe is the blocking network seam. Tests substitute a
+// non-blocking stub so serve framing can be exercised without binding a port.
+var serveListenAndServe = func(srv *cortexhttp.Server) error { return srv.ListenAndServe() }
+
+// webKeyFileFn resolves the web credential location. The `web.key_file` config
+// override is deferred to root-Config wiring; until then the documented default
+// is authoritative and tests override this resolver.
+var webKeyFileFn = config.DefaultWebKeyFile
+
 func runServe(args []string, stdout, stderr io.Writer) int {
 	a, err := openApp()
 	if err != nil {
@@ -747,6 +761,12 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	addr := fmt.Sprintf("%s:%d", a.Config.HTTP.Host, a.Config.HTTP.Port)
 	if !isLoopbackHost(a.Config.HTTP.Host) && strings.TrimSpace(a.Config.HTTP.Token) == "" {
 		writef(stderr, "cortex: refusing to expose HTTP API on non-local host %q without http.token configured\n", a.Config.HTTP.Host)
+		return 1
+	}
+
+	webHandler, keyFile, err := mountWebSurface(stdout)
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 
@@ -765,14 +785,64 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	srv := cortexhttp.NewServer(addr, deps, cortexhttp.Options{
 		AuthToken:      a.Config.HTTP.Token,
 		AllowedOrigins: a.Config.HTTP.AllowedOrigins,
+		WebHandler:     webHandler,
 	})
-	writef(stdout, "Cortex HTTP server listening on %s\n", addr)
 
-	if err := srv.ListenAndServe(); err != nil {
+	writeServeBanner(stdout, a.Config, addr, webHandler != nil, keyFile)
+
+	if err := serveListenAndServe(srv); err != nil {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// mountWebSurface mints the web credential on first boot (printing the
+// plaintext exactly once) and returns the guarded web handler plus the resolved
+// key file path. Any store failure is fail-closed: serve aborts non-zero.
+func mountWebSurface(stdout io.Writer) (http.Handler, string, error) {
+	keyFile := webKeyFileFn()
+	store, err := webkey.NewStore(keyFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("web access key unavailable: %w", err)
+	}
+	plaintext, minted, err := store.EnsureFirstBoot()
+	if err != nil {
+		return nil, "", fmt.Errorf("web access key unavailable: %w", err)
+	}
+	if minted {
+		writef(stdout, "Web access key generated on first boot.\n")
+		writef(stdout, "%s\n", plaintext)
+		writef(stdout, "Store it in a safe place; it will not be shown again.\n")
+	}
+	return web.NewHandler(web.Config{}, store), keyFile, nil
+}
+
+// writeServeBanner emits pipe-safe key=value status lines so serve output stays
+// machine-readable while remaining legible.
+func writeServeBanner(w io.Writer, cfg *config.Config, addr string, webMounted bool, keyFile string) {
+	syncState, webState := "disabled", "disabled"
+	if cfg.Sync.Enabled {
+		syncState = "enabled"
+	}
+	if webMounted {
+		webState = "mounted"
+	}
+	writeServeField(w, "mode", "local")
+	writeServeField(w, "store", cfg.Database.Path)
+	writeServeField(w, "sync", syncState)
+	writeServeField(w, "web", webState)
+	if keyFile != "" {
+		writeServeField(w, "key_file", keyFile)
+	}
+	writeServeField(w, "listen", addr)
+}
+
+// writeServeField sanitizes separators so a path or address can never break the
+// line-oriented, pipe-safe banner contract.
+func writeServeField(w io.Writer, key, value string) {
+	sanitized := strings.NewReplacer("\r", "_", "\n", "_", "|", "_").Replace(strings.TrimSpace(value))
+	writef(w, "%s=%s\n", key, sanitized)
 }
 
 func runSetup(args []string, stdout, stderr io.Writer) int {

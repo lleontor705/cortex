@@ -26,22 +26,71 @@ writes through `domain.UnitOfWork`.
 
 ```text
 HTTP or MCP request
-  -> bearer authentication
-  -> configured service principal and grants
+  -> static bearer verification (constant-time compare to http.token)
+  -> synthetic constant principal (configured tenant, workspace, subject, owner role)
   -> authz.AuthorizedContext
   -> postgres.AuthorizedStore operations
-  -> PostgreSQL transaction with tenant binding and RLS
+  -> PostgreSQL transaction bound to the constant tenant with RLS
 ```
 
 Server transports receive operation capabilities only. They must not receive raw
 PostgreSQL repositories, transactions, scoring primitives, or client-selected
 tenant authority.
 
-The current server transport represents one configured service account; the
-bearer secret authenticates callers as that account. Tenant comes from its
-configured organization. Workspace, project, role, scope, ownership, and
-classification are checked as grants. PostgreSQL remains
-behind `AuthorizedStore`; architecture tests reject raw accessors.
+The server is a single-tenant self-hosted deployment. Exactly one synthetic
+constant principal is assembled at composition from `server.principal_subject`,
+`server.tenant_id`, and `server.workspace_id`; the configured `http.token` is the
+single static bearer every caller must present, verified with a constant-time
+comparison. Tenant and workspace are configuration constants and are never derived
+from client input: the request header `X-Cortex-Workspace` cannot select a
+workspace, and workspace selection collapses to the fixed configured default.
+Request identity is bound to that constant principal, and `AuthorizedStore`
+operations execute inside a PostgreSQL transaction bound to the constant tenant,
+where row level security enforces isolation. PostgreSQL remains behind
+`AuthorizedStore`; architecture tests reject raw accessors.
+
+## Shared API Handlers (`internal/api`)
+
+The five web-critical read endpoints (`GET /api/me`, `GET /api/stats`,
+`GET /api/projects`, `GET /api/agent/projects`, `GET /api/graph/project-graph`) are
+served by one transport-neutral handler package, `internal/api`, on both the local
+and server muxes. It imports only `internal/domain` and the standard library, so
+neither mux crosses the server-track architecture boundary by consuming it
+(REQ-SH-010).
+
+The handlers depend on a narrow five-method `Port`:
+
+- `CurrentPrincipal` feeds the `/api/me` identity envelope.
+- `ServerStats` feeds the `/api/stats` counters.
+- `Projects` feeds the `/api/projects` identifier list.
+- `AgentProjects` feeds the `/api/agent/projects` id/label corpus.
+- `ProjectGraph` feeds the `/api/graph/project-graph` subgraph.
+
+`New(port)` binds the handlers to one `Port`. Adapters translate their own error
+vocabulary into the package's `ErrUnauthenticated` (401) and `ErrForbidden` (403)
+sentinels, so the emitted envelopes stay identical on both muxes without
+`internal/api` importing `internal/authz`.
+
+Two adapters implement the Port:
+
+- **Server — `serverAPIPort`** (`internal/platform/server/http.go`). It wraps the
+  request-scoped `Operations`, which resolve the principal-scoped
+  `AuthorizedStore`, and is constructed per request, so no operation is reachable
+  without a verified principal. `translatePortError` maps authorization denials onto
+  the api sentinels. Its `ProjectGraph` deliberately ignores the handler's
+  `depth`/`max_nodes` bounds and reproduces the pre-extraction traversal (a 150-row
+  project read plus one depth-1, 30-node subgraph lookup per observation) so
+  responses stay byte-compatible (REQ-SH-011).
+- **Local — `localParityPort`** (`internal/http`). A composite of `*localOpsPort`
+  and `localProjectGraph`: the operations half derives principal, stats, projects,
+  and agent projects from the SQLite `bundle.Stores`, and the graph half computes
+  `ProjectGraph` as a bounded breadth-first walk over `graphstore` edges (depth
+  default 2 within 1..10, `max_nodes` default 100 within 1..200, 150-row seed bound).
+  The serve mux registers the five routes behind the existing token gate and hands
+  `api.New(newLocalParityPort(deps))` this bundle-backed port. `CurrentPrincipal`
+  returns a synthetic single-user local principal (`local-owner`, owner role,
+  wildcard grants), so the web client observes a real identity instead of a null
+  principal (REQ-SH-012).
 
 ## Conversational Project Agent
 
@@ -128,9 +177,33 @@ Local startup is driven by the embedded forward-only baseline
 4. Existing v2 databases must retain the same baseline checksum.
 
 The root `migrations/001-014` files are retired v1 history. They do not drive
-local startup and must not be edited as a way to change the v2 schema. PostgreSQL
-uses the separate embedded migration line from `migrations/v2/100_server.sql`
-through `migrations/v2/109_scoped_code_index.sql` and its server ledger.
+local startup and must not be edited as a way to change the v2 schema.
+
+The embedded SQL set is frozen. No change edits, moves, or deletes any file under
+`migrations/v2/`, any ledger entry, any checksum pin, or the retired root history
+(REQ-SH-020). The local line is the immutable `migrations/v2/001_init.sql` baseline
+(whose identity is recorded in `cortex_meta`) plus its additive SQLite follow-ups.
+The PostgreSQL line runs `migrations/v2/100_server.sql` through
+`migrations/v2/112_static_bind_contract.sql`, recording every applied version and
+its SHA-256 in the `cortex_server_migrations` ledger:
+
+- Versions 100-105 are byte-identical forever; their checksums are pinned as
+  historical literals so any drift is visible in unit tests on every platform.
+- Versions 106-112 carry reviewed pins that move only with reviewed bytes until
+  release.
+- Version 111 (`ServerMultiTenantVerifierSQL`) stays embedded but is dead: after the
+  retired multi-tenant token verifier was deleted, its only references are the embed
+  declaration and the migration plumbing that registers the version, so it has no
+  runtime caller. The
+  live single-tenant verifier is version 110's `cortex_verify_token_principal_v2`.
+- Version 112 (`static_bind_contract`) is the active head. It additively replaces
+  `cortex_bind_principal` so the configuration-derived synthetic principal installs
+  the same RLS tenant/actor context as a token-verified one: the migration-108
+  `v1:<token>` provenance branch is preserved verbatim and a `static:<hmac>` branch
+  keyed by the actor's persisted grant digest is added.
+- The runtime head is 112. A ledger recording a version beyond the head fails closed
+  (`ErrFutureMigration`), because such a database was written by a newer runtime.
+  Physically dropping the dead 111 remains roadmap only.
 
 The v2 baseline is forward-only. Do not document or implement destructive local
 rollback as a normal upgrade path.
@@ -177,8 +250,8 @@ unhealthy. Deployment therefore proceeds runtime/schema first, non-destructive
 reindex per project second, coverage and sibling-workspace canary verification
 third. The production caller is the synchronous
 `cortex --mode server reindex --project-id <public UUID>` command. It authenticates
-the configured administrative bearer, derives tenant/workspace from verified
-authority, resolves the durable project identity in PostgreSQL, and records a
+the configured administrative bearer, binds tenant/workspace from the synthetic
+constant principal, resolves the durable project identity in PostgreSQL, and records a
 metadata-only start plus one terminal outcome. No HTTP reindex endpoint exists.
 
 The server embedding client is distinct from the permissive local constructor.
@@ -194,6 +267,13 @@ Configuration is YAML plus `CORTEX_*` environment overrides. Local defaults use
 
 - `server.storage.dsn`: non-superuser runtime connection.
 - `server.storage.migration_dsn`: privileged schema migration connection, required outside explicit development bootstrap.
+
+Server identity is configuration-constant: `server.tenant_id`, `server.workspace_id`,
+and `server.principal_subject` are required UUIDs that build the synthetic principal,
+and `http.token` is the static bearer. `server.grant_digest` and `server.grant_version`
+are deprecated compatibility fields; grant integrity is calculated by PostgreSQL in
+`cortex_bootstrap_service_principal`. The removed `multi_tenant` key is unknown to the
+schema and tolerated on load without branching.
 
 Before opening PostgreSQL, server composition parses both DSNs and requires distinct role names. The DSNs may address the same database. Setting `server.bootstrap_development: true` is the only supported way to omit `migration_dsn`; this development-only mode reuses the runtime DSN. Configuration loading never synthesizes the fallback.
 

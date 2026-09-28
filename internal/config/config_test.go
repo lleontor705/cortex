@@ -84,7 +84,9 @@ logging:
 			configYAML: "",
 			envVars: map[string]string{
 				"CORTEX_SERVER_NAME":                            "env-server",
-				"CORTEX_SERVER_MULTI_TENANT":                    "true",
+				"CORTEX_SERVER_TENANT_ID":                       "11111111-1111-1111-1111-111111111111",
+				"CORTEX_SERVER_WORKSPACE_ID":                    "22222222-2222-2222-2222-222222222222",
+				"CORTEX_SERVER_PRINCIPAL_SUBJECT":               "33333333-3333-3333-3333-333333333333",
 				"CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST": "ollama.railway.internal",
 				"CORTEX_HTTP_PORT":                              "3000",
 				"CORTEX_HTTP_TOKEN":                             "env-token",
@@ -97,8 +99,16 @@ logging:
 				if cfg.Server.Name != "env-server" {
 					t.Errorf("expected server name 'env-server', got '%s'", cfg.Server.Name)
 				}
-				if !cfg.Server.MultiTenant {
-					t.Error("expected server multi_tenant to be true")
+				// The server is unconditionally single-tenant: the synthetic
+				// principal coordinates still flow through config unchanged.
+				if cfg.Server.TenantID != "11111111-1111-1111-1111-111111111111" {
+					t.Errorf("expected tenant_id override, got %q", cfg.Server.TenantID)
+				}
+				if cfg.Server.WorkspaceID != "22222222-2222-2222-2222-222222222222" {
+					t.Errorf("expected workspace_id override, got %q", cfg.Server.WorkspaceID)
+				}
+				if cfg.Server.PrincipalSubject != "33333333-3333-3333-3333-333333333333" {
+					t.Errorf("expected principal_subject override, got %q", cfg.Server.PrincipalSubject)
 				}
 				if cfg.Server.RailwayInternalEmbeddingHost != "ollama.railway.internal" {
 					t.Errorf("expected configured Railway embedding hostname, got %q", cfg.Server.RailwayInternalEmbeddingHost)
@@ -191,6 +201,42 @@ database:
 
 			if !tt.wantErr && tt.checkFunc != nil {
 				tt.checkFunc(t, cfg)
+			}
+		})
+	}
+}
+
+// TestLoadToleratesLegacyMultiTenantKey pins the upgrade path for the removed
+// multi_tenant surface: existing configuration files that still carry the key
+// (YAML or CORTEX_SERVER_MULTI_TENANT) must keep loading as a tolerated unknown
+// key. Re-introducing strict/unknown-key rejection reddens this test, which
+// would otherwise break self-hosted upgrades.
+func TestLoadToleratesLegacyMultiTenantKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		yaml    string
+		envVars map[string]string
+	}{
+		"yaml key": {
+			yaml: "server:\n  multi_tenant: true\n  tenant_id: 11111111-1111-1111-1111-111111111111\n",
+		},
+		"environment variable": {
+			envVars: map[string]string{"CORTEX_SERVER_MULTI_TENANT": "true"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearEnvVars(t)
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			configPath := ""
+			if tc.yaml != "" {
+				configPath = filepath.Join(t.TempDir(), "cortex.yaml")
+				if err := os.WriteFile(configPath, []byte(tc.yaml), 0o600); err != nil {
+					t.Fatalf("failed to write config file: %v", err)
+				}
+			}
+			if _, err := Load(configPath); err != nil {
+				t.Fatalf("legacy multi_tenant key must be tolerated, got error: %v", err)
 			}
 		})
 	}
@@ -1056,7 +1102,9 @@ func clearEnvVars(t *testing.T) {
 	envVars := []string{
 		"CORTEX_SERVER_NAME",
 		"CORTEX_SERVER_VERSION",
-		"CORTEX_SERVER_MULTI_TENANT",
+		"CORTEX_SERVER_TENANT_ID",
+		"CORTEX_SERVER_WORKSPACE_ID",
+		"CORTEX_SERVER_PRINCIPAL_SUBJECT",
 		"CORTEX_DATABASE_PATH",
 		"CORTEX_DATABASE_IN_MEMORY",
 		"CORTEX_DATABASE_PRAGMA_JOURNAL_MODE",

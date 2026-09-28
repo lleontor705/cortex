@@ -22,7 +22,7 @@ Configuration values are resolved strictly in the following order (highest prece
 
 * **Environment Variable Matching**: Viper automatically translates dot-notated paths to uppercase snake_case prefixed by `CORTEX_` (e.g. `llm.provider` $\rightarrow$ `CORTEX_LLM_PROVIDER`, `http.port` $\rightarrow$ `CORTEX_HTTP_PORT`).
 * **Environment Overrides**: An environment variable always overrides the corresponding value in the configuration file or TUI state.
-* **Zero-Bloat Model**: The configuration manager automatically trims default and empty sections when writing to disk, keeping local configuration files clean (typically under 15 lines) and preventing serialization of internal SQLite pragmas or server-specific multi-tenant parameters.
+* **Zero-Bloat Model**: The configuration manager automatically trims default and empty sections when writing to disk, keeping local configuration files clean (typically under 15 lines) and preventing serialization of internal SQLite pragmas or server-specific storage parameters.
 
 ---
 
@@ -95,18 +95,27 @@ cortex tui
 | `server.storage.migration_dsn` | `CORTEX_SERVER_STORAGE_MIGRATION_DSN` | *(None)* | Privileged migration DSN. Applied during startup preflight and closed immediately. |
 | `server.storage.max_conns` | `CORTEX_SERVER_STORAGE_MAX_CONNS` | `10` | Maximum open database pool connections. |
 
-### Multi-Tenancy & Identity Privileges
+### Single-Tenant Server Identity & Privileges
+
+Server mode (`cortex --mode server`) runs one self-hosted tenant. Every request is
+authenticated as a single synthetic constant principal assembled from configuration,
+and tenant/workspace scope is a configuration constant that client input can never
+override.
 
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `server.auto_bootstrap` | `CORTEX_SERVER_AUTO_BOOTSTRAP` | `false` | When `true`, auto-generates tenant, workspace, owner subject, and Bearer token on first boot. |
-| `server.bootstrap_development` | `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | `false` | Allows development tenant provisioning without dedicated migration role separation. |
-| `server.multi_tenant` | `CORTEX_SERVER_MULTI_TENANT` | `false` | Enables SaaS multi-tenant isolation. When `true`, tenant and workspace come from verified Bearer grants. |
-| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` | *(None)* | Configured tenant UUID (UUIDv4). |
-| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` | *(None)* | Configured workspace UUID (UUIDv4). |
-| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | *(None)* | Verified service account subject UUID. |
-| `server.roles` | `CORTEX_SERVER_ROLES` | `[]` | Comma-separated roles granted to the principal (e.g. `owner,admin`). |
+| `server.bootstrap_development` | `CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT` | `false` | Development-only mode that reuses the runtime DSN when a dedicated migration role is not separated. |
+| `server.tenant_id` | `CORTEX_SERVER_TENANT_ID` | *(None)* | Configured tenant UUID (UUIDv4) bound to the synthetic principal. Required: startup fails closed when empty. |
+| `server.workspace_id` | `CORTEX_SERVER_WORKSPACE_ID` | *(None)* | Configured default workspace UUID (UUIDv4) bound to the synthetic principal. Required: startup fails closed when empty. |
+| `server.principal_subject` | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | *(None)* | Subject UUID of the synthetic constant principal bound to every authenticated request. Required: startup fails closed when empty. |
+| `server.roles` | `CORTEX_SERVER_ROLES` | `[]` | Comma-separated roles for the configured principal (the synthetic server principal carries `owner`). |
 | `server.scopes` | `CORTEX_SERVER_SCOPES` | `[]` | Comma-separated authorized scopes (e.g. `workspaces:read,workspaces:write`). |
+| `server.grant_digest` | `CORTEX_SERVER_GRANT_DIGEST` | `""` | **Deprecated.** Retained for backward compatibility only; grant integrity is calculated dynamically by PostgreSQL in `cortex_bootstrap_service_principal`. |
+| `server.grant_version` | `CORTEX_SERVER_GRANT_VERSION` | `0` | **Deprecated.** Retained for backward compatibility only; the grant version is provisioned dynamically by PostgreSQL. |
+
+A configuration file that still carries the removed `multi_tenant` key loads without
+error: the key is unknown to the schema, no code path branches on it, and it is dropped
+by the zero-bloat writer on the next save.
 
 ### HTTP API, MCP Transport & Logging
 
@@ -115,7 +124,7 @@ cortex tui
 | `http.enabled` | `CORTEX_HTTP_ENABLED` | `true` | Enables HTTP REST API (`/api/*`) and Streamable HTTP MCP (`/mcp`). |
 | `http.host` | `CORTEX_HTTP_HOST` | `localhost` | Network interface to bind (`0.0.0.0` for containers/all interfaces). |
 | `http.port` | `CORTEX_HTTP_PORT` | `7438` | Port to listen on. *(Note: `CORTEX_PORT` is intentionally rejected).* |
-| `http.token` | `CORTEX_HTTP_TOKEN` | `""` | Authentication Bearer token. Required for non-loopback bindings. |
+| `http.token` | `CORTEX_HTTP_TOKEN` | `""` | Static Bearer token. Authenticates local HTTP/MCP and, in server mode, is the single credential verified on every request before the synthetic constant principal is bound. Required for non-loopback bindings. |
 | `http.allowed_origins` | `CORTEX_HTTP_ALLOWED_ORIGINS` | `[]` | Comma-separated list of allowed CORS browser origins. |
 | `logging.level` | `CORTEX_LOGGING_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
 | `logging.format` | `CORTEX_LOGGING_FORMAT` | `json` | Log output format: `json`, `text`, `plain`. |

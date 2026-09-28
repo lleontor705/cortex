@@ -26,6 +26,26 @@ code: nothing here mutates a ledger or overrides a checksum.
   bricks every applied database — the pins make that drift fail loudly in
   unit tests on every platform.
 
+### 1.1 Migration path (b): frozen embedded set, live 110, dead-but-embedded 111
+
+The embedded `migrations/v2/` SQL set is frozen (REQ-SH-020): no change edits,
+moves, or deletes any file under it, any ledger entry, any checksum pin, or the
+retired root `migrations/001-014` history. Versions 100-105 are byte-identical
+forever; 106-112 carry reviewed pins that move only with reviewed bytes until
+release. Migration **111** (`ServerMultiTenantVerifierSQL`) stays embedded but is
+dead code: after `MultiTenantTokenPrincipalVerifier` was deleted it has no Go
+caller, and its only references are the embed declaration in
+`migrations/v2/embed.go` and the plumbing that registers version 111 in
+`internal/migration/postgres.go`. The live single-tenant verifier is version
+**110**'s `cortex_verify_token_principal_v2`; the runtime head is version **112**
+(`static_bind_contract`), which is additive and leaves 111 in place. A database
+whose ledger records a version beyond the runtime head fails closed with
+`ErrFutureMigration` — it was written by a newer runtime and must keep running
+that runtime — so ledgered databases that trip the guard keep working as
+documented in section 5. Physically dropping the dead 111 requires a
+compensating migration at a future head; that work remains **roadmap only** and
+is never created or applied as part of this train.
+
 ## 2. Read-only ledger preflight
 
 API (in `internal/migration`):

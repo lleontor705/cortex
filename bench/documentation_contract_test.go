@@ -320,14 +320,20 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if !strings.Contains(ciText, "    runs-on: ubuntu-latest\n") {
 		t.Error("CI coverage job must run on Linux")
 	}
-	if !strings.Contains(ciText, "go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...") {
+	// REQ-SH-032/REQ-QA-004: the coverpkg list is computed with go list and
+	// excludes only vendored web/node_modules; every cortex-owned package stays
+	// in the measurement scope.
+	if !strings.Contains(ciText, `cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`) {
+		t.Error("CI coverage job must compute coverpkg with go list excluding only vendored /node_modules/")
+	}
+	if !strings.Contains(ciText, `go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`) {
 		t.Error("CI coverage job must collect whole-project atomic coverage with PostgreSQL integration")
 	}
 	if !strings.Contains(ciText, "go tool cover -func coverage.out") {
 		t.Error("CI coverage job must parse the coverage profile with go tool cover")
 	}
-	if !strings.Contains(ciText, "awk '$1 == \"total:\"") || !strings.Contains(ciText, "< 70.0") {
-		t.Error("CI coverage job must fail when exact total coverage is below 70.0%")
+	if !strings.Contains(ciText, "awk '$1 == \"total:\"") || !strings.Contains(ciText, "< 80.0") {
+		t.Error("CI coverage job must fail when exact total coverage is below 80.0%")
 	}
 	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
 		t.Error("CI coverage threshold must not promote rounded percentages")
@@ -460,10 +466,11 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 		"CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable",
 		"CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable",
 		"CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable",
-		"go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...",
+		`cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`,
+		`go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`,
 		"go tool cover -func coverage.out",
 		"awk '$1 == \"total:\"",
-		"coverage < 70.0",
+		"coverage < 80.0",
 		"go test -v -count=1 -tags \"integration postgres_integration\" ./...",
 	} {
 		if !strings.Contains(ciText, required) {

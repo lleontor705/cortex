@@ -5,8 +5,12 @@ package postgres
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -197,7 +201,11 @@ func (s *Store) bind(ctx context.Context, tx pgx.Tx) error {
 		if _, err := uuid.Parse(s.principal.Subject); err != nil {
 			return fmt.Errorf("%w: principal public id: %v", ErrPrincipalRequired, err)
 		}
-		_, err := tx.Exec(ctx, `SELECT public.cortex_bind_principal($1::uuid,$2::text,$3::bigint)`, s.principal.Subject, s.grantDigest, s.grantVersion)
+		provenance, err := s.bindProvenance()
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `SELECT public.cortex_bind_principal($1::uuid,$2::text,$3::bigint)`, s.principal.Subject, provenance, s.grantVersion)
 		if err != nil {
 			return fmt.Errorf("postgres store: bind principal: %w", err)
 		}
@@ -206,6 +214,37 @@ func (s *Store) bind(ctx context.Context, tx pgx.Tx) error {
 	// Compatibility stores cannot safely establish server authorization.
 	// Refuse before any tenant value can reach PostgreSQL.
 	return ErrAuthorizedStoreRequired
+}
+
+// bindProvenance renders the authorized principal's binder provenance in the
+// shape migration 112 accepts. A principal verified against a live token
+// carries the authentication-bound `v1:` provenance minted by verification
+// and passes through untouched. The configuration-derived single-tenant
+// principal has no live token, so its configured digest is expressed as the
+// static contract `static:<hex>`: HMAC-SHA256 over the canonical
+// `tenant:actor:grant version` message, keyed by that digest. Migration 112
+// recomputes the identical MAC from the actor's persisted grant digest and
+// the revalidated version, so a mismatched tenant, actor, or stale version
+// fails closed in the database even when the caller presents a well-formed
+// static provenance. The key therefore has to be the value the operator
+// provisioned as the actor's grant digest: any other configured constant
+// derives a MAC the database cannot reproduce and the transaction bind is
+// refused.
+func (s *Store) bindProvenance() (string, error) {
+	if strings.HasPrefix(s.grantDigest, "v1:") || strings.HasPrefix(s.grantDigest, "static:") {
+		return s.grantDigest, nil
+	}
+	tenant, err := uuid.Parse(s.tenant.TenantID)
+	if err != nil {
+		return "", fmt.Errorf("%w: tenant id: %v", ErrGrantDigestRequired, err)
+	}
+	actor, err := uuid.Parse(s.principal.Subject)
+	if err != nil {
+		return "", fmt.Errorf("%w: principal public id: %v", ErrGrantDigestRequired, err)
+	}
+	mac := hmac.New(sha256.New, []byte(s.grantDigest))
+	mac.Write([]byte(tenant.String() + ":" + actor.String() + ":" + strconv.FormatInt(s.grantVersion, 10)))
+	return "static:" + hex.EncodeToString(mac.Sum(nil)), nil
 }
 func (s *Store) context(ctx context.Context) context.Context {
 	return withPrincipal(withTenant(ctx, s.tenant), s.principal)
