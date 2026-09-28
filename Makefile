@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e-docker test-integration test-postgres-integration test-coverage test-web-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
+.PHONY: build run web-build test test-e2e-docker test-integration test-postgres-integration test-coverage test-web-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
 
 # Binary name
 BINARY_NAME=cortex
@@ -27,6 +27,11 @@ MIGRATIONS_DIR=migrations
 DOCKER_IMAGE=cortex
 DOCKER_TAG=latest
 
+# Embedded web parameters
+WEB_DIR=web
+WEB_OUT=$(WEB_DIR)/out
+WEB_DIST=internal/web/dist
+
 # Default target
 all: build
 
@@ -38,6 +43,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  build          Build the binary"
+	@echo "  web-build      Build the Next.js static export and sync it into $(WEB_DIST)"
 	@echo "  run            Run the server"
 	@echo "  test           Run all tests"
 	@echo "  test-e2e-docker Run isolated Docker Compose E2E tests"
@@ -62,6 +68,21 @@ build:
 	@mkdir -p $(BINARY_DIR)
 	$(GOBUILD) -o $(BINARY_PATH) ./cmd/cortex
 	@echo "Binary built: $(BINARY_PATH)"
+
+# Build the Next.js static export and sync it into the embedded asset tree.
+# npm ci runs only when dependencies are absent. The sync mirrors the fresh
+# export into $(WEB_DIST), removing prior export output while preserving the
+# committed $(WEB_DIST)/index.html placeholder so go:embed still compiles
+# before the first web build. Re-running is idempotent.
+web-build:
+	@echo "Building web static export..."
+	@if [ ! -d "$(WEB_DIR)/node_modules" ]; then npm --prefix $(WEB_DIR) ci; fi
+	npm --prefix $(WEB_DIR) run build
+	@echo "Syncing $(WEB_OUT) -> $(WEB_DIST)..."
+	@mkdir -p $(WEB_DIST)
+	@find $(WEB_DIST) -mindepth 1 -maxdepth 1 ! -name index.html -exec rm -rf {} +
+	@cp -R $(WEB_OUT)/. $(WEB_DIST)/
+	@echo "Embedded web assets synced into $(WEB_DIST)"
 
 # Run the cortex application
 run:

@@ -213,16 +213,53 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		a.archivalCancel = archivalSvc.Start(ctx)
 	}
 
-	isHybrid := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))) == "hybrid"
-	if (cfg.Sync.Enabled || isHybrid) && strings.TrimSpace(cfg.Sync.URL) != "" {
-		token := os.Getenv(cfg.Sync.TokenEnv)
-		if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
-			token = cfg.Sync.TokenEnv
-		}
-		if token == "" && cfg.HTTP.Token != "" {
-			token = cfg.HTTP.Token
-		}
-		if token != "" {
+	a.syncCancel, a.syncDone = startHybridReplication(ctx, cfg, manager, stores, hybridRequested(), opts.DisableRemoteSync)
+
+	return a, nil
+}
+
+// hybridRequested reports whether the hybrid composition was selected through
+// the stable CORTEX_MODE surface. cmd/cortex sets CORTEX_MODE=hybrid when it
+// resolves --mode hybrid, so this predicate covers both entry surfaces without
+// creating an import cycle (internal/platform already imports internal/app).
+func hybridRequested() bool {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))) == "hybrid"
+}
+
+// hybridDegradedWarning is the named degradation notice emitted when the hybrid
+// composition is requested but remote sync is unconfigured. Hybrid then
+// continues as the plain local SQLite composition (D2 locked semantics).
+const hybridDegradedWarning = "hybrid mode running without remote sync: sync.url not configured; continuing as local"
+
+// resolveSyncToken applies the historical token precedence: the environment
+// variable named by sync.token_env, then a literal token embedded in
+// sync.token_env, then the local HTTP token.
+func resolveSyncToken(cfg *config.Config) string {
+	token := os.Getenv(cfg.Sync.TokenEnv)
+	if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
+		token = cfg.Sync.TokenEnv
+	}
+	if token == "" && cfg.HTTP.Token != "" {
+		token = cfg.HTTP.Token
+	}
+	return token
+}
+
+// startHybridReplication wires the hybrid composition's remote sync/replication
+// path: ModeHybrid is exactly the local SQLite composition plus this loop, with
+// no separate store (decision D2). For backward compatibility an explicit
+// sync.enabled in a local configuration starts the same loop, and a hybrid run
+// with an unconfigured sync.url logs hybridDegradedWarning and continues as
+// local. It returns the loop's cancel function and completion channel, or
+// (nil, nil) when no replication loop is started.
+func startHybridReplication(ctx context.Context, cfg *config.Config, db *database.Manager, stores *bundle.Stores, isHybrid, disabled bool) (context.CancelFunc, <-chan struct{}) {
+	if !cfg.Sync.Enabled && !isHybrid {
+		return nil, nil
+	}
+
+	configuredURL := strings.TrimSpace(cfg.Sync.URL) != ""
+	if configuredURL {
+		if token := resolveSyncToken(cfg); token != "" {
 			remoteSearchClient, err := cortsync.NewRemoteSearchClient(cfg.Sync.URL, token, cfg.Sync.Timeout)
 			if err != nil {
 				log.Printf("warning: remote search disabled: %v", err)
@@ -232,55 +269,48 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		}
 	}
 
-	if (cfg.Sync.Enabled || isHybrid) && !opts.DisableRemoteSync {
-		if strings.TrimSpace(cfg.Sync.URL) == "" {
-			if isHybrid {
-				log.Printf("warning: CORTEX_MODE is hybrid but sync.url is empty; remote sync disabled")
-			}
-		} else {
-			token := os.Getenv(cfg.Sync.TokenEnv)
-			if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
-				token = cfg.Sync.TokenEnv
-			}
-			if token == "" && cfg.HTTP.Token != "" {
-				token = cfg.HTTP.Token
-			}
-			remote, syncErr := cortsync.NewRemoteSyncer(manager.DB(), cfg.Sync.URL, token, cfg.Sync.Timeout)
-			if syncErr != nil {
-				log.Printf("warning: remote sync disabled: %v", syncErr)
-			} else {
-				syncCtx, cancel := context.WithCancel(ctx)
-				a.syncCancel = cancel
-				done := make(chan struct{})
-				a.syncDone = done
-				go func() {
-					defer close(done)
-					run := func() {
-						if _, err := remote.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
-							log.Printf("warning: remote sync failed; local writes remain available: %v", err)
-						}
-					}
-					run()
-					interval := cfg.Sync.Interval
-					if interval <= 0 {
-						interval = time.Minute
-					}
-					ticker := time.NewTicker(interval)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-syncCtx.Done():
-							return
-						case <-ticker.C:
-							run()
-						}
-					}
-				}()
-			}
+	if disabled {
+		return nil, nil
+	}
+	if !configuredURL {
+		if isHybrid {
+			log.Printf("warning: %s", hybridDegradedWarning)
 		}
+		return nil, nil
 	}
 
-	return a, nil
+	remote, syncErr := cortsync.NewRemoteSyncer(db.DB(), cfg.Sync.URL, resolveSyncToken(cfg), cfg.Sync.Timeout)
+	if syncErr != nil {
+		log.Printf("warning: remote sync disabled: %v", syncErr)
+		return nil, nil
+	}
+
+	syncCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run := func() {
+			if _, err := remote.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
+				log.Printf("warning: remote sync failed; local writes remain available: %v", err)
+			}
+		}
+		run()
+		interval := cfg.Sync.Interval
+		if interval <= 0 {
+			interval = time.Minute
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-syncCtx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+	return cancel, done
 }
 
 // ReloadConfig re-reads the configuration from disk and reinitializes

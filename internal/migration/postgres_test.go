@@ -62,6 +62,13 @@ var postgresHistoricalChecksums = map[int]string{
 	109: "48850158d3bc8304749ba938d63732580a5658fa3f6b190a5a253d1d36c03227",
 	110: "2161c9e8eb4fe95596ec39a5e6971c34bbc99752b158d4e80ad0ce4ea210a1c2",
 	111: "3cd9c26c32af26c62664ae73e382f3fec91a7204fc64fcd35c495e71074596dd",
+	// 112 replaces cortex_bind_principal additively for the configuration-
+	// derived single-tenant principal: the migration-108 token-bound `v1:`
+	// contract is preserved verbatim, and a `static:<hmac>` branch keyed by
+	// the actor's persisted grant digest installs the same RLS tenant/actor
+	// context under the canonical shared advisory gate. Still unshipped, so
+	// its pin moves with the reviewed bytes until release.
+	112: "f8653459fb835fb7ec1e05be88a396078e9835e546165a78b5d0f85c9aa2529d",
 }
 
 // mustPostgresMigrations loads the full PostgreSQL migration line or fails
@@ -98,10 +105,10 @@ func TestPostgresServerMigrationMetadata(t *testing.T) {
 
 func TestPostgresServerMigrationSequence(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
-	if len(migrations) != 12 {
-		t.Fatalf("migration count = %d, want 12", len(migrations))
+	if len(migrations) != 13 {
+		t.Fatalf("migration count = %d, want 13", len(migrations))
 	}
-	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111} {
+	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112} {
 		if migrations[i].Version() != want {
 			t.Fatalf("migration %d version = %d, want %d", i, migrations[i].Version(), want)
 		}
@@ -159,6 +166,11 @@ func TestPostgresServerMigrationSequence(t *testing.T) {
 	for _, token := range []string{"cortex_verify_token_principal_global", "cortex_verify_token_principal_v2", "Prefix collisions are deliberately fail-closed"} {
 		if !strings.Contains(migrations[11].SQL(), token) {
 			t.Errorf("migration 111 missing %q", token)
+		}
+	}
+	for _, token := range []string{"static:[0-9a-f]{64}", "principal binding requires token-bound provenance or a static digest", "v_expected := encode("} {
+		if !strings.Contains(migrations[12].SQL(), token) {
+			t.Errorf("migration 112 missing %q", token)
 		}
 	}
 }
@@ -432,13 +444,14 @@ func TestPostgresServerMigration107WorkspaceSync(t *testing.T) {
 	}
 }
 
-// TestPostgresServerMigrationHeadIs111 pins the runtime head so older
-// binaries fail closed against a database that has applied SaaS token routing.
-func TestPostgresServerMigrationHeadIs111(t *testing.T) {
+// TestPostgresServerMigrationHeadIs112 pins the runtime head so older
+// binaries fail closed against a database that has applied the static bind
+// contract for the configuration-derived single-tenant principal.
+func TestPostgresServerMigrationHeadIs112(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.maxKnownVersion != 111 {
-			t.Errorf("migration %d maxKnownVersion = %d, want 111", migration.Version(), migration.maxKnownVersion)
+		if migration.maxKnownVersion != 112 {
+			t.Errorf("migration %d maxKnownVersion = %d, want 112", migration.Version(), migration.maxKnownVersion)
 		}
 		if err := migration.Down(context.Background(), (*sql.DB)(nil)); err == nil || !strings.Contains(err.Error(), "nil") {
 			// Down(nil) must fail on the nil connection before any DDL; the
@@ -1371,8 +1384,8 @@ func TestPostgresPreflightAndVerifyAppliedContract(t *testing.T) {
 func TestPostgresPreflightHeadChecksumsMatchPins(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.Version() > 111 {
-			t.Errorf("migration %d registered beyond head 111", migration.Version())
+		if migration.Version() > 112 {
+			t.Errorf("migration %d registered beyond head 112", migration.Version())
 		}
 		if migration.Version() >= 106 && migration.Checksum() != postgresHistoricalChecksums[migration.Version()] {
 			t.Errorf("migration %d checksum %s does not match the reviewed pin %s", migration.Version(), migration.Checksum(), postgresHistoricalChecksums[migration.Version()])
@@ -1757,6 +1770,120 @@ func TestPostgresServerMigration108PrincipalRWGating(t *testing.T) {
 	} {
 		if strings.Contains(upper, banned) {
 			t.Errorf("migration 108 contains destructive statement %q", banned)
+		}
+	}
+}
+
+// TestPostgresServerMigration112StaticBindContract pins the additive binder
+// replacement that lets the configuration-derived single-tenant principal
+// install the SAME RLS context as a token-verified one. The v1 branch must
+// stay byte-for-byte the migration-108 contract, the static branch must be
+// anchored to the actor's persisted grant digest under the canonical shared
+// gate, and the context-writing tail and EXECUTE matrix must not move.
+func TestPostgresServerMigration112StaticBindContract(t *testing.T) {
+	migrations := mustPostgresMigrations(t)
+	var subject *PostgresServerMigration
+	for _, migration := range migrations {
+		if migration.Version() == 112 {
+			subject = migration
+			break
+		}
+	}
+	if subject == nil {
+		t.Fatal("migration 112 (static bind contract) is not registered")
+	}
+	if subject.Name() != "static_bind_contract" || subject.Checksum() == "" {
+		t.Fatalf("migration 112 identity = %q/%q, want static_bind_contract with a checksum", subject.Name(), subject.Checksum())
+	}
+	sqlText := subject.SQL()
+	body := sqlFunctionDefinition(sqlText, "CREATE OR REPLACE FUNCTION cortex_bind_principal(")
+	if body == "" {
+		t.Fatal("migration 112 binder definition not found")
+	}
+	// Both provenance shapes are admitted by the format gate; anything else
+	// still fails closed with the 28000 taxonomy.
+	for _, token := range []string{
+		"v_static := p_grant_digest ~ '^static:[0-9a-f]{64}$';",
+		"'^v1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{64}$'",
+		"IF NOT v_static",
+		"RAISE EXCEPTION 'principal binding requires token-bound provenance or a static digest' USING ERRCODE = '28000';",
+	} {
+		if !strings.Contains(body, token) {
+			t.Errorf("migration 112 bind format gate missing %q", token)
+		}
+	}
+	// The v1 branch keeps the migration-108 proof contract verbatim.
+	for _, token := range []string{
+		"v_token_public_id := substring(p_grant_digest FROM 4 FOR 36)::uuid;",
+		"v_subject IS DISTINCT FROM p_actor_public_id",
+		"OR v_token_revoked IS NOT NULL",
+		"v_mac <> v_expected",
+		"principal binding proof is stale, revoked, or foreign",
+	} {
+		if !strings.Contains(body, token) {
+			t.Errorf("migration 112 v1 branch lost the token-bound contract %q", token)
+		}
+	}
+	// The static branch recomputes an HMAC keyed by the actor's persisted
+	// grant digest over the actor's own tenant/public id/version, and never
+	// trusts a caller-supplied tenant.
+	for _, token := range []string{
+		"SELECT grant_version, grant_digest INTO v_version, v_stored_digest",
+		"convert_to(v_stored_digest, 'UTF8'), 'sha256'",
+		"v_tenant::text || ':' || p_actor_public_id::text || ':' || v_version::text",
+		"IF substring(p_grant_digest FROM 8) <> v_expected THEN",
+		"IF v_stored_digest IS NULL OR v_stored_digest = '' THEN",
+	} {
+		if !strings.Contains(body, token) {
+			t.Errorf("migration 112 static branch missing %q", token)
+		}
+	}
+	// The RLS-critical context install is preserved unmodified: tenant and
+	// actor from the revalidated row, stale workspace/project scope cleared.
+	for _, token := range []string{
+		"PERFORM pg_advisory_xact_lock_shared(public.cortex_principal_key(v_tenant, p_actor_public_id));",
+		"IF v_version IS NULL OR v_version IS DISTINCT FROM p_grant_version THEN",
+		"INSERT INTO public.cortex_tenant_context",
+		"VALUES (pg_backend_pid(), txid_current(), v_tenant, p_actor_public_id, NULL, NULL, NULL)",
+		"workspace_id = NULL",
+		"project_id = NULL",
+		"scope_bound_at = NULL",
+	} {
+		if !strings.Contains(body, token) {
+			t.Errorf("migration 112 context contract missing %q", token)
+		}
+	}
+	if strings.Contains(body, "FOR UPDATE") {
+		t.Errorf("migration 112 binder takes exclusive row locks; readers must stay FOR SHARE under the shared gate")
+	}
+	// Exactly one binder replacement, and the EXECUTE matrix stays
+	// cortex_app-only.
+	if got := strings.Count(sqlText, "CREATE OR REPLACE FUNCTION cortex_bind_principal("); got != 1 {
+		t.Errorf("migration 112 binder definition count = %d, want 1", got)
+	}
+	for _, token := range []string{
+		"REVOKE ALL ON FUNCTION cortex_bind_principal(uuid,text,bigint) FROM PUBLIC;",
+		"REVOKE ALL ON FUNCTION cortex_bind_principal(uuid,text,bigint) FROM cortex_admin;",
+		"GRANT EXECUTE ON FUNCTION cortex_bind_principal(uuid,text,bigint) TO cortex_app;",
+	} {
+		if !strings.Contains(sqlText, token) {
+			t.Errorf("migration 112 privilege contract missing %q", token)
+		}
+	}
+	// Forward-only additive posture: the binder's stale tenant-context
+	// housekeeping DELETE is carried over verbatim and is the only delete.
+	upper := strings.ToUpper(sqlText)
+	contextCleanup := strings.ToUpper("DELETE FROM public.cortex_tenant_context\n     WHERE backend_pid = pg_backend_pid() AND transaction_id <> txid_current();")
+	if got := strings.Count(upper, contextCleanup); got != 1 {
+		t.Fatalf("migration 112 must contain exactly one pinned tenant-context housekeeping DELETE (found %d)", got)
+	}
+	upper = strings.ReplaceAll(upper, contextCleanup, "")
+	for _, banned := range []string{
+		"DROP TABLE", "DROP INDEX", "DROP FUNCTION", "DROP TRIGGER", "DROP SCHEMA",
+		"TRUNCATE", "DELETE FROM", "ON DELETE CASCADE", "ON DELETE SET NULL",
+	} {
+		if strings.Contains(upper, banned) {
+			t.Errorf("migration 112 contains destructive statement %q", banned)
 		}
 	}
 }

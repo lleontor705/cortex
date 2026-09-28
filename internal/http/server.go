@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lleontor705/cortex/v2/internal/api"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
@@ -66,6 +67,10 @@ type Deps struct {
 type Options struct {
 	AuthToken      string
 	AllowedOrigins []string
+	// WebHandler, when non-nil, serves the embedded web UI for every path not
+	// owned by an explicit API or health route. It is mounted as the root
+	// fallback so /api/* and /health keep their exact existing contracts.
+	WebHandler http.Handler
 }
 
 // Server wraps an http.Server with Cortex handlers.
@@ -132,6 +137,23 @@ func NewServer(addr string, deps *Deps, opts Options) *Server {
 	// Export/Import
 	mux.HandleFunc("GET /api/export", s.handleExport)
 	mux.HandleFunc("POST /api/import", s.handleImport)
+
+	// Parity surface (REQ-SH-012): the web-critical endpoints are served by the
+	// neutral internal/api handlers over the bundle-backed local port, behind
+	// the same withAuth token gate that wraps the whole mux.
+	parity := api.New(newLocalParityPort(deps))
+	mux.HandleFunc("GET /api/me", parity.Me)
+	mux.HandleFunc("GET /api/stats", parity.Stats)
+	mux.HandleFunc("GET /api/projects", parity.Projects)
+	mux.HandleFunc("GET /api/agent/projects", parity.AgentProjects)
+	mux.HandleFunc("GET /api/graph/project-graph", parity.ProjectGraph)
+
+	if opts.WebHandler != nil {
+		// The web surface is the root fallback: the explicit routes above (and
+		// the withAuth/CORS wrapping around the whole mux) stay authoritative,
+		// while unknown non-API paths fall through to the embedded UI.
+		mux.Handle("/", opts.WebHandler)
+	}
 
 	return s
 }

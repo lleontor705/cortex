@@ -1,0 +1,28 @@
+{
+  "root": true,
+  "extends": ["next/core-web-vitals", "plugin:jsx-a11y/recommended"],
+  "overrides": [
+    {
+      "files": [
+        "src/app/admin/page.tsx",
+        "src/app/extract/page.tsx",
+        "src/app/memory/page.tsx",
+        "src/app/projects/page.tsx",
+        "src/app/settings/page.tsx",
+        "src/components/AppShell.tsx",
+        "src/components/graph-view.tsx",
+        "src/components/knowledge/sourcepanel.tsx",
+        "src/components/ui/card.tsx",
+        "src/components/ui/dialog.tsx"
+      ],
+      "rules": {
+        "jsx-a11y/click-events-have-key-events": "warn",
+        "jsx-a11y/heading-has-content": "warn",
+        "jsx-a11y/label-has-associated-control": "warn",
+        "jsx-a11y/no-noninteractive-tabindex": "warn",
+        "jsx-a11y/no-static-element-interactions": "warn",
+        "react/no-unescaped-entities": "warn"
+      }
+    }
+  ]
+}

@@ -184,5 +184,28 @@ var ServerVerifiedRateLimitTierSQL string
 // SaaS data-plane token verifier which derives the tenant from a validated
 // bearer instead of accepting a client-selected tenant identifier.
 //
+// The embedded set is frozen (REQ-SH-020): 100-105 are immutable forever,
+// 106-109 are unchanged, and 110's cortex_verify_token_principal_v2 is the
+// live single-tenant verifier. After MultiTenantTokenPrincipalVerifier was
+// deleted, migration 111 stays embedded but is dead: its only references are
+// this embed declaration and the plumbing that registers version 111 in
+// internal/migration. Ledgered databases that hit the ErrFutureMigration
+// guard keep working as documented (internal/migration/postgres.go and
+// docs/project-context-protocol-identity-privilege.md); physically dropping
+// 111 is a compensating migration at a future head, roadmap only and never
+// created in this change.
+//
 //go:embed 111_multi_tenant_verifier.sql
 var ServerMultiTenantVerifierSQL string
+
+// ServerStaticBindContractSQL is PostgreSQL migration 112. It replaces
+// cortex_bind_principal additively so the single-tenant synthetic principal
+// can install the same RLS context as a token-verified principal: the
+// authentication-bound `v1:` branch of migration 108 is preserved verbatim,
+// and a `static:` branch accepts an HMAC over tenant/actor/grant-version keyed
+// by the actor's persisted grant digest. The context-writing tail, the
+// canonical shared advisory gate, the error taxonomy, and the cortex_app-only
+// EXECUTE matrix are unchanged; the migration is additive and forward-only.
+//
+//go:embed 112_static_bind_contract.sql
+var ServerStaticBindContractSQL string

@@ -5,8 +5,11 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +109,15 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	// its canonical grants, and the reserved bootstrap token. Development
 	// startups take this same path; only the prerequisite fixtures differ.
 	if err := bootstrapServicePrincipal(ctx, migrationDB, cfg); err != nil {
+		return nil, err
+	}
+	// The synthetic request principal has no live token, so its binder proof
+	// is keyed by the actor's PERSISTED grant digest. That value is only known
+	// after the durable reconciler above runs, and only the privileged
+	// migration role can read actor_subjects.grant_digest, so it is resolved
+	// here while that handle is still open.
+	staticProvenance, err := resolveStaticBindProvenance(ctx, migrationDB, cfg)
+	if err != nil {
 		return nil, err
 	}
 	if err := migrationDB.Close(); err != nil {
@@ -211,11 +224,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		return nil, fmt.Errorf("server: construct vector provider: %w", err)
 	}
 	if vec != nil {
-		if cfg.Server.MultiTenant {
-			vec, err = external.NewRequestScopedVectorIndex(vec)
-		} else {
-			vec, err = external.NewServerScopedVectorIndex(vec, cfg.Server.TenantID, cfg.Server.WorkspaceID)
-		}
+		vec, err = external.NewServerScopedVectorIndex(vec, cfg.Server.TenantID, cfg.Server.WorkspaceID)
 		if err != nil {
 			pool.Close()
 			return nil, fmt.Errorf("server: scope vector provider: %w", err)
@@ -274,8 +283,6 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		workspaceID := cfg.Server.WorkspaceID
 		if selectedWorkspace, ok := workspaceFromContext(ctx); ok {
 			workspaceID = selectedWorkspace
-		} else if cfg.Server.MultiTenant {
-			return nil, errors.New("server: verified workspace context is required")
 		}
 		audit, err := postgresstore.NewAuditSink(pool, requestPrincipal.Subject, requestPrincipal.GrantDigest, requestPrincipal.GrantVersion)
 		if err != nil {
@@ -289,20 +296,21 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		}
 		return postgresstore.NewAuthorizedStore(pool, requestContext)
 	})
-	var requestVerifier principalVerifier = verifier
-	if cfg.Server.MultiTenant {
-		requestVerifier, err = postgresstore.NewMultiTenantTokenPrincipalVerifier(pool)
-		if err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("server: construct multi-tenant token verifier: %w", err)
-		}
+	// The static verifier is the ONLY request identity source: it derives one
+	// synthetic constant principal from configuration, carrying the
+	// migration-112 static binder proof resolved from the bootstrapped actor.
+	requestConfig := cfg
+	requestConfig.Server.GrantDigest = staticProvenance
+	requestVerifier, err := newStaticBearerVerifier(requestConfig)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: construct static bearer verifier: %w", err)
 	}
 	authenticator := requestAuthenticator{
 		verifier: requestVerifier,
 		factory:  factory,
 		workspace: workspaceSelector{
-			defaultWorkspace:      cfg.Server.WorkspaceID,
-			allowRequestSelection: cfg.Server.MultiTenant,
+			defaultWorkspace: cfg.Server.WorkspaceID,
 		},
 	}
 	// SEC-02: the outbound provider is composed exclusively from trusted
@@ -532,6 +540,58 @@ func bootstrapServicePrincipal(ctx context.Context, db *sql.DB, cfg config.Confi
 	return nil
 }
 
+// resolveStaticBindProvenance reads the bootstrapped service principal's
+// persisted grant digest and renders the migration-112 static binder contract
+// for the synthetic request principal. The digest cannot be a configured
+// constant: cortex_bind_principal recomputes the static MAC from the actor row
+// and fails closed on any value it cannot reproduce.
+func resolveStaticBindProvenance(ctx context.Context, db *sql.DB, cfg config.Config) (string, error) {
+	var storedDigest string
+	var grantVersion int64
+	err := db.QueryRowContext(ctx, `
+		SELECT grant_digest, grant_version
+		  FROM public.actor_subjects
+		 WHERE tenant_id = $1::uuid
+		   AND public_id = $2::uuid
+		   AND active
+		   AND revoked_at IS NULL`,
+		cfg.Server.TenantID, cfg.Server.PrincipalSubject,
+	).Scan(&storedDigest, &grantVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errors.New("server: bootstrapped service principal is missing or revoked")
+	}
+	if err != nil {
+		return "", fmt.Errorf("server: read bootstrapped service principal: %w", err)
+	}
+	return staticBindProvenance(cfg.Server.TenantID, cfg.Server.PrincipalSubject, storedDigest, grantVersion)
+}
+
+// staticBindProvenance derives the `static:<hex>` argument migration 112
+// recomputes in PostgreSQL: HMAC-SHA256 over the canonical
+// `tenant:actor:grant version` message keyed by the actor's persisted grant
+// digest. It is rendered here, rather than left as the raw digest, because
+// both the authorized store and the audit sink hand a principal's configured
+// digest straight to cortex_bind_principal.
+func staticBindProvenance(tenantID, actorID, storedDigest string, grantVersion int64) (string, error) {
+	if storedDigest == "" {
+		return "", errors.New("server: bootstrapped service principal has no grant digest")
+	}
+	if grantVersion < 1 {
+		return "", errors.New("server: bootstrapped service principal has no grant version")
+	}
+	tenant, err := uuid.Parse(tenantID)
+	if err != nil {
+		return "", errors.New("server: tenant_id is invalid")
+	}
+	actor, err := uuid.Parse(actorID)
+	if err != nil {
+		return "", errors.New("server: principal_subject is invalid")
+	}
+	mac := hmac.New(sha256.New, []byte(storedDigest))
+	_, _ = mac.Write([]byte(tenant.String() + ":" + actor.String() + ":" + strconv.FormatInt(grantVersion, 10)))
+	return "static:" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
 // redactStageError guarantees a startup-stage error never carries a
 // presented secret back to callers or logs: each occurrence is replaced
 // with a stable placeholder while the stage label survives.
@@ -567,10 +627,14 @@ func validateRuntimeConfig(cfg config.Config, withServerSurfaces bool) error {
 	if strings.TrimSpace(cfg.Server.Storage.DSN) == "" {
 		return errors.New("server: storage DSN is required")
 	}
-	for name, value := range map[string]string{"tenant_id": cfg.Server.TenantID, "workspace_id": cfg.Server.WorkspaceID, "principal_subject": cfg.Server.PrincipalSubject} {
-		if value == "" {
-			return fmt.Errorf("server: %s is required", name)
-		}
+	// The single-tenant static verifier is the composition's only request
+	// identity source; it is assembled here so startup fails closed, naming
+	// the missing key, before any pool or handler exists. Its binder proof is
+	// not a configured constant: the composition later replaces the digest
+	// with the migration-112 static provenance derived from the bootstrapped
+	// actor's persisted grant digest.
+	if _, err := newStaticBearerVerifier(cfg); err != nil {
+		return err
 	}
 	if _, err := uuid.Parse(cfg.Server.TenantID); err != nil {
 		return fmt.Errorf("server: tenant_id is invalid")

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,23 +31,7 @@ type agentAnswerInput struct {
 }
 
 func (a *apiHandler) agentProjects(w http.ResponseWriter, r *http.Request) {
-	setAgentNoStore(w)
-	projects, err := a.ops.ListAgentProjects(r.Context())
-	if err != nil {
-		respondAgentOperationError(w, err)
-		return
-	}
-	result := make([]agentProject, 0, len(projects))
-	for id, label := range projects {
-		result = append(result, agentProject{ID: id, Label: label})
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Label != result[j].Label {
-			return result[i].Label < result[j].Label
-		}
-		return result[i].ID < result[j].ID
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"projects": result})
+	a.parityHandlers().AgentProjects(w, r)
 }
 
 func (a *apiHandler) agentAnswer(w http.ResponseWriter, r *http.Request) {
@@ -136,10 +119,6 @@ func (a *apiHandler) prepareAgentRequest(w http.ResponseWriter, r *http.Request,
 	}
 	workspaceID, ok := workspaceFromContext(r.Context())
 	if !ok {
-		if a.cfg.Server.MultiTenant {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "verified workspace is required")
-			return preparedAgentRequest{}, false
-		}
 		workspaceID = strings.TrimSpace(a.cfg.Server.WorkspaceID)
 	}
 	if workspaceID == "" {

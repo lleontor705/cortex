@@ -44,6 +44,10 @@ type fakeOperations struct {
 	agentSearchProjectID    string
 	agentSearchProjectLabel string
 	agentSearchResults      []*domain.SearchResult
+	statsErr                error
+	projectsErr             error
+	observationsErr         error
+	agentProjectsErr        error
 }
 
 type serverFixedEmbedding struct {
@@ -178,17 +182,31 @@ func (f *fakeOperations) ListSessions(context.Context, string) ([]*domain.Sessio
 	return []*domain.Session{}, nil
 }
 func (f *fakeOperations) GetServerStats(context.Context) (*domain.ServerStats, error) {
+	if f.statsErr != nil {
+		return nil, f.statsErr
+	}
 	return &domain.ServerStats{}, nil
 }
 func (f *fakeOperations) ListAuditEvents(context.Context, int) ([]*domain.AuditEntry, error) {
 	return []*domain.AuditEntry{}, nil
 }
-func (f *fakeOperations) ListProjects(context.Context) ([]string, error) { return []string{}, nil }
+func (f *fakeOperations) ListProjects(context.Context) ([]string, error) {
+	if f.projectsErr != nil {
+		return nil, f.projectsErr
+	}
+	return []string{}, nil
+}
 func (f *fakeOperations) ListAgentProjects(context.Context) (map[string]string, error) {
+	if f.agentProjectsErr != nil {
+		return nil, f.agentProjectsErr
+	}
 	return f.agentProjects, nil
 }
 
 func (f *fakeOperations) ListObservations(context.Context, domain.ObservationFilter) ([]*domain.Observation, error) {
+	if f.observationsErr != nil {
+		return nil, f.observationsErr
+	}
 	result := make([]*domain.Observation, 0, len(f.observations))
 	for _, o := range f.observations {
 		copy := *o
@@ -1452,6 +1470,228 @@ func TestRESTOperationErrorRedactionCanary(t *testing.T) {
 		t.Fatalf("extraction error = %+v", body.Error)
 	}
 	assertNoServerCanaries(t, extractionRec.Body.String())
+}
+
+// TestParityRoutesDelegateThroughNeutralHandlers pins REQ-SH-011: the five
+// parity routes stay registered at their exact patterns, keep the pre-existing
+// auth middleware ordering (401 without a bearer), and answer 200 through the
+// neutral internal/api handlers once authenticated.
+func TestParityRoutesDelegateThroughNeutralHandlers(t *testing.T) {
+	for _, path := range []string{
+		"/api/me",
+		"/api/stats",
+		"/api/projects",
+		"/api/agent/projects",
+		"/api/graph/project-graph",
+	} {
+		t.Run(path, func(t *testing.T) {
+			ops := newFakeOperations()
+			h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+			unauthenticated := httptest.NewRecorder()
+			h.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, path, nil))
+			if unauthenticated.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthenticated status = %d, want %d", unauthenticated.Code, http.StatusUnauthorized)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("authenticated status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestProjectGraphDelegationPreservesLegacyTraversal pins the byte-identical
+// response and the legacy traversal bounds of GET /api/graph/project-graph: a
+// 150-row observation read and one depth-1, 30-node subgraph lookup per
+// observation, with "nodes":null for the empty project.
+func TestProjectGraphDelegationPreservesLegacyTraversal(t *testing.T) {
+	ops := newFakeOperations()
+	ops.observations[1] = &domain.Observation{
+		ID: 1, PublicID: "00000000-0000-0000-0000-000000000001",
+		Title: "Root", Type: "note", Project: "proj-a", Scope: "project", Source: "manual",
+	}
+	ops.subgraph = &domain.GraphSubgraph{
+		Root:  "observation:00000000-0000-0000-0000-000000000001",
+		Nodes: []domain.GraphNode{{ID: "entity:1", Kind: "entity", Label: "Entity"}},
+		Edges: []domain.GraphLink{{ID: "link:1", Source: "observation:00000000-0000-0000-0000-000000000001", Target: "entity:1", Type: "mentions"}},
+	}
+	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/graph/project-graph?project=proj-a", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	const want = `{"root":"proj-a","nodes":[` +
+		`{"id":"observation:00000000-0000-0000-0000-000000000001","kind":"note","label":"Root","project":"proj-a","hop":0,"metadata":{"scope":"project","source":"manual"}},` +
+		`{"id":"entity:1","kind":"entity","label":"Entity","hop":0}` +
+		`],"edges":[{"id":"link:1","source":"observation:00000000-0000-0000-0000-000000000001","target":"entity:1","type":"mentions"}],"truncated":false}` + "\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("project-graph body mismatch\n got: %s\nwant: %s", got, want)
+	}
+	if ops.subgraphDepth != 1 || ops.subgraphMax != 30 {
+		t.Fatalf("subgraph bounds = (%d,%d), want (1,30)", ops.subgraphDepth, ops.subgraphMax)
+	}
+}
+
+// TestProjectGraphDelegationEmitsLegacyEmptyEnvelope covers the tolerated
+// empty project: the neutral handler's nil-subgraph fallback must keep the
+// pre-extraction root-labelled envelope with null nodes and edges.
+func TestProjectGraphDelegationEmitsLegacyEmptyEnvelope(t *testing.T) {
+	ops := newFakeOperations()
+	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/graph/project-graph", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	const want = `{"root":"all_projects","nodes":null,"edges":null,"truncated":false}` + "\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("empty project-graph mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestMeDelegationEnvelopeMatchesLegacyKeys pins the /api/me envelope keys and
+// the workspace_id guard the neutral handler must reproduce.
+func TestMeDelegationEnvelopeMatchesLegacyKeys(t *testing.T) {
+	ops := newFakeOperations()
+	h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode /api/me: %v", err)
+	}
+	for _, key := range []string{"id", "type", "org_id", "workspaces", "projects", "roles", "scopes", "classification_clearance", "auth_method"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing key %q in %s", key, rec.Body.String())
+		}
+	}
+	if _, ok := body["workspace_id"]; ok {
+		t.Fatalf("workspace_id must be absent without a granted workspace: %s", rec.Body.String())
+	}
+}
+
+// TestMeDelegationEnrichesUserPrincipalFromOperations proves the adapter binds
+// Operations.GetUserProfile for user principals and skips enrichment otherwise.
+func TestMeDelegationEnrichesUserPrincipalFromOperations(t *testing.T) {
+	ops := newFakeOperations()
+	cfg := config.Config{HTTP: config.HTTPConfig{Token: "user-token"}}
+	auth := requestAuthenticator{
+		verifier: verifierFunc(func(_ context.Context, secret, _ string) (domain.Principal, error) {
+			if secret != cfg.HTTP.Token {
+				return domain.Principal{}, errors.New("unknown credential")
+			}
+			return domain.Principal{Subject: "00000000-0000-0000-0000-0000000000a1", Type: "user", OrgID: "org-1"}, nil
+		}),
+		factory: operationsFactoryFunc(func(context.Context, domain.Principal) (Operations, error) { return ops, nil }),
+	}
+	h, _ := newHTTPHandlerWithAuth(cfg, requestOperations{}, func(context.Context) error { return nil }, auth.middleware)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer user-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"display_name":"Test User"`) || !strings.Contains(rec.Body.String(), `"email":"test@example.com"`) {
+		t.Fatalf("user /api/me = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestParityAdapterTranslatesAuthorizationDenialToForbidden pins the adapter
+// contract: an authz denial from Operations becomes the shared api 403
+// envelope on all five delegated routes.
+func TestParityAdapterTranslatesAuthorizationDenialToForbidden(t *testing.T) {
+	const forbiddenBody = `{"error":{"code":"forbidden","message":"principal is not authorized for this operation"}}` + "\n"
+	cases := []struct {
+		name      string
+		path      string
+		configure func(*fakeOperations)
+	}{
+		{"stats", "/api/stats", func(o *fakeOperations) { o.statsErr = authz.ErrForbidden }},
+		{"projects", "/api/projects", func(o *fakeOperations) { o.projectsErr = authz.ErrForbidden }},
+		{"agent projects", "/api/agent/projects", func(o *fakeOperations) { o.agentProjectsErr = authz.ErrForbidden }},
+		{"project graph", "/api/graph/project-graph", func(o *fakeOperations) { o.observationsErr = authz.ErrForbidden }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOperations()
+			tc.configure(ops)
+			h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if got := rec.Body.String(); got != forbiddenBody {
+				t.Fatalf("body mismatch\n got: %s\nwant: %s", got, forbiddenBody)
+			}
+		})
+	}
+}
+
+// TestParityAdapterPreservesNonAuthorizationErrorEnvelopes pins the remaining
+// translation: domain sentinels keep their statuses and unexpected failures
+// keep the legacy 500/503 envelopes without leaking the underlying text.
+func TestParityAdapterPreservesNonAuthorizationErrorEnvelopes(t *testing.T) {
+	boom := errors.New("store failure: leaked-secret-detail")
+	cases := []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantBody   string
+		configure  func(*fakeOperations)
+	}{
+		{"stats not found", "/api/stats", http.StatusNotFound, `{"error":{"code":"not_found","message":"resource not found"}}` + "\n", func(o *fakeOperations) { o.statsErr = domain.ErrNotFound }},
+		{"stats invalid input", "/api/stats", http.StatusBadRequest, `{"error":{"code":"invalid_request","message":"invalid operation input"}}` + "\n", func(o *fakeOperations) { o.statsErr = domain.ErrInvalidInput }},
+		{"stats unexpected", "/api/stats", http.StatusInternalServerError, `{"error":{"code":"operation_failed","message":"operation failed"}}` + "\n", func(o *fakeOperations) { o.statsErr = boom }},
+		{"projects unexpected", "/api/projects", http.StatusInternalServerError, `{"error":{"code":"operation_failed","message":"operation failed"}}` + "\n", func(o *fakeOperations) { o.projectsErr = boom }},
+		{"agent projects unexpected", "/api/agent/projects", http.StatusServiceUnavailable, `{"error":{"code":"agent_unavailable","message":"project agent is unavailable"}}` + "\n", func(o *fakeOperations) { o.agentProjectsErr = boom }},
+		{"project graph unexpected", "/api/graph/project-graph", http.StatusInternalServerError, `{"error":{"code":"operation_failed","message":"operation failed"}}` + "\n", func(o *fakeOperations) { o.observationsErr = boom }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOperations()
+			tc.configure(ops)
+			h, _ := newVerifiedHTTPHandler(config.Config{HTTP: config.HTTPConfig{Token: "test-token"}}, ops, func(context.Context) error { return nil })
+
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if got := rec.Body.String(); got != tc.wantBody {
+				t.Fatalf("body mismatch\n got: %s\nwant: %s", got, tc.wantBody)
+			}
+			if strings.Contains(rec.Body.String(), "leaked-secret-detail") {
+				t.Fatalf("raw error text leaked: %s", rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestServerMCP_CodeTools(t *testing.T) {

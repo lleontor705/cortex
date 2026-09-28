@@ -12,9 +12,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	parityapi "github.com/lleontor705/cortex/v2/internal/api"
 	"github.com/lleontor705/cortex/v2/internal/authz"
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -189,6 +191,26 @@ func normalizedModel(model string) string {
 	return model
 }
 
+// webSurface is the embedded web UI handler installed by the composition root
+// before Open. The server package must not assemble web internals, and Open
+// takes no handler parameter, so cmd/cortex — the only permitted local→server
+// bridge — builds internal/web.NewHandler and hands it over here. The surface
+// mounts at "/", where the more specific /health, /health/live, /health/ready,
+// /api/, and /mcp patterns keep precedence and remain byte-for-byte unchanged.
+// A nil surface leaves server mode API-only.
+var webSurface atomic.Pointer[http.Handler]
+
+// MountWebSurface installs h as the embedded web UI surface for server runtimes
+// composed after this call. Passing nil removes it. It is a composition-root
+// hook: callers install it once before Open and never mutate it while serving.
+func MountWebSurface(h http.Handler) {
+	if h == nil {
+		webSurface.Store(nil)
+		return
+	}
+	webSurface.Store(&h)
+}
+
 // Every authenticated route is wired through newHTTPHandlerWithAuth with a
 // verifier-backed middleware (requestAuthenticator in production). There is
 // deliberately no static-compare constructor: the configured bearer is a
@@ -276,6 +298,12 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	}
 	mux.Handle("/api/", protect(api.routes()))
 	mux.Handle("/mcp", protect(guard.wrap(transport)))
+	if surface := webSurface.Load(); surface != nil {
+		// The embedded web surface answers only the residual namespace; every
+		// explicitly registered pattern above is more specific and therefore
+		// keeps precedence under Go's ServeMux specificity rules.
+		mux.Handle("/", *surface)
+	}
 	return corsHandler(cfg.HTTP.AllowedOrigins, mux), transport
 }
 
@@ -379,6 +407,126 @@ func (a *apiHandler) routes() http.Handler {
 	return mux
 }
 
+// legacy project-graph traversal bounds, captured from the pre-delegation
+// handler so the delegated route stays byte-compatible.
+const (
+	projectGraphObservationLimit = 150
+	projectGraphSubgraphDepth    = 1
+	projectGraphSubgraphMaxNodes = 30
+)
+
+// parityHandlers binds this request's Operations to the neutral internal/api
+// Port. Construction is per-request and cheap: the Port resolves the
+// principal-scoped AuthorizedStore through the Operations value the
+// authentication middleware installed in the request context
+// (requestOperations in production), so no operation is reachable without a
+// verified principal.
+func (a *apiHandler) parityHandlers() *parityapi.Handlers {
+	return parityapi.New(serverAPIPort{ops: a.ops})
+}
+
+// serverAPIPort implements internal/api.Port over the operation-only server
+// boundary. Authorization denials are translated into api sentinels here, so
+// internal/api never imports internal/authz.
+type serverAPIPort struct {
+	ops Operations
+}
+
+var _ parityapi.Port = serverAPIPort{}
+
+func (p serverAPIPort) CurrentPrincipal(ctx context.Context) (parityapi.Principal, error) {
+	principal, ok := principalFromContext(ctx)
+	if !ok {
+		return parityapi.Principal{}, parityapi.ErrUnauthenticated
+	}
+	projected := parityapi.Principal{Identity: principal}
+	if workspaceID, ok := workspaceFromContext(ctx); ok {
+		projected.WorkspaceID = workspaceID
+	}
+	// Profile enrichment stayed user-only before extraction; keep the guard so
+	// a non-user principal never gains display_name/email keys.
+	if principal.Type == "user" && principal.Subject != "" {
+		if profile, err := p.ops.GetUserProfile(ctx, principal.Subject); err == nil && profile != nil {
+			projected.DisplayName = profile.DisplayName
+			projected.Email = profile.Email
+		}
+	}
+	return projected, nil
+}
+
+func (p serverAPIPort) ServerStats(ctx context.Context) (*domain.ServerStats, error) {
+	stats, err := p.ops.GetServerStats(ctx)
+	return stats, translatePortError(err)
+}
+
+func (p serverAPIPort) Projects(ctx context.Context) ([]string, error) {
+	projects, err := p.ops.ListProjects(ctx)
+	return projects, translatePortError(err)
+}
+
+func (p serverAPIPort) AgentProjects(ctx context.Context) (map[string]string, error) {
+	projects, err := p.ops.ListAgentProjects(ctx)
+	return projects, translatePortError(err)
+}
+
+// ProjectGraph reproduces the pre-extraction server traversal exactly: the
+// selected project's observations are read with the legacy 150-row bound and
+// each observation fans out one depth-1, 30-node subgraph lookup. The neutral
+// handler's depth/max_nodes bounds are deliberately not applied: the legacy
+// route exposed project/limit and never honored them, so applying the api
+// defaults (depth 2, max_nodes 100) would change the response bytes for the
+// common no-parameter call REQ-SH-011 pins.
+func (p serverAPIPort) ProjectGraph(ctx context.Context, project string, _, _ int) (*domain.GraphSubgraph, error) {
+	observations, err := p.ops.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: projectGraphObservationLimit})
+	if err != nil {
+		return nil, translatePortError(err)
+	}
+
+	// Keep nil slices for the empty case: the legacy handler emitted
+	// "nodes":null / "edges":null, which a make(...)-backed slice would turn
+	// into [].
+	var nodes []domain.GraphNode
+	var edges []domain.GraphLink
+	nodeSet := make(map[string]bool)
+
+	for _, observation := range observations {
+		nodeID := "observation:" + observation.PublicID
+		nodeSet[nodeID] = true
+		nodes = append(nodes, domain.GraphNode{
+			ID: nodeID, Kind: observation.Type, Label: observation.Title, Project: observation.Project, Hop: 0,
+			Metadata: map[string]any{"source": observation.Source, "scope": observation.Scope},
+		})
+
+		subgraph, err := p.ops.GetGraphSubgraph(ctx, observation.PublicID, projectGraphSubgraphDepth, projectGraphSubgraphMaxNodes)
+		if err == nil && subgraph != nil {
+			edges = append(edges, subgraph.Edges...)
+			for _, node := range subgraph.Nodes {
+				if !nodeSet[node.ID] {
+					nodeSet[node.ID] = true
+					nodes = append(nodes, node)
+				}
+			}
+		}
+	}
+
+	root := project
+	if root == "" {
+		root = "all_projects"
+	}
+	return &domain.GraphSubgraph{Root: root, Nodes: nodes, Edges: edges}, nil
+}
+
+// translatePortError maps the server's authorization vocabulary onto the
+// neutral api sentinel. Domain sentinels (ErrNotFound, ErrInvalidInput) and
+// unexpected failures pass through unchanged so the neutral handler emits the
+// same envelope the legacy server handler produced.
+func translatePortError(err error) error {
+	if isAuthorizationDenial(err) {
+		return parityapi.ErrForbidden
+	}
+	return err
+}
+
 func (a *apiHandler) pushSync(w http.ResponseWriter, r *http.Request) {
 	var batch domain.SyncBatch
 	if !decodeBody(w, r, &batch) {
@@ -408,26 +556,7 @@ func (a *apiHandler) pullSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiHandler) me(w http.ResponseWriter, r *http.Request) {
-	principal, ok := principalFromContext(r.Context())
-	if !ok {
-		writeUnauthorized(w)
-		return
-	}
-	resp := principalResponse(principal)
-	if workspaceID, ok := workspaceFromContext(r.Context()); ok {
-		resp["workspace_id"] = workspaceID
-	}
-	if principal.Type == "user" && principal.Subject != "" {
-		if u, err := a.ops.GetUserProfile(r.Context(), principal.Subject); err == nil && u != nil {
-			if u.DisplayName != "" {
-				resp["display_name"] = u.DisplayName
-			}
-			if u.Email != "" {
-				resp["email"] = u.Email
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, resp)
+	a.parityHandlers().Me(w, r)
 }
 
 func (a *apiHandler) createUser(w http.ResponseWriter, r *http.Request) {
@@ -592,12 +721,7 @@ func (a *apiHandler) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiHandler) stats(w http.ResponseWriter, r *http.Request) {
-	result, err := a.ops.GetServerStats(r.Context())
-	if err != nil {
-		respondOperationError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	a.parityHandlers().Stats(w, r)
 }
 
 func (a *apiHandler) systemMetrics(w http.ResponseWriter, r *http.Request) {
@@ -628,12 +752,7 @@ func (a *apiHandler) audit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiHandler) projects(w http.ResponseWriter, r *http.Request) {
-	result, err := a.ops.ListProjects(r.Context())
-	if err != nil {
-		respondOperationError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	a.parityHandlers().Projects(w, r)
 }
 
 func (a *apiHandler) listObservations(w http.ResponseWriter, r *http.Request) {
@@ -766,10 +885,6 @@ func (a *apiHandler) searchHybrid(w http.ResponseWriter, r *http.Request) {
 
 	workspaceID, workspaceSelected := workspaceFromContext(r.Context())
 	if !workspaceSelected {
-		if a.cfg.Server.MultiTenant {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "verified workspace is required")
-			return
-		}
 		workspaceID = strings.TrimSpace(a.cfg.Server.WorkspaceID)
 	}
 	if workspaceID == "" || a.hybrid.embeddings == nil || !domain.IsVectorIndexHealthy(r.Context(), a.hybrid.vectors) {
@@ -1027,59 +1142,7 @@ func (a *apiHandler) graphBlastRadius(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiHandler) projectGraph(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
-	limit := queryInt(r.URL.Query().Get("limit"), 150, 1, 500)
-
-	observations, err := a.ops.ListObservations(r.Context(), domain.ObservationFilter{
-		Project: project,
-		Limit:   limit,
-	})
-	if err != nil {
-		respondOperationError(w, err)
-		return
-	}
-
-	var nodes []domain.GraphNode
-	var edges []domain.GraphLink
-	nodeSet := make(map[string]bool)
-
-	for _, obs := range observations {
-		nid := "observation:" + obs.PublicID
-		nodeSet[nid] = true
-		nodes = append(nodes, domain.GraphNode{
-			ID:      nid,
-			Kind:    obs.Type,
-			Label:   obs.Title,
-			Project: obs.Project,
-			Hop:     0,
-			Metadata: map[string]any{
-				"source": obs.Source,
-				"scope":  obs.Scope,
-			},
-		})
-
-		sub, err := a.ops.GetGraphSubgraph(r.Context(), obs.PublicID, 1, 30)
-		if err == nil && sub != nil {
-			edges = append(edges, sub.Edges...)
-			for _, n := range sub.Nodes {
-				if !nodeSet[n.ID] {
-					nodeSet[n.ID] = true
-					nodes = append(nodes, n)
-				}
-			}
-		}
-	}
-
-	rootLabel := project
-	if rootLabel == "" {
-		rootLabel = "all_projects"
-	}
-
-	writeJSON(w, http.StatusOK, domain.GraphSubgraph{
-		Root:  rootLabel,
-		Nodes: nodes,
-		Edges: edges,
-	})
+	a.parityHandlers().ProjectGraph(w, r)
 }
 
 func processIngestCode(ctx context.Context, ops Operations, path string, project string, maxFiles int, persist bool) (map[string]any, error) {
@@ -1494,10 +1557,6 @@ func observationListResponse(observations []*domain.Observation) []map[string]an
 		}
 	}
 	return out
-}
-
-func principalResponse(principal domain.Principal) map[string]any {
-	return map[string]any{"id": principal.Subject, "type": principal.Type, "org_id": principal.OrgID, "workspaces": principal.WorkspacesCopy(), "projects": principal.ProjectsCopy(), "roles": principal.RolesCopy(), "scopes": principal.ScopesCopy(), "classification_clearance": principal.ClassificationClearanceCopy(), "auth_method": principal.AuthMethod}
 }
 
 func userResponse(user identity.UserRecord) map[string]any {

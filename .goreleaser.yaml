@@ -1,5 +1,14 @@
 version: 2
 
+# Global before hooks run exactly once, before any build target starts, so the
+# Next.js static export is synced into internal/web/dist before go:embed
+# packages the real UI into every release binary. Per-build `builds[].hooks.pre`
+# would run make web-build once per target (six times) in parallel and race on
+# the shared dist tree, so the single global hook is the correct mechanism here.
+before:
+  hooks:
+    - make web-build
+
 builds:
   - main: ./cmd/cortex
     binary: cortex

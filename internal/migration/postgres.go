@@ -124,6 +124,11 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 	}
 	sql111 := normalizeLF(servermigrations.ServerMultiTenantVerifierSQL)
 	sum111 := sha256.Sum256([]byte(sql111))
+	if servermigrations.ServerStaticBindContractSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL static bind contract SQL is empty")
+	}
+	sql112 := normalizeLF(servermigrations.ServerStaticBindContractSQL)
+	sum112 := sha256.Sum256([]byte(sql112))
 	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
@@ -165,10 +170,25 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		sql:      sql110,
 		checksum: hex.EncodeToString(sum110[:]),
 	}, {
+		// Version 111 stays registered and applied exactly as before, but it is
+		// dead after MultiTenantTokenPrincipalVerifier was deleted: the embedded
+		// ServerMultiTenantVerifierSQL has no runtime caller, and the live
+		// single-tenant verifier is 110's cortex_verify_token_principal_v2. The
+		// embedded set is frozen (REQ-SH-020). Apply still registers it and
+		// VerifyApplied/Preflight still treat a recorded 111 row as valid
+		// evidence, so ledgered databases that hit the ErrFutureMigration guard
+		// in Apply keep working as documented. Physically dropping 111 is a
+		// compensating migration at a future head; it remains roadmap only and
+		// is never created or applied by this change.
 		version:  111,
 		name:     "multi_tenant_verifier",
 		sql:      sql111,
 		checksum: hex.EncodeToString(sum111[:]),
+	}, {
+		version:  112,
+		name:     "static_bind_contract",
+		sql:      sql112,
+		checksum: hex.EncodeToString(sum112[:]),
 	}}
 	// Every migration carries the runtime head so any single Apply refuses
 	// databases ledgered by a newer runtime (ErrFutureMigration).

@@ -185,7 +185,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./... > coverage.log 2>&1; then
+          cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"
+          if ! go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./... > coverage.log 2>&1; then
             grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
               echo "::error title=Coverage Test Failure::$line"
             done
@@ -195,11 +196,11 @@ jobs:
           total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
           total="${total_line%%%}"
           awk -v coverage="$total" 'BEGIN {
-            if (coverage < 70.0) {
-              printf "global coverage %.2f%% is below 70.0%%\n", coverage
+            if (coverage < 80.0) {
+              printf "global coverage %.2f%% is below 80.0%%\n", coverage
               exit 1
             }
-            printf "global coverage %.2f%% meets 70.0%% threshold\n", coverage
+            printf "global coverage %.2f%% meets 80.0%% threshold\n", coverage
           }'
 
       - name: Upload Go coverage evidence
@@ -374,7 +375,7 @@ jobs:
           echo "Waiting for services to become healthy..."
           for i in $(seq 1 30); do
             SERVER_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-server-1 2>/dev/null || echo "starting")
-            UI_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-ui-1 2>/dev/null || echo "starting")
+            UI_STATUS=$(curl -fsS -o /dev/null http://localhost:7438/ 2>/dev/null && echo "healthy" || echo "starting")
             DB_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-postgres-1 2>/dev/null || echo "starting")
             echo "Status [db=$DB_STATUS, server=$SERVER_STATUS, ui=$UI_STATUS]"
             if [ "$SERVER_STATUS" = "healthy" ] && [ "$UI_STATUS" = "healthy" ] && [ "$DB_STATUS" = "healthy" ]; then
@@ -387,8 +388,58 @@ jobs:
       - name: Verify health endpoints
         run: |
           curl -fsS http://localhost:7438/health || exit 1
-          curl -fsS http://localhost:3000/health || exit 1
+          curl -fsS http://localhost:7438/ | grep -qi '<!DOCTYPE html>\|<html' || exit 1
 
       - name: Teardown stack
         if: always()
         run: docker compose down -v
+
+  playwright-e2e:
+    name: Playwright E2E (Embedded Web)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/e2e-web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Build and sync embedded web assets
+        run: make web-build
+
+      - name: Install Playwright harness dependencies
+        working-directory: tools/e2e-web
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        working-directory: tools/e2e-web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright e2e suite
+        working-directory: tools/e2e-web
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-report
+          path: tools/e2e-web/playwright-report
+          if-no-files-found: warn
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-traces
+          path: tools/e2e-web/test-results
+          if-no-files-found: warn

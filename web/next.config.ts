@@ -1,10 +1,9 @@
 import type { NextConfig } from "next";
-import path from "path";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  output: "standalone",
-  outputFileTracingRoot: path.join(__dirname),
+  output: "export",
+  trailingSlash: true,
 };
 
 export default nextConfig;

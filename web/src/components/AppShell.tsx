@@ -9,6 +9,13 @@ import {
   observeResetGeneration,
   type SecretInputState,
 } from "@/lib/form-secret-reset";
+import {
+  initialWebKeyGateState,
+  loadStoredWebKey,
+  submitWebKey,
+  webKeyGateReducer,
+  type WebKeyGateState,
+} from "@/lib/web-key";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -70,6 +77,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [cloudSyncEnabled, setCloudSyncEnabled] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [webKeyGate, setWebKeyGate] = useState<WebKeyGateState>({ status: "unauthenticated" });
+  const [webKeyChecked, setWebKeyChecked] = useState<boolean>(false);
+  const [webKeyInput, setWebKeyInput] = useState<string>("");
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileDrawerRef = useRef<HTMLElement | null>(null);
   const mobileCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -109,6 +119,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setSecretInput((state) => observeResetGeneration(state, resetGeneration));
   }, [resetGeneration]);
+
+  useEffect(() => {
+    setWebKeyGate(initialWebKeyGateState(loadStoredWebKey(window.localStorage)));
+    setWebKeyChecked(true);
+  }, []);
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -177,6 +192,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     setIsSubmitting(false);
   };
 
+  const handleWebKeySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const raw = webKeyInput;
+    setWebKeyGate((state) => webKeyGateReducer(state, { type: "submit", key: raw }));
+    const result = await submitWebKey(
+      { fetch: window.fetch.bind(window), baseUrl: serverUrl, storage: window.localStorage },
+      raw,
+    );
+    setWebKeyGate((state) =>
+      webKeyGateReducer(
+        state,
+        result.ok
+          ? { type: "verified", key: result.key, verified: result.verified }
+          : { type: "rejected", kind: result.kind, message: result.message },
+      ),
+    );
+    if (result.ok) {
+      setWebKeyInput("");
+    }
+  };
+
   const userRoles = principal?.roles || ["developer"];
   const isAdmin = userRoles.some(
     (r) => r.toLowerCase() === "admin" || r.toLowerCase() === "owner",
@@ -230,6 +266,83 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ...group,
     items: group.items.filter((item) => item.minRole !== "admin" || isAdmin),
   })).filter((group) => group.items.length > 0);
+
+  if (!webKeyChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
+        <p className="text-xs text-muted-foreground">Preparing Cortex…</p>
+      </div>
+    );
+  }
+
+  if (webKeyGate.status !== "ready") {
+    const isVerifying = webKeyGate.status === "verifying";
+    const gateError = webKeyGate.status === "failed" ? webKeyGate.message : null;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
+        <Card className="max-w-md w-full p-6 sm:p-8 shadow-sm border-border bg-card text-card-foreground">
+          <div className="text-center mb-6">
+            <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 text-primary flex items-center justify-center mx-auto mb-4">
+              <Key className="h-6 w-6" />
+            </div>
+            <h1 className="text-lg font-bold tracking-tight text-card-foreground uppercase">Cortex Web Access</h1>
+            <p className="text-xs text-muted-foreground mt-1">
+              Paste the one-time web key printed by{" "}
+              <code className="text-foreground font-mono font-medium">cortex serve</code> at first boot.
+            </p>
+          </div>
+
+          {gateError && (
+            <div className="bg-destructive/10 border border-destructive/30 text-destructive p-3 rounded-lg text-xs mb-5 flex items-center gap-2.5">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{gateError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleWebKeySubmit} className="space-y-4 text-xs">
+            <div className="space-y-1.5">
+              <label htmlFor="cortex-web-key" className="text-[11px] font-semibold text-muted-foreground block uppercase tracking-wider">
+                WEB ACCESS KEY
+              </label>
+              <Input
+                id="cortex-web-key"
+                type="password"
+                value={webKeyInput}
+                onChange={(e) => setWebKeyInput(e.target.value)}
+                placeholder="cortex_web_..."
+                autoComplete="off"
+                className="h-10 text-xs font-mono"
+              />
+            </div>
+
+            <Button
+              type="submit"
+              disabled={isVerifying}
+              className="w-full h-10 mt-2 text-xs font-semibold shadow-sm"
+            >
+              {isVerifying ? "Verifying..." : "Unlock Cortex"}
+            </Button>
+          </form>
+
+          <div className="mt-6 pt-5 border-t border-border text-center flex items-center justify-between">
+            <p className="text-[11px] text-muted-foreground text-left">
+              Lost the key? Run{" "}
+              <code className="text-foreground font-mono font-medium">cortex web key regenerate</code> on the server.
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={toggleTheme}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              {isLightMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4 text-amber-500" />}
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   if (!isConnected && !isLoading) {
     return (

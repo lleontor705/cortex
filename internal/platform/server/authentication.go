@@ -35,48 +35,32 @@ type workspaceContextKey struct{}
 
 const workspaceRequestHeader = "X-Cortex-Workspace"
 
-var (
-	errWorkspaceNotGranted        = errors.New("server: workspace is not granted")
-	errWorkspaceSelectionRequired = errors.New("server: workspace selection is required")
-)
+var errWorkspaceNotGranted = errors.New("server: workspace is not granted")
 
-// workspaceSelector accepts a workspace only after bearer verification and
-// only when the verified principal carries an exact workspace grant. The
-// header is therefore a UI selector, never an authorization input.
+// workspaceSelector always resolves to the configured default workspace. The
+// X-Cortex-Workspace header may only echo that default; any other value is
+// rejected, so the header is never an authorization input.
 type workspaceSelector struct {
-	defaultWorkspace      string
-	allowRequestSelection bool
+	defaultWorkspace string
 }
 
-func (s workspaceSelector) selectWorkspace(r *http.Request, principal domain.Principal) (string, error) {
+func (s workspaceSelector) selectWorkspace(r *http.Request, _ domain.Principal) (string, error) {
 	raw := r.Header.Get(workspaceRequestHeader)
 	requested := strings.TrimSpace(raw)
 	if raw != requested {
 		return "", errWorkspaceNotGranted
 	}
 	if requested == "" {
-		if !s.allowRequestSelection {
-			return s.defaultWorkspace, nil
-		}
-		if len(principal.WorkspaceIDs) > 0 {
-			return canonicalWorkspaceID(principal.WorkspaceIDs[0])
-		}
-		return "", errWorkspaceNotGranted
+		return s.defaultWorkspace, nil
 	}
 	workspaceID, err := canonicalWorkspaceID(requested)
 	if err != nil {
 		return "", errWorkspaceNotGranted
 	}
-	if !s.allowRequestSelection && workspaceID != s.defaultWorkspace {
+	if workspaceID != s.defaultWorkspace {
 		return "", errWorkspaceNotGranted
 	}
-	for _, granted := range principal.WorkspaceIDs {
-		canonical, grantErr := canonicalWorkspaceID(granted)
-		if grantErr == nil && canonical == workspaceID {
-			return workspaceID, nil
-		}
-	}
-	return "", errWorkspaceNotGranted
+	return workspaceID, nil
 }
 
 func canonicalWorkspaceID(value string) (string, error) {
@@ -125,11 +109,7 @@ func (a requestAuthenticator) middleware(next http.Handler) http.Handler {
 		}
 		workspaceID, err := a.workspace.selectWorkspace(r, principal)
 		if err != nil {
-			if errors.Is(err, errWorkspaceSelectionRequired) {
-				writeError(w, http.StatusBadRequest, "workspace_selection_required", "select an authorized workspace")
-			} else {
-				writeError(w, http.StatusForbidden, "workspace_not_granted", "workspace is not granted")
-			}
+			writeError(w, http.StatusForbidden, "workspace_not_granted", "workspace is not granted")
 			return
 		}
 		ctx := context.WithValue(r.Context(), principalContextKey{}, principal)

@@ -1,0 +1,15 @@
+{
+  "name": "cortex-e2e-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Isolated Playwright end-to-end harness for the Cortex embedded web UI (own package so web/ stays owned by the a11y/lint gate)",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

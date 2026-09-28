@@ -14,6 +14,8 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/platform"
 	serverplatform "github.com/lleontor705/cortex/v2/internal/platform/server"
+	"github.com/lleontor705/cortex/v2/internal/web"
+	"github.com/lleontor705/cortex/v2/internal/webkey"
 	"github.com/mattn/go-isatty"
 )
 
@@ -119,7 +121,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	mode, cleanArgs := platform.ParseMode(args)
+	mode, cleanArgs, err := platform.ParseModeStrict(args)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "cortex: %v\n", err)
+		return 2
+	}
 	switch mode {
 	case platform.ModeLocal, platform.ModeHybrid:
 		if mode == platform.ModeHybrid {
@@ -174,14 +180,30 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 				invocation.projectID, result.Total, result.Upserted, result.ReEmbedded, result.Skipped, result.Batches)
 			return 0
 		}
+		webStore, err := mountServerWebSurface()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "cortex: server web key: %v\n", err)
+			return 2
+		}
 		rt, err := serverplatform.Open(ctx, *cfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "cortex: server bootstrap: %v\n", err)
 			return 2
 		}
 		defer func() { _ = rt.Close() }()
+		// The credential is minted only after the server composition opens, so a
+		// failed bootstrap never creates a key file or claims a web surface.
+		secret, minted, err := webStore.EnsureFirstBoot()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "cortex: server web key: %v\n", err)
+			return 2
+		}
 		baseURL := "http://" + rt.Address()
 		_, _ = fmt.Fprintf(stdout, "cortex: server endpoint %s\ncortex: readiness %s/health\ncortex: API %s/api/\ncortex: MCP %s/mcp\n", baseURL, baseURL, baseURL, baseURL)
+		_, _ = fmt.Fprintf(stdout, "cortex: web %s/\ncortex: web key file %s\n", baseURL, webStore.Path())
+		if minted {
+			_, _ = fmt.Fprintf(stdout, "cortex: web access key %s\ncortex: web access key shown once; paste it into the UI to unlock the surface\n", secret)
+		}
 		if err := rt.Serve(ctx); err != nil {
 			_, _ = fmt.Fprintf(stderr, "cortex: server: %v\n", err)
 			return 1
@@ -191,6 +213,22 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local, --mode hybrid, or --mode server)\n", mode)
 		return 2
 	}
+}
+
+// mountServerWebSurface builds the embedded web surface for --mode server and
+// installs it into the server composition before Open, so the server mux can
+// mount it ahead of the authenticated /api/ and /mcp routes. The returned key
+// store is still unseeded: the credential is minted or loaded after the server
+// boots, so a bootstrap failure never creates a key file. The key lives at the
+// same DefaultWebKeyFile location the local serve path uses, and its namespace
+// stays independent of http.token.
+func mountServerWebSurface() (*webkey.Store, error) {
+	store, err := webkey.NewStore(config.DefaultWebKeyFile())
+	if err != nil {
+		return nil, err
+	}
+	serverplatform.MountWebSurface(web.NewHandler(web.Config{}, store))
+	return store, nil
 }
 
 func isInteractive(w io.Writer) bool {
