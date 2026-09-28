@@ -24,14 +24,28 @@ vendor/
 /node_modules/
 web/node_modules/
 web/dist/
+web/out/
 web/coverage/
 web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
 
+# Embedded web assets synced by `make web-build`: ignore the generated export
+# tree but keep the committed placeholder so go:embed always compiles. The
+# trailing /* is required because an ignored directory cannot re-include files.
+/internal/web/dist/*
+!/internal/web/dist/index.html
+
 # Plugin npm subpackages (plugin/opencode, future plugin/* packages);
 # shared in-repo so contributors do not need local .git/info/exclude rules.
 plugin/*/node_modules/
+
+# Playwright e2e tooling (tools/e2e-web): dependency tree plus generated run
+# artifacts. Reports and results can capture on-screen credentials, so they
+# must never be staged by a broad `git add tools/`.
+tools/*/node_modules/
+tools/e2e-web/playwright-report/
+tools/e2e-web/test-results/
 
 # Coverage profiles (go test -coverprofile / go tool cover).
 # The broad /coverage* pattern catches ad-hoc names like coverage-w8,
@@ -44,6 +58,14 @@ plugin/*/node_modules/
 # Claude local settings
 .claude/settings.local.json
 
+# Recurring untracked workstation artifacts (documented, not duplicated):
+#   .codex/            -> covered by the global `.*` dotfile rule below
+#   web/.next/         -> covered by the global `.*` dotfile rule below
+#   cortex.exe~        -> covered by the Binaries block above
+#   web/*.tsbuildinfo  -> covered by the Web client block above
+# Add explicit patterns only when `git check-ignore` proves a real gap; never
+# widen these so intentional tracked dotfiles (e.g. web/.eslintrc.json) survive.
+
 # Ignore dotfiles except specific ones
 .*
 !.gitattributes
@@ -54,3 +76,5 @@ plugin/*/node_modules/
 !.goreleaser.yaml
 !.env.example
 !web/.env.example
+# Intentional tracked web lint config (see REQ-HYG-002).
+!web/.eslintrc.json
