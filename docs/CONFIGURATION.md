@@ -129,6 +129,29 @@ by the zero-bloat writer on the next save.
 | `logging.level` | `CORTEX_LOGGING_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. |
 | `logging.format` | `CORTEX_LOGGING_FORMAT` | `json` | Log output format: `json`, `text`, `plain`. |
 
+### Embedded Web UI (`web.*`)
+
+Cortex serves the compiled Next.js operator UI from the same binary and the same
+HTTP listener as the API: there is no separate web container and no second port.
+The `web.*` namespace overrides that surface; when a value is unset it inherits the
+HTTP listener (`http.host` / `http.port`), so a default configuration mounts the UI
+wherever the API listens. See [embedded-web.md](embedded-web.md) for the key
+lifecycle, at-rest format, and rotation semantics.
+
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `web.enabled` | `CORTEX_WEB_ENABLED` | `true` | Enable the embedded web UI. Only an explicit `false` disables it, and the code-owned default is never written back to a saved config file. |
+| `web.host` | `CORTEX_WEB_HOST` | inherits `http.host` (`localhost`) | Listener host for the web surface. Empty inherits `http.host`; accepts an IP literal or bare hostname (no scheme, path, userinfo, or port). |
+| `web.port` | `CORTEX_WEB_PORT` | inherits `http.port` (`7438`) | Listener port for the web surface. `0` inherits `http.port`; valid range `1`–`65535`. |
+| `web.key_file` | `CORTEX_WEB_KEY_FILE` | `~/.cortex/web.key` | Path to the embedded web access-key store. Empty or blank resolves to the default inside the Cortex config directory. |
+
+The web access key is an independent `ctx_`-prefixed credential: it is never used
+as, defaulted to, or derived from `http.token`, and the `/api/*` endpoints never
+accept it. On first boot Cortex mints the key and prints the plaintext exactly once;
+afterwards the plaintext is never shown again. Manage it with
+`cortex web key show` and `cortex web key regenerate` (both accept
+`--key-file PATH`).
+
 ### Standardized AI Configuration (Strict Separation)
 
 Cortex strictly separates configuration and API credentials between **Embeddings** and **LLM** so they never unintentionally cross-pollinate or override each other:

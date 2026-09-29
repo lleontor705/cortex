@@ -1429,7 +1429,7 @@ func currentDir() string {
 
 func isLoopbackHost(host string) bool {
 	host = strings.TrimSpace(host)
-	if host == "" || strings.EqualFold(host, "localhost") {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -2220,7 +2220,10 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		cfg.HTTP.Token = ""
-		_ = config.Save(cfg, cfg.LoadedFrom)
+		if err := config.Save(cfg, cfg.LoadedFrom); err != nil {
+			writef(stderr, "error saving config: %v\n", err)
+			return 1
+		}
 		writef(stdout, "✔ Successfully logged out.\n")
 		return 0
 

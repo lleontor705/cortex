@@ -91,6 +91,18 @@ cortex doctor
 # Búsqueda adaptativa con clasificación de complejidad
 cortex search "decisión de arquitectura" --mode=auto
 
+# Index a repository once (AST symbols and relations)
+cortex ingest ./internal --project cortex
+
+# Keep the index fresh with the continuous file watcher daemon
+cortex watch . --project cortex
+
+# Snapshot the local SQLite database before risky operations
+cortex backup ~/backups/cortex.db
+
+# Check for a newer release without installing it
+cortex update --check
+
 # Lanzar interfaz interactiva en terminal (con selector de perfiles integrado)
 cortex tui
 ```
@@ -177,7 +189,7 @@ Agrega Cortex como servidor MCP en tu editor o agente:
 ```
 
 ### Perfiles Modulares y Herramientas MCP:
-Cortex organiza su catálogo en perfiles modulares (`--tools=agent|dev|minimal|admin|temporal`):
+Cortex organiza su catálogo en perfiles modulares (`--tools=agent|dev|minimal`):
 - **Memoria Episódica & Búsqueda:** `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search` (FTS5 + Vectores + HippoRAG + Adaptive-RAG), `cortex_get_agent_context`.
 - **Grafo de Conocimiento & Linaje:** `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_revision_history`, `cortex_handoff` (handoff idempotente entre agentes).
 - **Inteligencia de Código AST (Zero-CGO):** `cortex_ingest_code` (extracción estática políglota), `cortex_get_code_symbols`, `cortex_code_map` (PageRank repo map), `cortex_code_tests` (Fast-TDD test impact), `cortex_get_blast_radius`, `cortex_detect_cycles`, `cortex_analyze_architecture`.

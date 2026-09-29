@@ -1,7 +1,10 @@
 package web_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -223,4 +226,187 @@ func TestWebKeyGuardAcceptsValidKeyAndRejectsOnlyPresentedInvalidKeys(t *testing
 
 	deepLink := request(t, h, http.MethodGet, "/graph/", map[string]string{"Authorization": "Bearer good"})
 	assertStatus(t, deepLink, http.StatusOK)
+}
+
+// precompressedFS pairs each compressible asset with a gzip sibling the way the
+// web-build sync step emits them, leaving robots.txt identity-only.
+func precompressedFS(t *testing.T) fstest.MapFS {
+	t.Helper()
+	shell := []byte("<!doctype html><title>shell</title>")
+	script := []byte("console.log('precompressed')")
+	return fstest.MapFS{
+		"index.html":    {Data: shell},
+		"index.html.gz": {Data: gzipBytes(t, shell)},
+		"app.js":        {Data: script},
+		"app.js.gz":     {Data: gzipBytes(t, script)},
+		"robots.txt":    {Data: []byte("User-agent: *\n")},
+	}
+}
+
+func gzipBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func gunzip(t *testing.T, data []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gunzip: %v", err)
+	}
+	return out
+}
+
+func TestStaticAssetsEmitStrongContentETag(t *testing.T) {
+	h := newHandler(web.Config{}, nil)
+	for _, target := range []string{"/", "/index.html", "/robots.txt", "/_next/static/chunks/main-abc123.js", "/_next/static/css/app-abc123.css"} {
+		rec := request(t, h, http.MethodGet, target, nil)
+		assertStatus(t, rec, http.StatusOK)
+		etag := rec.Header().Get("ETag")
+		if strings.HasPrefix(etag, "W/") || !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) || len(etag) < 3 {
+			t.Fatalf("%s etag=%q want quoted strong validator", target, etag)
+		}
+	}
+
+	sameBytes := request(t, h, http.MethodGet, "/index.html", nil).Header().Get("ETag")
+	viaShell := request(t, h, http.MethodGet, "/", nil).Header().Get("ETag")
+	if sameBytes != viaShell {
+		t.Fatalf("index.html etag=%q shell etag=%q want identical", sameBytes, viaShell)
+	}
+	distinct := request(t, h, http.MethodGet, "/robots.txt", nil).Header().Get("ETag")
+	if distinct == sameBytes {
+		t.Fatalf("distinct assets share etag=%q", sameBytes)
+	}
+}
+
+func TestConditionalRequestReturns304WithoutBody(t *testing.T) {
+	h := newHandler(web.Config{}, nil)
+	for _, target := range []string{"/index.html", "/_next/static/chunks/main-abc123.js", "/robots.txt"} {
+		t.Run(target, func(t *testing.T) {
+			initial := request(t, h, http.MethodGet, target, nil)
+			assertStatus(t, initial, http.StatusOK)
+			etag := initial.Header().Get("ETag")
+			if etag == "" {
+				t.Fatalf("%s emitted no ETag", target)
+			}
+
+			conditional := request(t, h, http.MethodGet, target, map[string]string{"If-None-Match": etag})
+			assertStatus(t, conditional, http.StatusNotModified)
+			if conditional.Body.Len() != 0 {
+				t.Fatalf("%s 304 carried a body %q", target, conditional.Body.String())
+			}
+			if got := conditional.Header().Get("ETag"); got != etag {
+				t.Fatalf("%s 304 etag=%q want %q", target, got, etag)
+			}
+
+			stale := request(t, h, http.MethodGet, target, map[string]string{"If-None-Match": `"stale-validator"`})
+			assertStatus(t, stale, http.StatusOK)
+			if stale.Body.Len() == 0 {
+				t.Fatalf("%s stale validator suppressed the body", target)
+			}
+		})
+	}
+}
+
+func TestShellFallbackHonorsConditionalRequests(t *testing.T) {
+	h := newHandler(web.Config{}, nil)
+	etag := request(t, h, http.MethodGet, "/", nil).Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("SPA shell emitted no ETag")
+	}
+	rec := request(t, h, http.MethodGet, "/projects/42/details", map[string]string{"If-None-Match": etag})
+	assertStatus(t, rec, http.StatusNotModified)
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 shell carried a body %q", rec.Body.String())
+	}
+}
+
+func TestPrecompressedAssetServedWhenClientAcceptsGzip(t *testing.T) {
+	h := web.NewHandler(web.Config{Assets: precompressedFS(t)}, nil)
+	rec := request(t, h, http.MethodGet, "/app.js", map[string]string{"Accept-Encoding": "gzip"})
+	assertStatus(t, rec, http.StatusOK)
+	if enc := rec.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("content-encoding=%q want gzip", enc)
+	}
+	if vary := rec.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("vary=%q want Accept-Encoding", vary)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("content-type=%q want javascript", ct)
+	}
+	if body := string(gunzip(t, rec.Body.Bytes())); body != "console.log('precompressed')" {
+		t.Fatalf("decompressed body=%q", body)
+	}
+
+	head := request(t, h, http.MethodHead, "/app.js", map[string]string{"Accept-Encoding": "gzip"})
+	assertStatus(t, head, http.StatusOK)
+	if head.Body.Len() != 0 {
+		t.Fatalf("HEAD served a body: %q", head.Body.String())
+	}
+}
+
+func TestIdentityServedWhenGzipAbsentOrRefused(t *testing.T) {
+	h := web.NewHandler(web.Config{Assets: precompressedFS(t)}, nil)
+
+	plain := request(t, h, http.MethodGet, "/app.js", nil)
+	assertStatus(t, plain, http.StatusOK)
+	if enc := plain.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("no Accept-Encoding content-encoding=%q want none", enc)
+	}
+	if plain.Body.String() != "console.log('precompressed')" {
+		t.Fatalf("identity body=%q", plain.Body.String())
+	}
+
+	refused := request(t, h, http.MethodGet, "/app.js", map[string]string{"Accept-Encoding": "gzip;q=0"})
+	assertStatus(t, refused, http.StatusOK)
+	if enc := refused.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("q=0 refusal content-encoding=%q want none", enc)
+	}
+
+	absent := request(t, h, http.MethodGet, "/robots.txt", map[string]string{"Accept-Encoding": "gzip"})
+	assertStatus(t, absent, http.StatusOK)
+	if enc := absent.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("unsupported-asset content-encoding=%q want none", enc)
+	}
+	if absent.Body.String() != "User-agent: *\n" {
+		t.Fatalf("unsupported-asset body=%q", absent.Body.String())
+	}
+}
+
+func TestShellPrefersPrecompressedVariant(t *testing.T) {
+	h := web.NewHandler(web.Config{Assets: precompressedFS(t)}, nil)
+	rec := request(t, h, http.MethodGet, "/projects/42", map[string]string{"Accept-Encoding": "gzip"})
+	assertStatus(t, rec, http.StatusOK)
+	if enc := rec.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("shell content-encoding=%q want gzip", enc)
+	}
+	if body := string(gunzip(t, rec.Body.Bytes())); !strings.Contains(body, "shell") {
+		t.Fatalf("shell variant decompressed to %q", body)
+	}
+}
+
+func TestPrecompressedVariantHonorsConditionalRequests(t *testing.T) {
+	h := web.NewHandler(web.Config{Assets: precompressedFS(t)}, nil)
+	etag := request(t, h, http.MethodGet, "/app.js", map[string]string{"Accept-Encoding": "gzip"}).Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("precompressed asset emitted no ETag")
+	}
+	rec := request(t, h, http.MethodGet, "/app.js", map[string]string{"Accept-Encoding": "gzip", "If-None-Match": etag})
+	assertStatus(t, rec, http.StatusNotModified)
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 precompressed carried a body %q", rec.Body.String())
+	}
 }

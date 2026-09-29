@@ -1275,6 +1275,80 @@ level = "debug"
 	})
 }
 
+func TestSaveClearsScalarSecretsOnAllFormats(t *testing.T) {
+	t.Setenv("CORTEX_HTTP_TOKEN", "")
+
+	httpSecret, syncSecret, aiSecret := "logout-http-secret", "logout-sync-secret", "logout-ai-secret"
+
+	cases := []struct {
+		name    string
+		ext     string
+		content string
+	}{
+		{
+			name: "yaml",
+			ext:  ".yaml",
+			content: "http:\n  token: " + httpSecret + "\n" +
+				"sync:\n  token: " + syncSecret + "\n" +
+				"ai:\n  api_key: " + aiSecret + "\n",
+		},
+		{
+			name: "json",
+			ext:  ".json",
+			content: `{"http":{"token":"` + httpSecret + `"},` +
+				`"sync":{"token":"` + syncSecret + `"},` +
+				`"ai":{"api_key":"` + aiSecret + `"}}`,
+		},
+		{
+			name: "toml",
+			ext:  ".toml",
+			content: "[http]\ntoken = \"" + httpSecret + "\"\n\n" +
+				"[sync]\ntoken = \"" + syncSecret + "\"\n\n" +
+				"[ai]\napi_key = \"" + aiSecret + "\"\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cortex"+tc.ext)
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load(%s) failed: %v", tc.name, err)
+			}
+			if cfg.HTTP.Token != httpSecret {
+				t.Fatalf("%s precondition: http token = %q, want %q", tc.name, cfg.HTTP.Token, httpSecret)
+			}
+
+			cfg.HTTP.Token = "" // cortex auth logout clears the in-memory secret
+			if err := Save(cfg, path); err != nil {
+				t.Fatalf("Save(%s) failed: %v", tc.name, err)
+			}
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{httpSecret, syncSecret, aiSecret} {
+				if strings.Contains(string(raw), secret) {
+					t.Errorf("%s: persisted config still contains %q:\n%s", tc.name, secret, raw)
+				}
+			}
+
+			reloaded, err := Load(path)
+			if err != nil {
+				t.Fatalf("reload(%s) failed: %v", tc.name, err)
+			}
+			if reloaded.HTTP.Token != "" {
+				t.Errorf("%s: post-logout http token = %q, want empty", tc.name, reloaded.HTTP.Token)
+			}
+		})
+	}
+}
+
 func TestInitConfigAndSaveMultiFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1535,4 +1609,3 @@ func TestGetSetProperty_MCPProfile(t *testing.T) {
 		}
 	}
 }
-

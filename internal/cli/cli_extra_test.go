@@ -123,7 +123,8 @@ func TestExtraIsLoopbackHost(t *testing.T) {
 		host string
 		want bool
 	}{
-		{"", true},
+		{"", false},
+		{"   ", false},
 		{"localhost", true},
 		{"LOCALHOST", true},
 		{"  localhost  ", true},

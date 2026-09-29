@@ -9,13 +9,13 @@ Cortex MCP is strictly focused on **agentic capabilities** — tools that an AI 
 | Profile | Description | Tools | Count |
 |---|---|---|---|
 | `agent` | Canonical AI coding agent suite (default) | `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search`, `cortex_get_agent_context`, `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_get_rules`, `cortex_save_rule`, `cortex_ingest_code`, `cortex_get_blast_radius`, `cortex_code_tests`, `cortex_get_code_symbols`, `cortex_detect_cycles`, `cortex_analyze_architecture`, `cortex_code_map`, `cortex_get_status`, `cortex_revision_history`, `cortex_handoff` | 22 |
-| `dev` | Golden suite for local software development | `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`, `cortex_get_agent_context`, `cortex_relate`, `cortex_get_rules`, `cortex_ingest_code`, `cortex_get_blast_radius`, `cortex_code_tests` | 11 |
+| `dev` | Golden suite for local software development (`coder` is an accepted alias) | `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation`, `cortex_get_agent_context`, `cortex_relate`, `cortex_get_rules`, `cortex_ingest_code`, `cortex_get_blast_radius`, `cortex_code_tests` | 11 |
 | `minimal` | Ultra-low footprint for fast inference | `cortex_save`, `cortex_search`, `cortex_context`, `cortex_session_summary`, `cortex_get_observation` | 5 |
 
-Use `cortex mcp` (defaults to `agent`), or specify `--tools=dev` or `--tools=minimal`. Local observations, prompts, and edges use integer IDs; local sessions use opaque agent-provided strings.
+Use `cortex mcp` (defaults to `agent`), or specify `--tools=dev` or `--tools=minimal`. The supported profile set is `agent`, `dev`, and `minimal`; `admin` and `temporal` remain as deprecated keys but are retired from standard discovery. Local observations, prompts, and edges use integer IDs; local sessions use opaque agent-provided strings.
 
 ### Architectural Note: Retiring Non-Agentic Tools from MCP
-The `admin` (destructive deletion, project merging, compaction) and `temporal` (execution duration, memory telemetry, manual RFC3339 timestamps) toolsets are **deprecated and retired from standard agent discovery**:
+The `admin` (destructive deletion, project merging, compaction) and `temporal` (execution duration, memory telemetry, manual RFC3339 timestamps) toolsets are **deprecated and retired from standard agent discovery**: their entries remain in `internal/mcp/server.go` for explicit backward-compatible use, but no default or documented agent configuration loads them. Because the deprecated `admin` key still resolves, its destructive tools stay destructive whenever a caller deliberately requests `--tools=admin` (see Safety below).
 - **Why?** An autonomous agent should never be exposed to destructive operations (`cortex_delete`) or asked to record infrastructure memory telemetry (`cortex_temporal_record_operation`). Exposing 40+ tools imposes a massive ~6,000-token prompt tax and degrades tool-calling accuracy.
 - **Where did they go?**
   - Administrative operations belong to the **CLI** (`cortex gc`, `cortex merge-projects`, `cortex doctor`), the **TUI**, and the **Web Dashboard**.
@@ -75,4 +75,4 @@ Agents must use the schema returned by `tools/list`: numeric IDs from a local ca
 
 ## Safety
 
-`cortex_delete` is destructive in the local admin profile and soft-delete-only in the current server subset. Check `tools/list` for the exact transport catalog and schema. Unknown profile/tool names should be treated as configuration errors, not assumed to be available.
+`cortex_delete` is destructive in the deprecated local `admin` profile (reachable only by explicitly requesting `--tools=admin`) and soft-delete-only in the current server subset. Check `tools/list` for the exact transport catalog and schema. Unknown profile/tool names should be treated as configuration errors, not assumed to be available.

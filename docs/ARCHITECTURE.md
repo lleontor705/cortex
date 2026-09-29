@@ -213,14 +213,23 @@ rollback as a normal upgrade path.
 The supported namespace is `cortex_*`. Legacy `mem_*` names and Engram framing
 are intentionally rejected by tests.
 
-Profiles are defined in `internal/mcp/server.go`:
+Profiles are defined in `internal/mcp/server.go`. The supported local profiles are
+`agent` (default, the canonical coding-agent suite), `dev` (the golden suite for
+local software development), and `minimal` (the core memory tools for
+ultra-low-token contexts):
 
 - `agent` contains ordinary memory, graph, scoring, revision, and project tools.
-- `admin` contains destructive and curation tools.
-- `temporal` contains temporal graph and observability tools.
+- `dev` contains the golden software-development tool suite (`coder` is an accepted
+  alias).
+- `minimal` contains the five core memory tools only.
+- `admin` (destructive deletion and curation) and `temporal` (temporal graph and
+  observability) are deprecated non-agentic profiles: their keys remain for
+  backward compatibility but they are retired from standard agent discovery.
 
-Local MCP uses stdio. Server MCP uses Streamable HTTP at `/mcp` and requires the
-server bearer token.
+MCP profiles are local-only. Local MCP uses stdio; server MCP uses Streamable HTTP
+at `/mcp` and requires the server bearer token. The embedded web dashboard — served
+by the local binary alongside the CLI and TUI (see [HTTP](#http)) — is a separate
+local surface, not an MCP profile.
 
 ## HTTP
 

@@ -59,7 +59,7 @@
     <text x="15" y="95" fill="#cbd5e1" font-size="11">• System Prompts</text>
     <text x="15" y="120" fill="#cbd5e1" font-size="11">• MCP Skills</text>
     <text x="15" y="145" fill="#cbd5e1" font-size="11">• BOLA Defense</text>
-    <text x="15" y="170" fill="#cbd5e1" font-size="11">• Multi-Tenant RLS</text>
+    <text x="15" y="170" fill="#cbd5e1" font-size="11">• RLS (Single Tenant)</text>
   </g>
 
   <!-- Loop back path -->

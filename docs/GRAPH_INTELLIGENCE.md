@@ -56,7 +56,36 @@ The AST extractor analyzes codebase repositories and extracts structured symbols
 
 ---
 
-## 3. Server Endpoints & MCP Tools
+## 3. CLI Code Intelligence (`cortex code`)
+
+The `cortex code` command exposes the same AST and graph engine from the terminal
+(see [CLI-REFERENCE.md](CLI-REFERENCE.md#323-code) for the authoritative command
+contract). `cortex code`, `cortex code help`, `cortex code --help`, and
+`cortex code -h` print the subcommand list and exit `0`; every subcommand defaults
+`--project` to `default`.
+
+| Subcommand | Synopsis | Purpose |
+| :--- | :--- | :--- |
+| `scan` | `cortex code scan [path] [--project=NAME] [--max-files=N]` | Scan a repository and index AST symbols (delegates to `cortex ingest`; `--max-files` default `500`). |
+| `symbols` | `cortex code symbols [--project=NAME] [--kind=KIND] [--file=PATH]` | List up to 100 indexed symbols, optionally filtered by kind or file. |
+| `analyze` | `cortex code analyze [--project=NAME]` | Run Graphify analytics: totals, average cohesion, god nodes, and import cycles. |
+| `impact` | `cortex code impact <target> [--project=NAME] [--hops=N] [--json]` | Blast radius for a symbol or file (`--hops` default `3`; alias `blast-radius`). |
+| `diff` | `cortex code diff [--staged] [--project=NAME] [--hops=N] [--json]` | Blast radius of uncommitted Git changes (`--staged`/`--cached`; `--hops` default `3`). |
+| `graph` | `cortex code graph [--project=NAME] [--format=mermaid] [--symbol=S] [--hops=N] [--max-nodes=N]` | Export or visualize the dependency graph (`--format` `mermaid`, `ascii`/`tree`, `json`; `--hops` default `2`, `--max-nodes` default `50`). |
+| `map` | `cortex code map [--project=NAME] [--budget=N]` | Generate a compact token-budgeted Repo-Map for LLMs (`--budget` default `2048`; alias `repo-map`). |
+| `tests` | `cortex code tests <target> [--project=NAME] [--hops=N] [--json]` | Find impacted test files and functions for Fast-TDD (`--hops` default `3`; aliases `test-map`, `impacted-tests`). |
+| `find` | `cortex code find <query> [--project=NAME] [--kind=K] [--file=PATH] [--limit=N] [--regex] [--json]` | Search symbols by substring or regex (`--limit` default `50`; alias `search-symbols`). |
+
+```bash
+cortex code scan . --project cortex
+cortex code impact CalculateBlastRadius --project cortex --hops=2
+cortex code diff --staged --json
+cortex code tests CalculateBlastRadius
+```
+
+---
+
+## 4. Server Endpoints & MCP Tools
 
 ### REST Endpoints
 - `GET /api/graph/project-graph?project=<name>`: Loads the complete code and knowledge graph for a project.
@@ -79,7 +108,7 @@ The AST extractor analyzes codebase repositories and extracts structured symbols
 
 ---
 
-## 4. Web UI Features (`web/src/app/graph/page.tsx`)
+## 5. Web UI Features (`web/src/app/graph/page.tsx`)
 
 - **Project Switcher:** Select any project (`cortex`, `kardex`, `default`, or all) to load its complete graph.
 - **AST Code Scanner Modal:** Scan local directories (`.`, `D:\my-project`) to instantly map symbols into PostgreSQL.

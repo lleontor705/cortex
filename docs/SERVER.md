@@ -4,19 +4,20 @@ Server mode is the PostgreSQL composition selected with `cortex --mode server`.
 
 ## Docker Deployment (GHCR Official Images)
 
-Cortex publishes official multi-platform images on GitHub Container Registry:
-- Backend Server: `ghcr.io/lleontor705/cortex:latest`
-- Web UI Control Room: `ghcr.io/lleontor705/cortex-web:latest`
+Cortex publishes one official multi-platform image on GitHub Container Registry:
+- Cortex Server (API + embedded web UI): `ghcr.io/lleontor705/cortex:latest`
+
+The single binary serves the operator web UI at `/` and the API at `/api/*` on the same listener; there is no separate web image and no second UI port.
 
 ```bash
 # 1. Configure environment variables (optional overrides)
 cp .env.example .env
 
-# 2. Pull and start PostgreSQL, Cortex Server, and Web UI
+# 2. Pull and start PostgreSQL and Cortex Server
 docker compose up -d
 ```
 
-The Compose file creates PostgreSQL, applies the embedded server schema, bootstraps a development organization/workspace/principal, and starts Cortex Server on port `7438` and Web UI on port `3000`. To rebuild locally from source code, use `docker compose up --build -d`.
+The Compose file creates PostgreSQL, applies the embedded server schema, bootstraps one development deployment identity (`server.tenant_id`, `server.workspace_id`, `server.principal_subject`), and starts Cortex Server on port `7438`, which also serves the embedded web UI at `/` on that same origin. On first boot the process prints the web UI endpoint, the key file path, and the web access key shown exactly once; retrieve them with `docker compose logs cortex-server` and paste the key at `http://localhost:7438/`. To rebuild locally from source code, use `docker compose up --build -d`.
 
 For a full reference of all supported environment variables, see [.env.example](../.env.example) and [CONFIGURATION.md](CONFIGURATION.md).
 

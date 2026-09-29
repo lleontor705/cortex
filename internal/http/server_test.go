@@ -432,3 +432,104 @@ func TestAuthMiddleware_InvalidTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthMiddleware_UnauthorizedEnvelopeIsCanonical(t *testing.T) {
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret-token"})
+	handler := srv.httpServer.Handler
+
+	req := httptest.NewRequest("GET", "/api/observations", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != `Bearer realm="cortex"` {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, `Bearer realm="cortex"`)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want application/json; charset=utf-8", got)
+	}
+
+	raw := w.Body.Bytes()
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope %q: %v", raw, err)
+	}
+	if envelope.Error.Code != "unauthorized" {
+		t.Fatalf("error.code = %q, want %q", envelope.Error.Code, "unauthorized")
+	}
+	if envelope.Error.Message != "valid bearer token required" {
+		t.Fatalf("error.message = %q, want %q", envelope.Error.Message, "valid bearer token required")
+	}
+
+	var flat map[string]any
+	if err := json.Unmarshal(raw, &flat); err != nil {
+		t.Fatalf("decode flat map %q: %v", raw, err)
+	}
+	if _, ok := flat["code"]; ok {
+		t.Fatalf("401 envelope %q is flat; want the canonical nested {\"error\":{\"code\",\"message\"}} shape", raw)
+	}
+}
+
+func TestAuthMiddleware_WhitespacePaddedBearerIsAccepted(t *testing.T) {
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret-token"})
+	handler := srv.httpServer.Handler
+
+	req := httptest.NewRequest("GET", "/api/observations", nil)
+	req.Header.Set("Authorization", "  Bearer  secret-token  ")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 for whitespace-padded bearer under the local Trim policy, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthMiddleware_WhitespacePaddedAPIKeyIsAccepted(t *testing.T) {
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret-token"})
+	handler := srv.httpServer.Handler
+
+	req := httptest.NewRequest("GET", "/api/observations", nil)
+	req.Header.Set("X-API-Key", "  secret-token  ")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 for whitespace-padded X-API-Key under the local Trim policy, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthMiddleware_ComparesThroughHTTPAuthPrimitive proves REQ-SQ-SEC-007's
+// "withAuth MUST consume the primitive": the middleware must hand the
+// extracted, Trim-normalized secret to httpauth.EqualSecret. An inline raw byte
+// compare would leave the spy uncalled, so this oracle kills that reversion.
+func TestAuthMiddleware_ComparesThroughHTTPAuthPrimitive(t *testing.T) {
+	srv := setupTestServerWithOptions(t, Options{AuthToken: "secret-token"})
+	handler := srv.httpServer.Handler
+
+	var comparisons [][2]string
+	original := equalSecret
+	equalSecret = func(presented, configured string) bool {
+		comparisons = append(comparisons, [2]string{presented, configured})
+		return original(presented, configured)
+	}
+	t.Cleanup(func() { equalSecret = original })
+
+	req := httptest.NewRequest("GET", "/api/observations", nil)
+	req.Header.Set("Authorization", "  Bearer  secret-token  ")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 for the trimmed bearer, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(comparisons) != 1 || comparisons[0] != [2]string{"secret-token", "secret-token"} {
+		t.Fatalf("httpauth.EqualSecret calls = %v, want exactly [[secret-token secret-token]]: withAuth bypassed the shared primitive", comparisons)
+	}
+}

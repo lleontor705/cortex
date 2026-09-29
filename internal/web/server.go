@@ -2,6 +2,8 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +61,7 @@ func NewHandler(cfg Config, verifier webkey.Verifier) http.Handler {
 		assets:    assetsFS,
 		verifier:  verifier,
 		serverURL: strings.TrimRight(strings.TrimSpace(cfg.ServerURL), "/"),
+		content:   indexContent(assetsFS),
 	}
 }
 
@@ -65,6 +69,40 @@ type handler struct {
 	assets    fs.FS
 	verifier  webkey.Verifier
 	serverURL string
+	content   map[string]contentIdentity
+}
+
+// contentIdentity is the precomputed validator state for one embedded file: a
+// strong ETag derived from the exact uncompressed bytes, plus whether a
+// precompressed "<name>.gz" sibling can satisfy an Accept-Encoding: gzip
+// request. Both are resolved once per handler so the hot request path never
+// re-hashes asset bytes.
+type contentIdentity struct {
+	etag    string
+	gzipped bool
+}
+
+func indexContent(fsys fs.FS) map[string]contentIdentity {
+	index := make(map[string]contentIdentity)
+	_ = fs.WalkDir(fsys, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		data, readErr := fs.ReadFile(fsys, name)
+		if readErr != nil {
+			return nil
+		}
+		sum := sha256.Sum256(data)
+		index[name] = contentIdentity{etag: `"` + hex.EncodeToString(sum[:]) + `"`}
+		return nil
+	})
+	for name, identity := range index {
+		if _, ok := index[name+".gz"]; ok {
+			identity.gzipped = true
+			index[name] = identity
+		}
+	}
+	return index
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -217,33 +255,83 @@ func (h *handler) resolveAsset(rel string) (string, bool) {
 }
 
 func (h *handler) serveShell(w http.ResponseWriter, r *http.Request) {
-	data, err := fs.ReadFile(h.assets, "index.html")
-	if err != nil {
+	h.serveAssetPayload(w, r, "index.html", func() {
 		http.Error(w, "web UI assets unavailable", http.StatusInternalServerError)
-		return
-	}
-	h.setStaticHeaders(w, "index.html")
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(data))
+	})
 }
 
 func (h *handler) writeFile(w http.ResponseWriter, r *http.Request, name string) {
-	data, err := fs.ReadFile(h.assets, name)
+	h.serveAssetPayload(w, r, name, func() { http.NotFound(w, r) })
+}
+
+// serveAssetPayload answers one resolved asset. It emits the precomputed ETag so
+// http.ServeContent resolves If-None-Match into a bodiless 304, and swaps in the
+// precompressed ".gz" sibling when the client accepts it. fail mirrors the
+// caller's missing-file contract (404 for assets, 500 for the SPA shell).
+func (h *handler) serveAssetPayload(w http.ResponseWriter, r *http.Request, name string, fail func()) {
+	identity := h.content[name]
+	useGzip := identity.gzipped && acceptsGzip(r)
+	source := name
+	if useGzip {
+		source = name + ".gz"
+	}
+	data, err := fs.ReadFile(h.assets, source)
+	if err != nil && useGzip {
+		useGzip = false
+		data, err = fs.ReadFile(h.assets, name)
+	}
 	if err != nil {
-		http.NotFound(w, r)
+		fail()
 		return
 	}
-	h.setStaticHeaders(w, name)
+	h.setStaticHeaders(w, name, identity)
+	if useGzip {
+		w.Header().Set("Content-Encoding", "gzip")
+	}
 	http.ServeContent(w, r, path.Base(name), time.Time{}, bytes.NewReader(data))
 }
 
-func (h *handler) setStaticHeaders(w http.ResponseWriter, name string) {
+func (h *handler) setStaticHeaders(w http.ResponseWriter, name string, identity contentIdentity) {
 	w.Header().Set("Content-Type", contentTypeFor(name))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if identity.etag != "" {
+		w.Header().Set("ETag", identity.etag)
+	}
+	if identity.gzipped {
+		// The same URL can answer with an identity or a gzip representation, so
+		// shared caches must key on Accept-Encoding.
+		w.Header().Set("Vary", "Accept-Encoding")
+	}
 	if strings.HasPrefix(name, "_next/") {
 		w.Header().Set("Cache-Control", immutableCacheControl)
 		return
 	}
 	w.Header().Set("Cache-Control", noCacheControl)
+}
+
+// acceptsGzip reports whether the request negotiates gzip, honoring explicit
+// q=0 refusals and the "*" wildcard so a discouraged encoding is never served.
+func acceptsGzip(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, encoding := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		name, params, _ := strings.Cut(encoding, ";")
+		name = strings.TrimSpace(name)
+		if !strings.EqualFold(name, "gzip") && name != "*" {
+			continue
+		}
+		quality := strings.TrimSpace(params)
+		if !strings.HasPrefix(quality, "q=") {
+			return true
+		}
+		value, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(quality, "q=")), 64)
+		if err != nil {
+			return true
+		}
+		return value > 0
+	}
+	return false
 }
 
 // isRouteLike reports whether a missing path should fall back to the SPA shell.

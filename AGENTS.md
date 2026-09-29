@@ -13,7 +13,7 @@
 - Preserve the architecture gate in `internal/app/arch_test.go`: local code must remain zero-CGO and must not import PostgreSQL, authz/identity, Qdrant/pgvector, or `internal/platform/server`. `cmd/cortex` is the sole allowed bridge to server composition.
 - `cortex --mode server` serves the PostgreSQL composition over authenticated HTTP (`/api/*`) and Streamable HTTP MCP (`/mcp`); it is distinct from the SQLite-backed local `serve` command.
 - Server persistence must remain behind `AuthorizedStore`/`AuthorizedContext`. The request plane authenticates one configured static bearer against a synthetic constant service principal assembled from `server.tenant_id`, `server.workspace_id`, and `server.principal_subject`; tenant and workspace are configuration constants, never client input. Do not expose raw PostgreSQL repositories or transaction/scoring accessors from the server runtime.
-- Local MCP tools and profiles are defined in `internal/mcp/server.go`; server MCP is a separate authenticated subset in `internal/platform/server/http.go`. The supported namespace is `cortex_*`; tests explicitly reject legacy `mem_*` names and Engram framing. Profiles are local-only: `agent`, `admin`, and `temporal`.
+- Local MCP tools and profiles are defined in `internal/mcp/server.go`; server MCP is a separate authenticated subset in `internal/platform/server/http.go`. The supported namespace is `cortex_*`; tests explicitly reject legacy `mem_*` names and Engram framing. Profiles are local-only: `agent`, `dev`, and `minimal` are supported; `admin` and `temporal` are deprecated and retired from standard agent discovery.
 
 ## Schema And Vectors
 

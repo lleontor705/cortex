@@ -6,7 +6,6 @@ package http
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/httpauth"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	graphstore "github.com/lleontor705/cortex/v2/internal/store/graph"
 	"github.com/lleontor705/cortex/v2/internal/store/prompt"
@@ -977,6 +977,13 @@ func truncateHTTP(s string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
+// equalSecret is indirected through a variable so package tests can prove
+// withAuth performs credential comparison through the shared httpauth
+// primitive (REQ-SQ-SEC-007) instead of an inline byte compare, mirroring the
+// observability seam internal/httpauth keeps for its fixed-width digest oracle.
+// Production never reassigns it.
+var equalSecret = httpauth.EqualSecret
+
 func withAuth(next http.Handler, token string) http.Handler {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -988,27 +995,13 @@ func withAuth(next http.Handler, token string) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if requestAuthorized(r, token) {
+		if presented, ok := httpauth.ExtractSecret(r, httpauth.LocalOptions()); ok && equalSecret(presented, token) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		w.Header().Set("WWW-Authenticate", `Bearer realm="cortex"`)
-		writeError(w, http.StatusUnauthorized, codeUnauthorized, "missing or invalid API token")
+		httpauth.WriteUnauthorized(w)
 	})
-}
-
-func requestAuthorized(r *http.Request, token string) bool {
-	if authHeader := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(authHeader, "Bearer ") {
-		candidate := strings.TrimSpace(authHeader[len("Bearer "):])
-		if candidate != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) == 1 {
-			return true
-		}
-	}
-	if apiKey := strings.TrimSpace(r.Header.Get("X-API-Key")); apiKey != "" {
-		return subtle.ConstantTimeCompare([]byte(apiKey), []byte(token)) == 1
-	}
-	return false
 }
 
 func corsHandler(allowedOrigins []string, next http.Handler) http.Handler {

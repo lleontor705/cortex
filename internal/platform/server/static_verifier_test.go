@@ -65,6 +65,44 @@ func TestStaticBearerVerifierHonorsConfiguredGrantDigest(t *testing.T) {
 	}
 }
 
+// TestStaticBearerVerifierPropagatesResolvedGrantVersion is the HIGH-1
+// regression guard. After a canonical-grant reconcile bumps the sticky
+// grant_version, the composition overwrites the deprecated configured value
+// with the actor row's real version; the synthetic principal MUST carry that
+// propagated version so migration 112's FOR SHARE revalidation matches.
+// Re-hardcoding the assembled version to the historical 1 turns this red.
+func TestStaticBearerVerifierPropagatesResolvedGrantVersion(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Server.GrantDigest = "static:" + strings.Repeat("a", 64)
+	cfg.Server.GrantVersion = 2
+	verifier, err := newStaticBearerVerifier(cfg)
+	if err != nil {
+		t.Fatalf("newStaticBearerVerifier() = %v", err)
+	}
+	got, err := verifier.VerifyToken(context.Background(), cfg.HTTP.Token, "")
+	if err != nil {
+		t.Fatalf("VerifyToken() = %v", err)
+	}
+	if got.GrantVersion != 2 {
+		t.Fatalf("grant version = %d, want the propagated row version 2", got.GrantVersion)
+	}
+	if got.GrantDigest != cfg.Server.GrantDigest {
+		t.Fatalf("grant digest = %q, want the resolved provenance %q", got.GrantDigest, cfg.Server.GrantDigest)
+	}
+}
+
+// TestStaticBearerVerifierRejectsNegativeGrantVersion pins the fail-closed
+// startup contract: a negative resolved version can never yield a principal.
+// A zero version remains the deprecated configured default and keeps the
+// historical version-1 shape covered by the exact-match test above.
+func TestStaticBearerVerifierRejectsNegativeGrantVersion(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Server.GrantVersion = -1
+	if _, err := newStaticBearerVerifier(cfg); err == nil {
+		t.Fatal("newStaticBearerVerifier(negative grant_version) = nil error, want fail-closed refusal")
+	}
+}
+
 // TestStaticBearerVerifierFailsClosedForAnyByteDifference covers the byte-exact
 // contract: a secret that differs in any byte, is empty, or carries
 // surrounding whitespace must be rejected without leaking a principal.
@@ -105,9 +143,9 @@ func TestStaticBearerVerifierFailsClosedForAnyByteDifference(t *testing.T) {
 
 func TestStaticBearerVerifierRequiresSingleTenantIdentity(t *testing.T) {
 	cases := []struct {
-		name   string
-		key    string
-		apply  func(*config.Config)
+		name  string
+		key   string
+		apply func(*config.Config)
 	}{
 		{"missing tenant", "tenant_id", func(c *config.Config) { c.Server.TenantID = "" }},
 		{"missing workspace", "workspace_id", func(c *config.Config) { c.Server.WorkspaceID = "" }},

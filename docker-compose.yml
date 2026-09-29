@@ -30,7 +30,8 @@ services:
       CORTEX_SERVER_STORAGE_DSN: postgres://${POSTGRES_APP_USER:-cortex_test}:${POSTGRES_APP_PASSWORD:-cortex_test}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
       CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://${POSTGRES_USER:-cortex_bootstrap}:${POSTGRES_PASSWORD:-cortex_bootstrap}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
       CORTEX_SERVER_AUTO_BOOTSTRAP: "${CORTEX_SERVER_AUTO_BOOTSTRAP:-true}"
-      CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-true}"
+      # Local development opt-in: set CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true via env or .env to reuse the runtime DSN for migration/bootstrap.
+      CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-false}"
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: "${CORTEX_HTTP_HOST:-0.0.0.0}"
       CORTEX_HTTP_PORT: "${CORTEX_HTTP_PORT:-7438}"

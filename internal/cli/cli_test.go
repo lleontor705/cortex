@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -750,6 +751,111 @@ func TestConfigWizardAndTUIFlags(t *testing.T) {
 	}
 	if len(capturedArgs) != 0 {
 		t.Fatalf("expected empty args passed to runTUI, got %v", capturedArgs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// REQ-SQ-SEC-003: an empty http.host formats addr as ":7438", which binds every
+// interface, so it must not qualify for the tokenless loopback allowance.
+// ---------------------------------------------------------------------------
+
+// writeCortexHTTPHostConfig pins http.host in the isolated $HOME config file.
+// An empty CORTEX_HTTP_HOST env var is ignored by viper (AllowEmptyEnv is false),
+// so the file is the only deterministic way to exercise a blank host end to end.
+func writeCortexHTTPHostConfig(t *testing.T, host string) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("HOME"), ".cortex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	body := "http:\n  host: \"" + host + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "cortex.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write cortex.yaml: %v", err)
+	}
+}
+
+func TestIsLoopbackHostEmptyIsNotLoopback(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"", false},
+		{"   ", false},
+		{"localhost", true},
+		{"LOCALHOST", true},
+		{"127.0.0.1", true},
+		{"127.1.2.3", true},
+		{"::1", true},
+		{"0.0.0.0", false},
+		{"8.8.8.8", false},
+		{"example.com", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestServeEmptyHostWithoutTokenRefuses(t *testing.T) {
+	setCLIEnv(t)
+	t.Setenv("CORTEX_HTTP_HOST", "")
+	t.Setenv("CORTEX_HTTP_TOKEN", "")
+	writeCortexHTTPHostConfig(t, "")
+	keyPath := filepath.Join(t.TempDir(), "web.key")
+	launched := stubServe(t, keyPath)
+
+	code, _, stderr := run(t, "cortex", "serve")
+
+	if code != 1 {
+		t.Fatalf("empty-host serve code = %d, want 1 (stderr = %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "refusing to expose HTTP API") {
+		t.Fatalf("empty-host serve stderr = %q", stderr)
+	}
+	if *launched {
+		t.Fatal("refused empty-host serve still reached ListenAndServe")
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refused empty-host serve still minted a web key at %q (stat err = %v)", keyPath, err)
+	}
+}
+
+func TestServeLocalhostWithoutTokenServes(t *testing.T) {
+	setCLIEnv(t)
+	t.Setenv("CORTEX_HTTP_HOST", "")
+	t.Setenv("CORTEX_HTTP_TOKEN", "")
+	keyPath := filepath.Join(t.TempDir(), "web.key")
+	launched := stubServe(t, keyPath)
+
+	code, _, stderr := run(t, "cortex", "serve")
+
+	if code != 0 {
+		t.Fatalf("localhost serve code = %d, want 0 (stderr = %q)", code, stderr)
+	}
+	if !*launched {
+		t.Fatal("tokenless localhost serve never reached ListenAndServe")
+	}
+}
+
+func TestServeExplicitLoopbackWithoutTokenServes(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		t.Run(host, func(t *testing.T) {
+			setCLIEnv(t)
+			t.Setenv("CORTEX_HTTP_HOST", host)
+			t.Setenv("CORTEX_HTTP_TOKEN", "")
+			keyPath := filepath.Join(t.TempDir(), "web.key")
+			launched := stubServe(t, keyPath)
+
+			code, _, stderr := run(t, "cortex", "serve")
+
+			if code != 0 {
+				t.Fatalf("%s serve code = %d, want 0 (stderr = %q)", host, code, stderr)
+			}
+			if !*launched {
+				t.Fatalf("tokenless loopback %s serve never reached ListenAndServe", host)
+			}
+		})
 	}
 }
 

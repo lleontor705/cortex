@@ -3,7 +3,9 @@ package http
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -344,5 +346,98 @@ func TestLocalProjectGraphOverStore(t *testing.T) {
 	}
 	if unknown.Root != "missing" || len(unknown.Nodes) != 0 || len(unknown.Edges) != 0 {
 		t.Fatalf("unknown project subgraph = %+v, want empty root missing", unknown)
+	}
+}
+
+// TestLocalProjectGraphDoesNotLeakOutOfProjectNodes is the MEDIUM-5
+// regression (REQ-SQ-SEC-005): the seed query is project-scoped but expansion
+// reads nodes by identifier through an unscoped GetByID, so an edge crossing
+// the project boundary used to serialize the foreign project's title and
+// labels into the served subgraph.
+func TestLocalProjectGraphDoesNotLeakOutOfProjectNodes(t *testing.T) {
+	srv := setupParityServer(t)
+	ctx := context.Background()
+
+	if err := srv.deps.Sessions.Create(ctx, &domain.Session{ID: "s1", Project: "alpha", Directory: "."}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	save := func(title, project string) *domain.Observation {
+		observation := &domain.Observation{
+			SessionID: "s1", Title: title, Content: title, Type: "manual",
+			Project: project, Scope: "project", Source: "manual",
+		}
+		if err := srv.deps.Observations.Save(ctx, observation); err != nil {
+			t.Fatalf("save observation %q: %v", title, err)
+		}
+		return observation
+	}
+	alphaRoot := save("alpha root", "alpha")
+	betaSecret := save("beta secret", "beta")
+	alphaLeaf := save("alpha leaf", "alpha")
+	for _, edge := range []*domain.Edge{
+		{FromObsID: alphaRoot.ID, ToObsID: betaSecret.ID, RelationType: "references", Weight: 1, Confidence: 1},
+		{FromObsID: betaSecret.ID, ToObsID: alphaLeaf.ID, RelationType: "references", Weight: 1, Confidence: 1},
+	} {
+		if err := srv.deps.Graph.CreateEdge(ctx, edge); err != nil {
+			t.Fatalf("create edge: %v", err)
+		}
+	}
+
+	rec := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/graph/project-graph?project=alpha", nil, parityAuth())
+	assertStatus(t, rec, http.StatusOK)
+	if body := rec.Body.String(); strings.Contains(body, "beta secret") {
+		t.Fatalf("project graph leaked an out-of-project title: %s", body)
+	}
+
+	var subgraph domain.GraphSubgraph
+	decodeJSON(t, rec, &subgraph)
+	if len(subgraph.Nodes) != 2 {
+		t.Fatalf("nodes = %+v, want exactly the two seeded alpha observations", subgraph.Nodes)
+	}
+	wantNode := map[string]bool{localObservationNodeID(alphaRoot): true, localObservationNodeID(alphaLeaf): true}
+	for _, node := range subgraph.Nodes {
+		if !wantNode[node.ID] || node.Project != "alpha" || node.Label == "beta secret" {
+			t.Fatalf("out-of-project node leaked: %+v", node)
+		}
+	}
+	if len(subgraph.Edges) != 0 {
+		t.Fatalf("crossing edges = %+v, want both boundary edges dropped", subgraph.Edges)
+	}
+}
+
+// TestLocalProjectGraphPrunesCrossProjectBoundary pins the scoped counterpart:
+// an in-project node linked only to an out-of-project node survives while the
+// boundary edge is dropped, keeping the payload referentially closed.
+func TestLocalProjectGraphPrunesCrossProjectBoundary(t *testing.T) {
+	ctx := context.Background()
+	alpha := &domain.Observation{ID: 1, Title: "alpha", Project: "alpha", Scope: "project"}
+	beta := &domain.Observation{ID: 2, Title: "beta", Project: "beta", Scope: "project"}
+	fixture := newLocalGraphFixture(alpha, beta)
+	fixture.addEdge(localGraphEdge(11, 1, 2, "references"))
+
+	subgraph := buildProjectGraphSubgraph(ctx, "alpha", []*domain.Observation{alpha}, 2, 10, fixture.neighbors, fixture.lookup)
+	if got := localGraphNodeIDs(subgraph); len(got) != 1 || !got["observation:1"] {
+		t.Fatalf("nodes = %v, want only the in-project seed", got)
+	}
+	if len(subgraph.Edges) != 0 {
+		t.Fatalf("edges = %+v, want the boundary edge dropped", subgraph.Edges)
+	}
+}
+
+// TestLocalProjectGraphAllProjectsKeepsCrossProjectExpansion pins that the
+// aggregate root disables the boundary, so unscoped traversal is unchanged.
+func TestLocalProjectGraphAllProjectsKeepsCrossProjectExpansion(t *testing.T) {
+	ctx := context.Background()
+	alpha := &domain.Observation{ID: 1, Title: "alpha", Project: "alpha", Scope: "project"}
+	beta := &domain.Observation{ID: 2, Title: "beta", Project: "beta", Scope: "project"}
+	fixture := newLocalGraphFixture(alpha, beta)
+	fixture.addEdge(localGraphEdge(11, 1, 2, "references"))
+
+	subgraph := buildProjectGraphSubgraph(ctx, "all_projects", []*domain.Observation{alpha}, 2, 10, fixture.neighbors, fixture.lookup)
+	if got := localGraphNodeIDs(subgraph); len(got) != 2 || !got["observation:2"] {
+		t.Fatalf("all_projects nodes = %v, want both projects expanded", got)
+	}
+	if len(subgraph.Edges) != 1 {
+		t.Fatalf("all_projects edges = %d, want 1", len(subgraph.Edges))
 	}
 }

@@ -116,7 +116,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	// after the durable reconciler above runs, and only the privileged
 	// migration role can read actor_subjects.grant_digest, so it is resolved
 	// here while that handle is still open.
-	staticProvenance, err := resolveStaticBindProvenance(ctx, migrationDB, cfg)
+	staticProvenance, grantVersion, err := resolveStaticBindProvenance(ctx, migrationDB, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -298,13 +298,25 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	})
 	// The static verifier is the ONLY request identity source: it derives one
 	// synthetic constant principal from configuration, carrying the
-	// migration-112 static binder proof resolved from the bootstrapped actor.
+	// migration-112 static binder proof AND the grant version read from the
+	// bootstrapped actor row. A hardcoded version would desynchronize from the
+	// sticky grant_version after any canonical-grant reconcile, so every
+	// authenticated request would bind a stale version and PostgreSQL would
+	// fail closed with SQLSTATE 28000 in a non-recoverable outage.
 	requestConfig := cfg
 	requestConfig.Server.GrantDigest = staticProvenance
+	requestConfig.Server.GrantVersion = grantVersion
 	requestVerifier, err := newStaticBearerVerifier(requestConfig)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct static bearer verifier: %w", err)
+	}
+	// Equality assertion: the assembled principal must carry the exact version
+	// the actor row reported. Divergence means the verifier stopped consuming
+	// the composed value, which would reintroduce the HIGH-1 outage.
+	if requestVerifier.principal.GrantVersion != grantVersion {
+		pool.Close()
+		return nil, fmt.Errorf("server: static bearer principal grant version %d does not match the bootstrapped row version %d", requestVerifier.principal.GrantVersion, grantVersion)
 	}
 	authenticator := requestAuthenticator{
 		verifier: requestVerifier,
@@ -541,11 +553,15 @@ func bootstrapServicePrincipal(ctx context.Context, db *sql.DB, cfg config.Confi
 }
 
 // resolveStaticBindProvenance reads the bootstrapped service principal's
-// persisted grant digest and renders the migration-112 static binder contract
-// for the synthetic request principal. The digest cannot be a configured
-// constant: cortex_bind_principal recomputes the static MAC from the actor row
-// and fails closed on any value it cannot reproduce.
-func resolveStaticBindProvenance(ctx context.Context, db *sql.DB, cfg config.Config) (string, error) {
+// persisted grant digest and grant version, then renders the migration-112
+// static binder contract for the synthetic request principal. The digest
+// cannot be a configured constant: cortex_bind_principal recomputes the static
+// MAC from the actor row and fails closed on any value it cannot reproduce.
+// The returned version must also reach the request principal, because the
+// binder revalidates the presented version against the row before the MAC
+// check; returning it here lets the composition carry the real value instead
+// of a stale literal.
+func resolveStaticBindProvenance(ctx context.Context, db *sql.DB, cfg config.Config) (string, int64, error) {
 	var storedDigest string
 	var grantVersion int64
 	err := db.QueryRowContext(ctx, `
@@ -558,12 +574,16 @@ func resolveStaticBindProvenance(ctx context.Context, db *sql.DB, cfg config.Con
 		cfg.Server.TenantID, cfg.Server.PrincipalSubject,
 	).Scan(&storedDigest, &grantVersion)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", errors.New("server: bootstrapped service principal is missing or revoked")
+		return "", 0, errors.New("server: bootstrapped service principal is missing or revoked")
 	}
 	if err != nil {
-		return "", fmt.Errorf("server: read bootstrapped service principal: %w", err)
+		return "", 0, fmt.Errorf("server: read bootstrapped service principal: %w", err)
 	}
-	return staticBindProvenance(cfg.Server.TenantID, cfg.Server.PrincipalSubject, storedDigest, grantVersion)
+	provenance, err := staticBindProvenance(cfg.Server.TenantID, cfg.Server.PrincipalSubject, storedDigest, grantVersion)
+	if err != nil {
+		return "", 0, err
+	}
+	return provenance, grantVersion, nil
 }
 
 // staticBindProvenance derives the `static:<hex>` argument migration 112

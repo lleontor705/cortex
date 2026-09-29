@@ -101,8 +101,8 @@
     <!-- Storage Boxes -->
     <g transform="translate(25, 40)">
       <rect width="255" height="50" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1"/>
-      <text x="127" y="24" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">PostgreSQL Multi-Tenant (RLS)</text>
-      <text x="127" y="40" text-anchor="middle" fill="#94a3b8" font-size="10">Aislamiento por Tenant, Workspace y Proyecto</text>
+      <text x="127" y="24" text-anchor="middle" fill="#f1f5f9" font-size="12" font-weight="600">PostgreSQL (RLS) — Single Tenant</text>
+      <text x="127" y="40" text-anchor="middle" fill="#94a3b8" font-size="10">Aislamiento por Workspace y Proyecto</text>
     </g>
     <g transform="translate(305, 40)">
       <rect width="255" height="50" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>

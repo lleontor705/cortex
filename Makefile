@@ -82,6 +82,8 @@ web-build:
 	@mkdir -p $(WEB_DIST)
 	@find $(WEB_DIST) -mindepth 1 -maxdepth 1 ! -name index.html -exec rm -rf {} +
 	@cp -R $(WEB_OUT)/. $(WEB_DIST)/
+	@echo "Precompressing text assets for gzip content negotiation..."
+	@find $(WEB_DIST) -type f ! -name '*.gz' \( -name '*.html' -o -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.json' -o -name '*.txt' -o -name '*.svg' -o -name '*.map' -o -name '*.webmanifest' -o -name '*.xml' \) -exec gzip -k9 {} +
 	@echo "Embedded web assets synced into $(WEB_DIST)"
 
 # Run the cortex application

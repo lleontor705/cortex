@@ -50,12 +50,13 @@ The local database defaults to `~/.cortex/cortex.db`. Configuration is read from
 
 `cortex setup opencode` installs its TypeScript event plugin from content embedded in the binary. Claude Code's native lifecycle plugin is installed separately through its marketplace; `cortex setup claude-code` configures MCP and tool permissions.
 
-## Server & Web Docker (GHCR Images)
+## Server Docker (GHCR Images)
 
-Cortex provides official, multi-architecture (`linux/amd64`, `linux/arm64`) container images hosted on **GitHub Container Registry (`ghcr.io`)**:
+Cortex provides one official, multi-architecture (`linux/amd64`, `linux/arm64`) container image hosted on **GitHub Container Registry (`ghcr.io`)**:
 
-- **Server Backend**: `ghcr.io/lleontor705/cortex:latest`
-- **Web UI Control Room**: `ghcr.io/lleontor705/cortex-web:latest`
+- **Cortex Server (API + embedded web UI)**: `ghcr.io/lleontor705/cortex:latest`
+
+The same binary serves the operator web UI at `/` and the HTTP API at `/api/*`, so there is no separate web image and no second UI port.
 
 ### Running with Docker Compose
 
@@ -63,20 +64,21 @@ Cortex provides official, multi-architecture (`linux/amd64`, `linux/arm64`) cont
 # 1. Configure environment variables (optional overrides)
 cp .env.example .env
 
-# 2. Pull and start PostgreSQL, Cortex Server, and Web UI
+# 2. Pull and start PostgreSQL and Cortex Server
 docker compose up -d
 ```
 
-The server listens on `http://localhost:7438` and the Web UI on `http://localhost:3000`. Server mode is single-tenant: on first start the Docker entrypoint provisions and persists one stable deployment identity — the constants `CORTEX_SERVER_TENANT_ID`, `CORTEX_SERVER_WORKSPACE_ID`, and `CORTEX_SERVER_PRINCIPAL_SUBJECT`, plus the static `CORTEX_HTTP_TOKEN` bearer — generating any value you did not configure. Copy them with:
+The server listens on `http://localhost:7438` and serves the embedded web UI from the same origin at `http://localhost:7438/`. Server mode is single-tenant: on first start the Docker entrypoint provisions and persists one stable deployment identity — the constants `CORTEX_SERVER_TENANT_ID`, `CORTEX_SERVER_WORKSPACE_ID`, and `CORTEX_SERVER_PRINCIPAL_SUBJECT`, plus the static `CORTEX_HTTP_TOKEN` bearer — generating any value you did not configure. The first boot also mints one web access key and prints it exactly once. Copy both from:
 
 ```bash
 docker compose logs cortex-server
 ```
 
-### Running Standalone Containers
+Open `http://localhost:7438/` and paste the web access key once; the browser stores it and never prompts again. The key has its own namespace and is never accepted by `/api/*`, which keeps using the `CORTEX_HTTP_TOKEN` bearer. See [embedded-web.md](embedded-web.md) for the full key lifecycle.
+
+### Running a Standalone Container
 
 ```bash
-# 1. Run Cortex Server
 docker run -d \
   --name cortex-server \
   -p 7438:7438 \
@@ -86,15 +88,14 @@ docker run -d \
   -e CORTEX_SERVER_STORAGE_DSN="postgres://user:pass@host:5432/cortex?sslmode=disable" \
   -e CORTEX_SERVER_STORAGE_MIGRATION_DSN="postgres://admin:pass@host:5432/cortex?sslmode=disable" \
   ghcr.io/lleontor705/cortex:latest
-
-# 2. Run Cortex Web UI
-docker run -d \
-  --name cortex-web \
-  -p 3000:3000 \
-  ghcr.io/lleontor705/cortex-web:latest
 ```
 
-Open `http://localhost:3000` and enter `http://localhost:7438` along with the bootstrap `CORTEX_HTTP_TOKEN` bearer.
+Open `http://localhost:7438/` and paste the web access key printed once on first boot. The `cortex-server-state` volume mounted at `/home/cortex/.cortex` persists the key file (`web.key`) across restarts, so the browser does not need it re-entered. Inspect or rotate the key from inside the container:
+
+```bash
+docker exec cortex-server cortex web key show
+docker exec cortex-server cortex web key regenerate
+```
 
 ## Verification
 

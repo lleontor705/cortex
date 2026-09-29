@@ -18,11 +18,17 @@ import (
 var errInvalidBearer = errors.New("server: invalid bearer")
 
 // staticGrantDigest is the synthetic principal's provenance constant. It is
-// non-empty and paired with grant version 1 so the store and audit
-// composition contracts (postgres.validateAuthorizedContext,
+// non-empty and paired with the historical grant version so the store and
+// audit composition contracts (postgres.validateAuthorizedContext,
 // postgres.NewAuditSink) are satisfied even when the deprecated configured
 // grant_digest input is absent.
 const staticGrantDigest = "static-single-tenant"
+
+// staticGrantVersion is the deprecated configured grant_version default: a
+// zero value means the operator never set the compatibility input, so the
+// historical version-1 principal shape is preserved. The composition replaces
+// it with the bootstrapped actor row's real version before request traffic.
+const staticGrantVersion int64 = 1
 
 // staticBearerVerifier is the single-tenant request identity source: it
 // compares the presented secret to the configured bearer in constant time and
@@ -38,8 +44,11 @@ var _ principalVerifier = staticBearerVerifier{}
 
 // newStaticBearerVerifier assembles the verifier and its synthetic principal
 // from trusted administrator configuration. It fails closed, naming the
-// missing key, when principal_subject, tenant_id, or workspace_id is empty, so
-// the composition aborts before any pool or handler exists.
+// missing key, when principal_subject, tenant_id, or workspace_id is empty, and
+// on a negative grant_version, so the composition aborts before any pool or
+// handler exists. The assembled grant version is the configured (or composed)
+// value: hardcoding it would strand every request behind a stale grant after a
+// canonical-grant reconcile bumps the persisted version.
 func newStaticBearerVerifier(cfg config.Config) (staticBearerVerifier, error) {
 	for _, required := range []struct {
 		key   string
@@ -57,6 +66,17 @@ func newStaticBearerVerifier(cfg config.Config) (staticBearerVerifier, error) {
 	if grantDigest == "" {
 		grantDigest = staticGrantDigest
 	}
+	// The composition overwrites this with the bootstrapped actor row's real
+	// grant_version before assembling request traffic. A negative value is
+	// never a valid principal grant version and fails closed; a zero value is
+	// the deprecated configured default and keeps the historical shape.
+	grantVersion := cfg.Server.GrantVersion
+	if grantVersion < 0 {
+		return staticBearerVerifier{}, fmt.Errorf("server: grant_version %d is not a valid principal grant version", grantVersion)
+	}
+	if grantVersion == 0 {
+		grantVersion = staticGrantVersion
+	}
 	return staticBearerVerifier{
 		token: cfg.HTTP.Token,
 		principal: domain.Principal{
@@ -67,7 +87,7 @@ func newStaticBearerVerifier(cfg config.Config) (staticBearerVerifier, error) {
 			Roles:                   []string{string(authz.RoleOwner)},
 			AuthMethod:              "static",
 			GrantDigest:             grantDigest,
-			GrantVersion:            1,
+			GrantVersion:            grantVersion,
 			RateLimitTier:           "standard",
 			ProjectIDs:              []string{"*"},
 			ClassificationClearance: []string{"*"},

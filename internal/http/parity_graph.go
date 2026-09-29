@@ -24,6 +24,11 @@ const (
 	localProjectGraphMaxMaxNodes      = 200
 )
 
+// allProjectsRoot is the aggregate sentinel projectGraphRootLabel emits for an
+// unscoped request. It names the absence of a project boundary, so expansion
+// must not treat it as a real project to compare against.
+const allProjectsRoot = "all_projects"
+
 // projectObservationReader is the observation slice the traversal needs; the
 // concrete *sqlitestore.Store satisfies it through Deps.Observations.
 type projectObservationReader interface {
@@ -71,9 +76,18 @@ func (g localProjectGraph) ProjectGraph(ctx context.Context, project string, dep
 
 func projectGraphRootLabel(project string) string {
 	if project == "" {
-		return "all_projects"
+		return allProjectsRoot
 	}
 	return project
+}
+
+// projectGraphNodeInProject enforces the same project boundary the seed query
+// applies. Expansion resolves neighbours by identifier through an unscoped
+// GetByID, so without this check a single edge would serialize a foreign
+// project's title, kind and scope into the response (REQ-SQ-SEC-005). The
+// aggregate root denotes no boundary and admits every project.
+func projectGraphNodeInProject(root string, observation *domain.Observation) bool {
+	return root == allProjectsRoot || observation.Project == root
 }
 
 func clampProjectGraphBounds(depth, maxNodes int) (int, int) {
@@ -97,8 +111,11 @@ func clampProjectGraphBound(value, fallback, minimum, maximum int) int {
 // buildProjectGraphSubgraph runs the level-order walk. Nodes are emitted in
 // discovery order (seeds first) and neighbours are visited in a stable
 // edge-identifier order, so identical inputs always produce identical output.
-// Only edges whose two endpoints are known nodes are emitted, keeping the
-// serialized subgraph referentially closed.
+// A neighbour outside the root project is skipped unless the root is the
+// all_projects aggregate, so a crossing edge is dropped instead of pulling its
+// foreign endpoint (and its labels) into the payload. Only edges whose two
+// endpoints are known nodes are emitted, keeping the serialized subgraph
+// referentially closed.
 func buildProjectGraphSubgraph(
 	ctx context.Context,
 	root string,
@@ -159,6 +176,9 @@ func buildProjectGraphSubgraph(
 				if _, known := nodeIDByObs[neighbor]; !known {
 					observation, lookupErr := lookup(ctx, neighbor)
 					if lookupErr != nil || observation == nil {
+						continue
+					}
+					if !projectGraphNodeInProject(root, observation) {
 						continue
 					}
 					nodeID := localObservationNodeID(observation)

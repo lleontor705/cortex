@@ -1,30 +1,25 @@
 # CLI Reference
 
-The production entrypoint is `cmd/cortex`. Run `cortex help` for flags and `cortex <command> --help` where supported.
+This page is a short index. The authoritative CLI contract — invocation model,
+exit codes, every command with flags, defaults, environment overrides,
+authentication requirements, worked examples, the environment-variable index, and
+the deprecated-surface appendix — lives in **[CLI-REFERENCE.md](CLI-REFERENCE.md)**.
 
-| Command | Purpose |
-|---|---|
-| `setup` | Install agent integration with modular tool profiles (`--profile=agent\|dev\|minimal`) |
-| `status` / `mode` | Display operational mode (local, hybrid, server), DB path, sync status, and embedding provider |
-| `search` | Search observations with multi-modal retrieval (`--mode=auto\|direct\|semantic\|multi_hop`) |
-| `save` | Save a local observation |
-| `context` | Show recent session context |
-| `stats` | Show local statistics |
-| `timeline` | Show local observation timeline |
-| `revisions` | Show observation revisions |
-| `tui` | Launch Bubble Tea interactive terminal UI (`--config` opens Configuration Center directly) |
-| `serve` | Start local SQLite HTTP |
-| `mcp` | Start local MCP stdio (`--tools=agent\|dev\|minimal`, defaults to `agent`) |
-| `doctor` | Check database, FTS, graph, vectors, and orphans |
-| `reindex` | Rebuild local vector/index data |
-| `gc` | Remove archived local observations |
-| `config` | Manage configuration (`get`, `set`, `show`, `validate`, `init`, `wizard [--cli\|--tui]`, `path`) |
-| `auth` | Manage user authentication session (`login`, `status`, `logout`) |
-| `export` / `import` | Exchange observation data |
-| `sync` | Synchronize configured chunks |
-| `merge-projects` | Merge local project names |
-| `code` | Ingest AST symbols and code relationships |
-| `watch` | Continuous file watcher for incremental AST indexing |
-| `migrate status` | Inspect migration state |
+Start here:
+
+- [Invocation model and exit codes](CLI-REFERENCE.md#1-invocation-model)
+- [Global conventions](CLI-REFERENCE.md#2-global-conventions)
+- [Command reference](CLI-REFERENCE.md#3-command-reference)
+- [Environment-variable index](CLI-REFERENCE.md#4-environment-variable-index)
+- [Authentication matrix](CLI-REFERENCE.md#5-authentication-matrix)
+- [Deprecated and retired surface](CLI-REFERENCE.md#6-deprecated-and-retired-surface)
+
+For configuration keys and file formats see [CONFIGURATION.md](CONFIGURATION.md);
+for MCP profiles and tools see [MCP.md](MCP.md); for the HTTP API see
+[HTTP-API.md](HTTP-API.md); for server deployment see [SERVER.md](SERVER.md); for
+the interactive terminal UI see [TUI-GUIDE.md](TUI-GUIDE.md).
+
+The production entrypoint is `cmd/cortex`. Run `cortex help` for the command list
+and see [CLI-REFERENCE.md](CLI-REFERENCE.md) for per-command detail.
 
 The local v2 baseline is forward-only. `migrate down` is not a supported normal operation and existing v2 databases must not be downgraded automatically.

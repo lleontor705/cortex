@@ -10,6 +10,15 @@ import (
 	agentdomain "github.com/lleontor705/cortex/v2/internal/domain/agent"
 )
 
+const (
+	// quotaWindowDuration is the fixed rolling admission window; requests older
+	// than one window never count toward the current budget.
+	quotaWindowDuration = time.Minute
+	// quotaSweepBatch caps how many expired windows a single acquire may drop so
+	// the sweep cost stays bounded no matter how many stale keys accumulated.
+	quotaSweepBatch = 64
+)
+
 type agentAdmission struct {
 	TenantID        string
 	TokenID         string
@@ -69,14 +78,15 @@ func (l *agentQuotaLimiter) acquire(ctx context.Context, admission agentAdmissio
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	l.pruneExpiredWindowsLocked(now)
 	key := agentQuotaKey{tenant: admission.TenantID, token: admission.TokenID}
 	window := l.windows[key]
-	if window.started.IsZero() || now.Sub(window.started) >= time.Minute || now.Before(window.started) {
+	if quotaWindowExpired(now, window) {
 		window = agentQuotaWindow{started: now}
 	}
-	retry := time.Minute - now.Sub(window.started)
-	if retry <= 0 || retry > time.Minute {
-		retry = time.Minute
+	retry := quotaWindowDuration - now.Sub(window.started)
+	if retry <= 0 || retry > quotaWindowDuration {
+		retry = quotaWindowDuration
 	}
 	if window.requests >= limits.RequestsPerMinute || window.tokens+admission.EstimatedTokens > limits.TokensPerMinute ||
 		l.tenantActive[admission.TenantID] >= limits.MaxTenantConcurrent || l.providerActive >= l.providerConcurrency {
@@ -113,6 +123,29 @@ func (l *agentQuotaLimiter) acquire(ctx context.Context, admission agentAdmissio
 		})
 	}
 	return release, nil
+}
+
+// quotaWindowExpired reports whether a stored window fell outside the current
+// rolling bucket. A window started in the future (clock stepped back) is also
+// treated as expired because acquire resets it on touch regardless.
+func quotaWindowExpired(now time.Time, window agentQuotaWindow) bool {
+	return window.started.IsZero() || now.Sub(window.started) >= quotaWindowDuration || now.Before(window.started)
+}
+
+// pruneExpiredWindowsLocked drops a bounded batch of windows whose bucket has
+// elapsed so key memory stays proportional to the tokens active in the current
+// window instead of growing with every token ever seen. Callers must hold l.mu.
+func (l *agentQuotaLimiter) pruneExpiredWindowsLocked(now time.Time) {
+	removed := 0
+	for key, window := range l.windows {
+		if removed == quotaSweepBatch {
+			return
+		}
+		if quotaWindowExpired(now, window) {
+			delete(l.windows, key)
+			removed++
+		}
+	}
 }
 
 func quotaExceeded(retry time.Duration) error {

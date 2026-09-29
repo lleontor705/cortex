@@ -1252,6 +1252,7 @@ func marshalConfigPreservingExisting(cfg *Config, path string) ([]byte, error) {
 	if len(existing.Content) != 1 || existing.Content[0].Kind != yaml.MappingNode || len(desired.Content) != 1 || desired.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("parse existing config: document root must be a mapping")
 	}
+	clearAbsentSecrets(existing.Content[0], desired.Content[0])
 	mergeYAMLNode(existing.Content[0], desired.Content[0])
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
@@ -1295,6 +1296,73 @@ func mergeYAMLNode(existing, desired *yaml.Node) {
 	}
 	if foot != "" {
 		existing.FootComment = foot
+	}
+}
+
+// secretClearList enumerates dotted scalar-secret paths that must not survive
+// in a persisted YAML file once the desired configuration stops supplying a
+// value for them. mergeYAMLNode only visits keys present in the desired
+// document, so an omitempty secret cleared in memory (cortex auth logout)
+// would otherwise be preserved from the pre-existing file indefinitely.
+var secretClearList = [][]string{
+	{"http", "token"},
+	{"sync", "token"},
+	{"ai", "api_key"},
+}
+
+// clearAbsentSecrets removes each clear-listed scalar from the existing mapping
+// unless the desired document still supplies a value for that path.
+func clearAbsentSecrets(existing, desired *yaml.Node) {
+	for _, path := range secretClearList {
+		if scalarAtPath(desired, path) != "" {
+			continue
+		}
+		removeMappingPath(existing, path)
+	}
+}
+
+func scalarAtPath(node *yaml.Node, path []string) string {
+	for _, key := range path {
+		node = mappingValue(node, key)
+		if node == nil {
+			return ""
+		}
+	}
+	if node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return node.Value
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func removeMappingPath(mapping *yaml.Node, path []string) {
+	node := mapping
+	for _, key := range path[:len(path)-1] {
+		node = mappingValue(node, key)
+		if node == nil {
+			return
+		}
+	}
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	leaf := path[len(path)-1]
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == leaf {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
 	}
 }
 
