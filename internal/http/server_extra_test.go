@@ -1061,12 +1061,17 @@ func TestHTTPAuthErrorCodeIsStable(t *testing.T) {
 	rec := doRaw(t, srv.httpServer.Handler, http.MethodGet, "/api/observations", nil, nil)
 	assertStatus(t, rec, http.StatusUnauthorized)
 	var body struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	decodeJSON(t, rec, &body)
-	if body.Code != "unauthorized" {
-		t.Fatalf("code: want unauthorized got %q", body.Code)
+	if body.Error.Code != "unauthorized" {
+		t.Fatalf("error.code: want unauthorized got %q", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "valid bearer token required") {
+		t.Fatalf("error.message: want it to contain %q got %q", "valid bearer token required", body.Error.Message)
 	}
 	assertNoCanaries(t, rec.Body.String())
 }
