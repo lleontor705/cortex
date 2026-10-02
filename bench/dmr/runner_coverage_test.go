@@ -181,7 +181,7 @@ func TestEvaluateQuestionKeywordScoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBenchStores: %v", err)
 	}
-	defer func() { _ = stores.Close() }()
+	defer stores.Close()
 	conv := MSCConversation{
 		Dialog:          []DialogTurn{{Text: "The answer is blue", ID: "a"}},
 		PreviousDialogs: []PreviousDialog{{Dialog: []DialogTurn{{Text: "Favorite color: blue", ID: "a"}}}},
