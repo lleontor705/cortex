@@ -67,27 +67,27 @@ type AIConfig struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Name                    string               `yaml:"name,omitempty" json:"name,omitempty" toml:"name,omitempty" mapstructure:"name"`
-	Version                 string               `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
-	Storage                 ServerStorageConfig  `yaml:"storage,omitempty" json:"storage,omitempty" toml:"storage,omitempty" mapstructure:"storage"`
-	Provider                ServerProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
-	Secrets                 ServerSecretsConfig  `yaml:"secrets,omitempty" json:"secrets,omitempty" toml:"secrets,omitempty" mapstructure:"secrets"`
-	TenantID                string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
-	WorkspaceID             string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
-	PrincipalSubject        string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
+	Name             string               `yaml:"name,omitempty" json:"name,omitempty" toml:"name,omitempty" mapstructure:"name"`
+	Version          string               `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
+	Storage          ServerStorageConfig  `yaml:"storage,omitempty" json:"storage,omitempty" toml:"storage,omitempty" mapstructure:"storage"`
+	Provider         ServerProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
+	Secrets          ServerSecretsConfig  `yaml:"secrets,omitempty" json:"secrets,omitempty" toml:"secrets,omitempty" mapstructure:"secrets"`
+	TenantID         string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
+	WorkspaceID      string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
+	PrincipalSubject string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
 	// GrantDigest is retained for backward compatibility only.
 	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
-	GrantDigest             string               `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
+	GrantDigest string `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
 	// GrantVersion is retained for backward compatibility only.
 	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
-	GrantVersion            int64                `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
-	Roles                   []string             `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
-	Scopes                  []string             `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
-	ProjectIDs              []string             `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
-	ClassificationClearance []string             `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
-	BootstrapDevelopment    bool                 `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
+	GrantVersion            int64    `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
+	Roles                   []string `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
+	Scopes                  []string `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
+	ProjectIDs              []string `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
+	ClassificationClearance []string `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
+	BootstrapDevelopment    bool     `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
 	// RailwayInternalEmbeddingHost is the exact Railway private hostname
 	// allowed to serve embeddings over HTTP. An empty value keeps the default
 	// policy, which rejects every non-loopback HTTP destination.

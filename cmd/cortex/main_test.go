@@ -154,4 +154,3 @@ func TestRunServerHelpAndVersion(t *testing.T) {
 		}
 	}
 }
-

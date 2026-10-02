@@ -578,5 +578,3 @@ func TestCoverageMigrationPreflightNoLedgerTable(t *testing.T) {
 		t.Fatal("fresh database should not have a ledger table")
 	}
 }
-
-
