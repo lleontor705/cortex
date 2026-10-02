@@ -203,7 +203,7 @@ func TestWriteUnauthorized(t *testing.T) {
 	WriteUnauthorized(rec)
 
 	res := rec.Result()
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusUnauthorized)
