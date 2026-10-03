@@ -112,21 +112,30 @@ func TestExecuteCoverageBranches(t *testing.T) {
 		}
 	})
 	t.Run("timeout_clamped", func(t *testing.T) {
-		c := echo(lang); if c == "" { t.Skip() }
+		c := echo(lang)
+		if c == "" {
+			t.Skip()
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: c, Timeout: 120 * time.Second})
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("err=%v exit=%d", err, tern(err == nil, res.ExitCode, -1))
 		}
 	})
 	t.Run("default_timeout", func(t *testing.T) {
-		c := echo(lang); if c == "" { t.Skip() }
+		c := echo(lang)
+		if c == "" {
+			t.Skip()
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: c, Timeout: 0})
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("err=%v exit=%d", err, tern(err == nil, res.ExitCode, -1))
 		}
 	})
 	t.Run("maxoutput_clamped", func(t *testing.T) {
-		c := echo(lang); if c == "" { t.Skip() }
+		c := echo(lang)
+		if c == "" {
+			t.Skip()
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{
 			Language: lang, Code: c, Timeout: 5 * time.Second, MaxOutputBytes: 50 << 20})
 		if err != nil || res.ExitCode != 0 {
@@ -134,7 +143,10 @@ func TestExecuteCoverageBranches(t *testing.T) {
 		}
 	})
 	t.Run("truncation", func(t *testing.T) {
-		c := bigEcho(lang); if c == "" { t.Skip() }
+		c := bigEcho(lang)
+		if c == "" {
+			t.Skip()
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{
 			Language: lang, Code: c, Timeout: 30 * time.Second, MaxOutputBytes: 512 << 10})
 		if err != nil {
@@ -145,22 +157,35 @@ func TestExecuteCoverageBranches(t *testing.T) {
 		}
 	})
 	t.Run("filepath_small", func(t *testing.T) {
-		fr := fileRead(lang); if fr == "" { t.Skip() }
+		fr := fileRead(lang)
+		if fr == "" {
+			t.Skip()
+		}
 		p := filepath.Join(t.TempDir(), "in.txt")
-		os.WriteFile(p, []byte("payload"), 0600)
+		if err := os.WriteFile(p, []byte("payload"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("err=%v exit=%d stderr=%q", err, tern(err == nil, res.ExitCode, -1), tern(err == nil, res.Stderr, ""))
 		}
 	})
 	t.Run("filepath_large", func(t *testing.T) {
-		fr := fileRead(lang); if fr == "" { t.Skip() }
+		fr := fileRead(lang)
+		if fr == "" {
+			t.Skip()
+		}
 		p := filepath.Join(t.TempDir(), "big.txt")
-		os.WriteFile(p, bytes.Repeat([]byte("x"), 600<<10), 0600)
-		r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
+		if err := os.WriteFile(p, bytes.Repeat([]byte("x"), 600<<10), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
 	})
 	t.Run("exit_code", func(t *testing.T) {
-		fc := failExit(lang); if fc == "" { t.Skip() }
+		fc := failExit(lang)
+		if fc == "" {
+			t.Skip()
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fc, Timeout: 5 * time.Second})
 		if err != nil {
 			t.Fatalf("want result not err: %v", err)
@@ -170,7 +195,10 @@ func TestExecuteCoverageBranches(t *testing.T) {
 		}
 	})
 	t.Run("context_canceled", func(t *testing.T) {
-		sc := sleep(lang); if sc == "" { t.Skip() }
+		sc := sleep(lang)
+		if sc == "" {
+			t.Skip()
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if _, err := r.Execute(ctx, ExecutionRequest{Language: lang, Code: sc, Timeout: 30 * time.Second}); err == nil {
@@ -186,44 +214,63 @@ func TestExecuteCoverageBranches(t *testing.T) {
 }
 
 func tern[T any](b bool, a, c T) T {
-	if b { return a }
+	if b {
+		return a
+	}
 	return c
 }
 
 func pickFirst(m map[Language]string) (Language, string, bool) {
-	for l, b := range m { return l, b, true }
+	for l, b := range m {
+		return l, b, true
+	}
 	return "", "", false
 }
 
 func echo(l Language) string {
 	switch l {
-	case LanguageGo: return `package main; import "fmt"; func main() { fmt.Println("ok") }`
-	case LanguagePowerShell: return `Write-Output "ok"`
-	case LanguagePython: return `print("ok")`
-	case LanguageNode, LanguageBun: return `console.log("ok")`
-	case LanguageBash: return `echo ok`
+	case LanguageGo:
+		return `package main; import "fmt"; func main() { fmt.Println("ok") }`
+	case LanguagePowerShell:
+		return `Write-Output "ok"`
+	case LanguagePython:
+		return `print("ok")`
+	case LanguageNode, LanguageBun:
+		return `console.log("ok")`
+	case LanguageBash:
+		return `echo ok`
 	}
 	return ""
 }
 
 func sleep(l Language) string {
 	switch l {
-	case LanguageGo: return `package main; import "time"; func main() { time.Sleep(5*time.Second) }`
-	case LanguagePowerShell: return `Start-Sleep -Seconds 5`
-	case LanguagePython: return `import time; time.sleep(5)`
-	case LanguageNode, LanguageBun: return `setTimeout(()=>{},5000)`
-	case LanguageBash: return `sleep 5`
+	case LanguageGo:
+		return `package main; import "time"; func main() { time.Sleep(5*time.Second) }`
+	case LanguagePowerShell:
+		return `Start-Sleep -Seconds 5`
+	case LanguagePython:
+		return `import time; time.sleep(5)`
+	case LanguageNode, LanguageBun:
+		return `setTimeout(()=>{},5000)`
+	case LanguageBash:
+		return `sleep 5`
 	}
 	return ""
 }
 
 func failExit(l Language) string {
 	switch l {
-	case LanguageGo: return `package main; import "os"; func main() { os.Exit(42) }`
-	case LanguagePowerShell: return `exit 42`
-	case LanguagePython: return `import sys; sys.exit(42)`
-	case LanguageNode, LanguageBun: return `process.exit(42)`
-	case LanguageBash: return `exit 42`
+	case LanguageGo:
+		return `package main; import "os"; func main() { os.Exit(42) }`
+	case LanguagePowerShell:
+		return `exit 42`
+	case LanguagePython:
+		return `import sys; sys.exit(42)`
+	case LanguageNode, LanguageBun:
+		return `process.exit(42)`
+	case LanguageBash:
+		return `exit 42`
 	}
 	return ""
 }

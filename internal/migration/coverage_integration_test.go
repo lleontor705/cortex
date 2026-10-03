@@ -77,6 +77,11 @@ func TestCoverageMigrationChecksumMismatchFailsClose(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='tampered' WHERE version=$1`, m.Version()); err != nil {
 		t.Fatal(err)
 	}
+	// The ledger is shared with every other test in this package run, so
+	// the deliberate tamper must be undone before the next Apply.
+	defer func() {
+		_, _ = db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum=$2 WHERE version=$1`, m.Version(), m.Checksum())
+	}()
 	if err := m.Apply(ctx, db); err == nil {
 		t.Fatal("checksum mismatch must fail")
 	}
@@ -203,8 +208,10 @@ func TestCoverageMigrationPreflightLedgered(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	// A ledgered target is a rollout stop, not an operational failure: the
+	// verdict must carry ErrPreflightStop while still reporting the state.
+	if !errors.Is(err, ErrPreflightStop) {
+		t.Fatalf("preflight err=%v, want ErrPreflightStop", err)
 	}
 	if !preflight.Ledgered {
 		t.Fatal("applied migration should be ledgered")
@@ -391,9 +398,14 @@ func TestCoverageMigrationPreflightChecksumMismatch(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='mismatch' WHERE version=$1`, m.Version()); err != nil {
 		t.Fatal(err)
 	}
+	// Restore the shared ledger so the next test in this package run still
+	// sees the real embedded checksum.
+	defer func() {
+		_, _ = db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum=$2 WHERE version=$1`, m.Version(), m.Checksum())
+	}()
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrPreflightStop) || !errors.Is(err, ErrSchemaTampered) {
+		t.Fatalf("preflight err=%v, want ErrPreflightStop wrapping ErrSchemaTampered", err)
 	}
 	if !preflight.Ledgered {
 		t.Fatal("should be ledgered even with mismatch")
@@ -430,8 +442,8 @@ func TestCoverageMigrationPreflightFutureVersion(t *testing.T) {
 	defer func() { _, _ = db.ExecContext(ctx, `DELETE FROM cortex_server_migrations WHERE version=999`) }()
 
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrPreflightStop) || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("preflight err=%v, want ErrPreflightStop wrapping ErrFutureMigration", err)
 	}
 	if preflight.FutureLedgerVersion != 999 {
 		t.Fatalf("future=%d, want 999", preflight.FutureLedgerVersion)
@@ -503,6 +515,11 @@ func TestCoverageMigrationVerifyAppliedChecksumMismatch(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='wrong' WHERE version=$1`, m.Version()); err != nil {
 		t.Fatal(err)
 	}
+	// Restore the shared ledger so the next test in this package run still
+	// sees the real embedded checksum.
+	defer func() {
+		_, _ = db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum=$2 WHERE version=$1`, m.Version(), m.Checksum())
+	}()
 	if err := m.VerifyApplied(ctx, db); err == nil {
 		t.Fatal("VerifyApplied on tampered checksum must fail")
 	}
@@ -578,5 +595,3 @@ func TestCoverageMigrationPreflightNoLedgerTable(t *testing.T) {
 		t.Fatal("fresh database should not have a ledger table")
 	}
 }
-
-

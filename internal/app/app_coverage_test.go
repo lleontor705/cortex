@@ -96,8 +96,8 @@ func TestStartHybridReplication_IsHybridNoURL(t *testing.T) {
 func TestStartHybridReplication_SearchClientError(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{
-			Enabled: true,
-			URL:     "http://example.com:19999",
+			Enabled:  true,
+			URL:      "http://example.com:19999",
 			TokenEnv: "CORTEX_SYNC_TEST_TOK",
 		},
 		HTTP: config.HTTPConfig{Token: "test-token-value"},
