@@ -212,8 +212,13 @@ func TestGenerateFailsClosedWithoutPartialFile(t *testing.T) {
 	if _, err := s.Generate(); err == nil {
 		t.Fatal("Generate into a non-directory must fail closed")
 	}
-	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("partial key file left behind: %v", err)
+	// blocker is a regular file, so <blocker>/web.key can never exist:
+	// POSIX reports ENOTDIR and Windows reports ErrNotExist for that path.
+	// Probing with Open treats both as "no partial file" without depending
+	// on platform-specific error values.
+	if handle, err := os.Open(target); err == nil {
+		_ = handle.Close()
+		t.Fatal("partial key file left behind")
 	}
 }
 
