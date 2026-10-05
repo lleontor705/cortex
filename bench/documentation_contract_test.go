@@ -279,12 +279,17 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	}
 	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
 
-	ci, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "ci.yml"))
-	if err != nil {
-		t.Fatalf("read CI workflow: %v", err)
-	}
-	ciText := string(ci)
-	ciText = strings.ReplaceAll(ciText, "\r\n", "\n")
+	ciText := readWorkflowText(t, repositoryRoot, "ci.yml")
+	gatesText := readWorkflowText(t, repositoryRoot, "ci-reusable.yml")
+	releaseText := readWorkflowText(t, repositoryRoot, "release.yml")
+
+	// The t04 restructure moved every shared gate body into ci-reusable.yml:
+	// a caller keeps each old guarantee only by invoking that workflow, so the
+	// gate pins below assert against the shared definition while each caller
+	// pins the workflow_call link that inherits it.
+	requireSharedGatesCall(t, ciText, "CI")
+	requireSharedGatesCall(t, releaseText, "Release")
+
 	for _, branch := range []string{"      - main\n", "      - develop\n"} {
 		if !strings.Contains(ciText, branch) {
 			t.Errorf("CI pull_request branches missing %q", strings.TrimSpace(branch))
@@ -293,50 +298,51 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if strings.Contains(ciText, "      - master\n") {
 		t.Error("CI pull_request branches include unsupported master")
 	}
-	if !strings.Contains(ciText, "go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline") {
-		t.Error("CI baseline validation must use the direct offline Go command")
+	if !strings.Contains(gatesText, "go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline") {
+		t.Error("shared baseline validation must use the direct offline Go command")
 	}
-	if !strings.Contains(ciText, "  race-detector:") {
-		t.Error("CI must define a race-detector job")
+	if !strings.Contains(gatesText, "  race-detector:") {
+		t.Error("shared gates must define a race-detector job")
 	}
-	if !strings.Contains(ciText, "go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp") {
-		t.Error("CI must include a race detector gate over concurrent store packages (search, bundle, mcp)")
+	if !strings.Contains(gatesText, "go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp") {
+		t.Error("shared gates must include a race detector gate over concurrent store packages (search, bundle, mcp)")
 	}
-	if !strings.Contains(ciText, "go test -v -count=1 -tags cortex_vectors ./...") {
-		t.Error("CI must test the vector-enabled release build")
+	if !strings.Contains(gatesText, "go test -v -count=1 -tags cortex_vectors ./...") {
+		t.Error("shared gates must test the vector-enabled release build")
 	}
-	if strings.Count(ciText, `GOFLAGS: "-p=1"`) < 2 {
-		t.Error("CI PostgreSQL coverage and E2E jobs must serialize packages that share the test database")
+	if strings.Count(gatesText, `GOFLAGS: "-p=1"`) < 2 {
+		t.Error("shared coverage and E2E jobs must serialize packages that share the test database")
 	}
 	for _, command := range []string{"npm ci", "npm test", "npm run build"} {
-		if !strings.Contains(ciText, command) {
-			t.Errorf("CI web gate missing %q", command)
+		if !strings.Contains(gatesText, command) {
+			t.Errorf("shared web gate missing %q", command)
 		}
 	}
 
-	if !strings.Contains(ciText, "  coverage:") {
-		t.Error("CI must define a dedicated coverage job")
+	if !strings.Contains(gatesText, "  coverage:") {
+		t.Error("shared gates must define a dedicated coverage job")
 	}
-	if !strings.Contains(ciText, "    runs-on: ubuntu-latest\n") {
-		t.Error("CI coverage job must run on Linux")
+	coverageBlock := workflowJobBlock(t, gatesText, "coverage")
+	if !strings.Contains(coverageBlock, "    runs-on: ubuntu-latest\n") {
+		t.Error("shared coverage job must run on Linux")
 	}
 	// REQ-SH-032/REQ-QA-004: the coverpkg list is computed with go list and
 	// excludes only vendored web/node_modules; every cortex-owned package stays
 	// in the measurement scope.
-	if !strings.Contains(ciText, `cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`) {
-		t.Error("CI coverage job must compute coverpkg with go list excluding only vendored /node_modules/")
+	if !strings.Contains(coverageBlock, `cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`) {
+		t.Error("shared coverage job must compute coverpkg with go list excluding only vendored /node_modules/")
 	}
-	if !strings.Contains(ciText, `go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`) {
-		t.Error("CI coverage job must collect whole-project atomic coverage with PostgreSQL integration")
+	if !strings.Contains(coverageBlock, `go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`) {
+		t.Error("shared coverage job must collect whole-project atomic coverage with PostgreSQL integration")
 	}
-	if !strings.Contains(ciText, "go tool cover -func coverage.out") {
-		t.Error("CI coverage job must parse the coverage profile with go tool cover")
+	if !strings.Contains(coverageBlock, "go tool cover -func coverage.out") {
+		t.Error("shared coverage job must parse the coverage profile with go tool cover")
 	}
-	if !strings.Contains(ciText, "awk '$1 == \"total:\"") || !strings.Contains(ciText, "< 80.0") {
-		t.Error("CI coverage job must fail when exact total coverage is below 80.0%")
+	if !strings.Contains(coverageBlock, "awk '$1 == \"total:\"") || !strings.Contains(coverageBlock, "< 80.0") {
+		t.Error("shared coverage job must fail when exact total coverage is below 80.0%")
 	}
-	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
-		t.Error("CI coverage threshold must not promote rounded percentages")
+	if strings.Contains(coverageBlock, "printf \"%.0f") || strings.Contains(coverageBlock, "printf '%0.f") {
+		t.Error("shared coverage threshold must not promote rounded percentages")
 	}
 
 	// Reproducible gate surface (R8): compile gate plus both plugin gates.
@@ -348,42 +354,33 @@ func TestBaselineWorkflowContract(t *testing.T) {
 		"  plugin-claude-code:",
 		"plugin/claude-code/scripts/hooks_test.sh",
 	} {
-		if !strings.Contains(ciText, required) {
-			t.Errorf("CI reproducible-gate contract is missing %q", required)
+		if !strings.Contains(gatesText, required) {
+			t.Errorf("shared reproducible-gate contract is missing %q", required)
 		}
 	}
 	// The Claude harness job must provision its full toolchain (bash, jq,
 	// python3, coreutils/timeout) explicitly instead of relying on runner
 	// preinstalls, so the harness never silently degrades.
-	claudeJobBlock := workflowJobBlock(t, ciText, "plugin-claude-code")
+	claudeJobBlock := workflowJobBlock(t, gatesText, "plugin-claude-code")
 	for _, tool := range []string{"bash", "jq", "python3", "coreutils"} {
 		if !strings.Contains(claudeJobBlock, tool) {
-			t.Errorf("CI plugin-claude-code job must explicitly install %s", tool)
+			t.Errorf("shared plugin-claude-code job must explicitly install %s", tool)
 		}
 	}
 
-	release, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "release.yml"))
-	if err != nil {
-		t.Fatalf("read release workflow: %v", err)
-	}
-	releaseText := strings.ReplaceAll(string(release), "\r\n", "\n")
-	for _, command := range []string{"go test -v -count=1 -tags cortex_vectors ./...", "npm ci", "npm test", "npm run build"} {
-		if !strings.Contains(releaseText, command) {
-			t.Errorf("release gate missing %q", command)
+	for _, command := range []string{"go test -v -count=1 -tags cortex_vectors ./...", "npm ci", "npm test", "npm run build", "go build ./..."} {
+		if !strings.Contains(gatesText, command) {
+			t.Errorf("shared release gate missing %q", command)
 		}
 	}
-	// Release approval must depend on the full CI gate set. Parse the needs
-	// list and check it as a superset of required gates instead of matching
-	// one exact string, so extending the gate list does not break the
-	// contract while removing a required gate still fails.
-	for _, required := range []string{
-		"go build ./...",
-	} {
-		if !strings.Contains(releaseText, required) {
-			t.Errorf("release gate missing %q", required)
-		}
-	}
+	// Release approval must depend on the full gate set. approve-release waits
+	// on the gates job, and a workflow_call job only succeeds once every job
+	// inside the called workflow succeeds, so pinning the link plus the shared
+	// job definitions keeps the old needs-superset guarantee.
 	approvalNeeds := parseWorkflowJobNeeds(t, releaseText, "approve-release")
+	if !approvalNeeds["gates"] {
+		t.Error("release approval must depend on the shared gates job")
+	}
 	for _, gate := range []string{
 		"build",
 		"unit-tests",
@@ -398,15 +395,9 @@ func TestBaselineWorkflowContract(t *testing.T) {
 		"plugin-opencode",
 		"plugin-claude-code",
 	} {
-		if !approvalNeeds[gate] {
-			t.Errorf("release approval must depend on gate %q", gate)
+		if !workflowJobBlockMatches(gatesText, gate) {
+			t.Errorf("shared gate workflow must define job %q required by approval", gate)
 		}
-		if !workflowJobBlockMatches(releaseText, gate) {
-			t.Errorf("release workflow must define job %q required by approval", gate)
-		}
-	}
-	if !strings.Contains(releaseText, `GOFLAGS: "-p=1"`) {
-		t.Error("release PostgreSQL E2E job must serialize packages that share the test database")
 	}
 
 	protocol, err := os.ReadFile(filepath.Join(repositoryRoot, "bench", "evidence", "cortex-native", "v1", "protocol.json"))
@@ -452,11 +443,11 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 		t.Fatal("resolve workflow test location")
 	}
 	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
-	ci, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", "ci.yml"))
-	if err != nil {
-		t.Fatalf("read CI workflow: %v", err)
-	}
-	ciText := strings.ReplaceAll(string(ci), "\r\n", "\n")
+	ciText := readWorkflowText(t, repositoryRoot, "ci.yml")
+	gatesText := readWorkflowText(t, repositoryRoot, "ci-reusable.yml")
+	releaseText := readWorkflowText(t, repositoryRoot, "release.yml")
+	requireSharedGatesCall(t, ciText, "CI")
+	requireSharedGatesCall(t, releaseText, "Release")
 	for _, required := range []string{
 		"image: postgres:16",
 		"POSTGRES_USER: cortex_bootstrap",
@@ -471,16 +462,26 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 		"go tool cover -func coverage.out",
 		"awk '$1 == \"total:\"",
 		"coverage < 80.0",
+		"global coverage %.2f%% is below 80.0%%",
 		"go test -v -count=1 -tags \"integration postgres_integration\" ./...",
 	} {
-		if !strings.Contains(ciText, required) {
-			t.Errorf("CI PostgreSQL coverage contract is missing %q", required)
+		if !strings.Contains(gatesText, required) {
+			t.Errorf("shared PostgreSQL coverage contract is missing %q", required)
 		}
 	}
-	if strings.Contains(ciText, "t.Skip(\"CORTEX_TEST_POSTGRES_DSN") {
+	// t04 reconciled the retired release-side 70% gate upward into the shared
+	// 80.0% enforcement; neither the shared gates nor the release pipeline may
+	// reintroduce a lower threshold.
+	if strings.Contains(gatesText, "< 70.0") {
+		t.Error("shared coverage gate must enforce the reconciled 80.0% threshold, not the retired 70% gate")
+	}
+	if strings.Contains(releaseText, "< 70.0") {
+		t.Error("release workflow must not reintroduce the retired 70% coverage gate")
+	}
+	if strings.Contains(gatesText, "t.Skip(\"CORTEX_TEST_POSTGRES_DSN") {
 		t.Error("PostgreSQL harness must fail when DSN is missing, not skip")
 	}
-	if strings.Contains(ciText, "printf \"%.0f") || strings.Contains(ciText, "printf '%0.f") {
+	if strings.Contains(gatesText, "printf \"%.0f") || strings.Contains(gatesText, "printf '%0.f") {
 		t.Error("PostgreSQL coverage threshold must not use rounded percentages")
 	}
 	harness, err := os.ReadFile(filepath.Join(repositoryRoot, "internal", "store", "postgres", "postgres_integration_test.go"))
@@ -518,21 +519,23 @@ func TestPostgresAuthzBootstrapContract(t *testing.T) {
 		t.Fatal("resolve workflow test location")
 	}
 	repositoryRoot := filepath.Dir(filepath.Dir(currentFile))
-	bootstrapPath := filepath.Join(repositoryRoot, "scripts", "postgres", "bootstrap-authz.sql")
-	bootstrap, err := os.ReadFile(bootstrapPath)
+	ciText := readWorkflowText(t, repositoryRoot, "ci.yml")
+	gatesText := readWorkflowText(t, repositoryRoot, "ci-reusable.yml")
+	releaseText := readWorkflowText(t, repositoryRoot, "release.yml")
+	requireSharedGatesCall(t, ciText, "CI")
+	requireSharedGatesCall(t, releaseText, "Release")
+	// The bootstrap moved out of the caller pipelines into the shared
+	// PostgreSQL jobs; both callers inherit it through the gates link above.
+	for _, job := range []string{"coverage", "e2e-tests"} {
+		if !strings.Contains(workflowJobBlock(t, gatesText, job), "scripts/postgres/bootstrap-authz.sql") {
+			t.Errorf("shared %s job must execute the PostgreSQL authz bootstrap", job)
+		}
+	}
+	bootstrap, err := os.ReadFile(filepath.Join(repositoryRoot, "scripts", "postgres", "bootstrap-authz.sql"))
 	if err != nil {
 		t.Fatalf("read PostgreSQL authz bootstrap: %v", err)
 	}
 	text := strings.ReplaceAll(string(bootstrap), "\r\n", "\n")
-	for _, workflow := range []string{".github/workflows/ci.yml", ".github/workflows/release.yml"} {
-		data, err := os.ReadFile(filepath.Join(repositoryRoot, workflow))
-		if err != nil {
-			t.Fatalf("read workflow %s: %v", workflow, err)
-		}
-		if !strings.Contains(strings.ReplaceAll(string(data), "\r\n", "\n"), "scripts/postgres/bootstrap-authz.sql") {
-			t.Errorf("%s must execute the shared PostgreSQL authz bootstrap", workflow)
-		}
-	}
 	for _, required := range []string{
 		"CREATE ROLE cortex_admin NOLOGIN",
 		"CREATE ROLE cortex_test LOGIN NOSUPERUSER NOBYPASSRLS",
@@ -551,6 +554,30 @@ func TestPostgresAuthzBootstrapContract(t *testing.T) {
 	}
 	if strings.Count(text, "IF NOT EXISTS (SELECT 1 FROM pg_roles") != 3 {
 		t.Fatal("PostgreSQL authz role creation must guard each role idempotently")
+	}
+}
+
+// readWorkflowText loads one workflow file with normalized line endings so
+// substring pins behave identically on Windows checkouts.
+func readWorkflowText(t *testing.T, repositoryRoot, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repositoryRoot, ".github", "workflows", name))
+	if err != nil {
+		t.Fatalf("read workflow %s: %v", name, err)
+	}
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
+
+// requireSharedGatesCall pins that a caller pipeline invokes the shared gate
+// workflow: after the t04 restructure a caller inherits every gate body only
+// through this workflow_call link.
+func requireSharedGatesCall(t *testing.T, workflowText, pipeline string) {
+	t.Helper()
+	if !workflowJobBlockMatches(workflowText, "gates") {
+		t.Fatalf("%s workflow must define the shared gates job", pipeline)
+	}
+	if !strings.Contains(workflowJobBlock(t, workflowText, "gates"), "uses: ./.github/workflows/ci-reusable.yml") {
+		t.Errorf("%s shared gates job must call ./.github/workflows/ci-reusable.yml", pipeline)
 	}
 }
 

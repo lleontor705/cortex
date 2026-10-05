@@ -89,3 +89,42 @@ func TestSecureEmbeddingRejectsRedirectAndOversizedBody(t *testing.T) {
 		t.Fatalf("oversized response error=%v", err)
 	}
 }
+
+func TestNewSecureAcceptsOpenAICompatiblePreset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+
+	policy := OutboundPolicy{AllowLoopback: true, AllowInsecureLoopbackHTTP: true}
+	if err := policy.ApproveDestination(srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewSecure(Config{Provider: "openai-compatible", APIKey: "test-key", BaseURL: srv.URL, Model: "qwen3-embedding-8B"}, policy)
+	if err != nil {
+		t.Fatalf("openai-compatible preset rejected by secure allowlist: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("openai-compatible preset constructed no service")
+	}
+	if svc.Model() != "qwen3-embedding-8B" {
+		t.Fatalf("model = %q, want qwen3-embedding-8B", svc.Model())
+	}
+}
+
+func TestNewSecureRejectsUnknownProvider(t *testing.T) {
+	const destination = "https://api.example.com/v1"
+	policy := OutboundPolicy{}
+	if err := policy.ApproveDestination(destination); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewSecure(Config{Provider: "cohere", BaseURL: destination}, policy)
+	if err == nil || !strings.Contains(err.Error(), "unsupported secure provider") {
+		t.Fatalf("unknown provider error = %v, want unsupported secure provider rejection", err)
+	}
+}
+
+func TestNewSecureOpenAICompatibleRequiresExplicitBaseURL(t *testing.T) {
+	_, err := NewSecure(Config{Provider: "openai-compatible", APIKey: "test-key"}, OutboundPolicy{})
+	if err == nil || !strings.Contains(err.Error(), "base URL") {
+		t.Fatalf("error = %v, want an explicit base URL requirement", err)
+	}
+}

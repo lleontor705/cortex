@@ -1,0 +1,616 @@
+{
+  "schema_version": "longmemeval-diagnosis/v1",
+  "generated_at": "2026-10-03T05:11:47Z",
+  "task_id": "honest-03-longmemeval-diagnosis",
+  "requirement_ids": [
+    "REQ-GAINS-004"
+  ],
+  "spec_plane": "cortex",
+  "verdict": "PASS",
+  "measurement_scope": "diagnosis only; no product source files modified; no fixes applied",
+  "methodology": {
+    "harness": "Production bench/longmemeval runner code exercised via go test with a -overlay injected diagnostic test (repo files untouched; overlay replaced runner_coverage_test.go with original content + instrumentation). The overlay replayed the exact Run() path: same ingestHistory grouping (1 FTS observation per dataset session), same adaptive retrieve() (bench/longmemeval/runner.go:232-266), same top-5 join as the judge input (runner.go:196-206), same fixed judge (bench/common/llm_judge.go, OLLAMA endpoint http://localhost:11434, model qwen2.5:7b-instruct, temperature=0, seed=42, format=json).",
+    "dataset": {
+      "path": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/lme_runner_format.json",
+      "provenance": "Runner-format conversion (id/category/chat_history) of longmemeval_s.json (xiaowu0162/longmemeval-cleaned, 277 MB), i.e. the SAME input the published first-eval/second-eval runs used. Conversion artifact left by the prior eval session; the conversion script itself is not persisted in the repository (reproducibility gap, see limitations).",
+      "n_questions": 500,
+      "category_distribution": {
+        "IE": 156,
+        "MR": 133,
+        "TR": 133,
+        "KU": 78,
+        "ABS": 0
+      }
+    },
+    "sample": {
+      "n": 120,
+      "composition": "All 100 questions of the published evaluation subset (dataset indices 0-99: 70 IE + 30 MR) PLUS 10 stratified TR (indices 233..350) and 10 stratified KU (indices 366..429) to cover the per-ability breakdown.",
+      "note": "TR and KU rows are 10-question stratified samples and carry sampling error; IE/MR rows are the full published subset."
+    },
+    "reproduction_validation": {
+      "published_first_eval_score": 0.08,
+      "published_second_eval_score": 0.08,
+      "measured_judge_accuracy_first_100": 0.08,
+      "measured_correct_first_100": "8/100",
+      "published_by_slice": {
+        "IE": 0.086,
+        "MR": 0.067
+      },
+      "measured_by_slice": {
+        "IE": 0.086,
+        "MR": 0.067
+      },
+      "match": true,
+      "evidence_refs": [
+        "bench/reports/first-eval-longmemeval.json",
+        "bench/reports/second-eval-longmemeval.json",
+        "measured records in methodology.instrumentation_output"
+      ]
+    },
+    "instrumentation_output": {
+      "records_json": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/lme-diag/full_120.json",
+      "run_log": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/lme-diag/full_run.log",
+      "go_test_command": "go test -count=1 -v -timeout 45m -overlay .../lme-diag/overlay.json -run 'TestDiagLongMemEval$' ./bench/longmemeval (exit 0, 1171s, 120/120 records, 0 judge errors, 0 retrieval errors)",
+      "note": "Scratch paths are session-temporary; every number quoted in this report is also embedded here so the report is self-contained."
+    },
+    "class_definitions": {
+      "corpus_miss": "normalized gold answer substring absent from the question's own ingested haystack",
+      "query_starved_retrieval_miss": "answer in corpus but the AND-sanitized FTS query returned 0 keyword candidates and no adaptive list rescued it",
+      "retrieval_miss": "answer in corpus, >=1 keyword candidate, but no top-10 result's FULL content contains the answer",
+      "rank_below_top5": "evidence in top-10 but outside top-5 (the judge input slice)",
+      "context_truncation_hidden": "evidence session inside top-5 but the 300-char previews shown to the judge do not contain the answer span",
+      "judge_reject": "answer span visible in judge input but judge score <= 0.5",
+      "pass": "answer span visible and judge score > 0.5",
+      "judge_error / retrieval_error": "judge or retrieval transport failure (measured: 0 occurrences)"
+    }
+  },
+  "stage_breakdown": {
+    "note": "LongMemEval paper stage methodology mapped onto what this harness can actually measure. The harness has NO reading/generation stage: the judge scores the raw retrieved context, so 'reading' collapses into judge-acceptance-given-visible-context.",
+    "published_subset_first_100": {
+      "n": 100,
+      "ingestion_answer_coverage_exact_substring_pct": 73.0,
+      "mean_answer_token_coverage": 0.81,
+      "retrieval_recall_at5_pct": 20.0,
+      "retrieval_recall_at10_pct": 20.0,
+      "query_starved_zero_keyword_candidates_pct": 48.0,
+      "context_visible_answer_span_in_judge_input_pct": 5.0,
+      "judge_accuracy_pct": 8.0,
+      "judge_accept_given_visible": {
+        "accepted": 3,
+        "n": 5,
+        "pct": 60.0
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 5,
+        "n": 95,
+        "pct": 5.3
+      },
+      "mean_foreign_results_in_top5": 1.12,
+      "mean_judge_latency_ms": 6101,
+      "mean_judge_input_chars": 417,
+      "failure_class_counts": {
+        "query_starved_retrieval_miss": 32,
+        "corpus_miss": 27,
+        "retrieval_miss": 21,
+        "context_truncation_hidden": 15,
+        "pass": 3,
+        "judge_reject": 2
+      }
+    },
+    "full_sample_120": {
+      "n": 120,
+      "ingestion_answer_coverage_exact_substring_pct": 71.7,
+      "mean_answer_token_coverage": 0.797,
+      "retrieval_recall_at5_pct": 20.0,
+      "retrieval_recall_at10_pct": 20.0,
+      "query_starved_zero_keyword_candidates_pct": 49.2,
+      "context_visible_answer_span_in_judge_input_pct": 5.0,
+      "judge_accuracy_pct": 9.2,
+      "judge_accept_given_visible": {
+        "accepted": 3,
+        "n": 6,
+        "pct": 50.0
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 8,
+        "n": 114,
+        "pct": 7.0
+      },
+      "mean_foreign_results_in_top5": 1.13,
+      "mean_judge_latency_ms": 6098,
+      "mean_judge_input_chars": 429,
+      "failure_class_counts": {
+        "query_starved_retrieval_miss": 37,
+        "corpus_miss": 34,
+        "retrieval_miss": 25,
+        "context_truncation_hidden": 18,
+        "pass": 3,
+        "judge_reject": 3
+      }
+    },
+    "funnel_first_100": {
+      "L0_dataset_fit_abs_questions_present": 0,
+      "L1_ingestion_answer_coverage_pct": 73.0,
+      "L2_retrieval_recall_at10_pct": 20.0,
+      "L3_context_visible_in_judge_input_pct": 5.0,
+      "L4_judge_accuracy_pct": 8.0,
+      "interpretation": "20% of questions retrieve the evidence session into top-10, only 5% expose the answer span to the judge (25% of retrieved evidence survives the 300-char preview), and the judge accepts 3/5 of those; 5/95 blind guesses were accepted, summing to the published 8/100 = 0.08."
+    }
+  },
+  "score_decomposition": {
+    "retrieval_relevance": {
+      "measured": "recall@10 = 20.0% (all120), identical to recall@5 because the adaptive pipeline almost never returns candidates beyond the keyword leg; 49.2% of questions get zero keyword candidates",
+      "evidence_refs": [
+        "stage_breakdown.full_sample_120",
+        "failure_categories"
+      ]
+    },
+    "judge_acceptance": {
+      "measured": "judge accepts 50.0% of questions where the answer span IS visible in its input (3/6) and 7.0% where it is NOT visible (8/114, blind guessing that inflates the score); judge JSON parsing failures = 0/120",
+      "evidence_refs": [
+        "stage_breakdown.full_sample_120",
+        "examples[4]"
+      ]
+    },
+    "ingestion_coverage": {
+      "measured": "gold answer present verbatim in own haystack for 71.7% of questions (mean answer-token coverage 0.80); 28.3% are corpus_miss and cannot be split between paraphrase, true absence, and ingest loss without the has_answer instrumentation the conversion dropped",
+      "evidence_refs": [
+        "failure_categories",
+        "undetermined[0]"
+      ]
+    },
+    "dataset_fit": {
+      "measured": "the converted dataset carries 4 of the 5 LongMemEval abilities (IE/MR/TR/KU; ABS=0 questions) so abstention is unmeasured; the runner protocol scores raw retrieved context as the answer, i.e. the published 0.08 measures retrieval+judge acceptance, not question answering as defined by the LongMemEval paper",
+      "evidence_refs": [
+        "methodology.dataset.category_distribution",
+        "methodology.stage note",
+        "bench/longmemeval/baseline_adapter.go:134-145"
+      ]
+    }
+  },
+  "per_ability_breakdown": {
+    "IE": {
+      "n": 70,
+      "ingestion_answer_coverage_exact_substring_pct": 81.4,
+      "mean_answer_token_coverage": 0.956,
+      "retrieval_recall_at5_pct": 28.6,
+      "retrieval_recall_at10_pct": 28.6,
+      "query_starved_zero_keyword_candidates_pct": 45.7,
+      "context_visible_answer_span_in_judge_input_pct": 7.1,
+      "judge_accuracy_pct": 8.6,
+      "judge_accept_given_visible": {
+        "accepted": 3,
+        "n": 5,
+        "pct": 60.0
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 3,
+        "n": 65,
+        "pct": 4.6
+      },
+      "mean_foreign_results_in_top5": 1.1,
+      "mean_judge_latency_ms": 6306,
+      "mean_judge_input_chars": 442,
+      "failure_class_counts": {
+        "query_starved_retrieval_miss": 23,
+        "context_truncation_hidden": 15,
+        "retrieval_miss": 14,
+        "corpus_miss": 13,
+        "pass": 3,
+        "judge_reject": 2
+      },
+      "measured": true
+    },
+    "MR": {
+      "n": 30,
+      "ingestion_answer_coverage_exact_substring_pct": 53.3,
+      "mean_answer_token_coverage": 0.467,
+      "retrieval_recall_at5_pct": 0.0,
+      "retrieval_recall_at10_pct": 0.0,
+      "query_starved_zero_keyword_candidates_pct": 53.3,
+      "context_visible_answer_span_in_judge_input_pct": 0.0,
+      "judge_accuracy_pct": 6.7,
+      "judge_accept_given_visible": {
+        "accepted": 0,
+        "n": 0,
+        "pct": null
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 2,
+        "n": 30,
+        "pct": 6.7
+      },
+      "mean_foreign_results_in_top5": 1.17,
+      "mean_judge_latency_ms": 5625,
+      "mean_judge_input_chars": 357,
+      "failure_class_counts": {
+        "corpus_miss": 14,
+        "query_starved_retrieval_miss": 9,
+        "retrieval_miss": 7
+      },
+      "measured": true
+    },
+    "TR": {
+      "n": 10,
+      "ingestion_answer_coverage_exact_substring_pct": 40.0,
+      "mean_answer_token_coverage": 0.771,
+      "retrieval_recall_at5_pct": 0.0,
+      "retrieval_recall_at10_pct": 0.0,
+      "query_starved_zero_keyword_candidates_pct": 90.0,
+      "context_visible_answer_span_in_judge_input_pct": 0.0,
+      "judge_accuracy_pct": 30.0,
+      "judge_accept_given_visible": {
+        "accepted": 0,
+        "n": 0,
+        "pct": null
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 3,
+        "n": 10,
+        "pct": 30.0
+      },
+      "mean_foreign_results_in_top5": 0.1,
+      "mean_judge_latency_ms": 4749,
+      "mean_judge_input_chars": 30,
+      "failure_class_counts": {
+        "corpus_miss": 6,
+        "query_starved_retrieval_miss": 3,
+        "retrieval_miss": 1
+      },
+      "measured": true,
+      "note": "10-question stratified sample; 3/10 judge accepts occurred with NO visible evidence (blind guessing)"
+    },
+    "KU": {
+      "n": 10,
+      "ingestion_answer_coverage_exact_substring_pct": 90.0,
+      "mean_answer_token_coverage": 0.7,
+      "retrieval_recall_at5_pct": 40.0,
+      "retrieval_recall_at10_pct": 40.0,
+      "query_starved_zero_keyword_candidates_pct": 20.0,
+      "context_visible_answer_span_in_judge_input_pct": 10.0,
+      "judge_accuracy_pct": 0.0,
+      "judge_accept_given_visible": {
+        "accepted": 0,
+        "n": 1,
+        "pct": 0.0
+      },
+      "judge_accept_given_hidden": {
+        "accepted": 0,
+        "n": 9,
+        "pct": 0.0
+      },
+      "mean_foreign_results_in_top5": 2.3,
+      "mean_judge_latency_ms": 7414,
+      "mean_judge_input_chars": 949,
+      "failure_class_counts": {
+        "context_truncation_hidden": 3,
+        "retrieval_miss": 3,
+        "query_starved_retrieval_miss": 2,
+        "corpus_miss": 1,
+        "judge_reject": 1
+      },
+      "measured": true,
+      "note": "10-question stratified sample; highest cross-question contamination (mean 2.3 foreign results in top-5)"
+    },
+    "ABS": {
+      "n": 0,
+      "measured": false,
+      "note": "0 abstention questions exist in the converted dataset (categories IE/MR/TR/KU only); the ability is unmeasurable with the current artifact",
+      "missing_instrumentation": "dataset conversion must preserve abstention questions (upstream has_answer flags / answer_session_ids) before any ABS claim can be made"
+    }
+  },
+  "failure_categories": {
+    "basis": "all 120 measured questions",
+    "percentages": {
+      "query_starved_retrieval_miss": 30.8,
+      "corpus_miss": 28.3,
+      "retrieval_miss": 20.8,
+      "context_truncation_hidden": 15.0,
+      "pass": 2.5,
+      "judge_reject": 2.5
+    },
+    "counts": {
+      "query_starved_retrieval_miss": 37,
+      "corpus_miss": 34,
+      "retrieval_miss": 25,
+      "context_truncation_hidden": 18,
+      "pass": 3,
+      "judge_reject": 3
+    },
+    "extra": {
+      "judge_parse_failures_pct": 0.0,
+      "retrieval_transport_failures_pct": 0.0,
+      "questions_with_foreign_result_in_top5_pct": 40.8,
+      "questions_with_fully_foreign_top5_pct": 8.3,
+      "empty_judge_input_pct": 49.2
+    },
+    "first_100_counts": {
+      "query_starved_retrieval_miss": 32,
+      "corpus_miss": 27,
+      "retrieval_miss": 21,
+      "context_truncation_hidden": 15,
+      "pass": 3,
+      "judge_reject": 2
+    }
+  },
+  "examples": [
+    {
+      "question_id": "e47becba",
+      "dataset_index": 0,
+      "category": "IE",
+      "classification": "context_truncation_hidden",
+      "question": "What degree did I graduate with?",
+      "expected_answer": "Business Administration",
+      "measurements": {
+        "answer_in_corpus_exact_substring": true,
+        "answer_token_coverage": 1,
+        "keyword_candidates_from_fts": 1,
+        "results_returned": 1,
+        "evidence_rank_full_content_top10": 1,
+        "evidence_rank_in_top5": 1,
+        "foreign_results_in_top5": 0,
+        "answer_span_visible_in_judge_input": false,
+        "judge_input_chars": 306,
+        "judge_verdict": "incorrect",
+        "judge_score": 0
+      },
+      "judge_input_excerpt": "...miss a task or need to make changes to your routine.\n\nRemember, it may take some time to figure out what works best for you and your new job. Be patient, and don't hesitate to ask for help or guidance from your colleagues or manager.\n\nGood luck, and I hope these tips help you establish a productive ...",
+      "judge_reasoning": "The system answer is completely unrelated to the question about the degree.",
+      "evidence_trail": [
+        "Evidence session retrieved at rank 1 of 1 (bench/reports longmemeval-diagnosis measured record idx=0: evidence_rank_top5=1).",
+        "Gold answer 'Business Administration' occurs verbatim in session 52 (token coverage 1.0).",
+        "Search store truncates each result to a 300-char preview window (internal/store/search/store.go:368 previewContent(query, result.Content, 300)).",
+        "Judge input (5 x <=300 chars, actual 597 chars here) shows a different region of the session; answer span absent.",
+        "Judge verdict=incorrect with reasoning 'The system answer is completely unrelated to the question about the degree.'"
+      ]
+    },
+    {
+      "question_id": "58bf7951",
+      "dataset_index": 3,
+      "category": "IE",
+      "classification": "query_starved_retrieval_miss",
+      "question": "What play did I attend at the local community theater?",
+      "expected_answer": "The Glass Menagerie",
+      "measurements": {
+        "answer_in_corpus_exact_substring": true,
+        "answer_token_coverage": 1,
+        "keyword_candidates_from_fts": 0,
+        "results_returned": 0,
+        "evidence_rank_full_content_top10": 0,
+        "evidence_rank_in_top5": 0,
+        "foreign_results_in_top5": 0,
+        "answer_span_visible_in_judge_input": false,
+        "judge_input_chars": 0,
+        "judge_verdict": "incorrect",
+        "judge_score": 0
+      },
+      "judge_input_excerpt": "",
+      "judge_reasoning": "The system answer is missing and does not provide any information to compare with the expected answer.",
+      "evidence_trail": [
+        "sanitizeFTS joins every question term with AND and prefix-matches only the last (internal/store/search/store.go:493-524).",
+        "No single session of this question's 49-session haystack contains ALL question terms => 0 keyword candidates (record idx=3: prior_hits=0, n_results=0).",
+        "Judge input is EMPTY (0 chars); verdict=incorrect.",
+        "Offline probe over the same haystack: 0/37 starved questions match all terms; dropping stopwords rescues 11/37."
+      ]
+    },
+    {
+      "question_id": "118b2229",
+      "dataset_index": 1,
+      "category": "IE",
+      "classification": "retrieval_miss",
+      "question": "How long is my daily commute to work?",
+      "expected_answer": "45 minutes each way",
+      "measurements": {
+        "answer_in_corpus_exact_substring": true,
+        "answer_token_coverage": 1,
+        "keyword_candidates_from_fts": 1,
+        "results_returned": 1,
+        "evidence_rank_full_content_top10": 0,
+        "evidence_rank_in_top5": 0,
+        "foreign_results_in_top5": 0,
+        "answer_span_visible_in_judge_input": false,
+        "judge_input_chars": 306,
+        "judge_verdict": "incorrect",
+        "judge_score": 0
+      },
+      "judge_input_excerpt": "...reat habit to have.\n\nNow, let's get to prioritizing your to-do list. One popular method is the Eisenhower Matrix, which helps you categorize tasks based on their urgency and importance. Here's how it works:\n\n**Divide your tasks into four quadrants:**\n\n1. **Urgent and Important (Do First)**: Tasks th...",
+      "judge_reasoning": "The system answer does not provide any information related to the length of the daily commute to work.",
+      "evidence_trail": [
+        "FTS returned exactly 1 candidate (record idx=1: prior_hits=1, n_results=1) - a productivity-advice session that does not contain the commute answer.",
+        "Gold answer '45 minutes each way' is verbatim in the corpus (token coverage 1.0) but its session is never a candidate: recall@10=0.",
+        "Adaptive tier had no second-stage lists to fuse (n_results stayed 1), so PRF/topic-expansion/fact-key retrievers produced no rescue.",
+        "Judge verdict=incorrect on the single off-target preview."
+      ]
+    },
+    {
+      "question_id": "58ef2f1c",
+      "dataset_index": 8,
+      "category": "IE",
+      "classification": "corpus_miss",
+      "question": "When did I volunteer at the local animal shelter's fundraising dinner?",
+      "expected_answer": "February 14th",
+      "measurements": {
+        "answer_in_corpus_exact_substring": false,
+        "answer_token_coverage": 1,
+        "keyword_candidates_from_fts": 0,
+        "results_returned": 0,
+        "evidence_rank_full_content_top10": 0,
+        "evidence_rank_in_top5": 0,
+        "foreign_results_in_top5": 0,
+        "answer_span_visible_in_judge_input": false,
+        "judge_input_chars": 0,
+        "judge_verdict": "incorrect",
+        "judge_score": 0
+      },
+      "judge_input_excerpt": "",
+      "judge_reasoning": "The system answer is missing and does not provide any information related to the expected answer.",
+      "evidence_trail": [
+        "Exact normalized answer substring absent from this question's ingested haystack (record idx=8: answer_in_corpus=false) while token coverage=1.0 (both 'february' and '14th' occur separately).",
+        "0 keyword candidates and 0 results; judge input empty.",
+        "Class cannot be split further without has_answer/evidence-span instrumentation dropped by the dataset conversion - recorded as undetermined U1."
+      ]
+    },
+    {
+      "question_id": "c8c3f81d",
+      "dataset_index": 20,
+      "category": "IE",
+      "classification": "judge_reject_with_contamination",
+      "question": "What brand are my favorite running shoes?",
+      "expected_answer": "Nike",
+      "measurements": {
+        "answer_in_corpus_exact_substring": true,
+        "answer_token_coverage": 1,
+        "keyword_candidates_from_fts": 4,
+        "results_returned": 4,
+        "evidence_rank_full_content_top10": 1,
+        "evidence_rank_in_top5": 1,
+        "foreign_results_in_top5": 3,
+        "answer_span_visible_in_judge_input": true,
+        "judge_input_chars": 1227,
+        "judge_verdict": "incorrect",
+        "judge_score": 0
+      },
+      "judge_input_excerpt": "...s.\n\nTo help me better assist you, could you please provide me with the following information:\n\n1. **What is the exact model of your current Nike running shoes?** (e.g., Nike Air Zoom Pegasus 37, Nike Vaporfly Next%, etc.)\n2. **What is the colorway of your current shoes?** (e.g., black/white, blue/or...\n...ate a checklist to keep track of all my equipment and when I last used or serviced them?\nassistant: What a great idea! Having a checklist can help you stay on top of your sports gear and ensure you're always ready for your next game, practice, or adventure. I'd be happy to help you create a checklis...\n...eir high-quality outdoor gear, and they often have sales and promotions throughout ...",
+      "judge_reasoning": "The system answer '...'s' is not related to the question about the brand of running shoes.",
+      "evidence_trail": [
+        "Evidence session present in top5 (record idx=20: evidence_rank_top5=1) and answer span 'Nike' IS visible in judge input.",
+        "3 of the 5 judge-input results belong to OTHER questions' projects (foreign_top5=3) because the runner never sets SearchOptions.Project (bench/longmemeval/runner.go:232-240).",
+        "Judge input is a collage of non-answers; verdict=incorrect, reasoning 'The system answer ... is not related to the question'.",
+        "This is the structural no-reading-stage failure: raw retrieved context is scored as the system answer (bench/longmemeval/runner.go:196-217)."
+      ]
+    }
+  ],
+  "root_causes": [
+    {
+      "rank": 1,
+      "name": "Strict-AND FTS query semantics starve retrieval for natural-language questions",
+      "contribution": "Largest single class: 37/120 questions (30.8%) have zero keyword candidates; overall recall@10 is only 20.0%.",
+      "mechanism": "sanitizeFTS wraps EVERY whitespace term of the raw question in quotes and joins with AND, prefix-wildcarding only the last term (internal/store/search/store.go:493-524). A 49-session haystack essentially never contains every function word of a full interrogative sentence, so observations_fts MATCH yields 0 rows; PRF, topic-expansion and fact-key retrievers all start from those keyword results, so nothing rescues the query (store.go:604-636).",
+      "evidence_refs": [
+        "measured: 59/120 records with prior_hits=0 (full_120.json)",
+        "offline own-haystack probe: 0/37 starved questions contain ALL question terms; dropping stopwords rescues 11/37",
+        "internal/store/search/store.go:493-524 (sanitizeFTS AND join)",
+        "examples[1] (question 'What play did I attend at the local community theater?' -> 0 candidates, empty judge input)"
+      ],
+      "falsifiable_fix_hypothesis": {
+        "hypothesis": "Dropping English stopwords and/or OR-joining content terms before MATCH collapses the query_starved class and raises recall@10 well above 20% without hurting precision.",
+        "probe": "Re-run the identical 120-question overlay diagnostic with a patched sanitizeFTS (content-term extraction, OR join) behind an env flag; compare class counts.",
+        "expected_observable": "query_starved_retrieval_miss <10% (from 30.8%) and retrieval_recall_at10 >=40%; if starved stays >25%, the hypothesis is refuted and the AND semantics are not the binding constraint."
+      }
+    },
+    {
+      "rank": 2,
+      "name": "300-char result previews hide retrieved evidence from the judge (no reading stage)",
+      "contribution": "18/120 questions (15.0%) had the evidence session inside the top-5 yet the answer span absent from judge input; only 5.0% of all questions have the answer visible, i.e. 75% of correctly retrieved evidence is discarded before scoring.",
+      "mechanism": "Every retrieval path truncates result.Content to a single 300-char window anchored at the first query-term match (internal/store/search/store.go:368, :1043, :1749; window logic :552-595). The runner concatenates the top-5 previews as the ENTIRE system answer (bench/longmemeval/runner.go:196-206) - there is no answer-synthesis stage - so the judge scores ~429 average chars of chat transcript and rejects it.",
+      "evidence_refs": [
+        "measured: 18/120 context_truncation_hidden; mean judge input 429 chars (max 1534)",
+        "measured: judge accepts 3/6 (50%) when the span IS visible vs 8/114 (7.0%) when not",
+        "internal/store/search/store.go:368 and :552-595",
+        "bench/longmemeval/runner.go:196-217",
+        "examples[0] (evidence rank 1, answer verbatim in session, preview shows unrelated region)"
+      ],
+      "falsifiable_fix_hypothesis": {
+        "hypothesis": "Feeding the judge the FULL content of the top-5 observations (or an answer-synthesis pass over them) raises judge accuracy primarily through the previously-hidden evidence class.",
+        "probe": "Re-run the identical diagnostic with a flag that joins full observation content instead of previews (judge input budget permitting), holding model/seed fixed.",
+        "expected_observable": "context_visible rises from 5% to >=recall@5 (20%); of the 18 truncation-hidden questions at least half become visible and ~50-60% of those are accepted => overall accuracy >=15%. If visibility rises but accuracy stays <=10%, the judge/reading side (root cause 4) is the binding constraint instead."
+      }
+    },
+    {
+      "rank": 3,
+      "name": "Strict-AND is compounded by cross-question corpus contamination (runner never scopes project)",
+      "contribution": "40.8% of questions have at least one FOREIGN question's session in their top-5 (mean 1.13 of 5), 8.3% are fully foreign; contamination competes with the AND-starved candidates for the few available slots.",
+      "mechanism": "Run() ingests every question's haystack into ONE shared in-memory store with Project=q.ID but never passes SearchOptions.Project to search (bench/longmemeval/runner.go:232-240; filter support exists at internal/store/search/store.go:454-470). As the eval progresses, every query matches against all previously ingested haystacks; BM25 then surfaces unrelated sessions.",
+      "evidence_refs": [
+        "measured: foreign_top5 distribution {0:71, 1:16, 2:7, 3:8, 4:8, 5:10} over 120 records",
+        "bench/longmemeval/runner.go:232-240 (no Project set)",
+        "internal/store/search/store.go:454-470 (Project filter exists, unused)",
+        "examples[4] (judge_reject with foreign_top5=3)"
+      ],
+      "falsifiable_fix_hypothesis": {
+        "hypothesis": "Setting SearchOptions.Project=q.ID in the runner removes foreign context and improves judge acceptance for questions that do retrieve evidence (KU is the worst case at mean 2.3 foreign top-5).",
+        "probe": "Re-run the diagnostic with Project scoping; compare foreign_top5 and judge acceptance conditional on visibility.",
+        "expected_observable": "foreign_top5 -> 0 on all 120 and accept_given_visible >50% (from 50% overall, 0/1 on KU); if accuracy does not move, contamination is cosmetic and demoted."
+      }
+    },
+    {
+      "rank": 4,
+      "name": "No reading/answer-synthesis stage: raw context is scored as the system answer",
+      "contribution": "Structural ceiling: even with perfect retrieval the judge must find the answer inside a collage of transcripts; accept_given_visible is only 3/6 and judge_reject examples show it rejecting visible evidence as unrelated.",
+      "mechanism": "evaluateQuestion passes the concatenated top-5 raw contexts to the judge as 'System answer' (bench/longmemeval/runner.go:196-217); the LongMemEval paper's reading stage (answer generation from retrieved sessions) does not exist in the harness, so the fixed judge compares a transcript fragment against a short gold answer.",
+      "evidence_refs": [
+        "bench/longmemeval/runner.go:196-217",
+        "measured: judge rejects 3/6 visible-evidence questions (incl. examples[4])",
+        "bench/common/llm_judge.go:120-131 (prompt expects an answer, receives context)"
+      ],
+      "falsifiable_fix_hypothesis": {
+        "hypothesis": "Supplying ORACLE evidence (gold session full text) as the judge input would yield >=80% acceptance with the same judge; if it does not, judge strictness rather than missing synthesis is the binding constraint.",
+        "probe": "One-shot oracle-evidence judge pass over the 120 questions: judge(question, answer, full text of sessions flagged answer-bearing in the source dataset).",
+        "expected_observable": "oracle_acceptance >=80% confirms reading-stage absence as the residual bottleneck after retrieval fixes; <60% refutes and shifts rank to judge prompt/calibration (then re-design the prompt probe)."
+      }
+    },
+    {
+      "rank": 5,
+      "name": "Ingestion/answer coverage gap of 28% (corpus_miss) limits the ceiling before retrieval starts",
+      "contribution": "34/120 questions (28.3%) have no verbatim gold answer in their own haystack; MR coverage is only 53% and TR 40% because their answers are synthesized conclusions rather than quotes.",
+      "mechanism": "Mixed and currently inseparable causes: (a) legitimately non-verbatim answers (multi-session reasoning, temporal math), (b) true absence (abstention-style), (c) conversion/ingest loss. The conversion dropped the upstream has_answer flags, so the split is undetermined (see undetermined[0]).",
+      "evidence_refs": [
+        "measured: corpus_miss 34/120; per-ability exact-substring coverage IE 81.4% / MR 53.3% / TR 40% / KU 90%",
+        "examples[3] ('February 14th' absent as substring while tokens occur separately)",
+        "upstream longmemeval_s.json carries per-turn has_answer flags that the runner-format conversion discarded"
+      ],
+      "falsifiable_fix_hypothesis": {
+        "hypothesis": "Most corpus_miss is paraphrase (answerable but not quotable), not ingest loss; true absence is small and overlaps the unmeasured ABS population.",
+        "probe": "Re-convert the dataset preserving has_answer flags and answer_session_ids, then classify each corpus_miss question as (i) answer session flagged but text differs = paraphrase, (ii) no flagged session = true absence/ABS, (iii) flagged session missing from store = ingest bug.",
+        "expected_observable": "If (iii) >5% an ingestion bug is promoted to a top root cause; if (ii) clusters into ABS, the fix is dataset-fit (add ABS questions), not retrieval. Until run, no fix task may be created from this class."
+      }
+    }
+  ],
+  "undetermined": [
+    {
+      "class": "corpus_miss internal split (paraphrase vs true absence vs ingestion loss)",
+      "missing_instrumentation": "has_answer / answer_session_ids preserved through dataset conversion, plus stable-ID evidence spans (bench/longmemeval/baseline_adapter.go:40-54 documents that upstream provides NO Cortex stable relevance IDs)",
+      "rule": "No speculative fix task may be created from this class until the re-conversion probe runs (root_causes[4] probe)."
+    },
+    {
+      "class": "reading-stage quality isolated from retrieval (paper stage 3)",
+      "missing_instrumentation": "the harness contains no answer-generation stage at all, so 'evidence present but answer wrong' cannot be separated from 'judge rejects raw context' without adding a synthesis seam",
+      "rule": "Recorded as structural absence (root_causes[4] names the oracle-evidence probe); no reading-stage fix task may be created from this report."
+    },
+    {
+      "class": "BM25 document-length normalization vs session-decomposition granularity",
+      "missing_instrumentation": "runner records no per-candidate score breakdown (domain.SearchScoreBreakdown is not surfaced by the bench harness), so long-session rank penalty cannot be quantified",
+      "rule": "Indexing granularity is NOT claimed as a root cause; only probeable by surfacing ScoreBreakdown in instrumentation first."
+    },
+    {
+      "class": "Abstention (ABS) ability performance",
+      "missing_instrumentation": "0 ABS questions in the converted dataset artifact",
+      "rule": "No ABS score or fix may be claimed until the dataset re-conversion includes abstention questions."
+    },
+    {
+      "class": "judge blind-accept inflation by ability",
+      "missing_instrumentation": "TR/KU measured on 10-question samples (TR accepted 3/10 with no visible evidence); need the full 133+78 questions to quantify per-ability false-accept rates",
+      "rule": "TR 30% accuracy is measurement noise from blind accepts, NOT evidence of temporal-reasoning strength."
+    }
+  ],
+  "ranked_summary": [
+    "1. Strict-AND FTS query semantics: 30.8% of questions get zero keyword candidates (largest class, measurable headroom)",
+    "2. 300-char preview truncation + absent reading stage: 75% of retrieved evidence never reaches the judge; only 5% of questions have the answer span visible",
+    "3. Cross-question contamination: 40.8% of top-5s contain foreign sessions (runner omits Project scoping)",
+    "4. Raw-context-as-answer judge protocol: accepts only 50% even when evidence is visible; oracle-evidence probe required to size it",
+    "5. Corpus coverage gap 28.3%: ceiling before retrieval, internal split undetermined pending has_answer re-conversion"
+  ],
+  "limitations": [
+    "All numbers come from one deterministic run (judge temperature=0, seed=42; retrieval has map-iteration tie ordering in ingest, so session ingestion order is not byte-reproducible across runs).",
+    "answer_in_corpus uses exact normalized substring; token-coverage (mean 0.797) is reported alongside as a looser proxy; neither equals 'answerable'.",
+    "TR and KU rows are 10-question stratified samples.",
+    "The AND-starvation probe is an offline approximation of FTS tokenization (word-set membership), not an FTS execution.",
+    "The conversion script that produced the runner-format dataset is not in the repository (artifact-only provenance).",
+    "Judge input for empty retrievals is the empty string; the fixed judge scores those 'incorrect' by absence of an answer, consistent with production behavior."
+  ],
+  "verification": {
+    "acceptance_command": "jq -e '.root_causes | length >= 1' bench/reports/longmemeval-diagnosis.json",
+    "supporting_command": "go test -count=1 ./bench/common (exit 0)",
+    "repo_source_modified": false
+  }
+}

@@ -262,7 +262,7 @@ func gunzip(t *testing.T, data []byte) []byte {
 	if err != nil {
 		t.Fatalf("gzip reader: %v", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	out, err := io.ReadAll(zr)
 	if err != nil {
 		t.Fatalf("gunzip: %v", err)

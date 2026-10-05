@@ -4,6 +4,74 @@
 
 > Historical result tables in this document are not release evidence unless they include a reproducible command, fixture/version, commit, and environment. Use the offline gate below as the current repository verification contract.
 
+## Measured results: pre-change vs post-change (fixed judge)
+
+> **Evidence classification:** Measured, locally reproduced answer-judge scores published as `eval-comparison/v1` artifacts under `bench/reports/`.
+> **Evidence identity:** Every row below is read from a named report file that records the product commit, judge configuration, run timestamp, and question count.
+> **Evaluator classification:** Scores are fixed-judge answer acceptability (`fixed_judge_accuracy`), not labelled stable-ID/span retrieval relevance.
+> **Comparability:** The pre-change and post-change rows are comparable only with each other: same judge, same datasets, same question limit, same harness generation. No third-party system score appears on this page.
+
+### Evaluation protocol
+
+| Parameter | Value |
+|---|---|
+| Judge | `qwen2.5:7b-instruct` served by the local Ollama runtime |
+| Configuration | `OLLAMA_ENDPOINT`, `OLLAMA_JUDGE_MODEL`, `temperature=0`, `seed=42`, `format=json` (protocol `fixed-judge/ollama/v1`) |
+| Question limit | 100 questions per benchmark per run (`limit=100`), same slice for every run compared here |
+| Datasets | LOCOMO (CC BY-NC 4.0, five question types) and LongMemEval (ability slices as published by the runner: IE, MR) |
+| Metric | `fixed_judge_accuracy` = accepted answers / evaluated questions, reported per slice and overall |
+
+Two harness properties make these numbers publishable at all:
+
+- **No-fabrication contract.** Runners fail closed with `common.BlockedError` (exit code 2) when the judge endpoint is unreachable or a trustworthy score cannot be produced. A failed run publishes no score instead of a fallback or guessed score.
+- **Baseline chaining.** `common.EvalBaselineFromReport` loads a prior report into `Config.Baseline`; each report then records `baseline_status` (`not_recorded` on first publication, `recorded` thereafter) and per-slice `before` / `after` / `delta` against `min_delta` gates. Chaining only compares against the report it is fed.
+
+### Measured comparison
+
+| Metric | Pre-change (product commit `3bf0f411`) | Post-change | Δ absolute | Δ relative |
+|---|---|---|---|---|
+| LOCOMO overall | 0.26 (26/100) | 0.56 (56/100) | +0.30 | +115% |
+| LOCOMO single-hop | 0.25 | 0.625 | +0.375 | +150% |
+| LOCOMO multi-hop | 0.081 | 0.324 | +0.243 | +300% |
+| LOCOMO temporal | 0.692 | 0.769 | +0.077 | — |
+| LOCOMO open-domain | 0.333 | 0.778 | +0.445 | — |
+| LongMemEval overall | 0.06 (6/100) | 0.08 (8/100) | +0.02 | — |
+| LongMemEval IE | 0.057 | 0.086 | +0.029 | — |
+| LongMemEval MR | 0.067 | 0.067 | 0.000 | stable |
+
+Artifacts: pre-change `bench/reports/prechange-baseline-locomo.json` and `bench/reports/prechange-baseline-longmemeval.json`; post-change `bench/reports/first-eval-locomo.json` and `bench/reports/first-eval-longmemeval.json`, re-measured by `bench/reports/second-eval-locomo.json` and `bench/reports/second-eval-longmemeval.json`; current rows from `bench/reports/third-eval-locomo.json` (the LongMemEval columns are unchanged in `bench/reports/third-eval-longmemeval.json`).
+
+The relative columns are computed from the published values: 0.30 / 0.26 = +115%, 0.375 / 0.25 = +150%, and 0.243 / 0.081 = +300%. Other rows are reported as absolute deltas.
+
+### Provenance of the pre-change baseline
+
+The pre-change rows were measured against product commit `3bf0f411`, the last main commit before the 2026-10-02 retrieval change wave, in a detached disposable worktree outside the main checkout.
+
+- The `eval-comparison/v1` harness postdates `3bf0f411`, so the current `bench/` harness plus `go.mod` / `go.sum` were copied into that worktree and executed against the pre-change product tree. The committed `bench/` at `3bf0f411` cannot publish `eval-comparison/v1`, so reuse was mandatory.
+- Compiling the reused harness against the pre-change API surface required exactly three adaptations, in the worktree copies only: drop the `retrieval.AdaptiveSearchOptions.FusionScores` literal in `bench/locomo/runner.go` and `bench/longmemeval/runner.go`, and drop the `opts.QueryVector` assignment in `bench/locomo/runner.go`. Those options do not exist at `3bf0f411`. No main-checkout source file was modified.
+- The harness-reuse decision and the three adaptations are recorded verbatim in the `limitations` array of both pre-change report files.
+
+### Reproducibility
+
+- Post-change run 2 reproduced run 1 exactly: the canonical `score` payload (metric, overall, every slice, `total_questions`, `correct`) is byte-identical between `first-eval-*.json` and `second-eval-*.json`. Check it with:
+
+```bash
+diff <(jq -S .score bench/reports/first-eval-locomo.json) <(jq -S .score bench/reports/second-eval-locomo.json)
+diff <(jq -S .score bench/reports/first-eval-longmemeval.json) <(jq -S .score bench/reports/second-eval-longmemeval.json)
+```
+
+- `temperature=0` and `seed=42` make the judge deterministic for a fixed input; determinism is not the same as accuracy, and the repetition above covers one machine and one judge only.
+- **Why the harness deltas read 0.000.** The chained baseline inside the first- and second-pass post-change reports was `first-eval`, which already postdates every retrieval change, so its per-task rows compare 0.35 with 0.35 and report `delta: 0`. That chain cannot express pre-change lift; the comparison table above is computed across the separately published pre-change and post-change artifacts instead. The current `third-eval-locomo.json` chains against `second-eval`, so its per-task rows do report movement (0.35 → 0.56, `delta: 0.21` on the overall slice).
+
+### Limitations
+
+1. **No vector row at baseline.** The pre-change baseline and the embeddings-off post-change runs carry no `rag-t07` vector row because no embedding model was available when the baseline ran. Embeddings-enabled runs are recorded separately in `bench/reports/eval-embeddings-locomo.json` (and `bench/reports/eval-embeddings-longmemeval.json` when published), with the embedding model in provenance; they have no pre-change counterpart and are therefore not part of the before/after table.
+2. **No competitor numbers.** Scores from other systems are deliberately absent. Different judges, prompts, model backbones, question subsets, and metrics are not comparable, so importing them here would produce a false ranking.
+3. **Single local judge.** One judge model on one local runtime: a single pre-change run versus three post-change passes (the first two byte-identical), `n=100` per benchmark, no multi-seed or cross-machine variance analysis and no confidence intervals. Treat slice-level movements, especially `multi-hop` and `open-domain`, as indicative rather than settled.
+4. **Absolute level.** The lift from 0.26 to 0.56 on LOCOMO (+0.30 absolute, +115% relative) and from 0.06 to 0.08 on LongMemEval is measured, but LOCOMO still misses 44 of 100 questions; in the current run open-domain (0.778) and temporal (0.769) are the strongest slices and multi-hop (0.324) the weakest.
+5. **Environment.** The reports record the judge endpoint, model, seed, limit, and datasets, but no hardware profile; no latency, throughput, or resource claim is made from these runs.
+6. **Release claims.** These tables stay answer-judge evidence under the release-claim rules above: they are not stable-ID/span retrieval relevance evidence and do not by themselves satisfy a release gate.
+
 ## What the baseline proves
 
 The committed baseline contracts prove that Cortex can validate a versioned,

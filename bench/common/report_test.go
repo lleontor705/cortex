@@ -2,8 +2,15 @@ package common
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReportDeterministicSerialization(t *testing.T) {
@@ -269,4 +276,404 @@ func reverseQueryReports(values []QueryReport) []QueryReport {
 		result[left], result[right] = result[right], result[left]
 	}
 	return result
+}
+
+func TestRequireJudgeFailsClosedWithActionableRemediation(t *testing.T) {
+	unreachable := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unreachable.Close()
+
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "judge unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(refusing.Close)
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"judge-model"}]}`))
+	}))
+	t.Cleanup(healthy.Close)
+
+	tests := []struct {
+		name            string
+		cfg             *JudgeConfig
+		wantBlocked     bool
+		wantRemediation []string
+	}{
+		{
+			name:            "nil config",
+			cfg:             nil,
+			wantBlocked:     true,
+			wantRemediation: []string{"OLLAMA_ENDPOINT", "ollama pull"},
+		},
+		{
+			name:            "empty endpoint",
+			cfg:             &JudgeConfig{Endpoint: "  ", Model: "judge-model"},
+			wantBlocked:     true,
+			wantRemediation: []string{"OLLAMA_ENDPOINT"},
+		},
+		{
+			name:            "unreachable endpoint",
+			cfg:             &JudgeConfig{Endpoint: unreachable.URL, Model: "judge-model", Timeout: 2 * time.Second},
+			wantBlocked:     true,
+			wantRemediation: []string{"ollama serve", "ollama pull judge-model", "OLLAMA_ENDPOINT"},
+		},
+		{
+			name:            "non-2xx endpoint",
+			cfg:             &JudgeConfig{Endpoint: refusing.URL, Model: "judge-model", Timeout: 2 * time.Second},
+			wantBlocked:     true,
+			wantRemediation: []string{"OLLAMA_ENDPOINT"},
+		},
+		{
+			name:        "healthy endpoint",
+			cfg:         &JudgeConfig{Endpoint: healthy.URL, Model: "judge-model", Timeout: 2 * time.Second},
+			wantBlocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := RequireJudge(context.Background(), tt.cfg)
+			if !tt.wantBlocked {
+				if err != nil {
+					t.Fatalf("RequireJudge() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("RequireJudge() error = nil, want *BlockedError")
+			}
+			var blocked *BlockedError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("RequireJudge() error = %v, want *BlockedError", err)
+			}
+			if !IsBlocked(err) {
+				t.Errorf("IsBlocked(%v) = false, want true", err)
+			}
+			if !strings.HasPrefix(err.Error(), "BLOCKED:") {
+				t.Errorf("Error() = %q, want BLOCKED: prefix", err.Error())
+			}
+			for _, want := range tt.wantRemediation {
+				if !strings.Contains(blocked.Remediation, want) {
+					t.Errorf("Remediation = %q, want substring %q", blocked.Remediation, want)
+				}
+			}
+			if code := EvalExitCode(err); code != 2 {
+				t.Errorf("EvalExitCode() = %d, want 2", code)
+			}
+		})
+	}
+}
+
+func TestBuildEvalReportRegressionBelowGate(t *testing.T) {
+	baseline := EvalBaseline{
+		BaselineKey(EvalBenchmarkLOCOMO, EvalSliceOverall): 0.80,
+		BaselineKey(EvalBenchmarkLOCOMO, "multi-hop"):      0.90,
+	}
+
+	report, err := BuildEvalReport(EvalBenchmarkLOCOMO, evalLocomoResult(0.75), false, enabledEvalJudge(), baseline, 0)
+	if err != nil {
+		t.Fatalf("BuildEvalReport() error = %v", err)
+	}
+	if report.BaselineStatus != "recorded" {
+		t.Errorf("BaselineStatus = %q, want recorded", report.BaselineStatus)
+	}
+	if report.Gate.Status != EvalGateFailed {
+		t.Fatalf("Gate.Status = %q, want %q", report.Gate.Status, EvalGateFailed)
+	}
+
+	row, ok := findEvalTask(report.Tasks, EvalTaskLongMemEvalPack)
+	if !ok {
+		t.Fatalf("task %s missing from report rows", EvalTaskLongMemEvalPack)
+	}
+	if row.Status != EvalRowCompared {
+		t.Errorf("row.Status = %q, want %q", row.Status, EvalRowCompared)
+	}
+	if row.Before == nil || *row.Before != 0.80 {
+		t.Errorf("row.Before = %v, want 0.80", row.Before)
+	}
+	if row.After == nil || *row.After != 0.75 {
+		t.Errorf("row.After = %v, want 0.75", row.After)
+	}
+	if row.Delta == nil {
+		t.Fatal("row.Delta = nil, want a measured delta")
+	}
+	if row.Passed == nil || *row.Passed {
+		t.Errorf("row.Passed = %v, want false", row.Passed)
+	}
+
+	regression := report.RegressionError()
+	if regression == nil {
+		t.Fatal("RegressionError() = nil, want *RegressionError")
+	}
+	var target *RegressionError
+	if !errors.As(regression, &target) {
+		t.Fatalf("RegressionError() = %v, want *RegressionError", regression)
+	}
+	message := regression.Error()
+	for _, want := range []string{
+		EvalTaskLongMemEvalPack,
+		EvalTaskSkewRoute,
+		"before 0.8000",
+		"after 0.7500",
+		"delta -0.0500",
+		"below gate 0.0000",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("RegressionError() = %q, want substring %q", message, want)
+		}
+	}
+	if code := EvalExitCode(regression); code != 1 {
+		t.Errorf("EvalExitCode() = %d, want 1", code)
+	}
+}
+
+func TestBuildEvalReportGatePassesWhenDeltasHold(t *testing.T) {
+	baseline := EvalBaseline{
+		BaselineKey(EvalBenchmarkLOCOMO, EvalSliceOverall): 0.50,
+		BaselineKey(EvalBenchmarkLOCOMO, "multi-hop"):      0.50,
+	}
+
+	report, err := BuildEvalReport(EvalBenchmarkLOCOMO, evalLocomoResult(0.75), false, enabledEvalJudge(), baseline, 0)
+	if err != nil {
+		t.Fatalf("BuildEvalReport() error = %v", err)
+	}
+	if report.Gate.Status != EvalGatePassed {
+		t.Fatalf("Gate.Status = %q, want %q", report.Gate.Status, EvalGatePassed)
+	}
+	if err := report.RegressionError(); err != nil {
+		t.Fatalf("RegressionError() = %v, want nil", err)
+	}
+	for _, row := range report.Tasks {
+		if row.Status != EvalRowCompared {
+			t.Errorf("task %s status = %q, want %q", row.TaskID, row.Status, EvalRowCompared)
+		}
+		if row.Passed == nil || !*row.Passed {
+			t.Errorf("task %s passed = %v, want true", row.TaskID, row.Passed)
+		}
+	}
+}
+
+func TestBuildEvalReportMissingBaselineNeverInventsNumbers(t *testing.T) {
+	recordedBaseline := EvalBaseline{
+		BaselineKey(EvalBenchmarkLOCOMO, EvalSliceOverall): 0.50,
+		BaselineKey(EvalBenchmarkLOCOMO, "multi-hop"):      0.50,
+	}
+	unmeasured := BenchmarkResult{
+		Benchmark: EvalBenchmarkLOCOMO,
+		Overall:   0.75,
+		Total:     4,
+		Correct:   3,
+		Details: []QuestionResult{
+			{ID: "q-1", Correct: true},
+			{ID: "q-2", Correct: true},
+			{ID: "q-3", Correct: true},
+			{ID: "q-4", Correct: false},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		baseline EvalBaseline
+		result   BenchmarkResult
+		verify   func(*testing.T, EvalReport)
+	}{
+		{
+			name:     "no baseline recorded",
+			baseline: nil,
+			result:   evalLocomoResult(0.75),
+			verify: func(t *testing.T, report EvalReport) {
+				if report.BaselineStatus != "not_recorded" {
+					t.Errorf("BaselineStatus = %q, want not_recorded", report.BaselineStatus)
+				}
+				if report.Gate.Status != EvalGateNotEvaluated {
+					t.Errorf("Gate.Status = %q, want %q", report.Gate.Status, EvalGateNotEvaluated)
+				}
+				if len(report.Gate.Failures) != 0 {
+					t.Errorf("Gate.Failures = %v, want none without a baseline", report.Gate.Failures)
+				}
+				for _, row := range report.Tasks {
+					if row.Status != EvalRowBaselineNotRecorded {
+						t.Errorf("task %s status = %q, want %q", row.TaskID, row.Status, EvalRowBaselineNotRecorded)
+					}
+					if row.After == nil {
+						t.Errorf("task %s after = nil, want the measured score", row.TaskID)
+					}
+					if row.Before != nil || row.Delta != nil || row.Passed != nil {
+						t.Errorf("task %s invented comparison values: before=%v delta=%v passed=%v", row.TaskID, row.Before, row.Delta, row.Passed)
+					}
+				}
+				encoded, err := SerializeEvalReport(report)
+				if err != nil {
+					t.Fatalf("SerializeEvalReport() error = %v", err)
+				}
+				published := string(encoded)
+				for _, want := range []string{`"baseline_status": "not_recorded"`, `"status": "not_evaluated"`} {
+					if !strings.Contains(published, want) {
+						t.Errorf("published report missing %s:\n%s", want, published)
+					}
+				}
+				for _, forbidden := range []string{`"before":`, `"delta":`} {
+					if strings.Contains(published, forbidden) {
+						t.Errorf("published report contains %s without a baseline:\n%s", forbidden, published)
+					}
+				}
+			},
+		},
+		{
+			name:     "baseline recorded but slice unmeasured",
+			baseline: recordedBaseline,
+			result:   unmeasured,
+			verify: func(t *testing.T, report EvalReport) {
+				if report.BaselineStatus != "recorded" {
+					t.Errorf("BaselineStatus = %q, want recorded", report.BaselineStatus)
+				}
+				if report.Gate.Status != EvalGateNotEvaluated {
+					t.Errorf("Gate.Status = %q, want %q", report.Gate.Status, EvalGateNotEvaluated)
+				}
+				row, ok := findEvalTask(report.Tasks, EvalTaskHippoRAG2Wiring)
+				if !ok {
+					t.Fatalf("task %s missing from report rows", EvalTaskHippoRAG2Wiring)
+				}
+				if row.Status != EvalRowNotMeasured {
+					t.Errorf("row.Status = %q, want %q", row.Status, EvalRowNotMeasured)
+				}
+				if row.After != nil || row.Before != nil || row.Delta != nil || row.Passed != nil {
+					t.Errorf("unmeasured row invented values: after=%v before=%v delta=%v passed=%v", row.After, row.Before, row.Delta, row.Passed)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report, err := BuildEvalReport(EvalBenchmarkLOCOMO, tt.result, false, enabledEvalJudge(), tt.baseline, 0)
+			if err != nil {
+				t.Fatalf("BuildEvalReport() error = %v", err)
+			}
+			tt.verify(t, report)
+		})
+	}
+}
+
+func TestEvalExitCodeMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "nil", err: nil, want: 0},
+		{name: "blocked", err: &BlockedError{Reason: "judge unreachable"}, want: 2},
+		{name: "wrapped blocked", err: fmt.Errorf("probe judge: %w", &BlockedError{Reason: "judge unreachable"}), want: 2},
+		{name: "regression", err: &RegressionError{Failures: []string{"task fell below gate"}}, want: 1},
+		{name: "wrapped regression", err: fmt.Errorf("eval gate: %w", &RegressionError{Failures: []string{"task fell below gate"}}), want: 1},
+		{name: "other error", err: errors.New("score aggregate is inconsistent"), want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EvalExitCode(tt.err); got != tt.want {
+				t.Errorf("EvalExitCode(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSerializeEvalReportRefusesWithoutFixedJudgeProtocol(t *testing.T) {
+	valid := EvalReport{
+		SchemaVersion:   EvalReportSchemaVersion,
+		ProtocolVersion: FixedJudgeProtocolVersion,
+		Benchmark:       EvalBenchmarkLOCOMO,
+		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+		Judge:           enabledEvalJudge(),
+		BaselineStatus:  "recorded",
+		Gate:            EvalGate{Status: EvalGateNotEvaluated},
+		Limitations:     []string{"Scores produced under the fixed Ollama-only judge."},
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*EvalReport)
+		wantErr string
+	}{
+		{name: "judge disabled", mutate: func(r *EvalReport) { r.Judge.Enabled = false }, wantErr: "fixed-judge protocol"},
+		{name: "foreign judge protocol", mutate: func(r *EvalReport) { r.Judge.Protocol = "judge/v0" }, wantErr: "fixed-judge protocol"},
+		{name: "foreign schema", mutate: func(r *EvalReport) { r.SchemaVersion = "eval-comparison/v0" }, wantErr: "schema_version"},
+		{name: "missing benchmark", mutate: func(r *EvalReport) { r.Benchmark = "" }, wantErr: "benchmark is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := valid
+			tt.mutate(&report)
+			encoded, err := SerializeEvalReport(report)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("SerializeEvalReport() error = %v, want error containing %q", err, tt.wantErr)
+			}
+			if encoded != nil {
+				t.Errorf("SerializeEvalReport() bytes = %q, want nil on refusal", encoded)
+			}
+		})
+	}
+
+	encoded, err := SerializeEvalReport(valid)
+	if err != nil {
+		t.Fatalf("SerializeEvalReport(valid) error = %v", err)
+	}
+	published := string(encoded)
+	for _, want := range []string{
+		`"schema_version": "eval-comparison/v1"`,
+		`"protocol_version": "fixed-judge/ollama/v1"`,
+		`"enabled": true`,
+	} {
+		if !strings.Contains(published, want) {
+			t.Errorf("published report missing %s:\n%s", want, published)
+		}
+	}
+
+	disabled := JudgeProtocolSummary{Protocol: FixedJudgeProtocolVersion, Enabled: false}
+	if _, err := BuildEvalReport(EvalBenchmarkLOCOMO, evalLocomoResult(0.75), false, disabled, nil, 0); err == nil || !strings.Contains(err.Error(), "fixed-judge protocol") {
+		t.Errorf("BuildEvalReport() with disabled judge error = %v, want fixed-judge protocol refusal", err)
+	}
+}
+
+func enabledEvalJudge() JudgeProtocolSummary {
+	return DescribeJudgeProtocol(&JudgeConfig{
+		Endpoint: "http://127.0.0.1:11434",
+		Model:    "judge-model",
+	})
+}
+
+// evalLocomoResult builds a coherent four-question LOCOMO run whose overall
+// and multi-hop slice accuracies both equal score at quarter granularity.
+func evalLocomoResult(score float64) BenchmarkResult {
+	const totalQuestions = 4
+	correct := int(math.Round(score * totalQuestions))
+	details := make([]QuestionResult, totalQuestions)
+	for i := range details {
+		details[i] = QuestionResult{
+			ID:      fmt.Sprintf("q-%03d", i+1),
+			Type:    "multi-hop",
+			Correct: i < correct,
+		}
+	}
+	return BenchmarkResult{
+		Benchmark: EvalBenchmarkLOCOMO,
+		Overall:   score,
+		Total:     totalQuestions,
+		Correct:   correct,
+		Details:   details,
+	}
+}
+
+func findEvalTask(rows []TaskComparison, taskID string) (TaskComparison, bool) {
+	for _, row := range rows {
+		if row.TaskID == taskID {
+			return row, true
+		}
+	}
+	return TaskComparison{}, false
 }

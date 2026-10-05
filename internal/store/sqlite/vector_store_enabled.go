@@ -216,7 +216,7 @@ func (s *VectorStore) GetEmbedding(ctx context.Context, observationID int64) ([]
 		return nil, "", fmt.Errorf("vector store: get embedding: %w", err)
 	}
 
-	embedding, err := deserializeEmbedding(embeddingBlob)
+	embedding, err := DecodeEmbeddingPayload(embeddingBlob)
 	if err != nil {
 		return nil, "", fmt.Errorf("vector store: deserialize embedding: %w", err)
 	}
@@ -260,26 +260,6 @@ func serializeEmbedding(embedding []float32) ([]byte, error) {
 		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
 	}
 	return buf, nil
-}
-
-// deserializeEmbedding converts a binary BLOB back to a float32 slice.
-// It decodes each element with the same math.Float32frombits(
-// binary.LittleEndian.Uint32(...)) conversion the previous bytes.NewReader +
-// per-element binary.Read pipeline performed, bit-for-bit, without the
-// per-element reflection overhead. Trailing bytes of a blob whose length is
-// not a multiple of 4 are ignored, exactly like the previous reader-based
-// decode, which consumed only len(data)/4 complete floats.
-func deserializeEmbedding(data []byte) ([]float32, error) {
-	dimension := len(data) / 4 // float32 is 4 bytes
-	if dimension == 0 {
-		return nil, fmt.Errorf("empty embedding data")
-	}
-
-	embedding := make([]float32, dimension)
-	for i := range embedding {
-		embedding[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
-	}
-	return embedding, nil
 }
 
 // normalizeVector normalizes a vector to unit length for cosine similarity.

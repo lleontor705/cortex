@@ -2,6 +2,8 @@
 package retrieval
 
 import (
+	"sort"
+
 	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
@@ -48,6 +50,80 @@ type CRAGEvaluation struct {
 	Confidence      float64                `json:"confidence"`
 	NeedsRefinement bool                   `json:"needs_refinement"`
 	FilteredResults []*domain.SearchResult `json:"filtered_results"`
+}
+
+// RecognitionConfig configures the post-PPR recognition-memory filter that
+// prunes weak candidates before final fusion while still filling the
+// requested top-k.
+type RecognitionConfig struct {
+	TopK          int     // requested final candidate count; <= 0 disables prune-only
+	RelativeFloor float64 // keep candidates scoring at least RelativeFloor * top score
+	MinScoreFloor float64 // absolute noise floor on Rank
+}
+
+// DefaultRecognitionConfig returns standard recognition-memory parameters.
+func DefaultRecognitionConfig() RecognitionConfig {
+	return RecognitionConfig{
+		TopK:          0,
+		RelativeFloor: 0.05,
+		MinScoreFloor: DefaultCRAGConfig().MinScoreFloor,
+	}
+}
+
+// ApplyRecognitionFilter prunes post-PPR candidates below the recognition
+// floors, then refills from the strongest pruned candidates so the requested
+// TopK is always filled (and never exceeded), preserving descending-score
+// order with ties broken by descending ID to mirror the RRF contract.
+func ApplyRecognitionFilter(results []*domain.SearchResult, cfg RecognitionConfig) []*domain.SearchResult {
+	if len(results) == 0 {
+		return nil
+	}
+
+	relativeFloor := cfg.RelativeFloor
+	if relativeFloor <= 0 {
+		relativeFloor = 0.05
+	}
+	minFloor := cfg.MinScoreFloor
+	if minFloor < 0 {
+		minFloor = 0
+	}
+
+	sorted := make([]*domain.SearchResult, len(results))
+	copy(sorted, results)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Rank != sorted[j].Rank {
+			return sorted[i].Rank > sorted[j].Rank
+		}
+		return sorted[i].ID > sorted[j].ID
+	})
+
+	topScore := sorted[0].Rank
+	recognized := make([]*domain.SearchResult, 0, len(sorted))
+	pruned := make([]*domain.SearchResult, 0, len(sorted))
+	for _, r := range sorted {
+		if r.Rank >= minFloor && r.Rank >= relativeFloor*topScore {
+			recognized = append(recognized, r)
+		} else {
+			pruned = append(pruned, r)
+		}
+	}
+
+	if cfg.TopK <= 0 {
+		return recognized
+	}
+	if len(recognized) < cfg.TopK {
+		// Recognition pruned too aggressively: refill with the strongest
+		// pruned candidates so the requested top-k never starves.
+		room := cfg.TopK - len(recognized)
+		if room > len(pruned) {
+			room = len(pruned)
+		}
+		return append(recognized, pruned[:room]...)
+	}
+	if len(recognized) > cfg.TopK {
+		return recognized[:cfg.TopK]
+	}
+	return recognized
 }
 
 // EvaluateCRAG evaluates retrieved search results against CRAG confidence thresholds,

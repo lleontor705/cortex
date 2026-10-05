@@ -1069,7 +1069,7 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 				}
 				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
 				if vecErr == nil && len(vecResults) > 0 {
-					results = retrieval.FuseResultsWithOptions(results, vecResults, retrieval.FuseOptions{
+					results = fuseWithConfiguredRerank(query, results, vecResults, retrieval.FuseOptions{
 						Limit:         limit,
 						LexicalWeight: lexicalWeight,
 						VectorWeight:  vectorWeight,

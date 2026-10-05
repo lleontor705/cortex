@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -344,5 +345,83 @@ func TestOllamaService_CloseIdempotent(t *testing.T) {
 		if err := closer.Close(); err != nil {
 			t.Fatalf("Close call %d: %v", i, err)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// openai-compatible preset (Tier 2, REQ-EMB-001)
+// ---------------------------------------------------------------------------
+
+func mockOpenAICompatibleServer(t *testing.T, dims int, wantKey string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Errorf("path = %q, want /embeddings", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantKey {
+			t.Errorf("authorization = %q, want bearer %q", got, wantKey)
+		}
+		emb := make([]float64, dims)
+		for i := range emb {
+			emb[i] = float64(i) / float64(dims)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"embedding": emb}}})
+	}))
+}
+
+func TestNewWithClientBuildsOpenAICompatiblePreset(t *testing.T) {
+	srv := mockOpenAICompatibleServer(t, 4096, "test-key")
+	defer srv.Close()
+
+	svc := newWithClient(Config{Provider: "openai-compatible", APIKey: "test-key", BaseURL: srv.URL, Model: "qwen3-embedding-8B"}, &http.Client{}, 0, 0)
+	if svc == nil {
+		t.Fatal("openai-compatible preset did not construct a client")
+	}
+	if svc.Model() != "qwen3-embedding-8B" {
+		t.Fatalf("model = %q, want qwen3-embedding-8B", svc.Model())
+	}
+	if dims := svc.Dimensions(); dims != 0 {
+		t.Fatalf("pre-embed dimensions = %d, want 0: the compatible preset must not guess a dimension", dims)
+	}
+
+	vec, err := svc.Embed(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if len(vec) != 4096 {
+		t.Fatalf("len(vec) = %d, want 4096", len(vec))
+	}
+	if dims := svc.Dimensions(); dims != 4096 {
+		t.Fatalf("post-embed dimensions = %d, want live 4096", dims)
+	}
+}
+
+func TestOpenAICompatibleReportsPresetSpecificErrors(t *testing.T) {
+	dead := mockOpenAICompatibleServer(t, 8, "test-key")
+	deadURL := dead.URL
+	dead.Close()
+
+	svc := newWithClient(Config{Provider: "openai-compatible", APIKey: "test-key", BaseURL: deadURL}, &http.Client{}, 0, 0)
+	if svc == nil {
+		t.Fatal("openai-compatible preset did not construct a client")
+	}
+	_, err := svc.Embed(context.Background(), "hello")
+	if err == nil || !strings.Contains(err.Error(), "openai-compatible:") {
+		t.Fatalf("error = %v, want openai-compatible: prefix to keep telemetry distinct from first-party openai", err)
+	}
+}
+
+func TestNewRefusesOpenAICompatiblePresetInLocalMode(t *testing.T) {
+	svc := New(Config{Provider: "openai-compatible", APIKey: "test-key", BaseURL: "https://embed.example.com/v1", Model: "qwen3-embedding-8B"})
+	if svc != nil {
+		t.Fatal("local mode must refuse the remote openai-compatible preset: only the NewSecure server path may construct it")
+	}
+}
+
+func TestNewWithClientRejectsUnknownProvider(t *testing.T) {
+	svc := newWithClient(Config{Provider: "cohere", APIKey: "test-key", BaseURL: "https://api.cohere.com/v1"}, &http.Client{}, 0, 0)
+	if svc != nil {
+		t.Fatal("unknown provider must not construct a client")
 	}
 }

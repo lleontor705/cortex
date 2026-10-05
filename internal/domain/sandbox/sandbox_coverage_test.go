@@ -147,7 +147,9 @@ func TestExecuteCoverageBranches(t *testing.T) {
 	t.Run("filepath_small", func(t *testing.T) {
 		fr := fileRead(lang); if fr == "" { t.Skip() }
 		p := filepath.Join(t.TempDir(), "in.txt")
-		os.WriteFile(p, []byte("payload"), 0600)
+		if err := os.WriteFile(p, []byte("payload"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		res, err := r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
 		if err != nil || res.ExitCode != 0 {
 			t.Errorf("err=%v exit=%d stderr=%q", err, tern(err == nil, res.ExitCode, -1), tern(err == nil, res.Stderr, ""))
@@ -156,8 +158,10 @@ func TestExecuteCoverageBranches(t *testing.T) {
 	t.Run("filepath_large", func(t *testing.T) {
 		fr := fileRead(lang); if fr == "" { t.Skip() }
 		p := filepath.Join(t.TempDir(), "big.txt")
-		os.WriteFile(p, bytes.Repeat([]byte("x"), 600<<10), 0600)
-		r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
+		if err := os.WriteFile(p, bytes.Repeat([]byte("x"), 600<<10), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = r.Execute(context.Background(), ExecutionRequest{Language: lang, Code: fr, FilePath: p, Timeout: 10 * time.Second})
 	})
 	t.Run("exit_code", func(t *testing.T) {
 		fc := failExit(lang); if fc == "" { t.Skip() }

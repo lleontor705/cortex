@@ -292,7 +292,7 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	if api.adminAI == nil {
 		api.adminAI = composedAdminAIProbes{
 			llmStatus:       adminAIStatus{Provider: cfg.AI.Provider, Model: cfg.AI.Model, Configured: cfg.AI.Provider != "" && cfg.AI.Provider != "none"},
-			embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none", Dimensions: embeddingDimensions(cfg.Search.EmbeddingProvider)},
+			embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none", Dimensions: liveEmbeddingDimensions(cfg, hybrid.embeddings)},
 			extractor:       extractor, embeddings: hybrid.embeddings,
 		}
 	}

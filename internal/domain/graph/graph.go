@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
 )
@@ -54,6 +55,81 @@ const (
 	// MaxResultsCap bounds the user-supplied max_results budget.
 	MaxResultsCap = 1000
 )
+
+// passageNodePrefix namespaces first-class passage nodes inside the
+// heterogeneous HippoRAG 2 graph.
+const passageNodePrefix = "passage:"
+
+// PassageRef describes one passage (an observation chunk) to materialize as a
+// first-class graph node together with the concept/triple node IDs it mentions.
+type PassageRef struct {
+	ID       int64
+	Label    string
+	Concepts []string
+}
+
+// PassageNodeID returns the canonical first-class graph node ID for a passage.
+// The passage: prefix keeps passages addressable alongside obs:/sym: nodes in
+// the heterogeneous HippoRAG 2 graph.
+func PassageNodeID(id int64) string {
+	return passageNodePrefix + strconv.FormatInt(id, 10)
+}
+
+// LinkPassages materializes passages as first-class graph nodes linked to their
+// concept/triple nodes through mention edges. The input graph is never mutated,
+// duplicate nodes and mention edges are skipped, and a non-positive
+// mentionWeight falls back to DefaultWeight.
+func LinkPassages(
+	baseNodes []GraphAnalyticsNode,
+	baseEdges []GraphAnalyticsEdge,
+	passages []PassageRef,
+	mentionWeight float64,
+) ([]GraphAnalyticsNode, []GraphAnalyticsEdge) {
+	if mentionWeight <= 0 {
+		mentionWeight = DefaultWeight
+	}
+
+	nodes := make([]GraphAnalyticsNode, len(baseNodes), len(baseNodes)+len(passages))
+	copy(nodes, baseNodes)
+	edges := make([]GraphAnalyticsEdge, len(baseEdges), len(baseEdges)+len(passages))
+	copy(edges, baseEdges)
+
+	present := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		present[n.ID] = true
+	}
+	edgeKeys := make(map[string]bool, len(edges))
+	for _, e := range edges {
+		edgeKeys[e.Source+"\x00"+e.Target+"\x00"+e.Type] = true
+	}
+
+	for _, p := range passages {
+		passageID := PassageNodeID(p.ID)
+		if !present[passageID] {
+			nodes = append(nodes, GraphAnalyticsNode{
+				ID:    passageID,
+				Label: p.Label,
+				Kind:  NodeKindPassage,
+			})
+			present[passageID] = true
+		}
+		for _, concept := range p.Concepts {
+			key := passageID + "\x00" + concept + "\x00" + EdgeTypeMentions
+			if edgeKeys[key] {
+				continue
+			}
+			edgeKeys[key] = true
+			edges = append(edges, GraphAnalyticsEdge{
+				Source: passageID,
+				Target: concept,
+				Type:   EdgeTypeMentions,
+				Weight: mentionWeight,
+			})
+		}
+	}
+
+	return nodes, edges
+}
 
 // Common errors
 var (

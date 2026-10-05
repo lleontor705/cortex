@@ -21,6 +21,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
 )
 
 type closeCountingVector struct {
@@ -204,6 +205,29 @@ func TestNewServerEmbeddingAllowsExactRailwayPrivateDestination(t *testing.T) {
 		t.Fatal("expected embedding service")
 	}
 
+}
+
+func TestNewServerEmbeddingOpenAICompatibleNeedsConfiguredDestination(t *testing.T) {
+	cfg := validBootstrapConfig()
+	cfg.Search.EmbeddingProvider = "openai-compatible"
+	if _, err := newServerEmbedding(cfg); err == nil || !strings.Contains(err.Error(), "explicit base URL") {
+		t.Fatalf("newServerEmbedding() error = %v, want explicit base URL requirement", err)
+	}
+
+	cfg.Server.BootstrapDevelopment = true
+	cfg.Search.EmbeddingBaseURL = "http://127.0.0.1:11434/v1"
+	cfg.Search.EmbeddingModel = "qwen3-embedding-8B"
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "test-key")
+	service, err := newServerEmbedding(cfg)
+	if err != nil {
+		t.Fatalf("configured compatible destination rejected: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected embedding service")
+	}
+	if service.Model() != "qwen3-embedding-8B" {
+		t.Fatalf("model = %q, want configured model", service.Model())
+	}
 }
 
 func TestResolveServerDSNsPreservesExplicitDevelopmentMigrationDSN(t *testing.T) {
@@ -556,11 +580,119 @@ func TestRedactStageError(t *testing.T) {
 	}
 }
 
-func TestEmbeddingDimensions(t *testing.T) {
-	for provider, want := range map[string]int{"openai": 1536, "ollama": 768, "none": 0} {
-		if got := embeddingDimensions(provider); got != want {
-			t.Errorf("%s=%d want %d", provider, got, want)
-		}
+// staticEmbeddingService reports fixed live dimensions, mirroring how a real
+// provider caches the dimension from its first response.
+type staticEmbeddingService struct {
+	model      string
+	dimensions int
+}
+
+func (s staticEmbeddingService) Embed(context.Context, string) ([]float32, error) {
+	return make([]float32, s.dimensions), nil
+}
+
+func (s staticEmbeddingService) Dimensions() int { return s.dimensions }
+func (s staticEmbeddingService) Model() string   { return s.model }
+
+func TestLiveEmbeddingDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     config.Config
+		service embedding.Service
+		want    int
+	}{
+		{
+			name:    "composed embedder outranks operator vector configuration",
+			cfg:     config.Config{Vector: config.VectorConfig{Pgvector: config.PGVectorConfig{Dimension: 768}}},
+			service: staticEmbeddingService{model: "qwen3-embedding-8B", dimensions: 4096},
+			want:    4096,
+		},
+		{
+			name:    "embedder with uncached dimensions falls back to operator configuration",
+			cfg:     config.Config{Vector: config.VectorConfig{Pgvector: config.PGVectorConfig{Dimension: 768}}},
+			service: staticEmbeddingService{dimensions: 0},
+			want:    768,
+		},
+		{
+			name: "no embedder resolves operator configuration",
+			cfg:  config.Config{Vector: config.VectorConfig{Qdrant: config.QdrantConfig{Dimension: 1024}}},
+			want: 1024,
+		},
+		{
+			name: "no embedder and no operator configuration reports unknown",
+			cfg:  config.Config{},
+			want: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liveEmbeddingDimensions(tc.cfg, tc.service); got != tc.want {
+				t.Fatalf("liveEmbeddingDimensions() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdminAIStatusReportsLiveEmbeddingDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		search         config.SearchConfig
+		vector         config.VectorConfig
+		service        embedding.Service
+		wantConfigured bool
+		wantDimensions int
+	}{
+		{
+			name:           "composed embedder reports its live dimensions",
+			search:         config.SearchConfig{EmbeddingProvider: "openai-compatible", EmbeddingModel: "qwen3-embedding-8B"},
+			service:        staticEmbeddingService{model: "qwen3-embedding-8B", dimensions: 4096},
+			wantConfigured: true,
+			wantDimensions: 4096,
+		},
+		{
+			name:           "unconfigured provider stays unconfigured without a composed embedder",
+			vector:         config.VectorConfig{Pgvector: config.PGVectorConfig{Dimension: 768}},
+			wantConfigured: false,
+			wantDimensions: 768,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ops := newFakeOperations()
+			cfg := config.Config{
+				HTTP:   config.HTTPConfig{Token: "test-token"},
+				Search: tc.search,
+				Vector: tc.vector,
+			}
+			auth := requestAuthenticator{
+				verifier: verifierFunc(func(context.Context, string, string) (domain.Principal, error) {
+					return domain.Principal{Subject: "admin", OrgID: "tenant"}, nil
+				}),
+				factory: operationsFactoryFunc(func(context.Context, domain.Principal) (Operations, error) { return ops, nil }),
+			}
+			h, _ := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, func(context.Context) error { return nil }, auth.middleware,
+				hybridSearchDependencies{embeddings: tc.service})
+			req := httptest.NewRequest(http.MethodGet, "/api/admin/ai/status", nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s, want 200", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Embedding struct {
+					Dimensions int  `json:"dimensions"`
+					Configured bool `json:"configured"`
+				} `json:"embedding"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode status body: %v", err)
+			}
+			if body.Embedding.Configured != tc.wantConfigured || body.Embedding.Dimensions != tc.wantDimensions {
+				t.Fatalf("configured=%v dimensions=%d, want configured=%v dimensions=%d",
+					body.Embedding.Configured, body.Embedding.Dimensions, tc.wantConfigured, tc.wantDimensions)
+			}
+		})
 	}
 }
 

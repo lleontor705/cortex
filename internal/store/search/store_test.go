@@ -495,7 +495,7 @@ func TestSanitizeFTS(t *testing.T) {
 
 func TestSearchStore_ReturnsPreviewInsteadOfFullContent(t *testing.T) {
 	db := setupTestDB(t)
-	longContent := strings.Repeat("prefix ", 40) + "authentication keyword " + strings.Repeat("suffix ", 40)
+	longContent := strings.Repeat("prefix ", 400) + "authentication keyword " + strings.Repeat("suffix ", 400)
 	insertTestObservation(t, db, 1, "Long", longContent, "manual", "test-project", "project")
 
 	store := NewStore(db)
@@ -812,6 +812,339 @@ func TestNormalizeScope(t *testing.T) {
 				t.Errorf("normalizeScope(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- honest-03 LongMemEval diagnosis probes (bench/reports/longmemeval-diagnosis.json) ---
+
+// maxPreviewBudget is the maximum observable preview length (a 1200-char
+// window plus up to two ellipses). The widened window is the answer-span fix
+// (honest-03 root cause 2): shrinking it back to 306 hides the span from the
+// judge again, so the budget is pinned as a contract instead of being derived
+// from the implementation constant.
+const maxPreviewBudget = 1206
+
+// TestRelaxedKeywordFTSTiers pins the relaxation gate: sanitizeFTS keeps the
+// strict all-terms AND contract, and relaxed forms exist ONLY when stopword
+// pruning removes something — the query-language signal that separates a
+// natural-language question from a keyword lookup.
+func TestRelaxedKeywordFTSTiers(t *testing.T) {
+	t.Run("keyword query has nothing to relax", func(t *testing.T) {
+		if tiers := relaxedKeywordFTSTiers("fix auth bug"); len(tiers) != 0 {
+			t.Fatalf("expected no relaxed tier for a keyword query, got %v", tiers)
+		}
+		if got, want := sanitizeFTS("fix auth bug"), `"fix" AND "auth" AND "bug*"`; got != want {
+			t.Errorf("strict contract changed: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("natural language question gains relaxed tiers", func(t *testing.T) {
+		query := "What play did I attend at the local community theater?"
+		tiers := relaxedKeywordFTSTiers(query)
+		if len(tiers) != 2 {
+			t.Fatalf("expected 2 relaxed tiers for an interrogative query, got %d: %v", len(tiers), tiers)
+		}
+		if strings.Contains(tiers[0], `"what"`) || strings.Contains(tiers[0], `"the"`) {
+			t.Errorf("stopword-drop tier still carries function words: %s", tiers[0])
+		}
+		if !strings.Contains(tiers[0], `"play"`) || !strings.Contains(tiers[0], `"theater?*`) {
+			t.Errorf("stopword-drop tier lost content terms: %s", tiers[0])
+		}
+		if !strings.Contains(tiers[1], " OR ") || strings.Contains(tiers[1], " AND ") {
+			t.Errorf("second tier should be an OR over content terms, got: %s", tiers[1])
+		}
+	})
+
+	t.Run("stopword-only query has nothing to relax", func(t *testing.T) {
+		if tiers := relaxedKeywordFTSTiers("what is it"); len(tiers) != 0 {
+			t.Fatalf("expected no relaxed tier, got %v", tiers)
+		}
+	})
+
+	t.Run("empty query has nothing to relax", func(t *testing.T) {
+		if tiers := relaxedKeywordFTSTiers("   "); len(tiers) != 0 {
+			t.Fatalf("expected no relaxed tier, got %v", tiers)
+		}
+	})
+}
+
+// TestSearch_StarvedQuestionRescuedByRelaxedFTS replays honest-03 example[1]
+// ("What play did I attend at the local community theater?": 0 keyword
+// candidates, empty judge input). The fixture session deliberately omits the
+// question's function words, so strict AND matches nothing and only the
+// relaxed tiers can start retrieval when they are called. The end-to-end half
+// of the probe pins the routing-neutral shipped state: Search() does not call
+// them.
+func TestSearch_StarvedQuestionRescuedByRelaxedFTS(t *testing.T) {
+	t.Run("stopword drop rescues when all content terms co-occur", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 1, "Commute", "It was a long daily commute to work: 45 minutes each way.", "manual", "test-project", "project")
+
+		store := NewStore(db)
+		question := "How long is my daily commute to work?"
+		strict, err := store.searchKeywords(context.Background(), question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(strict) != 0 {
+			t.Fatalf("probe premise broken: strict tier returned %d results, want 0", len(strict))
+		}
+
+		results, err := store.searchRelaxedKeywords(context.Background(),
+			question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("stopword-dropped AND tier failed to rescue a starved natural-language query")
+		}
+		if results[0].ID != 1 {
+			t.Errorf("expected observation 1, got %d", results[0].ID)
+		}
+	})
+
+	// Both halves of the honest-03 probe are pinned: the OR tier must still
+	// rescue when invoked directly (the capability honest-10b keeps for its
+	// seam redesign), and Search() must NOT reach for it. Wiring the rescue into
+	// the pipeline populated the prior-stage FusionScores that SkewRoute routes
+	// on and regressed LOCOMO 0.56 -> 0.51-0.53 in both measured rank profiles
+	// (Cortex gotcha gotchas/honest-10-retrieval-basics-fix), so re-wiring it
+	// requires updating this contract consciously.
+	t.Run("OR tier rescues directly but stays out of Search", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 7, "Theater night", "user: The community theater production of The Glass Menagerie was unforgettable.\nassistant: Glad you enjoyed the show.", "manual", "test-project", "project")
+
+		store := NewStore(db)
+		question := "What play did I attend at the local community theater?"
+		opts := domain.SearchOptions{Project: "test-project"}
+		if strict, err := store.searchKeywords(context.Background(), question, opts, 10); err != nil || len(strict) != 0 {
+			t.Fatalf("probe premise broken: strict tier returned %d results (err=%v), want 0", len(strict), err)
+		}
+
+		rescue, err := store.searchRelaxedKeywords(context.Background(), question, opts, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(rescue) == 0 {
+			t.Fatal("OR tier lost its honest-03 rescue capability")
+		}
+		if rescue[0].Project != "test-project" {
+			t.Errorf("rescued result escaped project scope: %q", rescue[0].Project)
+		}
+
+		results, err := store.Search(context.Background(), question, domain.SearchOptions{Project: "test-project", Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("relaxed tiers leaked into Search, breaking routing neutrality: %v", idsOf(results))
+		}
+	})
+
+	t.Run("keyword-only query keeps its zero-row recall contract", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 1, "Zebra notes", "All about zebras in the savanna.", "manual", "test-project", "project")
+
+		store := NewStore(db)
+		results, err := store.searchRelaxedKeywords(context.Background(), "zebra quantum", domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("keyword query must keep strict AND semantics, got %d results", len(results))
+		}
+	})
+
+	// The starvation rescue must never add a second RRF vote to a pool another
+	// retriever already populated: when fact keys answer the question, the
+	// relaxed keyword tier stays out of the fusion entirely.
+	t.Run("rescue stays out when another retriever has results", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 1, "Picnic report", "Our team celebrated a surprise victory during the summer picnic.", "manual", "test-project", "project")
+		insertTestObservationWithTopicKey(t, db, 2, "Offsite budget", "Budget spreadsheet for the quarterly offsite.", "manual", "test-project", "project", "notes/summer-offsite")
+
+		store := NewStore(db)
+		question := "What was the surprise victory during the summer picnic?"
+		strict, err := store.searchKeywords(context.Background(), question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(strict) != 0 {
+			t.Fatalf("probe premise broken: strict tier returned %d results, want 0", len(strict))
+		}
+		rescue, err := store.searchRelaxedKeywords(context.Background(), question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsID(rescue, 1) {
+			t.Fatalf("probe premise broken: relaxed tier must reach observation 1, got %v", idsOf(rescue))
+		}
+
+		results, err := store.Search(context.Background(), question, domain.SearchOptions{Project: "test-project", Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsID(results, 1) || !containsID(results, 2) {
+			t.Fatalf("fact keys and topic expansion must both answer, got %v", idsOf(results))
+		}
+		for _, r := range results {
+			if r.ID != 1 {
+				continue
+			}
+			// One list = one RRF vote (1/(60+1)); a second keyword vote would
+			// double it and let the rescued observation outrank its peers.
+			if r.ScoreBreakdown.FusionScore > 1.1/61 {
+				t.Errorf("relaxed keyword tier fused into a populated pool: fusion=%.6f", r.ScoreBreakdown.FusionScore)
+			}
+		}
+	})
+
+	// The same invariant on the dual-level ('/') routing path: a fact list that
+	// already answers must not get a second RRF vote from the rescue.
+	t.Run("dual-level rescue stays out when fact keys answer", func(t *testing.T) {
+		db := setupTestDB(t)
+		insertTestObservation(t, db, 1, "Picnic report", "Our team celebrated a surprise victory at a summer picnic.", "manual", "test-project", "project")
+
+		store := NewStore(db)
+		question := "surprise victory during the summer picnic/"
+		strict, err := store.searchKeywords(context.Background(), question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(strict) != 0 {
+			t.Fatalf("probe premise broken: strict tier returned %d results, want 0", len(strict))
+		}
+		rescue, err := store.searchRelaxedKeywords(context.Background(), question, domain.SearchOptions{Project: "test-project"}, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsID(rescue, 1) {
+			t.Fatalf("probe premise broken: relaxed tier must reach observation 1, got %v", idsOf(rescue))
+		}
+
+		results, err := store.Search(context.Background(), question, domain.SearchOptions{Project: "test-project", Limit: 10})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsID(results, 1) {
+			t.Fatalf("fact keys must still answer the question, got %v", idsOf(results))
+		}
+		for _, r := range results {
+			if r.ID == 1 && r.ScoreBreakdown.FusionScore > 1.1/61 {
+				t.Errorf("relaxed keyword tier fused into a populated dual-level pool: fusion=%.6f", r.ScoreBreakdown.FusionScore)
+			}
+		}
+	})
+}
+
+// containsID reports whether a result set contains the given observation.
+func containsID(results []*domain.SearchResult, want int64) bool {
+	for _, r := range results {
+		if r.ID == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPreviewContent_AnswerSpanVisible replays honest-03 example[0]: the
+// evidence session is retrieved at rank 1 but a 300-char window cut the answer
+// span out of what the judge scores. The widened window keeps the span in view.
+func TestPreviewContent_AnswerSpanVisible(t *testing.T) {
+	query := "What degree did I graduate with?"
+	content := "What a great day for a walk outside. " +
+		strings.Repeat("career advice about routines and habits and managers. ", 6) +
+		"She graduated with a degree in Business Administration and framed the diploma. " +
+		strings.Repeat("more unrelated filler text follows the answer span. ", 20)
+
+	preview := previewContent(query, content, answerSpanPreviewChars)
+	if !strings.Contains(preview, "Business Administration") {
+		t.Fatalf("answer span missing from preview (len=%d): %q", len(preview), preview)
+	}
+	if len(preview) > maxPreviewBudget {
+		t.Errorf("preview exceeded budget: %d > %d", len(preview), maxPreviewBudget)
+	}
+}
+
+// TestSearch_PreviewCarriesEvidenceBeyondAnchor pins the widened answer-span
+// window end to end: evidence further from the anchor than the old 300-char
+// window reaches the caller, and the result stays a bounded preview.
+func TestSearch_PreviewCarriesEvidenceBeyondAnchor(t *testing.T) {
+	db := setupTestDB(t)
+	longContent := strings.Repeat("prefix ", 400) + "authentication keyword " +
+		strings.Repeat("filler ", 40) + "EVIDENCE-SPAN-BUSINESS-ADMINISTRATION " +
+		strings.Repeat("suffix ", 400)
+	insertTestObservation(t, db, 1, "Long", longContent, "manual", "test-project", "project")
+
+	store := NewStore(db)
+	results, err := store.Search(context.Background(), "authentication", domain.SearchOptions{
+		Project: "test-project",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if len(results[0].Content) >= len(longContent) {
+		t.Fatal("expected a bounded preview, got the full session")
+	}
+	if len(results[0].Content) > maxPreviewBudget {
+		t.Errorf("preview exceeded budget: %d > %d", len(results[0].Content), maxPreviewBudget)
+	}
+	if !strings.Contains(results[0].Content, "authentication keyword") {
+		t.Error("expected preview to keep the matching span")
+	}
+	if !strings.Contains(results[0].Content, "EVIDENCE-SPAN-BUSINESS-ADMINISTRATION") {
+		t.Error("expected the widened window to carry evidence past the anchor")
+	}
+}
+
+// TestSearch_ProjectScopeConsistentAcrossRetrievers pins that
+// SearchOptions.Project is applied by EVERY ranked list that feeds RRF —
+// keyword, topic exact, topic expansion, fact keys and graph expansion — so a
+// scoped search can never fuse a foreign project's observation.
+func TestSearch_ProjectScopeConsistentAcrossRetrievers(t *testing.T) {
+	db := setupTestDB(t)
+
+	insertTestObservationWithTopicKey(t, db, 1, "JWT auth", "JWT authentication implementation plan for the gateway with token rotation.", "decision", "alpha", "project", "auth/setup")
+	insertTestObservation(t, db, 2, "Session tokens", "Session token rotation and middleware validation for JWT tokens.", "decision", "alpha", "project")
+	insertTestObservationWithTopicKey(t, db, 3, "JWT auth", "JWT authentication implementation plan for the gateway with token rotation.", "decision", "beta", "project", "auth/setup")
+	insertTestObservation(t, db, 4, "Session tokens", "Session token rotation and middleware validation for JWT tokens.", "decision", "beta", "project")
+	// Reachable only through topic-key expansion (topic_key LIKE %JWT%) and
+	// through a cross-project graph edge from alpha's own observation.
+	insertTestObservationWithTopicKey(t, db, 5, "Beta notes", "Random notes about coffee.", "manual", "beta", "project", "notes/jwt-setup")
+	insertEdge(t, db, 1, 2, "references")
+	insertEdge(t, db, 3, 4, "references")
+	insertEdge(t, db, 1, 3, "references")
+
+	store := NewStore(db)
+	scoped, err := store.Search(context.Background(), "JWT authentication",
+		domain.SearchOptions{Project: "alpha", Limit: 10, GraphExpand: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scoped) == 0 {
+		t.Fatal("scoped search returned nothing; probe is vacuous")
+	}
+	for _, r := range scoped {
+		if r.Project != "alpha" {
+			t.Errorf("observation %d from project %q leaked into an alpha-scoped search", r.ID, r.Project)
+		}
+	}
+
+	unscoped, err := store.Search(context.Background(), "JWT authentication",
+		domain.SearchOptions{Limit: 10, GraphExpand: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	projects := make(map[string]bool)
+	for _, r := range unscoped {
+		projects[r.Project] = true
+	}
+	if !projects["alpha"] || !projects["beta"] {
+		t.Fatalf("unscoped search must see both projects to prove the filter is what excludes beta, got %v", projects)
 	}
 }
 

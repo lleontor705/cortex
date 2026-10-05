@@ -356,11 +356,14 @@ func publicKey(k jwk) (any, error) {
 		default:
 			return nil, errors.New("unsupported EC curve")
 		}
-		px, py := new(big.Int).SetBytes(x), new(big.Int).SetBytes(y)
 		if !validECPoint(k.Crv, x, y) {
 			return nil, errors.New("invalid EC point")
 		}
-		return &ecdsa.PublicKey{Curve: crv, X: px, Y: py}, nil
+		pub, err := ecdsa.ParseUncompressedPublicKey(crv, append(append([]byte{4}, x...), y...))
+		if err != nil {
+			return nil, errors.New("invalid EC point")
+		}
+		return pub, nil
 	}
 	return nil, errors.New("unsupported jwk")
 }
