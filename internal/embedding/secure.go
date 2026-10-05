@@ -54,21 +54,36 @@ func (p *OutboundPolicy) ApproveDestination(raw string) error {
 	return nil
 }
 
+// acceptedSecureProvider is the hard allowlist for server-mode construction.
+// Unknown providers fail closed instead of silently falling back to another
+// backend; the local composition never reaches this gate.
+func acceptedSecureProvider(provider string) bool {
+	switch provider {
+	case "", providerNone, providerOllama, providerOpenAI, providerOpenAICompatible:
+		return true
+	default:
+		return false
+	}
+}
+
 func NewSecure(cfg Config, policy OutboundPolicy) (Service, error) {
-	if cfg.Provider != "" && cfg.Provider != "none" && cfg.Provider != "ollama" && cfg.Provider != "openai" {
+	if !acceptedSecureProvider(cfg.Provider) {
 		return nil, errors.New("embedding: unsupported secure provider")
 	}
 	base := cfg.BaseURL
 	if base == "" {
 		switch cfg.Provider {
-		case "openai":
+		case providerOpenAI:
 			base = "https://api.openai.com/v1"
-		case "ollama":
+		case providerOllama:
 			base = "http://localhost:11434"
 		}
 	}
-	if cfg.Provider == "" || cfg.Provider == "none" {
+	if cfg.Provider == "" || cfg.Provider == providerNone {
 		return nil, nil
+	}
+	if cfg.Provider == providerOpenAICompatible && base == "" {
+		return nil, errors.New("embedding: openai-compatible requires an explicit base URL")
 	}
 	if err := policy.validateURL(base); err != nil {
 		return nil, err

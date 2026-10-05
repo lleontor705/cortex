@@ -67,27 +67,27 @@ type AIConfig struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Name                    string               `yaml:"name,omitempty" json:"name,omitempty" toml:"name,omitempty" mapstructure:"name"`
-	Version                 string               `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
-	Storage                 ServerStorageConfig  `yaml:"storage,omitempty" json:"storage,omitempty" toml:"storage,omitempty" mapstructure:"storage"`
-	Provider                ServerProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
-	Secrets                 ServerSecretsConfig  `yaml:"secrets,omitempty" json:"secrets,omitempty" toml:"secrets,omitempty" mapstructure:"secrets"`
-	TenantID                string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
-	WorkspaceID             string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
-	PrincipalSubject        string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
+	Name             string               `yaml:"name,omitempty" json:"name,omitempty" toml:"name,omitempty" mapstructure:"name"`
+	Version          string               `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
+	Storage          ServerStorageConfig  `yaml:"storage,omitempty" json:"storage,omitempty" toml:"storage,omitempty" mapstructure:"storage"`
+	Provider         ServerProviderConfig `yaml:"provider,omitempty" json:"provider,omitempty" toml:"provider,omitempty" mapstructure:"provider"`
+	Secrets          ServerSecretsConfig  `yaml:"secrets,omitempty" json:"secrets,omitempty" toml:"secrets,omitempty" mapstructure:"secrets"`
+	TenantID         string               `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty" toml:"tenant_id,omitempty" mapstructure:"tenant_id"`
+	WorkspaceID      string               `yaml:"workspace_id,omitempty" json:"workspace_id,omitempty" toml:"workspace_id,omitempty" mapstructure:"workspace_id"`
+	PrincipalSubject string               `yaml:"principal_subject,omitempty" json:"principal_subject,omitempty" toml:"principal_subject,omitempty" mapstructure:"principal_subject"`
 	// GrantDigest is retained for backward compatibility only.
 	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
-	GrantDigest             string               `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
+	GrantDigest string `yaml:"grant_digest,omitempty" json:"grant_digest,omitempty" toml:"grant_digest,omitempty" mapstructure:"grant_digest"`
 	// GrantVersion is retained for backward compatibility only.
 	// @deprecated in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
 	// Deprecated: in Cortex v2, grant integrity is calculated dynamically by PostgreSQL in cortex_bootstrap_service_principal.
-	GrantVersion            int64                `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
-	Roles                   []string             `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
-	Scopes                  []string             `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
-	ProjectIDs              []string             `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
-	ClassificationClearance []string             `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
-	BootstrapDevelopment    bool                 `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
+	GrantVersion            int64    `yaml:"grant_version,omitempty" json:"grant_version,omitempty" toml:"grant_version,omitempty" mapstructure:"grant_version"`
+	Roles                   []string `yaml:"roles,omitempty" json:"roles,omitempty" toml:"roles,omitempty" mapstructure:"roles"`
+	Scopes                  []string `yaml:"scopes,omitempty" json:"scopes,omitempty" toml:"scopes,omitempty" mapstructure:"scopes"`
+	ProjectIDs              []string `yaml:"project_ids,omitempty" json:"project_ids,omitempty" toml:"project_ids,omitempty" mapstructure:"project_ids"`
+	ClassificationClearance []string `yaml:"classification_clearance,omitempty" json:"classification_clearance,omitempty" toml:"classification_clearance,omitempty" mapstructure:"classification_clearance"`
+	BootstrapDevelopment    bool     `yaml:"bootstrap_development,omitempty" json:"bootstrap_development,omitempty" toml:"bootstrap_development,omitempty" mapstructure:"bootstrap_development"`
 	// RailwayInternalEmbeddingHost is the exact Railway private hostname
 	// allowed to serve embeddings over HTTP. An empty value keeps the default
 	// policy, which rejects every non-loopback HTTP destination.
@@ -180,10 +180,13 @@ type SearchConfig struct {
 	FTS5              bool    `yaml:"fts5,omitempty" json:"fts5,omitempty" toml:"fts5,omitempty" mapstructure:"fts5"`
 	Vector            bool    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
 	FusionK           float64 `yaml:"fusion_k,omitempty" json:"fusion_k,omitempty" toml:"fusion_k,omitempty" mapstructure:"fusion_k"`
-	EmbeddingProvider string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"` // "ollama", "openai", "none" (default)
+	EmbeddingProvider string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"` // "ollama", "openai", "openai-compatible", "none" (default)
 	EmbeddingModel    string  `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty" toml:"embedding_model,omitempty" mapstructure:"embedding_model"`             // Model name override (e.g. "qwen3-embedding:8b")
 	EmbeddingBaseURL  string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
 	OllamaAutoStart   bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`     // Auto-start Ollama when configured as provider
+	RerankProvider    string  `yaml:"rerank_provider,omitempty" json:"rerank_provider,omitempty" toml:"rerank_provider,omitempty" mapstructure:"rerank_provider"`             // "none" (default), "late-interaction", "openai-compatible"
+	RerankModel       string  `yaml:"rerank_model,omitempty" json:"rerank_model,omitempty" toml:"rerank_model,omitempty" mapstructure:"rerank_model"`                         // Rerank model override (e.g. "qwen3-Reranker-8B")
+	RerankBaseURL     string  `yaml:"rerank_base_url,omitempty" json:"rerank_base_url,omitempty" toml:"rerank_base_url,omitempty" mapstructure:"rerank_base_url"`             // Base URL for the openai-compatible rerank preset
 }
 
 // MemoryConfig holds memory management configuration
@@ -274,11 +277,12 @@ var defaults = Config{
 		Format: "json",
 	},
 	Search: SearchConfig{
-		DefaultLimit: 20,
-		MaxLimit:     100,
-		FTS5:         true,
-		Vector:       false,
-		FusionK:      60,
+		DefaultLimit:   20,
+		MaxLimit:       100,
+		FTS5:           true,
+		Vector:         false,
+		FusionK:        60,
+		RerankProvider: "none",
 	},
 	Memory: MemoryConfig{
 		MaxObservationLength: 50000,
@@ -382,6 +386,29 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	// Rerank preset: config file search.rerank_* -> CORTEX_RERANK_*. No viper
+	// default is registered for these keys on purpose — a SetDefault would
+	// shadow the explicit env mirror — so the empty provider is normalized to
+	// "none" right here instead.
+	if cfg.Search.RerankProvider == "" {
+		if p := os.Getenv("CORTEX_RERANK_PROVIDER"); p != "" {
+			cfg.Search.RerankProvider = p
+		}
+	}
+	if cfg.Search.RerankModel == "" {
+		if m := os.Getenv("CORTEX_RERANK_MODEL"); m != "" {
+			cfg.Search.RerankModel = m
+		}
+	}
+	if cfg.Search.RerankBaseURL == "" {
+		if u := os.Getenv("CORTEX_RERANK_BASE_URL"); u != "" {
+			cfg.Search.RerankBaseURL = u
+		}
+	}
+	if strings.TrimSpace(cfg.Search.RerankProvider) == "" {
+		cfg.Search.RerankProvider = "none"
+	}
+
 	// 2. Resolve LLM settings: config file ai.* / llm.* -> CORTEX_LLM_*
 	if cfg.AI.Provider == "" {
 		if p := os.Getenv("CORTEX_LLM_PROVIDER"); p != "" {
@@ -449,6 +476,12 @@ func Load(configPath string) (*Config, error) {
 // Strictly uses CORTEX_EMBEDDING_API_KEY.
 func ResolveEmbeddingAPIKey(provider string) string {
 	return strings.TrimSpace(os.Getenv("CORTEX_EMBEDDING_API_KEY"))
+}
+
+// ResolveRerankAPIKey resolves the rerank API key. Strictly env-only via
+// CORTEX_RERANK_API_KEY: rerank credentials are never read from config files.
+func ResolveRerankAPIKey() string {
+	return strings.TrimSpace(os.Getenv("CORTEX_RERANK_API_KEY"))
 }
 
 // ResolveLLMAPIKey resolves the API key for LLM services.
@@ -676,6 +709,34 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Search.MaxLimit < cfg.Search.DefaultLimit {
 		return fmt.Errorf("invalid search.max_limit: %d (must be >= default_limit %d)", cfg.Search.MaxLimit, cfg.Search.DefaultLimit)
+	}
+
+	// Embedding provider acceptance mirrors the runtime gates: the local
+	// factory and the server secure allowlist both hard-fail on unknown
+	// providers, so a typo fails at load time instead of silently disabling
+	// embeddings.
+	switch strings.ToLower(strings.TrimSpace(cfg.Search.EmbeddingProvider)) {
+	case "", "none", "ollama", "openai", "openai-compatible":
+	default:
+		return fmt.Errorf("invalid search.embedding_provider: %q (valid: none, ollama, openai, openai-compatible)", cfg.Search.EmbeddingProvider)
+	}
+
+	// Rerank provider acceptance mirrors the runtime factories for the same
+	// reason: unknown presets hard-fail at load time, and the remote preset
+	// must carry an explicit, transport-approved destination before any
+	// construction attempt can dial it.
+	switch strings.ToLower(strings.TrimSpace(cfg.Search.RerankProvider)) {
+	case "", "none", "late-interaction", "openai-compatible":
+	default:
+		return fmt.Errorf("invalid search.rerank_provider: %q (valid: none, late-interaction, openai-compatible)", cfg.Search.RerankProvider)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Search.RerankProvider), "openai-compatible") {
+		if strings.TrimSpace(cfg.Search.RerankBaseURL) == "" {
+			return fmt.Errorf("invalid search.rerank_base_url: required when search.rerank_provider is openai-compatible")
+		}
+		if err := transportpolicy.ValidateBearerDestination(cfg.Search.RerankBaseURL); err != nil {
+			return fmt.Errorf("invalid search.rerank_base_url: %w", err)
+		}
 	}
 
 	// Validate memory config
