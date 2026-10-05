@@ -1,0 +1,72 @@
+{
+  "schema_version": "eval-comparison/v1",
+  "protocol_version": "fixed-judge/ollama/v1",
+  "benchmark": "LOCOMO",
+  "generated_at": "2026-10-03T03:47:12Z",
+  "judge": {
+    "protocol": "fixed-judge/ollama/v1",
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen2.5:7b-instruct",
+    "temperature": 0,
+    "seed": 42,
+    "format": "json"
+  },
+  "score": {
+    "metric": "fixed_judge_accuracy",
+    "after": 0.35,
+    "by_slice": {
+      "multi-hop": 0.189,
+      "open-domain": 0.389,
+      "overall": 0.35,
+      "single-hop": 0.375,
+      "temporal": 0.692
+    },
+    "total_questions": 100,
+    "correct": 35
+  },
+  "baseline_status": "recorded",
+  "tasks": [
+    {
+      "task_id": "rag-t04-longmemeval-pack",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "compared",
+      "before": 0.35,
+      "after": 0.35,
+      "delta": 0,
+      "min_delta": 0,
+      "passed": true
+    },
+    {
+      "task_id": "rag-t05-skewroute-routing",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "compared",
+      "before": 0.35,
+      "after": 0.35,
+      "delta": 0,
+      "min_delta": 0,
+      "passed": true
+    },
+    {
+      "task_id": "rag-t11-hipporag2-wiring",
+      "benchmark": "LOCOMO",
+      "slice": "multi-hop",
+      "status": "compared",
+      "before": 0.189,
+      "after": 0.189,
+      "delta": 0,
+      "min_delta": 0,
+      "passed": true
+    }
+  ],
+  "gate": {
+    "status": "passed"
+  },
+  "limitations": [
+    "Task rows bind each landed task to the benchmark slice it targets; deltas measure slice movement against the recorded baseline, not per-task causality.",
+    "Deltas attribute to the runner's default query path (retrieval.ExecuteAdaptiveSearch with the prior stage's fusion scores; Config.LegacyPath=true reproduces the pre-adaptive FTS+RRF row), so rag-t05 routing and rag-t11 adaptive wiring changes now move these numbers; changes outside the query path still show zero delta.",
+    "Judge scores measure answer acceptability under the fixed protocol; they are not labelled retrieval relevance evidence."
+  ]
+}

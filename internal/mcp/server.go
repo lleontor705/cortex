@@ -3,22 +3,28 @@
 // This exposes memory tools via MCP stdio transport so agents can use
 // Cortex as a persistent memory server.
 //
-// Tool profiles allow agents to load only the tools they need:
+// Tool profiles allow agents to load only the tools they need. Discovery
+// metadata (supported vs retired profile names) is declared exactly once via
+// SupportedProfiles and RetiredProfiles below; docs and tool output must
+// derive from those declarations instead of copying the names:
 //
 //	cortex mcp                        -> all tools (default)
 //	cortex mcp --tools=agent          -> ordinary agent tools (cortex_* namespace)
 //	cortex mcp --tools=dev            -> golden dev suite (11 tools: memory + AST impact)
 //	cortex mcp --tools=minimal        -> essential core memory (5 tools: minimal token footprint)
-//	cortex mcp --tools=admin          -> admin/diagnostic tools
-//	cortex mcp --tools=temporal       -> temporal/advanced tools
+//	cortex mcp --tools=admin          -> retired profile (explicit use only, never discovered)
+//	cortex mcp --tools=temporal       -> retired profile (explicit use only, never discovered)
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -128,20 +134,70 @@ var ProfileDev = map[string]bool{
 	"cortex_code_tests":        true,
 }
 
-// Profiles maps profile names to their tool sets.
-// Canonical agentic profiles are "agent", "dev", "coder", and "minimal".
+// Profiles maps profile names to their tool sets, including the "coder" alias
+// for ProfileDev. It is the registry that discovery metadata derives from;
+// profile names must not be enumerated in any other declaration.
 var Profiles = map[string]map[string]bool{
 	"agent":    ProfileAgent,
 	"dev":      ProfileDev,
 	"coder":    ProfileDev,
 	"minimal":  ProfileMinimal,
-	"admin":    ProfileAdmin,    // Deprecated non-agentic profile
-	"temporal": ProfileTemporal, // Deprecated non-agentic profile
+	"admin":    ProfileAdmin,
+	"temporal": ProfileTemporal,
+}
+
+// RetiredProfiles marks non-agentic profiles that stay resolvable through
+// ResolveTools for backward compatibility but are rejected from standard
+// discovery surfaces such as the status tool output.
+var RetiredProfiles = map[string]bool{
+	"admin":    true,
+	"temporal": true,
+}
+
+// SupportedProfiles returns the sorted profile names advertised by standard
+// discovery. Deriving the list from Profiles minus RetiredProfiles keeps a
+// single source of truth so a stale copy cannot reappear in tool output.
+func SupportedProfiles() []string {
+	supported := make([]string, 0, len(Profiles))
+	for name := range Profiles {
+		if !RetiredProfiles[name] {
+			supported = append(supported, name)
+		}
+	}
+	sort.Strings(supported)
+	return supported
+}
+
+// Vector index capability states advertised by the status tool. They mirror
+// the verdict cortex doctor prints so status output and doctor output report
+// one reality.
+const (
+	VectorIndexEnabled  = "enabled"
+	VectorIndexDegraded = "degraded"
+	VectorIndexDisabled = "disabled"
+)
+
+// VectorIndexState derives the vector_index capability state from the live
+// VectorIndex health port. The enabled verdict delegates to
+// domain.IsVectorIndexHealthy — the exact check cortex doctor gates on — so
+// this cannot become a second copy of detection logic; the health status is
+// only read afterwards to separate a degraded index from an absent or
+// unhealthy one.
+func VectorIndexState(ctx context.Context, idx domain.VectorIndex) string {
+	if domain.IsVectorIndexHealthy(ctx, idx) {
+		return VectorIndexEnabled
+	}
+	if idx != nil && idx.Health(ctx).Status == domain.StatusDegraded {
+		return VectorIndexDegraded
+	}
+	return VectorIndexDisabled
 }
 
 // ResolveTools takes a comma-separated string of profile names and/or
 // individual tool names and returns the set of tool names to register.
 // An empty input or "all" resolves to ProfileAgent (the full canonical agent suite).
+// Retired profiles remain resolvable here for explicit backward-compatible
+// requests; only discovery surfaces (see SupportedProfiles) exclude them.
 func ResolveTools(input string) map[string]bool {
 	input = strings.TrimSpace(input)
 	if input == "" || input == "all" {

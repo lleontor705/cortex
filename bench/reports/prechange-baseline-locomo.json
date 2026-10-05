@@ -1,0 +1,69 @@
+{
+  "schema_version": "eval-comparison/v1",
+  "protocol_version": "fixed-judge/ollama/v1",
+  "benchmark": "LOCOMO",
+  "generated_at": "2026-10-03T04:49:24Z",
+  "judge": {
+    "protocol": "fixed-judge/ollama/v1",
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen2.5:7b-instruct",
+    "temperature": 0,
+    "seed": 42,
+    "format": "json"
+  },
+  "score": {
+    "metric": "fixed_judge_accuracy",
+    "after": 0.26,
+    "by_slice": {
+      "multi-hop": 0.081,
+      "open-domain": 0.333,
+      "overall": 0.26,
+      "single-hop": 0.25,
+      "temporal": 0.692
+    },
+    "total_questions": 100,
+    "correct": 26
+  },
+  "baseline_status": "not_recorded",
+  "tasks": [
+    {
+      "task_id": "rag-t04-longmemeval-pack",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "baseline_not_recorded",
+      "after": 0.26,
+      "min_delta": 0
+    },
+    {
+      "task_id": "rag-t05-skewroute-routing",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "baseline_not_recorded",
+      "after": 0.26,
+      "min_delta": 0
+    },
+    {
+      "task_id": "rag-t11-hipporag2-wiring",
+      "benchmark": "LOCOMO",
+      "slice": "multi-hop",
+      "status": "baseline_not_recorded",
+      "after": 0.081,
+      "min_delta": 0
+    }
+  ],
+  "gate": {
+    "status": "not_evaluated"
+  },
+  "limitations": [
+    "Task rows bind each landed task to the benchmark slice it targets; deltas measure slice movement against the recorded baseline, not per-task causality.",
+    "Deltas attribute to the runner's default query path (retrieval.ExecuteAdaptiveSearch with the prior stage's fusion scores; Config.LegacyPath=true reproduces the pre-adaptive FTS+RRF row), so rag-t05 routing and rag-t11 adaptive wiring changes now move these numbers; changes outside the query path still show zero delta.",
+    "Judge scores measure answer acceptability under the fixed protocol; they are not labelled retrieval relevance evidence.",
+    "No baseline was supplied: before/after values stay unpublished and the gate is not evaluated; feed this report to EvalBaselineFromReport to record it for the next run.",
+    "Provenance (product): commit 3bf0f411, evaluated in a detached disposable git worktree outside the main checkout; 3bf0f411 is the last main commit before the 2026-10-02 rag-perf wave (verified via git log at execution time).",
+    "Harness-reuse decision (verbatim): the eval harness postdates commit 3bf0f411 \u2014 eval-comparison/v1 (RunEval, BuildEvalReport, PublishEvalReport) exists only as uncommitted main-checkout changes \u2014 therefore the current main-checkout bench/ harness plus go.mod/go.sum were copied into the 3bf0f411 worktree and executed against the pre-change product tree (internal/** at 3bf0f411). The committed bench at 3bf0f411 cannot publish eval-comparison/v1, so reuse was mandatory.",
+    "Harness adaptation (verbatim): compiling the reused harness against the pre-change API surface required exactly three changes in the worktree copies of bench/locomo/runner.go and bench/longmemeval/runner.go \u2014 drop the retrieval.AdaptiveSearchOptions.FusionScores literal in both runners, drop the opts.QueryVector assignment in locomo \u2014 because those options do not exist at 3bf0f411; the prior FTS stage is retained unchanged as a reachability pre-check. No main-checkout source files were modified.",
+    "Fixed judge protocol: endpoint http://127.0.0.1:11434, model qwen2.5:7b-instruct, temperature 0, seed 42, format json; limit=100 questions (same protocol as first-eval/second-eval); datasets /private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/locomo10.json and lme_runner_format.json.",
+    "Runner driver: /private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/prechange-evalrun (go.mod replace github.com/lleontor705/cortex/v2 => worktree at 3bf0f411)."
+  ]
+}

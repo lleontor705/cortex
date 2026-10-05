@@ -49,8 +49,18 @@ type Config struct {
 	GraphBoost bool
 }
 
-// Run executes the DMR benchmark against Cortex.
+// Run executes the DMR benchmark against Cortex. When a judge is configured
+// the endpoint is probed first and any judge failure aborts the run with a
+// common.BlockedError: scores are never fabricated by falling back to token
+// overlap behind the judge's back. Callers map the outcome to a process exit
+// with common.EvalExitCode (0 pass, 1 regression, 2 BLOCKED).
 func Run(cfg Config) (*common.BenchmarkResult, error) {
+	if cfg.JudgeCfg != nil {
+		if err := common.RequireJudge(context.Background(), cfg.JudgeCfg); err != nil {
+			return nil, err
+		}
+	}
+
 	file, err := os.Open(cfg.DataPath)
 	if err != nil {
 		return nil, fmt.Errorf("dmr: open dataset: %w", err)
@@ -100,7 +110,10 @@ func Run(cfg Config) (*common.BenchmarkResult, error) {
 			if cfg.Limit > 0 && len(results) >= cfg.Limit {
 				break
 			}
-			result := evaluateQuestion(ctx, stores, project, question, answer, cfg)
+			result, err := judgedQuestion(ctx, stores, project, question, answer, cfg)
+			if err != nil {
+				return nil, err
+			}
 			results = append(results, result)
 		}
 
@@ -168,36 +181,59 @@ func ingestConversation(ctx context.Context, stores *common.BenchStores, project
 	return stores.IngestSession(ctx, currentSessionID, project, observations)
 }
 
+// judgedQuestion scores one question and applies the configured judge. Any
+// judge failure returns a *common.BlockedError so Run aborts instead of
+// publishing a score derived from token overlap behind the judge's back.
+func judgedQuestion(ctx context.Context, stores *common.BenchStores, project, question, expectedAnswer string, cfg Config) (common.QuestionResult, error) {
+	got := retrieveAnswer(ctx, stores, project, question, cfg)
+	result := scoreOverlap(project, question, expectedAnswer, got)
+	if cfg.JudgeCfg == nil {
+		return result, nil
+	}
+
+	judgeScore, judgeErr := common.JudgeAnswer(cfg.JudgeCfg, question, expectedAnswer, got)
+	if judgeErr != nil {
+		return common.QuestionResult{}, common.NewJudgeBlockedError(cfg.JudgeCfg.Endpoint, cfg.JudgeCfg.Model, judgeErr)
+	}
+	result.Correct = judgeScore > 0.5
+	return result, nil
+}
+
+// evaluateQuestion scores one question with answer-token overlap metrics only.
+// Judge verdicts live in judgedQuestion, so this path never reports a verdict
+// it did not receive from a judge.
 func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project, question, expectedAnswer string, cfg Config) common.QuestionResult {
+	return scoreOverlap(project, question, expectedAnswer, retrieveAnswer(ctx, stores, project, question, cfg))
+}
+
+// retrieveAnswer returns the top five search passages joined for one question,
+// or an empty string when retrieval fails (scored as a miss).
+func retrieveAnswer(ctx context.Context, stores *common.BenchStores, project, question string, cfg Config) string {
 	searchResults, err := stores.App.Stores.Search.Search(ctx, question, domain.SearchOptions{
 		Limit:       10,
 		Project:     project,
 		GraphExpand: cfg.GraphBoost,
 	})
-
-	var got string
-	if err == nil {
-		var parts []string
-		for i, r := range searchResults {
-			if i >= 5 {
-				break
-			}
-			parts = append(parts, r.Content)
-		}
-		got = strings.Join(parts, "\n")
+	if err != nil {
+		return ""
 	}
 
+	var parts []string
+	for i, r := range searchResults {
+		if i >= 5 {
+			break
+		}
+		parts = append(parts, r.Content)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// scoreOverlap combines answer-token F1 and ROUGE-L; Correct defaults to the
+// documented 0.3 threshold until a judge verdict overrides it.
+func scoreOverlap(project, question, expectedAnswer, got string) common.QuestionResult {
 	f1 := common.F1Score(got, expectedAnswer)
 	rougeL := common.RougeL(got, expectedAnswer)
 	score := (f1 + rougeL) / 2
-
-	correct := score >= 0.3
-	if cfg.JudgeCfg != nil {
-		judgeScore, judgeErr := common.JudgeAnswer(cfg.JudgeCfg, question, expectedAnswer, got)
-		if judgeErr == nil && judgeScore >= 0 {
-			correct = judgeScore > 0.5
-		}
-	}
 
 	return common.QuestionResult{
 		ID:       project,
@@ -206,7 +242,7 @@ func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project, 
 		Expected: truncate(expectedAnswer, 200),
 		Got:      truncate(got, 500),
 		Score:    score,
-		Correct:  correct,
+		Correct:  score >= 0.3,
 	}
 }
 

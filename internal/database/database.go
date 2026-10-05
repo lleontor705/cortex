@@ -9,7 +9,8 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite" // Pure Go SQLite driver (no CGO)
+	_ "modernc.org/sqlite"     // Pure Go SQLite driver (no CGO)
+	_ "modernc.org/sqlite/vec" // Built-in sqlite-vec extension (no CGO)
 )
 
 // DatabaseConfig holds configuration for database connection.
