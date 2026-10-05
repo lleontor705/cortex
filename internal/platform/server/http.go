@@ -33,7 +33,6 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/util"
 )
 
 var serverStartTime = time.Now().UTC()
@@ -236,7 +235,7 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	transport := mcpserver.NewStreamableHTTPServer(mcpCore,
 		mcpserver.WithSessionIdManagerResolver(sessions),
 		mcpserver.WithSessionIdleTTL(mcpSessionIdleTTLDefault),
-		mcpserver.WithLogger(redactingLogger{next: util.DefaultLogger()}),
+		mcpserver.WithLogger(redactingLogger{next: defaultTransportLogger()}),
 	)
 	guard := newMCPGuardWithTools(newMCPAdmission(mcpAdmissionLimits{
 		PerPrincipal: mcpPrincipalInflightBytes,

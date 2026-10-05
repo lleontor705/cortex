@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -42,15 +43,17 @@ import (
 
 	"github.com/google/uuid"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/util"
 )
 
 // Compile-time assertions: the registry and its principal-scoped views
-// satisfy the upstream streamable HTTP session contracts.
+// satisfy the upstream streamable HTTP session contracts. The WithLogger
+// assertion pins redactingLogger to the upstream util.Logger contract
+// without importing the util package, which mcp-go v1.x removed.
 var (
 	_ mcpserver.SessionIdManager         = mcpSessionManager{}
 	_ mcpserver.SessionIdManagerResolver = (*mcpSessionRegistry)(nil)
-	_ util.Logger                        = redactingLogger{}
+	_ mcpserver.StreamableHTTPOption     = mcpserver.WithLogger(redactingLogger{})
+	_ transportLogger                    = redactingLogger{}
 )
 
 const (
@@ -880,10 +883,38 @@ func redactTransportText(text string) string {
 	return redactUUIDRe.ReplaceAllString(text, "<session-redacted>")
 }
 
-// redactingLogger adapts util.Logger so the mcp-go transport never logs
+// transportLogger is the logger contract consumed by the mcp-go streamable
+// HTTP transport. It is structurally identical to the upstream util.Logger,
+// which mcp-go v1.x removed, so implementations satisfy the upstream option
+// by method shape without importing that package.
+type transportLogger interface {
+	Infof(format string, v ...any)
+	Errorf(format string, v ...any)
+}
+
+// stdTransportLogger reproduces the removed upstream default logger: the
+// standard library logger with the same INFO:/ERROR: line prefixes, keeping
+// transport log output byte-compatible after the dependency drop.
+type stdTransportLogger struct {
+	logger *log.Logger
+}
+
+func defaultTransportLogger() transportLogger {
+	return stdTransportLogger{logger: log.Default()}
+}
+
+func (l stdTransportLogger) Infof(format string, v ...any) {
+	l.logger.Printf("INFO: "+format, v...)
+}
+
+func (l stdTransportLogger) Errorf(format string, v ...any) {
+	l.logger.Printf("ERROR: "+format, v...)
+}
+
+// redactingLogger adapts transportLogger so the mcp-go transport never logs
 // credentials, driver errors, or session internals in clear text.
 type redactingLogger struct {
-	next util.Logger
+	next transportLogger
 }
 
 func (l redactingLogger) Infof(format string, v ...any) {
