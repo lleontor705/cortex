@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
-	"github.com/lleontor705/cortex/v2/internal/retrieval"
 
 	_ "modernc.org/sqlite" // base driver
 )
@@ -192,13 +191,12 @@ func TestEmbeddingDimension(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SearchVectors full-pipeline oracle + benchmarks (VEC-01, cortex_vectors).
-//
-// The sqlite_blob adapter cannot be imported here (it imports this package,
-// which would be an import cycle), so benchVectorIndex mirrors the adapter's
-// Search translation over the same concrete VectorStore. The pipeline under
-// test — capability-driven strategy, pool expansion, revalidation — is the
-// REAL retrieval.SearchVectors.
+// Search pipeline fixtures (VEC-01, cortex_vectors), shared by the in-package
+// scan oracles below and by package sqlite_test: the full-pipeline suite that
+// runs retrieval.SearchVectors lives there because an in-package import of
+// internal/retrieval forms the cycle sqlite(test) -> retrieval -> embedding ->
+// sqlite. Exported identifiers in these test files are visible to that
+// external test package; production sqlite never imports retrieval.
 // ---------------------------------------------------------------------------
 
 const (
@@ -208,9 +206,9 @@ const (
 	searchBenchDim  = 384
 )
 
-// vectorPipelineSchema extends the batch test schema with the v2 baseline
+// VectorPipelineSchema extends the batch test schema with the v2 baseline
 // observation_vectors table.
-const vectorPipelineSchema = batchTestSchema + `
+const VectorPipelineSchema = batchTestSchema + `
 	CREATE TABLE IF NOT EXISTS observation_vectors (
 		observation_id  INTEGER PRIMARY KEY,
 		embedding       BLOB,
@@ -230,9 +228,9 @@ func searchBenchEmbedding(i, dim int) []float32 {
 	return v
 }
 
-// seedSearchPipelineFixture inserts n observations and embeddings; the query
+// SeedSearchPipelineFixture inserts n observations and embeddings; the query
 // vector equals row 0's embedding so row 0 ranks first.
-func seedSearchPipelineFixture(tb testing.TB, db *sql.DB) []float32 {
+func SeedSearchPipelineFixture(tb testing.TB, db *sql.DB) []float32 {
 	tb.Helper()
 	for i := 0; i < searchBenchRows; i++ {
 		if _, err := db.Exec(`
@@ -252,62 +250,10 @@ func seedSearchPipelineFixture(tb testing.TB, db *sql.DB) []float32 {
 	return searchBenchEmbedding(0, searchBenchDim)
 }
 
-// benchVectorIndex mirrors sqlite_blob.Adapter over the concrete VectorStore
-// (same PostFilter capabilities, same Search translation) without importing
-// the adapter package.
-type benchVectorIndex struct{ store *VectorStore }
-
-var _ domain.VectorIndex = (*benchVectorIndex)(nil)
-
-func (b *benchVectorIndex) ID() string { return "sqlite_blob" }
-
-func (b *benchVectorIndex) Upsert(_ context.Context, _ []domain.VectorPoint) error { return nil }
-func (b *benchVectorIndex) Delete(_ context.Context, _ []int64) error              { return nil }
-func (b *benchVectorIndex) Close() error                                           { return nil }
-
-func (b *benchVectorIndex) Health(_ context.Context) domain.Health {
-	return domain.Health{Status: domain.StatusHealthy, Message: "bench"}
-}
-
-func (b *benchVectorIndex) Capabilities(_ context.Context) (domain.Capabilities, error) {
-	return domain.Capabilities{
-		IndexType: "sqlite_blob",
-		Filters:   "PostFilter",
-	}, nil
-}
-
-func (b *benchVectorIndex) Search(ctx context.Context, q domain.VectorQuery) ([]domain.VectorCandidate, error) {
-	results, err := b.store.SearchByVector(ctx, domain.VectorSearchOptions{
-		Embedding: q.Vector,
-		Limit:     q.Limit,
-		Threshold: q.Threshold,
-	})
-	if err != nil {
-		return nil, err
-	}
-	candidates := make([]domain.VectorCandidate, 0, len(results))
-	for _, r := range results {
-		candidates = append(candidates, domain.VectorCandidate{
-			ID:         r.ID,
-			Score:      r.Similarity,
-			Provenance: "sqlite_blob",
-		})
-	}
-	return candidates, nil
-}
-
-// perIDOnlyLookup hides GetByIDs so retrieval.SearchVectors exercises the
-// LEGACY per-ID hydration path over the same *Store (A/B benchmark control).
-type perIDOnlyLookup struct{ inner *Store }
-
-func (p perIDOnlyLookup) GetByID(ctx context.Context, id int64) (*domain.Observation, error) {
-	return p.inner.GetByID(ctx, id)
-}
-
-// openSearchPipelineDB opens an in-memory DB with the production-style DSN
+// OpenSearchPipelineDB opens an in-memory DB with the production-style DSN
 // pragmas (mirrors database.InMemoryConfig via buildDSN) so benchmark numbers
 // are comparable with the #512 baseline methodology.
-func openSearchPipelineDB(tb testing.TB) *sql.DB {
+func OpenSearchPipelineDB(tb testing.TB) *sql.DB {
 	tb.Helper()
 	v := url.Values{}
 	v.Add("_pragma", "busy_timeout=5000")
@@ -323,85 +269,6 @@ func openSearchPipelineDB(tb testing.TB) *sql.DB {
 	db.SetMaxIdleConns(1)
 	tb.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-// TestSearchVectors_Limit50_SingleHydrationSQL pins the VEC-01 query budget
-// on the full pipeline: limit=50 PostFilter search (pool 150, legacy clamp
-// 100) must issue exactly ONE ANN scan plus ONE batch hydration statement.
-func TestSearchVectors_Limit50_SingleHydrationSQL(t *testing.T) {
-	db, counter := newCountingDB(t)
-	if _, err := db.Exec(vectorPipelineSchema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	queryVec := seedSearchPipelineFixture(t, db)
-	counter.reset()
-
-	store := NewStore(db)
-	idx := &benchVectorIndex{store: NewVectorStore(db)}
-	results, err := retrieval.SearchVectors(context.Background(), idx, domain.VectorQuery{
-		Vector: queryVec,
-		Limit:  50,
-	}, store)
-	if err != nil {
-		t.Fatalf("SearchVectors: %v", err)
-	}
-	if len(results) != 50 {
-		t.Fatalf("expected 50 results, got %d", len(results))
-	}
-	if n := counter.value(); n != 2 {
-		t.Fatalf("limit=50 PostFilter search must issue exactly 2 statements (1 ANN scan + 1 batch hydration), got %d", n)
-	}
-	// Row 0 shares the query embedding: it must rank first with similarity 1.
-	if results[0].ID != 1 || math.Abs(results[0].Similarity-1.0) > 1e-6 {
-		t.Fatalf("top result must be ID 1 with similarity 1.0, got %d/%f", results[0].ID, results[0].Similarity)
-	}
-}
-
-// BenchmarkSearchVectorsLimit50 measures the full PostFilter pipeline with
-// batch hydration (the new default: *Store implements BatchObservationLookup).
-func BenchmarkSearchVectorsLimit50(b *testing.B) {
-	db := openSearchPipelineDB(b)
-	if _, err := db.Exec(vectorPipelineSchema); err != nil {
-		b.Fatalf("schema: %v", err)
-	}
-	queryVec := seedSearchPipelineFixture(b, db)
-	store := NewStore(db)
-	idx := &benchVectorIndex{store: NewVectorStore(db)}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := retrieval.SearchVectors(ctx, idx, domain.VectorQuery{
-			Vector: queryVec,
-			Limit:  50,
-		}, store); err != nil {
-			b.Fatalf("SearchVectors: %v", err)
-		}
-	}
-}
-
-// BenchmarkSearchVectorsLimit50_LegacyHydration is the pre-batch control:
-// identical pipeline with the per-ID-only lookup (100 GetByID statements).
-func BenchmarkSearchVectorsLimit50_LegacyHydration(b *testing.B) {
-	db := openSearchPipelineDB(b)
-	if _, err := db.Exec(vectorPipelineSchema); err != nil {
-		b.Fatalf("schema: %v", err)
-	}
-	queryVec := seedSearchPipelineFixture(b, db)
-	store := NewStore(db)
-	idx := &benchVectorIndex{store: NewVectorStore(db)}
-	legacy := perIDOnlyLookup{inner: store}
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := retrieval.SearchVectors(ctx, idx, domain.VectorQuery{
-			Vector: queryVec,
-			Limit:  50,
-		}, legacy); err != nil {
-			b.Fatalf("SearchVectors: %v", err)
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -761,7 +628,7 @@ func TestSearchByVector_DifferentialBaseline(t *testing.T) {
 	for _, dim := range []int{64, 128, 384} {
 		t.Run(fmt.Sprintf("dim%d", dim), func(t *testing.T) {
 			db, _ := newCountingDB(t)
-			if _, err := db.Exec(vectorPipelineSchema); err != nil {
+			if _, err := db.Exec(VectorPipelineSchema); err != nil {
 				t.Fatalf("schema: %v", err)
 			}
 			queries := seedDifferentialFixture(t, db, dim)
@@ -820,7 +687,7 @@ func TestSearchByVector_CorruptBlobErrorsBothPaths(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			db, _ := newCountingDB(t)
-			if _, err := db.Exec(vectorPipelineSchema); err != nil {
+			if _, err := db.Exec(VectorPipelineSchema); err != nil {
 				t.Fatalf("schema: %v", err)
 			}
 			if _, err := db.Exec(`INSERT INTO observations (session_id, type, title, content, scope, source) VALUES ('s', 'manual', 'corrupt', 'c', 'project', 'manual')`); err != nil {
@@ -848,11 +715,11 @@ func TestSearchByVector_CorruptBlobErrorsBothPaths(t *testing.T) {
 // the pre-optimization budget (measured ~86k allocs/op for the scan alone,
 // ~89k for the full pipeline). Budget: 20000 allocs/op (a >75% reduction).
 func TestSearchByVector_ScanAllocationBudget(t *testing.T) {
-	db := openSearchPipelineDB(t)
-	if _, err := db.Exec(vectorPipelineSchema); err != nil {
+	db := OpenSearchPipelineDB(t)
+	if _, err := db.Exec(VectorPipelineSchema); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	queryVec := seedSearchPipelineFixture(t, db)
+	queryVec := SeedSearchPipelineFixture(t, db)
 	vs := NewVectorStore(db)
 	ctx := context.Background()
 	opts := domain.VectorSearchOptions{Embedding: queryVec, Limit: 50}
@@ -876,11 +743,11 @@ func TestSearchByVector_ScanAllocationBudget(t *testing.T) {
 // BenchmarkSearchByVectorScan_200x384 isolates the ANN scan/decode pipeline
 // (SearchByVector alone, no retrieval hydration) for before/after evidence.
 func BenchmarkSearchByVectorScan_200x384(b *testing.B) {
-	db := openSearchPipelineDB(b)
-	if _, err := db.Exec(vectorPipelineSchema); err != nil {
+	db := OpenSearchPipelineDB(b)
+	if _, err := db.Exec(VectorPipelineSchema); err != nil {
 		b.Fatalf("schema: %v", err)
 	}
-	queryVec := seedSearchPipelineFixture(b, db)
+	queryVec := SeedSearchPipelineFixture(b, db)
 	vs := NewVectorStore(db)
 	ctx := context.Background()
 	opts := domain.VectorSearchOptions{Embedding: queryVec, Limit: 50}
