@@ -1486,7 +1486,7 @@ variable is set.
 | `CORTEX_SEARCH_EMBEDDING_PROVIDER` | `search.embedding_provider` | *(empty)* | Embedding provider (auto-mapped alias). |
 | `CORTEX_SEARCH_EMBEDDING_MODEL` | `search.embedding_model` | *(empty)* | Embedding model (auto-mapped alias). |
 | `CORTEX_SEARCH_EMBEDDING_BASE_URL` | `search.embedding_base_url` | *(empty)* | Embedding base URL (auto-mapped alias). |
-| `CORTEX_EMBEDDING_PROVIDER` | `search.embedding_provider` | `none` | Embedding provider: `none`, `openai`, `ollama`, `gemini`. |
+| `CORTEX_EMBEDDING_PROVIDER` | `search.embedding_provider` | `none` | Embedding provider: `none`, `openai`, `ollama`, `openai-compatible`. Unknown values fail closed at load time. |
 | `CORTEX_EMBEDDING_MODEL` | `search.embedding_model` | `text-embedding-3-small` | Embedding model identifier. |
 | `CORTEX_EMBEDDING_BASE_URL` | `search.embedding_base_url` | `http://localhost:11434` (Ollama) | Embedding base URL. |
 | `CORTEX_EMBEDDING_API_KEY` | *(credential)* | *(empty)* | Embedding credential. Required for hosted embedding providers. |

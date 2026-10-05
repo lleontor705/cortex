@@ -38,6 +38,11 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# One syft SBOM per archive artifact; syft must be on PATH at release time
+# (release.yml installs the pinned version before GoReleaser runs).
+sboms:
+  - artifacts: archive
+
 changelog:
   sort: asc
   filters:

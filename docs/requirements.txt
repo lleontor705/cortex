@@ -1,0 +1,5 @@
+# Docs toolchain is pinned and isolated from the Go/Node builds; CI installs
+# this file before running `mkdocs build --strict` (see Makefile docs-build).
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+mkdocs-static-i18n==1.3.1

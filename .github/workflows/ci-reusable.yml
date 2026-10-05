@@ -1,0 +1,372 @@
+name: CI Reusable Gates
+
+# NOTE: actions are pinned to full commit SHAs with a trailing version comment
+# (ratchet pattern). .github/dependabot.yml keeps them current through the
+# github-actions ecosystem, which bumps each SHA and its version comment together.
+#
+# Single definition of the gate jobs shared by CI (push/PR) and Release
+# (tag/dispatch): both callers invoke this workflow through `workflow_call`, so a
+# gate body can no longer drift between pipelines. The coverage job enforces the
+# CI >=80% policy; Release inherits it, reconciling the former release-side 70%
+# gate upward.
+
+on:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        description: "Codecov upload token; tokenless upload is attempted when unset."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Compile all packages
+        run: go build ./...
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! go test -v -count=1 ./... > unit_test.log 2>&1; then
+            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" unit_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
+            echo "::error title=Failed Unit Tests::$FAILED_TESTS"
+            cat unit_test.log
+            exit 1
+          fi
+
+  vector-tests:
+    name: Vector-enabled Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Run vector-enabled tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! go test -v -count=1 -tags cortex_vectors ./... > vector_test.log 2>&1; then
+            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" vector_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
+            echo "::error title=Failed Vector Tests::$FAILED_TESTS"
+            cat vector_test.log
+            exit 1
+          fi
+
+  web-tests:
+    name: Web Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Enforce web client-core coverage
+        run: npm run test:coverage
+
+      - name: Upload web coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-coverage
+          path: web/coverage
+          if-no-files-found: error
+
+      - name: Build production application
+        run: npm run build
+
+  obsidian-path-portability:
+    name: Obsidian Path Portability (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Assert portability test contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f internal/projection/obsidian/writer_test.go
+          grep -q 'TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot' internal/projection/obsidian/writer_test.go
+          grep -q 'TestWindowsDeviceNameNearMissesAreNotReservedOrColliding' internal/projection/obsidian/writer_test.go
+          grep -q 'TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants' internal/projection/obsidian/writer_test.go
+
+      - name: Run focused Obsidian/path portability tests
+        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
+
+  coverage:
+    name: Global Coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cortex_bootstrap
+          POSTGRES_PASSWORD: cortex_bootstrap
+          POSTGRES_DB: cortex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      GOFLAGS: "-p=1"
+      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Create non-superuser application and authorization logins
+        run: |
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
+
+      - name: Enforce whole-project coverage threshold
+        shell: bash
+        run: |
+          set -euo pipefail
+          cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"
+          if ! go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./... > coverage.log 2>&1; then
+            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
+              echo "::error title=Coverage Test Failure::$line"
+            done
+            cat coverage.log
+            exit 1
+          fi
+          total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
+          total="${total_line%%%}"
+          awk -v coverage="$total" 'BEGIN {
+            if (coverage < 80.0) {
+              printf "global coverage %.2f%% is below 80.0%%\n", coverage
+              exit 1
+            }
+            printf "global coverage %.2f%% meets 80.0%% threshold\n", coverage
+          }'
+
+      - name: Upload Go coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-coverage
+          path: |
+            coverage.out
+            coverage.log
+          if-no-files-found: warn
+
+      - name: Upload coverage report to Codecov
+        if: always()
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          files: coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  baseline-contracts:
+    name: Offline Retrieval Baseline Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Validate deterministic baseline contracts
+        run: go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cortex_bootstrap
+          POSTGRES_PASSWORD: cortex_bootstrap
+          POSTGRES_DB: cortex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      GOFLAGS: "-p=1"
+      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Create non-superuser application and authorization logins
+        run: |
+          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
+
+      - name: Run e2e tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
+            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" e2e_test.log | head -n 50 | while IFS= read -r line; do
+              echo "::error title=E2E Failure::$line"
+            done
+            cat e2e_test.log
+            exit 1
+          fi
+
+      - name: Run Docker Compose boundary E2E tests
+        run: go test -v -count=1 -tags docker_e2e ./e2e
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
+        with:
+          version: v2.11.4
+          args: --config .golangci.yml ./...
+
+  race-detector:
+    name: Race Detector
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+
+      - name: Run race detector on concurrent stores
+        run: go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp
+
+  plugin-opencode:
+    name: Plugin Tests (OpenCode)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin/opencode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: plugin/opencode/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run plugin contract tests
+        run: npm test
+
+  plugin-claude-code:
+    name: Plugin Tests (Claude Code)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install harness dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bash jq python3 coreutils
+
+      - name: Verify harness toolchain
+        run: |
+          for tool in bash jq python3 timeout; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "missing required harness tool: $tool" >&2
+              exit 127
+            }
+          done
+
+      - name: Run hooks contract harness
+        run: bash plugin/claude-code/scripts/hooks_test.sh
+

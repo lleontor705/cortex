@@ -163,12 +163,126 @@ Cortex strictly separates configuration and API credentials between **Embeddings
 
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `embedding.provider` / `search.embedding_provider` | `CORTEX_EMBEDDING_PROVIDER` | `none` | Embedding model provider: `none` (native BM25), `openai`, `ollama`, `gemini`. |
-| `embedding.model` / `search.embedding_model` | `CORTEX_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model identifier. |
-| `embedding.base_url` / `search.embedding_base_url` | `CORTEX_EMBEDDING_BASE_URL` | `""` | Custom or Ollama base endpoint URL. |
-| *(Credential)* | `CORTEX_EMBEDDING_API_KEY` | `""` | **Standard embedding API credential**. |
+| `embedding.provider` / `search.embedding_provider` | `CORTEX_EMBEDDING_PROVIDER` | *(Unset ⇒ embeddings disabled)* | Embedding provider preset: `none` (disabled), `ollama`, `openai`, `openai-compatible`. Any other value is rejected at configuration load. |
+| `embedding.model` / `search.embedding_model` | `CORTEX_EMBEDDING_MODEL` | `""` (provider default) | Embedding model identifier. Provider defaults: `nomic-embed-text` (`ollama`), `text-embedding-3-small` (`openai` / `openai-compatible`). |
+| `embedding.base_url` / `search.embedding_base_url` | `CORTEX_EMBEDDING_BASE_URL` | `""` (provider default) | Endpoint override. Defaults: `http://localhost:11434` (`ollama`), `https://api.openai.com/v1` (`openai`); **explicit URL required** for `openai-compatible`. |
+| *(Credential)* | `CORTEX_EMBEDDING_API_KEY` | `""` | **Embedding API credential, environment-only.** Never read from YAML/JSON/TOML files. |
 | `search.ollama_auto_start` | `CORTEX_SEARCH_OLLAMA_AUTO_START` | `false` | Automatically starts local Ollama daemon when needed. |
 | `search.fusion_k` | `CORTEX_SEARCH_FUSION_K` | `60` | Reciprocal Rank Fusion (RRF) rank constant. |
+
+When no embedding provider is configured (unset or `none`), no embedder is
+constructed: search runs on FTS5/BM25 alone, the embedding outbox worker is not
+started, and the local save path stays byte-for-byte identical to a
+zero-embedding build.
+
+### Embedding providers
+
+`search.embedding_provider` accepts exactly four presets. Unknown values fail
+closed at load time (`invalid search.embedding_provider`) instead of silently
+disabling embeddings.
+
+| Provider | Modes | Default base URL | Default model | Credential |
+| :--- | :--- | :--- | :--- | :--- |
+| `none` / *(unset)* | local, server | — | — | — |
+| `ollama` | local, server | `http://localhost:11434` | `nomic-embed-text` (768 dims) | none |
+| `openai` | local, server | `https://api.openai.com/v1` | `text-embedding-3-small` (1536 dims) | `CORTEX_EMBEDDING_API_KEY` |
+| `openai-compatible` | **server only** | *(none — explicit URL required)* | `text-embedding-3-small` unless `search.embedding_model` is set | `CORTEX_EMBEDDING_API_KEY` |
+
+* **`ollama` (local default)** — the local-mode embedding provider: it dials the
+  loopback daemon and needs no credential. `search.ollama_auto_start` can launch
+  it, and `search.embedding_base_url` overrides the endpoint.
+* **`openai`** — first-party OpenAI embeddings over `{base_url}/embeddings` with
+  Bearer authentication; the key comes only from `CORTEX_EMBEDDING_API_KEY`.
+* **`openai-compatible` (server-mode, Tier 2)** — any OpenAI-compatible
+  `/embeddings` endpoint. The local composition refuses it fail-closed (no
+  embedder, no outbound dial); it is constructed only in server mode through the
+  outbound policy allowlist. It **requires an explicit `search.embedding_base_url`**
+  because a generic compatible endpoint has no safe default host — a missing URL
+  fails at construction (`embedding: openai-compatible requires an explicit base
+  URL`).
+* **`none`** — embeddings disabled; native BM25/FTS5 only.
+* API keys are resolved exclusively from `CORTEX_EMBEDDING_API_KEY` at runtime
+  and must never appear in a configuration file.
+
+Server-mode construction additionally approves the destination through the
+outbound policy: HTTPS is required off-loopback, the host and port are
+allowlisted, and redirect hops and response size are bounded.
+
+#### Worked example: nan.builders (OpenAI-compatible endpoint)
+
+```yaml
+search:
+  embedding_provider: openai-compatible
+  embedding_model: qwen3-embedding-8B
+  embedding_base_url: https://api.nan.builders/v1
+```
+
+```bash
+# Placeholder only — export the real credential at run time; never commit it.
+export CORTEX_EMBEDDING_API_KEY="<nan-builders-api-key>"
+```
+
+The same three keys are readable/settable as `search.embedding_provider`,
+`search.embedding_model`, and `search.embedding_base_url` (aliases:
+`embedding.provider`, `embedding.model`, `embedding.base_url`) and are mirrored
+by `CORTEX_EMBEDDING_PROVIDER`, `CORTEX_EMBEDDING_MODEL`, and
+`CORTEX_EMBEDDING_BASE_URL`.
+
+#### Vector dimensions and corpus re-ingestion
+
+* **Dimensions are reported from live service state.** The dimension is cached
+  from the first embedding response, and server ModelInfo / admin AI status read
+  that live value (`liveEmbeddingDimensions`) instead of a static
+  provider-to-dimension map, so status cannot drift from the endpoint. Before
+  the first response, `ollama` reports `768`, `openai` reports `1536`, and
+  `openai-compatible` reports no guess (`0`) precisely because an arbitrary
+  endpoint has no trustworthy default.
+* **Mismatched dimensions are rejected, never stored.** A vector whose length
+  differs from the declared model dimension fails with
+  `domain.ErrDimensionMismatch` (`vector dimension mismatch`): it is neither
+  written to the vector index nor scored as zero. The embedding outbox worker
+  classifies validation failures such as a dimension mismatch as terminal,
+  non-retryable, and dead-letters the intent instead of consuming retries.
+* **Changing the model dimension requires corpus re-ingestion.** Switching from
+  a 768-dim model (`nomic-embed-text`) to a 4096-dim model
+  (`qwen3-embedding-8B`) leaves existing vectors at the old dimension, so every
+  observation must be re-embedded through the durable outbox worker. In the TUI,
+  save the embedding configuration (a provider/model change raises the reindex
+  warning) and press `x` to **Reindex all embeddings**; the worker drains the
+  outbox asynchronously and reports progress.
+
+### Reranking
+
+Reranking reorders the fused candidate set **before** the final result limit is
+applied (post-fusion, pre-limit). It is resolved once per process/store from
+`search.rerank_*` and is **disabled by default**: with no rerank keys set,
+`search.rerank_provider` resolves to `none`, zero rerank machinery is
+constructed, and search output is byte-identical to a build without the feature.
+
+| Configuration Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `search.rerank_provider` | `CORTEX_RERANK_PROVIDER` | `none` | Rerank preset: `none` (disabled), `late-interaction` (local), `openai-compatible` (server only). Unknown values are rejected at load. |
+| `search.rerank_model` | `CORTEX_RERANK_MODEL` | `""` | Rerank model identifier (e.g. `qwen3-Reranker-8B`). |
+| `search.rerank_base_url` | `CORTEX_RERANK_BASE_URL` | `""` | Endpoint base URL. **Required** when `search.rerank_provider` is `openai-compatible`, and validated as a bearer destination at load. |
+| *(Credential)* | `CORTEX_RERANK_API_KEY` | `""` | **Rerank credential, environment-only.** Never read from configuration files; without it the HTTP reranker cannot be constructed. |
+
+* **`none` (default)** — no reranker is constructed anywhere; results are
+  byte-identical to the unreranked fusion order.
+* **`late-interaction`** — the local, zero-network reranker: a 60% rank / 40%
+  MaxSim late-interaction blend over the vectors already in the store. Valid in
+  both local and server mode.
+* **`openai-compatible` (server only)** — the HTTP `/v1/rerank` reranker. It
+  requires an explicit `search.rerank_base_url` plus `CORTEX_RERANK_API_KEY`, and
+  the destination is approved through the outbound policy. Local mode refuses to
+  construct it (`rerank: openai-compatible is server-mode only`) and degrades to
+  rerank-off with a warning instead of failing the query.
+* **Provider budgets are enforced client-side, not assumed**: candidate
+  documents are sent in batches of at most **32**, requests are paced to at most
+  **60 requests/minute**, `429` responses are retried at most 3 times, redirects
+  are capped at 3 hops, and responses are capped at 4 MiB.
+* **Failures degrade, never corrupt**: a rerank error, a timeout, or a provider
+  response that changes the candidate set keeps the unreranked fusion order (with
+  a warning) and never drops or fails a search.
 
 ### LLM (Agent Reasoning, Extraction & Synthesis)
 
