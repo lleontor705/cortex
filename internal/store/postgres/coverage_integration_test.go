@@ -115,7 +115,10 @@ func TestCoverageGetServerStatsAdminAndNonAdmin(t *testing.T) {
 
 	viewerSubject := uuid.New()
 	_, viewerProvenance := mintBindingProvenance(t, h, tenant, viewerSubject, 1, "viewer-digest")
-	viewerPrincipal := domain.Principal{Subject: viewerSubject.String(), Type: "user", OrgID: tenant.String(), GrantDigest: viewerProvenance, GrantVersion: 1}
+	// The partial-permission fixture pins an explicit viewer role and the
+	// workspace grant so the non-admin stats branch stays exercised instead
+	// of being promoted through durable owner-grant resolution.
+	viewerPrincipal := domain.Principal{Subject: viewerSubject.String(), Type: "user", OrgID: tenant.String(), Roles: []string{"viewer"}, WorkspaceIDs: []string{workspace.String()}, GrantDigest: viewerProvenance, GrantVersion: 1}
 	viewerStore, err := NewAuthorizedStore(h.pool, authzAuthCtx(tenant, workspace, viewerPrincipal, viewerProvenance))
 	if err != nil {
 		t.Fatal(err)

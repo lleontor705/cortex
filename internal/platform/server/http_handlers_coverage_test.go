@@ -16,7 +16,7 @@ import (
 
 func newCoverageHandler(ops Operations) http.Handler {
 	cfg := config.Config{
-		HTTP: config.HTTPConfig{Token: "cov-token"},
+		HTTP:   config.HTTPConfig{Token: "cov-token"},
 		Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20},
 		Server: config.ServerConfig{WorkspaceID: "00000000-0000-0000-0000-000000000001"},
 	}
@@ -82,7 +82,7 @@ func TestCoverageMeWithWorkspace(t *testing.T) {
 	ops := newFakeOperations()
 	ops.agentProjects = map[string]string{"p1": "proj1"}
 	cfg := config.Config{
-		HTTP: config.HTTPConfig{Token: "cov-token"},
+		HTTP:   config.HTTPConfig{Token: "cov-token"},
 		Search: config.SearchConfig{DefaultLimit: 10, MaxLimit: 20},
 		Server: config.ServerConfig{WorkspaceID: "00000000-0000-0000-0000-000000000001"},
 	}

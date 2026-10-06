@@ -33,7 +33,6 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/util"
 )
 
 var serverStartTime = time.Now().UTC()
@@ -212,9 +211,12 @@ func MountWebSurface(h http.Handler) {
 }
 
 // Every authenticated route is wired through newHTTPHandlerWithAuth with a
-// verifier-backed middleware (requestAuthenticator in production). There is
-// deliberately no static-compare constructor: the configured bearer is a
-// secret to verify through TokenPrincipalVerifier, never a comparison value.
+// verifier-backed middleware (requestAuthenticator in production). The
+// durable bearer gate composed in front of it proves any secret that maps to
+// a durable credential through TokenPrincipalVerifier — revocation and
+// expiry included — so the configured bearer is verified rather than merely
+// compared; only a secret with no durable credential still reaches the
+// static compare.
 //
 // The optional extractor argument (SEC-02) injects a server-composed
 // extraction service whose outbound destination policy and provider
@@ -226,6 +228,7 @@ func newHTTPHandlerWithAuth(cfg config.Config, ops Operations, health healthChec
 }
 
 func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health healthCheck, protect func(http.Handler) http.Handler, hybrid hybridSearchDependencies, extractors ...*extraction.Service) (http.Handler, *mcpserver.StreamableHTTPServer) {
+	protect = durableBearerGate(cfg, protect)
 	mcpCore := newServerMCP(ops)
 	sessions := newMCPSessionRegistry(mcpSessionLimits{
 		IdleTTL:      mcpSessionIdleTTLDefault,
@@ -236,7 +239,7 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	transport := mcpserver.NewStreamableHTTPServer(mcpCore,
 		mcpserver.WithSessionIdManagerResolver(sessions),
 		mcpserver.WithSessionIdleTTL(mcpSessionIdleTTLDefault),
-		mcpserver.WithLogger(redactingLogger{next: util.DefaultLogger()}),
+		mcpserver.WithLogger(redactingLogger{next: defaultTransportLogger()}),
 	)
 	guard := newMCPGuardWithTools(newMCPAdmission(mcpAdmissionLimits{
 		PerPrincipal: mcpPrincipalInflightBytes,

@@ -98,7 +98,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if err := migration.ApplyPostgresServerMigrations(ctx, migrationDB); err != nil {
 		return nil, fmt.Errorf("server: apply migration: %w", err)
 	}
-	if cfg.Server.BootstrapDevelopment {
+	if cfg.Server.BootstrapDevelopment || dockerAutoBootstrapRequested() {
 		if err := bootstrapDevelopmentData(ctx, migrationDB, cfg); err != nil {
 			return nil, fmt.Errorf("server: bootstrap development data: %w", err)
 		}
@@ -399,7 +399,13 @@ func bootstrapDevelopmentData(ctx context.Context, db *sql.DB, cfg config.Config
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `GRANT cortex_app TO cortex_test`); err != nil {
+	runtimeRole, err := postgresRole(cfg.Server.Storage.DSN)
+	if err != nil {
+		return fmt.Errorf("application role: %w", err)
+	}
+	// GRANT does not accept bind parameters: the role name is parsed from the
+	// operator-configured runtime DSN and quoted defensively before use.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`GRANT cortex_app TO %s`, quotePostgresIdentifier(runtimeRole))); err != nil {
 		return fmt.Errorf("application role: %w", err)
 	}
 
@@ -418,6 +424,24 @@ func bootstrapDevelopmentData(ctx context.Context, db *sql.DB, cfg config.Config
 		return fmt.Errorf("workspace: %w", err)
 	}
 	return tx.Commit()
+}
+
+// dockerAutoBootstrapRequested reports whether the Docker auto-bootstrap
+// entrypoint enabled fresh-volume provisioning (CORTEX_SERVER_AUTO_BOOTSTRAP=true).
+// The entrypoint generates the tenant identity set and the tenant owner bearer
+// on first start; the server must then provision the prerequisite tenant
+// fixtures the durable bootstrap reconciler binds its grants to. This trigger
+// relaxes no authorization boundary: runtime and migration DSNs stay distinct,
+// loopback allowances stay off, and the service principal is still provisioned
+// exclusively by cortex_bootstrap_service_principal.
+func dockerAutoBootstrapRequested() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("CORTEX_SERVER_AUTO_BOOTSTRAP")), "true")
+}
+
+// quotePostgresIdentifier renders a role name as a safe SQL identifier for
+// statements (like GRANT) that cannot take bind parameters.
+func quotePostgresIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // Reserved identity anchors for the durable bootstrap reconciler. They are
@@ -448,11 +472,19 @@ var bootstrapGrantKinds = []string{"role", "workspace", "scope", "project", "cla
 // owner/wildcard defaults. The workspace grant always uses the canonical
 // uuid spelling so it matches p_workspace_public_id::text exactly.
 func canonicalBootstrapGrants(cfg config.Config) ([]bootstrapGrant, error) {
+	// The Docker auto-bootstrap path provisions the same tenant owner bearer
+	// the synthetic request principal historically represented, so its grants
+	// must carry the canonical wildcard project and classification grants too.
+	// Without them the durable principal verified through
+	// cortex_verify_token_principal loses the project authority the synthetic
+	// contract guarantees (NewSyntheticPrincipal), and every project-scoped
+	// operation is denied with DenyProject.
+	devDefaults := cfg.Server.BootstrapDevelopment || dockerAutoBootstrapRequested()
 	roles := append([]string(nil), cfg.Server.Roles...)
 	scopes := append([]string(nil), cfg.Server.Scopes...)
 	projects := append([]string(nil), cfg.Server.ProjectIDs...)
 	clearance := append([]string(nil), cfg.Server.ClassificationClearance...)
-	if cfg.Server.BootstrapDevelopment {
+	if devDefaults {
 		roles = []string{string(authz.RoleOwner)}
 		scopes = []string{"workspaces:read"}
 		projects = []string{"*"}
