@@ -38,6 +38,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 )
 
@@ -138,6 +139,10 @@ func (baseRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (baseRows) Values() ([]any, error)                       { return nil, nil }
 func (baseRows) RawValues() [][]byte                          { return nil }
 func (baseRows) Conn() *pgx.Conn                              { return nil }
+
+// TypeMap satisfies the pgx v5.11.0 Rows interface. The fake provides no type
+// map (the adapter never calls TypeMap), so nil mirrors the nil Conn() stub.
+func (baseRows) TypeMap() *pgtype.Map { return nil }
 
 // fakeRows implements pgx.Rows with canned data. Each row is a []any slice
 // matching the column order of the search query: [id int64, similarity float64].
