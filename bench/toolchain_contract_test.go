@@ -32,15 +32,15 @@ func TestGoToolchainContract(t *testing.T) {
 		}
 	}
 
-	// ci.yml and release.yml stay pinned to 1.26.5 until the tc2 alignment task
-	// flips them; ci-reusable.yml carries the aligned 1.27.1 pins.
+	// ci.yml and release.yml were flipped to the aligned 1.27.1 pins by the tc2
+	// alignment task; ci-reusable.yml carries the same aligned 1.27.1 pins.
 	for _, workflow := range []struct {
 		path    string
 		version string
 	}{
 		{".github/workflows/ci-reusable.yml", "1.27.1"},
-		{".github/workflows/ci.yml", "1.26.5"},
-		{".github/workflows/release.yml", "1.26.5"},
+		{".github/workflows/ci.yml", "1.27.1"},
+		{".github/workflows/release.yml", "1.27.1"},
 	} {
 		text := readContractFile(t, filepath.Join(root, filepath.FromSlash(workflow.path)))
 		exact := `go-version: "` + workflow.version + `"`
