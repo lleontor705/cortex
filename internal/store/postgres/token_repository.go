@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,7 +85,9 @@ func (r *TokenRepository) Issue(ctx context.Context, in identity.TokenIssue) (id
 		rec.ExpiresAt = *expiresAt
 	}
 	rec.Name, rec.Digest, rec.Subject, rec.PrincipalType, rec.OrgID = in.Name, base64.RawURLEncoding.EncodeToString(digest), in.Subject, in.PrincipalType, in.OrgID
-	rec.Workspaces, rec.Scopes = append([]string(nil), in.Workspaces...), append([]string(nil), in.Scopes...)
+	// slices.Clone preserves the non-nil empty defaults above; appending a
+	// nil destination with zero elements would collapse them back to nil.
+	rec.Workspaces, rec.Scopes = slices.Clone(in.Workspaces), slices.Clone(in.Scopes)
 	return identity.IssuedToken{Secret: secret, Record: rec}, nil
 }
 

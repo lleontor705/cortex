@@ -58,6 +58,14 @@ func (s *AuthorizedStore) authorizeObservation(ctx context.Context, action authz
 	return s.authorize(ctx, authz.ResourceMemory, action, r.ProjectID, r.OwnerSubject, r.Classification)
 }
 
+// invalidObservationInput keeps every preflight rejection inside the invalid
+// input class while preserving the typed cause: privacy surfaces resolve the
+// wrapped *privacy.Error, and the save contract keeps classifying empty or
+// malformed fields as ErrInvalidInput instead of a transport-specific error.
+func invalidObservationInput(cause error) error {
+	return fmt.Errorf("%w: %w", domain.ErrInvalidInput, cause)
+}
+
 // preflightObservation performs detached privacy preflight on an observation,
 // validating metadata and redacting private markers in title and content.
 // The caller's input struct is never mutated on failure.
@@ -77,14 +85,14 @@ func preflightObservation(obs *domain.Observation) (*domain.Observation, error) 
 		meta[fmt.Sprintf("tag[%d]", i)] = tag
 	}
 	if err := privacy.ValidateMetadata(meta); err != nil {
-		return nil, err
+		return nil, invalidObservationInput(err)
 	}
 	results, err := privacy.ProtectNamedFields(
 		privacy.NamedField{Name: "title", Value: obs.Title, Required: true},
 		privacy.NamedField{Name: "content", Value: obs.Content, Required: true},
 	)
 	if err != nil {
-		return nil, err
+		return nil, invalidObservationInput(err)
 	}
 	clone := *obs
 	if len(obs.Tags) > 0 {
