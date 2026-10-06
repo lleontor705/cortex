@@ -270,6 +270,18 @@ func gatedFuse(query string, opts retrieval.FuseOptions) []*domain.SearchResult 
 	return fuseWithConfiguredRerank(query, fts, vec, opts)
 }
 
+// isolateUserConfig points config.Load at a throwaway home because product
+// code resolves the user config exclusively from HOME/USERPROFILE: a real
+// ~/.cortex/cortex.yaml that pins search.rerank_provider would shadow the
+// CORTEX_RERANK_* env overlay, which config.Load only applies when the file
+// value is empty.
+func isolateUserConfig(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 func withInjectedReranker(t *testing.T, reranker retrieval.Reranker) {
 	t.Helper()
 	rerankGateMu.Lock()
@@ -295,6 +307,8 @@ func (setBreakingReranker) Rerank(_ string, docs []*domain.SearchResult) ([]*dom
 // with the default search.rerank_provider the helper must return exactly what
 // the pre-change fusion call returns, candidate for candidate and rank for rank.
 func TestFuseWithConfiguredRerank_DefaultIsByteIdentical(t *testing.T) {
+	isolateUserConfig(t)
+
 	if cfg, err := config.Load(""); err == nil && cfg.Search.RerankProvider != "" &&
 		!strings.EqualFold(cfg.Search.RerankProvider, "none") {
 		t.Skipf("search.rerank_provider=%q in this environment; byte-identity pin requires the default", cfg.Search.RerankProvider)
@@ -324,6 +338,7 @@ func TestFuseWithConfiguredRerank_DefaultIsByteIdentical(t *testing.T) {
 // enabled path: ordering visibly changes AND the winner comes from outside the
 // disabled top-limit, so rerank ran on the whole fused set before truncation.
 func TestFuseWithConfiguredRerank_LateInteractionOrdersBeforeLimit(t *testing.T) {
+	isolateUserConfig(t)
 	t.Setenv("CORTEX_RERANK_PROVIDER", "late-interaction")
 	resetRerankGate()
 	t.Cleanup(resetRerankGate)
@@ -390,6 +405,7 @@ func TestFuseWithConfiguredRerank_FailureKeepsFusionOrder(t *testing.T) {
 // fail-closed behavior: the server-only preset cannot be constructed here, so
 // rerank degrades to off instead of erroring the query.
 func TestFuseWithConfiguredRerank_OpenAICompatibleRefusedLocally(t *testing.T) {
+	isolateUserConfig(t)
 	t.Setenv("CORTEX_RERANK_PROVIDER", "openai-compatible")
 	t.Setenv("CORTEX_RERANK_BASE_URL", "https://rerank.example.com/v1")
 	resetRerankGate()
