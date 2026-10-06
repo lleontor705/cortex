@@ -25,7 +25,7 @@ func TestGoToolchainContract(t *testing.T) {
 	}
 	for _, dependency := range []string{
 		"golang.org/x/text v0.39.0",
-		"google.golang.org/grpc v1.82.1",
+		"google.golang.org/grpc v1.83.1",
 	} {
 		if !strings.Contains(goMod, dependency) {
 			t.Errorf("go.mod must pin %s", dependency)
