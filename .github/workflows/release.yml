@@ -67,6 +67,11 @@ jobs:
       - name: Build and sync embedded web assets
         run: make web-build
 
+      - name: Verify embedded dist freshness
+        shell: bash
+        run: |
+          git diff --exit-code -- internal/web/dist/index.html || (echo "::error::internal/web/dist/index.html is stale — run make web-build and commit it"; exit 1)
+
       - name: Verify embedded web export is present
         shell: bash
         run: |
