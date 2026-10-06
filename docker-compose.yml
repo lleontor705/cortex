@@ -32,6 +32,12 @@ services:
       CORTEX_SERVER_AUTO_BOOTSTRAP: "${CORTEX_SERVER_AUTO_BOOTSTRAP:-true}"
       # Local development opt-in: set CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true via env or .env to reuse the runtime DSN for migration/bootstrap.
       CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-false}"
+      # The bootstrap reconciler fails closed unless the synthetic server
+      # principal's grants include the owner or admin role
+      # (internal/platform/server/server.go canonicalBootstrapGrants). The
+      # auto-bootstrap entrypoint provisions a tenant owner bearer, so the
+      # dev stack grants the principal the documented owner role by default.
+      CORTEX_SERVER_ROLES: "${CORTEX_SERVER_ROLES:-owner}"
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: "${CORTEX_HTTP_HOST:-0.0.0.0}"
       CORTEX_HTTP_PORT: "${CORTEX_HTTP_PORT:-7438}"
@@ -57,6 +63,10 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7438/health || exit 1"]
       interval: 5s
       timeout: 5s
+      # First boot runs storage migrations and tenant bootstrap before the HTTP
+      # listener opens 7438; failures during that window must not count toward
+      # the unhealthy threshold or compose marks the service dead too early.
+      start_period: 90s
       retries: 12
 
 volumes:

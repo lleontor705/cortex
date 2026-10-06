@@ -514,6 +514,45 @@ func handoffObservationPublicID(ctx context.Context, tx pgx.Tx, observationID in
 	return id, nil
 }
 
+// annotatedHandoffError classifies a driver failure into the stable handoff
+// taxonomy and records the curated classification context in both Context and
+// Message (sentinel + ": " + context), so the surfaced message carries the
+// safe reason without driver internals. The sentinel itself is never mutated:
+// a fresh error is always allocated.
+func annotatedHandoffError(base *domain.HandoffError, operation, context string) *domain.HandoffError {
+	return &domain.HandoffError{
+		Code:      base.Code,
+		Message:   base.Message + ": " + context,
+		Retryable: base.Retryable,
+		Operation: operation,
+		Context:   context,
+	}
+}
+
+// handoffSentinelMessage returns the canonical public message for a
+// classified handoff code, used where a surface promises the redacted
+// sentinel text exactly instead of the annotated executor message.
+func handoffSentinelMessage(code domain.HandoffErrorCode) string {
+	switch code {
+	case domain.HandoffErrorValidation:
+		return domain.ErrHandoffValidation.Message
+	case domain.HandoffErrorPayloadTooLarge:
+		return domain.ErrHandoffPayloadTooLarge.Message
+	case domain.HandoffErrorUnauthorized:
+		return domain.ErrHandoffUnauthorized.Message
+	case domain.HandoffErrorForbidden:
+		return domain.ErrHandoffForbidden.Message
+	case domain.HandoffErrorConflict:
+		return domain.ErrHandoffConflict.Message
+	case domain.HandoffErrorUnavailable:
+		return domain.ErrHandoffUnavailable.Message
+	case domain.HandoffErrorTimeout:
+		return domain.ErrHandoffTimeout.Message
+	default:
+		return domain.ErrHandoffPersistence.Message
+	}
+}
+
 // handoffPgError converts driver failures into the stable handoff taxonomy.
 // Already-classified handoff errors pass through unchanged.
 func handoffPgError(err error, operation string) error {
@@ -528,19 +567,19 @@ func handoffPgError(err error, operation string) error {
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "55P03", "40P01", "40001":
-			return &domain.HandoffError{Code: domain.HandoffErrorUnavailable, Message: domain.ErrHandoffUnavailable.Message, Retryable: true, Operation: operation, Context: "database contention"}
+			return annotatedHandoffError(domain.ErrHandoffUnavailable, operation, "database contention")
 		case "23505":
-			return &domain.HandoffError{Code: domain.HandoffErrorConflict, Message: domain.ErrHandoffConflict.Message, Operation: operation, Context: "unique constraint"}
+			return annotatedHandoffError(domain.ErrHandoffConflict, operation, "unique constraint")
 		case "23503":
-			return &domain.HandoffError{Code: domain.HandoffErrorValidation, Message: domain.ErrHandoffValidation.Message, Operation: operation, Context: "referenced row is missing"}
+			return annotatedHandoffError(domain.ErrHandoffValidation, operation, "referenced row is missing")
 		case "28000", "28P01":
-			return &domain.HandoffError{Code: domain.HandoffErrorUnauthorized, Message: domain.ErrHandoffUnauthorized.Message, Operation: operation, Context: "principal binding failed"}
+			return annotatedHandoffError(domain.ErrHandoffUnauthorized, operation, "principal binding failed")
 		case "42501":
-			return &domain.HandoffError{Code: domain.HandoffErrorForbidden, Message: domain.ErrHandoffForbidden.Message, Operation: operation, Context: "row level security denied access"}
+			return annotatedHandoffError(domain.ErrHandoffForbidden, operation, "row level security denied access")
 		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return &domain.HandoffError{Code: domain.HandoffErrorTimeout, Message: domain.ErrHandoffTimeout.Message, Retryable: true, Operation: operation, Context: "deadline exceeded"}
+		return annotatedHandoffError(domain.ErrHandoffTimeout, operation, "deadline exceeded")
 	}
-	return &domain.HandoffError{Code: domain.HandoffErrorPersistence, Message: domain.ErrHandoffPersistence.Message, Retryable: true, Operation: operation, Context: "database error"}
+	return annotatedHandoffError(domain.ErrHandoffPersistence, operation, "database error")
 }

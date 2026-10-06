@@ -50,6 +50,34 @@ func TestCoverageMigrationApplyIdempotent(t *testing.T) {
 	}
 }
 
+// tamperLedgerChecksum overwrites the ledgered checksum of one version and
+// returns a restore function for the previous value. These coverage tests
+// share the package-level isolated database, so an unrestored tamper makes
+// every later Apply of that version fail with a checksum mismatch instead of
+// exercising its own scenario. Callers defer the restore so it runs before
+// their own deferred db.Close.
+func tamperLedgerChecksum(t *testing.T, ctx context.Context, db *sql.DB, version int, value string) func() {
+	t.Helper()
+	var previous string
+	if err := db.QueryRowContext(ctx,
+		`SELECT checksum FROM cortex_server_migrations WHERE version=$1`, version,
+	).Scan(&previous); err != nil {
+		t.Fatalf("read ledger checksum for version %d: %v", version, err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE cortex_server_migrations SET checksum=$2 WHERE version=$1`, version, value,
+	); err != nil {
+		t.Fatalf("tamper ledger checksum for version %d: %v", version, err)
+	}
+	return func() {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE cortex_server_migrations SET checksum=$2 WHERE version=$1`, version, previous,
+		); err != nil {
+			t.Errorf("restore ledger checksum for version %d: %v", version, err)
+		}
+	}
+}
+
 // TestCoverageMigrationChecksumMismatchFailsClose proves that a tampered
 // ledger checksum causes Apply to refuse the migration without mutation.
 func TestCoverageMigrationChecksumMismatchFailsClose(t *testing.T) {
@@ -74,9 +102,7 @@ func TestCoverageMigrationChecksumMismatchFailsClose(t *testing.T) {
 	if err := m.Apply(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='tampered' WHERE version=$1`, m.Version()); err != nil {
-		t.Fatal(err)
-	}
+	defer tamperLedgerChecksum(t, ctx, db, m.Version(), "tampered")()
 	if err := m.Apply(ctx, db); err == nil {
 		t.Fatal("checksum mismatch must fail")
 	}
@@ -203,8 +229,11 @@ func TestCoverageMigrationPreflightLedgered(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrPreflightStop) {
+		t.Fatalf("preflight on applied migration err=%v; want errors.Is ErrPreflightStop", err)
+	}
+	if errors.Is(err, ErrSchemaTampered) {
+		t.Errorf("already-applied stop must not be tamper-class: %v", err)
 	}
 	if !preflight.Ledgered {
 		t.Fatal("applied migration should be ledgered")
@@ -388,12 +417,10 @@ func TestCoverageMigrationPreflightChecksumMismatch(t *testing.T) {
 	if err := m.Apply(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='mismatch' WHERE version=$1`, m.Version()); err != nil {
-		t.Fatal(err)
-	}
+	defer tamperLedgerChecksum(t, ctx, db, m.Version(), "mismatch")()
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrPreflightStop) || !errors.Is(err, ErrSchemaTampered) {
+		t.Fatalf("preflight on mismatched checksum err=%v; want ErrPreflightStop AND ErrSchemaTampered", err)
 	}
 	if !preflight.Ledgered {
 		t.Fatal("should be ledgered even with mismatch")
@@ -430,8 +457,8 @@ func TestCoverageMigrationPreflightFutureVersion(t *testing.T) {
 	defer func() { _, _ = db.ExecContext(ctx, `DELETE FROM cortex_server_migrations WHERE version=999`) }()
 
 	preflight, err := m.Preflight(ctx, db)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !errors.Is(err, ErrPreflightStop) || !errors.Is(err, ErrFutureMigration) {
+		t.Fatalf("preflight with a 999 row err=%v; want ErrPreflightStop AND ErrFutureMigration", err)
 	}
 	if preflight.FutureLedgerVersion != 999 {
 		t.Fatalf("future=%d, want 999", preflight.FutureLedgerVersion)
@@ -500,9 +527,7 @@ func TestCoverageMigrationVerifyAppliedChecksumMismatch(t *testing.T) {
 	if err := m.Apply(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE cortex_server_migrations SET checksum='wrong' WHERE version=$1`, m.Version()); err != nil {
-		t.Fatal(err)
-	}
+	defer tamperLedgerChecksum(t, ctx, db, m.Version(), "wrong")()
 	if err := m.VerifyApplied(ctx, db); err == nil {
 		t.Fatal("VerifyApplied on tampered checksum must fail")
 	}
@@ -578,5 +603,3 @@ func TestCoverageMigrationPreflightNoLedgerTable(t *testing.T) {
 		t.Fatal("fresh database should not have a ledger table")
 	}
 }
-
-

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/lleontor705/cortex/v2/internal/webkey"
@@ -212,7 +213,10 @@ func TestGenerateFailsClosedWithoutPartialFile(t *testing.T) {
 	if _, err := s.Generate(); err == nil {
 		t.Fatal("Generate into a non-directory must fail closed")
 	}
-	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+	// Stat through the regular-file blocker returns ENOTDIR, which Go only
+	// maps to os.ErrNotExist in the ENOENT direction; either error proves the
+	// key file is absent rather than partially written.
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
 		t.Fatalf("partial key file left behind: %v", err)
 	}
 }

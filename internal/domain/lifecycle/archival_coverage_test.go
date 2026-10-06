@@ -12,10 +12,10 @@ import (
 
 // errRepo is a configurable fake that returns controlled errors.
 type errRepo struct {
-	mu          sync.Mutex
-	listErr     error
-	deleteErr   error
-	deletedIDs  []int64
+	mu           sync.Mutex
+	listErr      error
+	deleteErr    error
+	deletedIDs   []int64
 	observations []*domain.Observation
 }
 

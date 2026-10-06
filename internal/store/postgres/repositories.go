@@ -29,7 +29,9 @@ var errDedupSkipped = errors.New("postgres observations: dedup skipped")
 // classifySaveError converts driver failures escaping the interactive save
 // path into the stable handoff taxonomy: a bounded topic-lock timeout
 // (SQLSTATE 55P03) or any other contention surfaces as a redacted,
-// retryable-unavailable save error instead of leaking driver internals.
+// retryable-unavailable save error whose Message is the canonical sentinel
+// text exactly — the handoff executor's annotated classification context is
+// re-pinned away on this surface, and driver internals never leak.
 // Non-driver errors (validation, sentinels) pass through unchanged.
 func classifySaveError(err error) error {
 	if err == nil {
@@ -37,9 +39,26 @@ func classifySaveError(err error) error {
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return handoffPgError(err, "save")
+		return redactSaveClassification(handoffPgError(err, "save"))
 	}
 	return err
+}
+
+// redactSaveClassification rebuilds a classified save failure with the
+// canonical sentinel Message for its code while keeping code, retryability,
+// and operation metadata intact.
+func redactSaveClassification(err error) error {
+	var typed *domain.HandoffError
+	if !errors.As(err, &typed) {
+		return err
+	}
+	return &domain.HandoffError{
+		Code:      typed.Code,
+		Message:   handoffSentinelMessage(typed.Code),
+		Retryable: typed.Retryable,
+		Operation: typed.Operation,
+		Context:   typed.Context,
+	}
 }
 
 // SaveWithEffect persists the observation and reports the durable write

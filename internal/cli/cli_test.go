@@ -608,7 +608,11 @@ func TestRunContextFormat(t *testing.T) {
 
 func TestRunSetupOllama(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv("CORTEX_HOME", tmpDir)
+	// setup ollama persists the generated config into $HOME/.cortex; redirect
+	// both home lookups so the real user config is never rewritten (CORTEX_HOME
+	// is read by no product code).
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
@@ -858,4 +862,3 @@ func TestServeExplicitLoopbackWithoutTokenServes(t *testing.T) {
 		})
 	}
 }
-
