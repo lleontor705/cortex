@@ -57,6 +57,10 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7438/health || exit 1"]
       interval: 5s
       timeout: 5s
+      # First boot runs storage migrations and tenant bootstrap before the HTTP
+      # listener opens 7438; failures during that window must not count toward
+      # the unhealthy threshold or compose marks the service dead too early.
+      start_period: 90s
       retries: 12
 
 volumes:
