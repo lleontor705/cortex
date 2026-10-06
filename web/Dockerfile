@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:26-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN --mount=type=cache,target=/root/.npm \
@@ -12,7 +12,7 @@ ENV NEXT_PUBLIC_CORTEX_SERVER_URL=$NEXT_PUBLIC_CORTEX_SERVER_URL
 RUN --mount=type=cache,target=/app/.next/cache \
     npm run build
 
-FROM node:22-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
