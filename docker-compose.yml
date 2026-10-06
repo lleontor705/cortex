@@ -32,6 +32,12 @@ services:
       CORTEX_SERVER_AUTO_BOOTSTRAP: "${CORTEX_SERVER_AUTO_BOOTSTRAP:-true}"
       # Local development opt-in: set CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true via env or .env to reuse the runtime DSN for migration/bootstrap.
       CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-false}"
+      # The bootstrap reconciler fails closed unless the synthetic server
+      # principal's grants include the owner or admin role
+      # (internal/platform/server/server.go canonicalBootstrapGrants). The
+      # auto-bootstrap entrypoint provisions a tenant owner bearer, so the
+      # dev stack grants the principal the documented owner role by default.
+      CORTEX_SERVER_ROLES: "${CORTEX_SERVER_ROLES:-owner}"
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: "${CORTEX_HTTP_HOST:-0.0.0.0}"
       CORTEX_HTTP_PORT: "${CORTEX_HTTP_PORT:-7438}"
