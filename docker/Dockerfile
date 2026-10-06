@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine AS builder
+FROM golang:1.27.1-alpine AS builder
 
 WORKDIR /build
 
@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -tags cortex_vectors -ldflags="-s -w" -o cortex ./cmd/cortex
 
 # Runtime image
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates curl \
     && addgroup -S cortex && adduser -S cortex -G cortex \
