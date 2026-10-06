@@ -472,11 +472,19 @@ var bootstrapGrantKinds = []string{"role", "workspace", "scope", "project", "cla
 // owner/wildcard defaults. The workspace grant always uses the canonical
 // uuid spelling so it matches p_workspace_public_id::text exactly.
 func canonicalBootstrapGrants(cfg config.Config) ([]bootstrapGrant, error) {
+	// The Docker auto-bootstrap path provisions the same tenant owner bearer
+	// the synthetic request principal historically represented, so its grants
+	// must carry the canonical wildcard project and classification grants too.
+	// Without them the durable principal verified through
+	// cortex_verify_token_principal loses the project authority the synthetic
+	// contract guarantees (NewSyntheticPrincipal), and every project-scoped
+	// operation is denied with DenyProject.
+	devDefaults := cfg.Server.BootstrapDevelopment || dockerAutoBootstrapRequested()
 	roles := append([]string(nil), cfg.Server.Roles...)
 	scopes := append([]string(nil), cfg.Server.Scopes...)
 	projects := append([]string(nil), cfg.Server.ProjectIDs...)
 	clearance := append([]string(nil), cfg.Server.ClassificationClearance...)
-	if cfg.Server.BootstrapDevelopment {
+	if devDefaults {
 		roles = []string{string(authz.RoleOwner)}
 		scopes = []string{"workspaces:read"}
 		projects = []string{"*"}

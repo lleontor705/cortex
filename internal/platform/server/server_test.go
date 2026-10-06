@@ -371,6 +371,35 @@ func TestCanonicalBootstrapGrants(t *testing.T) {
 	}
 }
 
+// The Docker auto-bootstrap path enables the canonical development grant
+// defaults without setting CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: the reconciled
+// principal must keep the wildcard project and classification grants the
+// synthetic request contract guarantees, or every project-scoped operation is
+// denied with DenyProject (regression: compose E2E POST /api/sessions 403).
+func TestCanonicalBootstrapGrantsAutoBootstrap(t *testing.T) {
+	t.Setenv("CORTEX_SERVER_AUTO_BOOTSTRAP", "true")
+	stack := validBootstrapConfig()
+	stack.Server.BootstrapDevelopment = false
+	stack.Server.Roles = []string{"owner"}
+	stack.Server.Scopes = nil
+	stack.Server.ProjectIDs = nil
+	stack.Server.ClassificationClearance = nil
+	got, err := canonicalBootstrapGrants(stack)
+	if err != nil {
+		t.Fatalf("auto-bootstrap grants error = %v", err)
+	}
+	want := []bootstrapGrant{
+		{Type: "role", Value: "owner"},
+		{Type: "workspace", Value: "00000000-0000-0000-0000-000000000002"},
+		{Type: "scope", Value: "workspaces:read"},
+		{Type: "project", Value: "*"},
+		{Type: "classification", Value: "*"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auto-bootstrap grants = %+v, want %+v", got, want)
+	}
+}
+
 // --- migration-role bootstrap reconciler stub ---------------------------------
 //
 // The stub records the single SQL statement bootstrapServicePrincipal must
