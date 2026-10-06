@@ -12,6 +12,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.0] - 2026-10-06
+
+### 🚀 Features
+
+- *(web)* Embed Next.js UI in the binary - static export, web-key auth, parity routes
+- *(server)* Single-tenant self-hosted pivot - multi-tenant plane removed, docs repositioned
+- Self-hosted pivot + embedded web + quality audit — 89 tasks done across 3 initiatives (embedded-web-redesign, self-hosted-pivot, self-hosted-quality)
+- *(retrieval)* RAG performance overhaul — HippoRAG 2, SkewRoute, MRL/int8 vector scan, cardinality switch
+- *(embed)* Openai-compatible embed tier, live dimensions, and the Reranker port
+
+### 🐛 Bug Fixes
+
+- *(test)* Resolve errcheck and staticcheck lint warnings
+- *(server)* Drop mcp-go/util dependency to unblock Dependabot go_modules updater (#84)
+- *(mcp)* Prevent sandbox execution timeout under race instrumentation (#86)
+- *(postgres)* Resolve durable grant resolution, token scopes clone, and handoff error annotation (#88)
+- *(server)* Correct bearer auth token lifecycle regressions (#89)
+- *(server)* Grant owner role to fresh-volume bootstrap principal (#93)
+- *(server)* Grant wildcard project/classification to auto-bootstrap principal (#96)
+- *(lint)* Resolve errcheck and staticcheck warnings in test suites (#57)
+- *(vector)* Adapt pgvector test fake to pgx 5.11.0 Rows interface (#99)
+
+### 📚 Documentation
+
+- *(ops)* Publish honest-gain evidence, operator runbook, and distribution packaging
+
+### 🧪 Testing
+
+- Break store/sqlite test import cycle for vector-tests gate
+- *(ci)* Make rerank config tests hermetic and fix webkey ENOTDIR postcondition (#85)
+- *(migration)* Restore tampered ledger checksum between shared-DB tests (#90)
+- *(sandbox)* Stabilize TestProcessExecution under vector-tagged CI (#94)
+- *(postgres)* Align migration head pin with shipped migration 112 (#91)
+- *(bench)* Align toolchain contract pins with grpc v1.83.1 security bump (#95)
+
+### ⚙️ Miscellaneous Tasks
+
+- Gitignore Playwright e2e artifacts + landed-work housekeeping
+- *(docs)* SHA-pin actions, harden the release pipeline, and ship the bilingual docs site
+- *(codeql)* Use autobuild build-mode for Go analysis (#83)
+- *(docker)* Fix compose smoke health-wait budget for cold-start builds (#87)
+- *(toolchain)* Align to Go 1.27.1 + golangci-lint v2.14.0 (#97)
+- *(toolchain)* Align release.yml and ci.yml Go pins to 1.27.1 (#98)
+
+### 💼 Other
+
+- *(deps)* Bump node from 22-alpine to 26-alpine in /web (#67)
+- *(deps)* Bump the docker-server-minor-patch group (#68)
+- *(deps)* Bump the go-minor-patch group across 1 directory with 6 updates (#70)
+- *(deps)* Bump docker/build-push-action from 6.19.2 to 7.4.0 (#76)
+- *(deps)* Bump actions/dependency-review-action from 4.9.0 to 5.0.0 (#77)
+- *(deps)* Bump docker/setup-buildx-action from 3.12.0 to 4.4.1 (#78)
+- *(deps)* Bump docker/metadata-action from 5.10.0 to 6.2.0 (#79)
+- *(deps)* Bump actions/github-script from 7.1.0 to 9.0.0 (#80)
+- *(deps)* Bump the web-minor-patch group in /web with 9 updates (#71)
+- *(deps-dev)* Bump vitest from 4.1.10 to 5.0.3 in /web (#72)
+- *(deps-dev)* Bump vitest from 4.1.10 to 5.0.3 in /plugin/opencode (#69)
+- *(deps)* Bump tailwind-merge from 2.6.0 to 3.7.0 in /web (#75)
+- *(deps)* Bump eslint from 8.57.1 to 10.12.0 in /web (#73)
+- *(deps-dev)* Bump typescript from 5.9.3 to 7.0.2 in /web (#74)
+
 ## [2.3.12] - 2026-09-20
 
 ### 🚀 Features
