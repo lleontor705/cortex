@@ -14,7 +14,7 @@
     "@types/jszip": "^3.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "eslint": "8.57.1",
+    "eslint": "10.12.0",
     "eslint-config-next": "15.5.23",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "graphology": "^0.26.0",
