@@ -22,7 +22,6 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/util"
 )
 
 // opaqueReader hides the concrete reader type from httptest.NewRequest so the
@@ -693,7 +692,7 @@ func TestMCPRedactingLogger(t *testing.T) {
 			}
 		}
 	}
-	var _ util.Logger = redactingLogger{}
+	var _ transportLogger = redactingLogger{}
 }
 
 // --- concurrency: release under load -------------------------------------------

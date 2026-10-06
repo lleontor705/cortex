@@ -1,4 +1,4 @@
-.PHONY: build run web-build test test-e2e-docker test-integration test-postgres-integration test-coverage test-web-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install help
+.PHONY: build run web-build test test-e2e-docker test-integration test-postgres-integration test-coverage test-web-coverage test-postgres-coverage lint fmt clean tidy migrate-up migrate-down docker-build install docs-build docs-serve help
 
 # Binary name
 BINARY_NAME=cortex
@@ -61,12 +61,14 @@ help:
 	@echo "  migrate-down   Rollback database migrations"
 	@echo "  docker-build   Build Docker image"
 	@echo "  install        Install binary to GOPATH/bin"
+	@echo "  docs-build     Build the MkDocs Material site (mkdocs build --strict)"
+	@echo "  docs-serve     Serve the docs site locally with live reload"
 
-# Build the cortex binary
+# Build the cortex binary (cortex_vectors ships by default so the functional zero-CGO vector path needs no extra flags)
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BINARY_DIR)
-	$(GOBUILD) -o $(BINARY_PATH) ./cmd/cortex
+	$(GOBUILD) -tags cortex_vectors -o $(BINARY_PATH) ./cmd/cortex
 	@echo "Binary built: $(BINARY_PATH)"
 
 # Build the Next.js static export and sync it into the embedded asset tree.
@@ -138,10 +140,10 @@ test-postgres-coverage:
 	$(GOTEST) -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=$(COVERAGE_FILE) ./...
 	@$(GOCMD) tool cover -func=$(COVERAGE_FILE)
 
-# Run golangci-lint
+# Run golangci-lint with the repo-shared config so local runs match CI exactly
 lint:
 	@echo "Running golangci-lint..."
-	$(GOLINT) run ./...
+	$(GOLINT) run --config .golangci.yml ./...
 
 # Format code
 fmt:
@@ -217,3 +219,28 @@ generate-mocks:
 	@echo "Generating mocks..."
 	$(GOCMD) generate ./...
 	@echo "Mocks generated"
+
+# Documentation site (MkDocs Material). The Python toolchain stays isolated from the
+# Go/Node builds. One-time local setup when mkdocs is not already on PATH:
+#   python3 -m venv "${TMPDIR:-/tmp/}cortex-docs-venv" \
+#     && "${TMPDIR:-/tmp/}cortex-docs-venv/bin/pip" install mkdocs-material \
+#     && export PATH="${TMPDIR:-/tmp/}cortex-docs-venv/bin:$PATH"
+DOCS_VENV ?= $(patsubst %/,%,$(or $(TMPDIR),/tmp))/cortex-docs-venv
+DOCS_MKDOCS ?= mkdocs
+
+docs-build:
+	@command -v $(DOCS_MKDOCS) >/dev/null 2>&1 || { \
+		echo "$(DOCS_MKDOCS) not found. One-time setup:"; \
+		echo "  python3 -m venv $(DOCS_VENV)"; \
+		echo "  $(DOCS_VENV)/bin/pip install mkdocs-material"; \
+		echo "  export PATH=$(DOCS_VENV)/bin:\$$PATH"; \
+		exit 1; \
+	}
+	$(DOCS_MKDOCS) build --strict
+
+docs-serve:
+	@command -v $(DOCS_MKDOCS) >/dev/null 2>&1 || { \
+		echo "$(DOCS_MKDOCS) not found. Run 'make docs-build' first to see the setup steps."; \
+		exit 1; \
+	}
+	$(DOCS_MKDOCS) serve

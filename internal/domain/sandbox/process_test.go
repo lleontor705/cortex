@@ -45,14 +45,13 @@ func main() {
 	if _, ok := runtimes[LanguagePowerShell]; ok {
 		t.Run("PowerShellExecution", func(t *testing.T) {
 			code := `Write-Output "cortex-powershell-ok"`
-			// CI runners pay a cold-start cost for every first pwsh
-			// invocation (module load + profile), which already pushed a
-			// 10s budget over the limit; this subtest asserts that
-			// PowerShell output is captured, not an execution deadline.
+			// Generous timeout: pwsh cold start on loaded CI runners can
+			// exceed 10s (observed >10s under contention, ~4.3s typical).
+			// Stays under MaxTimeout (60s) so the requested bound applies.
 			res, err := runner.Execute(ctx, ExecutionRequest{
 				Language: LanguagePowerShell,
 				Code:     code,
-				Timeout:  30 * time.Second,
+				Timeout:  55 * time.Second,
 			})
 			if err != nil {
 				t.Fatalf("PowerShell execution failed: %v", err)

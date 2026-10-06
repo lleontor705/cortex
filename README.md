@@ -1,53 +1,66 @@
 # 🧠 Cortex: Autonomous AI Memory & Project Knowledge Graph
 
+**English** | [Español](README.es.md)
+
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Cortex Architecture" width="100%" />
 </p>
 
 <p align="center">
-  <a href="#features"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go" alt="Go Version"/></a>
-  <a href="#features"><img src="https://img.shields.io/badge/Next.js-15-000000?style=flat&logo=next.js" alt="Next.js"/></a>
-  <a href="#features"><img src="https://img.shields.io/badge/PostgreSQL-16%20Self--Hosted-336791?style=flat&logo=postgresql" alt="Self-Hosted Postgres"/></a>
-  <a href="#features"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-8B5CF6?style=flat" alt="MCP Protocol"/></a>
-  <a href="#features"><img src="https://img.shields.io/badge/Zero--CGO-Pure%20Go-10B981?style=flat" alt="Zero CGO"/></a>
+  <a href="https://github.com/lleontor705/cortex/actions/workflows/ci.yml"><img src="https://github.com/lleontor705/cortex/actions/workflows/ci.yml/badge.svg" alt="CI status"/></a>
+  <a href="https://pkg.go.dev/github.com/lleontor705/cortex/v2"><img src="https://pkg.go.dev/badge/github.com/lleontor705/cortex/v2.svg" alt="Go Reference"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"/></a>
+  <a href="https://lleontor705.github.io/cortex/"><img src="https://img.shields.io/badge/docs-MkDocs%20Material-2E7D32.svg" alt="Docs: MkDocs Material"/></a>
 </p>
 
-**Cortex** es una plataforma autoalojada de **memoria episódica autónoma, gobernanza de proyectos y grafo de conocimiento de código** diseñada para agentes de IA (Cursor, Claude Code, Cline, Windsurf) y equipos de desarrollo.
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go" alt="Go Version"/></a>
+  <a href="web/"><img src="https://img.shields.io/badge/Next.js-15-000000?style=flat&logo=next.js" alt="Next.js"/></a>
+  <a href="docs/SERVER.md"><img src="https://img.shields.io/badge/PostgreSQL-16%20Self--Hosted-336791?style=flat&logo=postgresql" alt="Self-Hosted Postgres"/></a>
+  <a href="docs/MCP.md"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-8B5CF6?style=flat" alt="MCP Protocol"/></a>
+  <a href="https://pkg.go.dev/github.com/lleontor705/cortex/v2"><img src="https://img.shields.io/badge/Zero--CGO-Pure%20Go-10B981?style=flat" alt="Zero CGO"/></a>
+</p>
 
-Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotlin, Rust, C/C++, PHP, Ruby, Swift, Go, TS/JS, Python, SQL), clustering de comunidades (Louvain/Leiden), análisis de blast radius, gobernanza de proyectos, búsqueda híbrida (BM25 + Vectores) y persistencia segura respaldada por PostgreSQL autoalojado de instancia única y SQLite local.
+📖 **Documentation site:** [https://lleontor705.github.io/cortex/](https://lleontor705.github.io/cortex/)
+
+**Cortex** is a self-hosted platform for **autonomous episodic memory, project governance, and a code knowledge graph** built for AI agents (Cursor, Claude Code, Cline, Windsurf) and development teams.
+
+It combines Zero-CGO static AST code extraction (.NET C#/F#/VB, Java, Kotlin, Rust, C/C++, PHP, Ruby, Swift, Go, TS/JS, Python, SQL), community clustering (Louvain/Leiden), blast-radius analysis, project governance, hybrid search (BM25 + vectors), and secure persistence backed by single-instance self-hosted PostgreSQL and local SQLite.
 
 ---
 
-## ⚡ Capacidades Principales
+## ⚡ Key Capabilities
 
-### 1. 🌐 Grafo de Código & Conocimiento por Proyecto (Estilo Graphify)
-- **Extractor AST Nativo Políglota (Zero-CGO):** Analiza código en Go puro para **.NET** (`.cs`, `.fs`, `.vb`), **Java/Kotlin** (`.java`, `.kt`), **Rust** (`.rs`), **C/C++** (`.c`, `.cpp`, `.h`, `.hpp`), **PHP** (`.php`), **Ruby** (`.rb`), **Swift** (`.swift`), **TypeScript/JavaScript** (`.ts`, `.tsx`, `.js`), **Python** (`.py`), **Go** (`.go`) y **SQL** (`.sql`) sin enviar código a LLMs externos ni gastar tokens de API.
-- **Clustering de Comunidades (Louvain/Hubs):** Agrupa automáticamente los subsistemas funcionales del proyecto y etiqueta los hubs arquitectónicos.
-- **God Nodes & Detección de Ciclos:** Identifica cuellos de botella (`in_degree`/`out_degree`) y dependencias circulares (Tarjan SCC).
-- **Cálculo de Blast Radius:** Mide el impacto porcentual y lista los archivos/funciones afectados al modificar cualquier componente.
-- **Reconciliación Incremental en Refactorizaciones:** Si el archivo `A` antes dependía de `B` y ahora depende de `B` y `C`, Cortex actualiza y reconcilia las relaciones de forma instantánea.
-- **Exportador a Obsidian Vault:** Descarga notas Markdown interconectadas con enlaces `[[WikiLinks]]`.
+### 1. 🌐 Per-Project Code & Knowledge Graph (Graphify-style)
+- **Native Polyglot AST Extractor (Zero-CGO):** Analyzes code in pure Go for **.NET** (`.cs`, `.fs`, `.vb`), **Java/Kotlin** (`.java`, `.kt`), **Rust** (`.rs`), **C/C++** (`.c`, `.cpp`, `.h`, `.hpp`), **PHP** (`.php`), **Ruby** (`.rb`), **Swift** (`.swift`), **TypeScript/JavaScript** (`.ts`, `.tsx`, `.js`), **Python** (`.py`), **Go** (`.go`), and **SQL** (`.sql`) without sending code to external LLMs or spending API tokens.
+- **Community Clustering (Louvain/Hubs):** Automatically groups the functional subsystems of a project and labels architectural hubs.
+- **God Nodes & Cycle Detection:** Identifies bottlenecks (`in_degree`/`out_degree`) and circular dependencies (Tarjan SCC).
+- **Blast Radius:** Measures the percentage impact and lists the affected files/functions when any component changes.
+- **Incremental Reconciliation on Refactors:** If file `A` previously depended on `B` and now depends on `B` and `C`, Cortex updates and reconciles the relationships instantly.
+- **Obsidian Vault Exporter:** Downloads interlinked Markdown notes with `[[WikiLinks]]`.
 
 <p align="center">
   <img src="docs/assets/graph_workflow.svg" alt="Cortex Graph Workflow" width="100%" />
 </p>
 
-### 2. 🧠 Memoria Episódica & Aprendizaje Continuo
-- Registra decisiones de arquitectura, correcciones de bugs, patrones y descubrimientos técnicos.
-- **Búsqueda Híbrida Inteligente:** Combina BM25 de texto completo con similitud vectorial (Gemini, OpenAI, Ollama, pgvector, Qdrant) y ponderación de frescura/importancia.
-- **Workers Autónomos en Background:** Reorganización periódica de grafos, detección de contradicciones y resolución de conflictos (`supersedes`).
+### 2. 🧠 Episodic Memory & Continuous Learning
+- Records architecture decisions, bug fixes, patterns, and technical discoveries.
+- **Smart Hybrid Search:** Combines full-text BM25 with vector similarity (OpenAI, Ollama, pgvector, Qdrant) plus freshness/importance weighting.
+- **Autonomous Background Workers:** Periodic graph reorganization, contradiction detection, and conflict resolution (`supersedes`).
 
 <p align="center">
   <img src="docs/assets/memory_lifecycle.svg" alt="Cortex Memory Lifecycle" width="100%" />
 </p>
 
-### 3. 🛡️ Gobernanza de Proyectos & Autoalojamiento
-- **PostgreSQL Autoalojado (RLS de Instancia Única):** El servidor single-tenant fija `tenant_id` y `workspace_id` por configuración y ejecuta cada operación bajo RLS forzado.
-- **Reglas de Proyecto & Prompts del Sistema:** Inyección dinámica de reglas corporativas y skills en cada consulta de los agentes.
+### 3. 🛡️ Project Governance & Self-Hosting
+- **Self-Hosted PostgreSQL (Single-Instance RLS):** The single-tenant server pins `tenant_id` and `workspace_id` from configuration and runs every operation under forced RLS.
+- **Project Rules & System Prompts:** Dynamic injection of corporate rules and skills into every agent query.
 
 ---
 
-## 📦 Instalación
+## 📦 Installation
+
+Every channel installs the same `cortex` binary. The full channel matrix — Homebrew, Go toolchain, checksum-verified release binaries, source builds, and the multi-arch container image — is documented in **[docs/distribution.md](docs/distribution.md)**.
 
 ### Homebrew (macOS / Linux)
 
@@ -55,15 +68,15 @@ Combina extracción estática de código AST Zero-CGO (.NET C#/F#/VB, Java, Kotl
 brew install lleontor705/tap/cortex
 ```
 
-### Go Install (Multiplataforma)
+### Go Install (Cross-platform)
 
 ```bash
 go install github.com/lleontor705/cortex/v2/cmd/cortex@latest
 ```
 
-### Binarios Precompilados & Compilación desde Fuente
+### Prebuilt Binaries & Source Builds
 
-Descarga directa de binarios (Windows, macOS, Linux) desde [GitHub Releases](https://github.com/lleontor705/cortex/releases), o compila localmente desde el código fuente:
+Download prebuilt binaries (Windows, macOS, Linux) from [GitHub Releases](https://github.com/lleontor705/cortex/releases), or build locally from source (see [docs/distribution.md](docs/distribution.md#build-from-source)):
 
 ```bash
 git clone https://github.com/lleontor705/cortex.git
@@ -73,23 +86,23 @@ make build
 
 ---
 
-## 🚀 Inicio Rápido
+## 🚀 Quick Start
 
-### 1. Modo Local (SQLite, CLI & TUI)
+### 1. Local Mode (SQLite, CLI & TUI)
 
 ```bash
-# Configurar integración automática con perfiles modulares (dev, minimal, agent)
+# Set up automatic integration with modular profiles (dev, minimal, agent)
 cortex setup claude-code --profile=dev
 cortex setup opencode --profile=agent
 
-# Ver estado del modo operativo (local, híbrido, server)
+# Show the operating mode (local, hybrid, server)
 cortex status
 
-# Diagnóstico de base de datos e índices
+# Diagnose the database and indexes
 cortex doctor
 
-# Búsqueda adaptativa con clasificación de complejidad
-cortex search "decisión de arquitectura" --mode=auto
+# Adaptive search with complexity classification
+cortex search "architecture decision" --mode=auto
 
 # Index a repository once (AST symbols and relations)
 cortex ingest ./internal --project cortex
@@ -103,7 +116,7 @@ cortex backup ~/backups/cortex.db
 # Check for a newer release without installing it
 cortex update --check
 
-# Lanzar interfaz interactiva en terminal (con selector de perfiles integrado)
+# Launch the interactive terminal UI (with an integrated profile selector)
 cortex tui
 ```
 
@@ -169,66 +182,73 @@ docker compose up -d
 
 ---
 
-## 🔌 Integración con Agentes MCP (Cursor, Claude Code, Cline)
+## 🔌 MCP Agent Integration (Cursor, Claude Code, Cline)
 
-Agrega Cortex como servidor MCP en tu editor o agente:
+Add Cortex as an MCP server in your editor or agent:
 
-### Configuración MCP (Streamable HTTP):
+### MCP configuration (Streamable HTTP):
 
 ```json
 {
   "mcpServers": {
     "cortex": {
-      "url": "https://tu-servidor-cortex.railway.app/mcp",
+      "url": "https://your-cortex-server.railway.app/mcp",
       "headers": {
-        "Authorization": "Bearer TU_BEARER_TOKEN"
+        "Authorization": "Bearer YOUR_BEARER_TOKEN"
       }
     }
   }
 }
 ```
 
-### Perfiles Modulares y Herramientas MCP:
-Cortex organiza su catálogo en perfiles modulares (`--tools=agent|dev|minimal`):
-- **Memoria Episódica & Búsqueda:** `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search` (FTS5 + Vectores + HippoRAG + Adaptive-RAG), `cortex_get_agent_context`.
-- **Grafo de Conocimiento & Linaje:** `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_revision_history`, `cortex_handoff` (handoff idempotente entre agentes).
-- **Inteligencia de Código AST (Zero-CGO):** `cortex_ingest_code` (extracción estática políglota), `cortex_get_code_symbols`, `cortex_code_map` (PageRank repo map), `cortex_code_tests` (Fast-TDD test impact), `cortex_get_blast_radius`, `cortex_detect_cycles`, `cortex_analyze_architecture`.
-- **Gobernanza & Estado:** `cortex_get_rules`, `cortex_save_rule`, `cortex_get_status` (modo SQLite/Postgres y capacidades). En modo Server también: `cortex_get_project_context`, `cortex_list_skills`, `cortex_get_skill`, `cortex_resolve_query`.
+### Modular Profiles and MCP Tools:
+Cortex organizes its catalog into modular profiles (`--tools=agent|dev|minimal`):
+- **Episodic Memory & Search:** `cortex_save`, `cortex_update`, `cortex_get_observation`, `cortex_context`, `cortex_session_summary`, `cortex_search` (FTS5 + Vectors + HippoRAG + Adaptive-RAG), `cortex_get_agent_context`.
+- **Knowledge Graph & Lineage:** `cortex_relate`, `cortex_graph`, `cortex_graph_path`, `cortex_revision_history`, `cortex_handoff` (idempotent handoff between agents).
+- **AST Code Intelligence (Zero-CGO):** `cortex_ingest_code` (native polyglot static extraction), `cortex_get_code_symbols`, `cortex_code_map` (PageRank repo map), `cortex_code_tests` (Fast-TDD test impact), `cortex_get_blast_radius`, `cortex_detect_cycles`, `cortex_analyze_architecture`.
+- **Governance & Status:** `cortex_get_rules`, `cortex_save_rule`, `cortex_get_status` (SQLite/Postgres mode and capabilities). In Server mode also: `cortex_get_project_context`, `cortex_list_skills`, `cortex_get_skill`, `cortex_resolve_query`.
 
 ---
 
-## 📚 Documentación Técnica
+## 📚 Documentation
 
-- [Guía de Inteligencia de Grafos & AST](docs/GRAPH_INTELLIGENCE.md)
-- [Catálogo de Herramientas MCP](docs/MCP.md)
-- [Referencia de API HTTP REST](docs/HTTP-API.md)
-- [Arquitectura del Sistema](docs/ARCHITECTURE.md)
-- [Configuración Multi-Formato](docs/CONFIGURATION.md)
-- [Exportación a Obsidian](docs/OBSIDIAN_EXPORT.md)
-- [Despliegue en Producción (Server & Docker)](docs/SERVER.md)
+📚 **Docs site:** [https://lleontor705.github.io/cortex/](https://lleontor705.github.io/cortex/)
+
+- [Graph & AST Intelligence Guide](docs/GRAPH_INTELLIGENCE.md)
+- [MCP Tool Catalog](docs/MCP.md)
+- [HTTP REST API Reference](docs/HTTP-API.md)
+- [System Architecture](docs/ARCHITECTURE.md)
+- [Multi-Format Configuration](docs/CONFIGURATION.md)
+- [Obsidian Export](docs/OBSIDIAN_EXPORT.md)
+- [Production Deployment (Server & Docker)](docs/SERVER.md)
 - [Embedded Web UI & Key Lifecycle](docs/embedded-web.md)
+- [Installation Channels & Distribution](docs/distribution.md)
+- [Installation Guide](docs/INSTALLATION.md)
+- [CLI Reference](docs/CLI-REFERENCE.md)
+- [Benchmarks & Measured Results](docs/BENCHMARKS.md)
 
 ---
 
-## 🛠️ Comandos de Desarrollo
+## 🛠️ Development Commands
 
 ```bash
-# Descargar dependencias y compilar binario
+# Download dependencies and build the binary
 go mod download
 make build
 
-# Ejecutar suite de pruebas unitarias y de integración
+# Run the unit and integration test suite
 go test -v -count=1 ./...
 
-# Linter oficial
+# Official linter
 golangci-lint run ./...
 
-# Compilar y embeber la web ANTES de make build (ver docs/embedded-web.md)
+# Build and embed the web assets BEFORE make build (see docs/embedded-web.md)
 make web-build
 ```
 
 ---
 
 <p align="center">
-  <b>Cortex 2.0</b> • Diseñado para potenciar el desarrollo de software asistido por IA de forma duradera y confiable.
+  <b>Cortex 2.0</b> • Built to make AI-assisted software development durable and reliable.<br/>
+  Also available in <a href="README.es.md">Español</a>.
 </p>

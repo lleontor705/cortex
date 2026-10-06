@@ -1,14 +1,13 @@
 name: Release
 
-# NOTE: actions are pinned by major tag (not commit SHA) so dependabot keeps
-# them current. Full SHA pinning is a known follow-up and would require the
-# dependabot configuration to be updated in the same change to avoid silently
-# freezing these mutable references.
+# NOTE: actions are pinned to full commit SHAs with a trailing version comment
+# (ratchet pattern). .github/dependabot.yml keeps them current through the
+# github-actions ecosystem, which bumps each SHA and its version comment together.
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -21,351 +20,16 @@ permissions:
   packages: write
 
 jobs:
-  # ── Stage 1: Run full test suite ───────────────────────────────────────
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Compile all packages
-        run: go build ./...
-
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run unit tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 ./... > unit_test.log 2>&1; then
-            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" unit_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
-            echo "::error title=Failed Unit Tests::$FAILED_TESTS"
-            cat unit_test.log
-            exit 1
-          fi
-
-  vector-tests:
-    name: Vector-enabled Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run vector-enabled tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 -tags cortex_vectors ./... > vector_test.log 2>&1; then
-            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" vector_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
-            echo "::error title=Failed Vector Tests::$FAILED_TESTS"
-            cat vector_test.log
-            exit 1
-          fi
-
-  web-tests:
-    name: Web Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Enforce web client-core coverage
-        run: npm run test:coverage
-
-      - name: Upload web coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-coverage
-          path: web/coverage
-          if-no-files-found: error
-
-      - name: Build production application
-        run: npm run build
-
-  e2e-tests:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: cortex_bootstrap
-          POSTGRES_PASSWORD: cortex_bootstrap
-          POSTGRES_DB: cortex_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      GOFLAGS: "-p=1"
-      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Create non-superuser application and authorization logins
-        run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
-
-      - name: Run e2e tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
-            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" e2e_test.log | head -n 50 | while IFS= read -r line; do
-              echo "::error title=E2E Failure::$line"
-            done
-            cat e2e_test.log
-            exit 1
-          fi
-
-      - name: Run Docker Compose boundary E2E tests
-        run: go test -v -count=1 -tags docker_e2e ./e2e
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.11.4
-
-  race-detector:
-    name: Race Detector
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run race detector on concurrent stores
-        run: go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp
-
-  coverage:
-    name: Global Coverage
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: cortex_bootstrap
-          POSTGRES_PASSWORD: cortex_bootstrap
-          POSTGRES_DB: cortex_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      GOFLAGS: "-p=1"
-      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Create non-superuser application and authorization logins
-        run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
-
-      - name: Enforce whole-project coverage threshold
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! go test -tags postgres_integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./... > coverage.log 2>&1; then
-            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
-              echo "::error title=Coverage Test Failure::$line"
-            done
-            cat coverage.log
-            exit 1
-          fi
-          total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
-          total="${total_line%%%}"
-          awk -v coverage="$total" 'BEGIN {
-            if (coverage < 70.0) {
-              printf "global coverage %.2f%% is below 70.0%%\n", coverage
-              exit 1
-            }
-            printf "global coverage %.2f%% meets 70.0%% threshold\n", coverage
-          }'
-
-      - name: Upload Go coverage evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-coverage
-          path: |
-            coverage.out
-            coverage.log
-          if-no-files-found: warn
-
-  baseline-contracts:
-    name: Offline Retrieval Baseline Contracts
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Validate deterministic baseline contracts
-        run: go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline
-
-  obsidian-path-portability:
-    name: Obsidian Path Portability (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Assert portability test contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f internal/projection/obsidian/writer_test.go
-          grep -q 'TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot' internal/projection/obsidian/writer_test.go
-          grep -q 'TestWindowsDeviceNameNearMissesAreNotReservedOrColliding' internal/projection/obsidian/writer_test.go
-          grep -q 'TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants' internal/projection/obsidian/writer_test.go
-
-      - name: Run focused Obsidian/path portability tests
-        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
-
-  plugin-opencode:
-    name: Plugin Tests (OpenCode)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: plugin/opencode
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: plugin/opencode/package-lock.json
-
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Run plugin contract tests
-        run: npm test
-
-  plugin-claude-code:
-    name: Plugin Tests (Claude Code)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install harness dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bash jq python3 coreutils
-
-      - name: Verify harness toolchain
-        run: |
-          for tool in bash jq python3 timeout; do
-            command -v "$tool" >/dev/null 2>&1 || {
-              echo "missing required harness tool: $tool" >&2
-              exit 127
-            }
-          done
-
-      - name: Run hooks contract harness
-        run: bash plugin/claude-code/scripts/hooks_test.sh
+  gates:
+    name: Shared Gates
+    uses: ./.github/workflows/ci-reusable.yml
+    secrets: inherit
 
   # ── Stage 2: Manual approval gate ──────────────────────────────────────
   approve-release:
     name: Approve Release
     runs-on: ubuntu-latest
-    needs: [build, unit-tests, vector-tests, web-tests, e2e-tests, lint, race-detector, coverage, baseline-contracts, obsidian-path-portability, plugin-opencode, plugin-claude-code]
+    needs: [gates]
     environment: production
     steps:
       - name: Approval confirmed
@@ -376,9 +40,16 @@ jobs:
     name: Publish Release
     runs-on: ubuntu-latest
     needs: approve-release
+    # Job-level permissions replace the workflow defaults, so the inherited
+    # scopes are restated explicitly; id-token: write is the OIDC switch that
+    # lets cosign request a short-lived Fulcio certificate (keyless signing).
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -387,7 +58,7 @@ jobs:
       # This runs upstream of setup-go/GoReleaser so a broken web export aborts
       # the release before any Go artifact (or tag) is produced.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           cache: npm
@@ -405,22 +76,18 @@ jobs:
             exit 1
           fi
 
-      - name: Determine version tag
-        id: tag
+      # Manual dispatch only: the tag for push events already exists, and a tag
+      # pushed with GITHUB_TOKEN never re-triggers workflows, so this run is the
+      # single owner of tag creation in the dispatch path.
+      - name: Create dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            # Auto-bump: latest tag + patch increment
-            latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-            IFS='.' read -r major minor patch <<< "${latest#v}"
-            patch=$((patch + 1))
-            echo "version=v${major}.${minor}.${patch}" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAG" ]; then
+            echo "::error title=Missing tag::workflow_dispatch requires a version tag input."
+            exit 1
           fi
-
-      - name: Create and push tag
-        run: |
-          TAG="${{ steps.tag.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists — skipping tag creation."
           else
@@ -429,12 +96,33 @@ jobs:
           fi
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.5"
 
+      # GoReleaser shells out to syft for the per-archive SBOMs declared in
+      # .goreleaser.yaml; without this install the publish step fails at runtime.
+      - name: Install syft for SBOM generation
+        run: |
+          set -euo pipefail
+          SYFT_VERSION=1.54.0
+          asset="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "${base}/${asset}"
+          curl -fsSLO "${base}/syft_${SYFT_VERSION}_checksums.txt"
+          expected="$(grep "${asset}\$" "syft_${SYFT_VERSION}_checksums.txt" | grep -oE '[0-9a-fA-F]{64}' | head -n 1)"
+          actual="$(sha256sum "${asset}" | awk '{print $1}')"
+          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo "::error title=Checksum mismatch::sha256 verification failed for ${asset}"
+            exit 1
+          fi
+          tar -xzf "${asset}" syft
+          sudo install -m 0755 syft /usr/local/bin/syft
+          syft version
+
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: "~> v2"
           args: release --clean
@@ -442,22 +130,59 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless signing after GoReleaser published the release: each artifact
+      # gets a self-contained Sigstore bundle (certificate + signature + Rekor
+      # entry), so verification needs no stored key material or extra registry.
+      - name: Sign release archives and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/checksums.txt dist/*.tar.gz dist/*.zip)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error title=Nothing to sign::GoReleaser left no archives or checksums.txt in dist/."
+            exit 1
+          fi
+          bundles=()
+          for asset in "${assets[@]}"; do
+            bundle="${asset}.sigstore"
+            cosign sign-blob --yes --bundle "$bundle" "$asset"
+            bundles+=("$bundle")
+          done
+          gh release upload "$TAG" "${bundles[@]}" --clobber
+
+      - name: Verify published signature bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle "dist/checksums.txt.sigstore" \
+            --certificate-identity-regexp "https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "dist/checksums.txt"
+
   docker-publish-server:
     name: Build & Publish Server Docker Image
     runs-on: ubuntu-latest
     needs: [approve-release, goreleaser]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -465,7 +190,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -475,15 +200,14 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and push Server Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-

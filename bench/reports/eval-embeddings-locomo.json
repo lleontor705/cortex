@@ -1,0 +1,94 @@
+{
+  "embedding": {
+    "dimensions": 768,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "nomic-embed-text",
+    "preflight_vector_point_served": true,
+    "provider": "ollama",
+    "query_path": "bench/locomo hybridSearch/adaptiveSearch: FTS5 + vector RRF fusion and the adaptive dense leg when the embedder and vector index are healthy",
+    "vector_index_healthy": true,
+    "verified_at": "2026-10-03T05:03:24Z"
+  },
+  "schema_version": "eval-comparison/v1",
+  "protocol_version": "fixed-judge/ollama/v1",
+  "benchmark": "LOCOMO",
+  "generated_at": "2026-10-03T05:03:24Z",
+  "judge": {
+    "protocol": "fixed-judge/ollama/v1",
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen2.5:7b-instruct",
+    "temperature": 0,
+    "seed": 42,
+    "format": "json"
+  },
+  "score": {
+    "metric": "fixed_judge_accuracy",
+    "after": 0.44,
+    "by_slice": {
+      "multi-hop": 0.243,
+      "open-domain": 0.556,
+      "overall": 0.44,
+      "single-hop": 0.469,
+      "temporal": 0.769
+    },
+    "total_questions": 100,
+    "correct": 44
+  },
+  "baseline_status": "recorded",
+  "tasks": [
+    {
+      "task_id": "rag-t04-longmemeval-pack",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "compared",
+      "before": 0.35,
+      "after": 0.44,
+      "delta": 0.09000000000000002,
+      "min_delta": 0,
+      "passed": true
+    },
+    {
+      "task_id": "rag-t05-skewroute-routing",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "compared",
+      "before": 0.35,
+      "after": 0.44,
+      "delta": 0.09000000000000002,
+      "min_delta": 0,
+      "passed": true
+    },
+    {
+      "task_id": "rag-t11-hipporag2-wiring",
+      "benchmark": "LOCOMO",
+      "slice": "multi-hop",
+      "status": "compared",
+      "before": 0.189,
+      "after": 0.243,
+      "delta": 0.05399999999999999,
+      "min_delta": 0,
+      "passed": true
+    },
+    {
+      "task_id": "rag-t07-vector-scan-modernization",
+      "benchmark": "LOCOMO",
+      "slice": "overall",
+      "status": "compared",
+      "before": 0.35,
+      "after": 0.44,
+      "delta": 0.09000000000000002,
+      "min_delta": 0,
+      "passed": true
+    }
+  ],
+  "gate": {
+    "status": "passed"
+  },
+  "limitations": [
+    "Task rows bind each landed task to the benchmark slice it targets; deltas measure slice movement against the recorded baseline, not per-task causality.",
+    "Deltas attribute to the runner's default query path (retrieval.ExecuteAdaptiveSearch with the prior stage's fusion scores; Config.LegacyPath=true reproduces the pre-adaptive FTS+RRF row), so rag-t05 routing and rag-t11 adaptive wiring changes now move these numbers; changes outside the query path still show zero delta.",
+    "Judge scores measure answer acceptability under the fixed protocol; they are not labelled retrieval relevance evidence.",
+    "rag-t07 vector rows require a -tags cortex_vectors build and a healthy vector index; a degraded index skips vector fusion for the whole run."
+  ]
+}

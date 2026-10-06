@@ -98,7 +98,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if err := migration.ApplyPostgresServerMigrations(ctx, migrationDB); err != nil {
 		return nil, fmt.Errorf("server: apply migration: %w", err)
 	}
-	if cfg.Server.BootstrapDevelopment {
+	if cfg.Server.BootstrapDevelopment || dockerAutoBootstrapRequested() {
 		if err := bootstrapDevelopmentData(ctx, migrationDB, cfg); err != nil {
 			return nil, fmt.Errorf("server: bootstrap development data: %w", err)
 		}
@@ -185,22 +185,19 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		return nil, fmt.Errorf("server: construct storage: %w", err)
 	}
 
-	model := domain.ModelInfo{Name: cfg.Search.EmbeddingModel, Dimension: embeddingDimensions(cfg.Search.EmbeddingProvider)}
+	// Dimension comes only from the live service below (or from the operator's
+	// vector configuration): a static provider-to-dimension mirror desyncs as
+	// soon as a preset ships or a model is overridden (REQ-EMB-002).
+	model := domain.ModelInfo{Name: cfg.Search.EmbeddingModel}
 	emb, err := newServerEmbedding(cfg)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: outbound embedding configuration: %w", err)
 	}
 	if emb != nil {
-		model.Name, model.Dimension = emb.Model(), emb.Dimensions()
+		model.Name = emb.Model()
 	}
-	if model.Dimension == 0 {
-		if cfg.Vector.Pgvector.Dimension > 0 {
-			model.Dimension = cfg.Vector.Pgvector.Dimension
-		} else if cfg.Vector.Qdrant.Dimension > 0 {
-			model.Dimension = cfg.Vector.Qdrant.Dimension
-		}
-	}
+	model.Dimension = liveEmbeddingDimensions(cfg, emb)
 	vectorCfg := cfg.Vector
 	if vectorCfg.Provider == "" {
 		if p := os.Getenv("CORTEX_VECTOR_PROVIDER"); p != "" {
@@ -354,13 +351,9 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	})
 	adminProbes := composedAdminAIProbes{
 		llmStatus:       adminAIStatus{Provider: llm.Provider, Model: llm.Model, Configured: llm.Configured()},
-		embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: emb != nil},
+		embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: model.Name, Configured: emb != nil, Dimensions: model.Dimension},
 		extractor:       extractor,
 		embeddings:      emb,
-	}
-	if emb != nil {
-		adminProbes.embeddingStatus.Model = emb.Model()
-		adminProbes.embeddingStatus.Dimensions = emb.Dimensions()
 	}
 	handler, transport := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, pool.Ping, authenticator.middleware, hybridSearchDependencies{
 		vectors: vec, embeddings: emb, adminAI: adminProbes, agent: agentService, agentAuditor: agentAuditor,
@@ -406,7 +399,13 @@ func bootstrapDevelopmentData(ctx context.Context, db *sql.DB, cfg config.Config
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `GRANT cortex_app TO cortex_test`); err != nil {
+	runtimeRole, err := postgresRole(cfg.Server.Storage.DSN)
+	if err != nil {
+		return fmt.Errorf("application role: %w", err)
+	}
+	// GRANT does not accept bind parameters: the role name is parsed from the
+	// operator-configured runtime DSN and quoted defensively before use.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`GRANT cortex_app TO %s`, quotePostgresIdentifier(runtimeRole))); err != nil {
 		return fmt.Errorf("application role: %w", err)
 	}
 
@@ -425,6 +424,24 @@ func bootstrapDevelopmentData(ctx context.Context, db *sql.DB, cfg config.Config
 		return fmt.Errorf("workspace: %w", err)
 	}
 	return tx.Commit()
+}
+
+// dockerAutoBootstrapRequested reports whether the Docker auto-bootstrap
+// entrypoint enabled fresh-volume provisioning (CORTEX_SERVER_AUTO_BOOTSTRAP=true).
+// The entrypoint generates the tenant identity set and the tenant owner bearer
+// on first start; the server must then provision the prerequisite tenant
+// fixtures the durable bootstrap reconciler binds its grants to. This trigger
+// relaxes no authorization boundary: runtime and migration DSNs stay distinct,
+// loopback allowances stay off, and the service principal is still provisioned
+// exclusively by cortex_bootstrap_service_principal.
+func dockerAutoBootstrapRequested() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("CORTEX_SERVER_AUTO_BOOTSTRAP")), "true")
+}
+
+// quotePostgresIdentifier renders a role name as a safe SQL identifier for
+// statements (like GRANT) that cannot take bind parameters.
+func quotePostgresIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // Reserved identity anchors for the durable bootstrap reconciler. They are
@@ -455,11 +472,19 @@ var bootstrapGrantKinds = []string{"role", "workspace", "scope", "project", "cla
 // owner/wildcard defaults. The workspace grant always uses the canonical
 // uuid spelling so it matches p_workspace_public_id::text exactly.
 func canonicalBootstrapGrants(cfg config.Config) ([]bootstrapGrant, error) {
+	// The Docker auto-bootstrap path provisions the same tenant owner bearer
+	// the synthetic request principal historically represented, so its grants
+	// must carry the canonical wildcard project and classification grants too.
+	// Without them the durable principal verified through
+	// cortex_verify_token_principal loses the project authority the synthetic
+	// contract guarantees (NewSyntheticPrincipal), and every project-scoped
+	// operation is denied with DenyProject.
+	devDefaults := cfg.Server.BootstrapDevelopment || dockerAutoBootstrapRequested()
 	roles := append([]string(nil), cfg.Server.Roles...)
 	scopes := append([]string(nil), cfg.Server.Scopes...)
 	projects := append([]string(nil), cfg.Server.ProjectIDs...)
 	clearance := append([]string(nil), cfg.Server.ClassificationClearance...)
-	if cfg.Server.BootstrapDevelopment {
+	if devDefaults {
 		roles = []string{string(authz.RoleOwner)}
 		scopes = []string{"workspaces:read"}
 		projects = []string{"*"}
@@ -772,15 +797,21 @@ func validateBearerToken(token string) error {
 	return nil
 }
 
-func embeddingDimensions(provider string) int {
-	switch provider {
-	case "openai":
-		return 1536
-	case "ollama":
-		return 768
-	default:
-		return 0
+// liveEmbeddingDimensions resolves the embedding dimension from the only
+// trusted sources: the composed embedder's live service state, then the
+// operator's vector configuration. A static provider-to-dimension mirror
+// desyncs from shipped presets and silently mismatches 4096-dim endpoints
+// (REQ-EMB-002), so no provider-name lookup may answer this question.
+func liveEmbeddingDimensions(cfg config.Config, service embedding.Service) int {
+	if service != nil {
+		if dimensions := service.Dimensions(); dimensions > 0 {
+			return dimensions
+		}
 	}
+	if dimensions := cfg.Vector.Pgvector.Dimension; dimensions > 0 {
+		return dimensions
+	}
+	return cfg.Vector.Qdrant.Dimension
 }
 
 func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
@@ -795,6 +826,11 @@ func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
 			baseURL = "https://api.openai.com/v1"
 		case "ollama":
 			baseURL = "http://localhost:11434"
+		case "openai-compatible":
+			// A generic compatible endpoint has no safe default host; the
+			// operator must name it so destination approval has a real URL
+			// to evaluate instead of a generic empty-destination rejection.
+			return nil, errors.New("embedding: openai-compatible requires an explicit base URL")
 		}
 	}
 	policy := embedding.OutboundPolicy{

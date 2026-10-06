@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain/payload"
 	"github.com/lleontor705/cortex/v2/internal/domain/sandbox"
@@ -13,6 +14,13 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	_ "modernc.org/sqlite"
 )
+
+// The first sandbox `go run` compiles the script from a cold Go build cache,
+// and on CI the race job shares cores with other race-instrumented packages,
+// so the interactive 15s default budget can expire mid-compile. The test
+// requests the sandbox maximum instead: it asserts output semantics, not the
+// interactive timeout policy.
+const sandboxTimeoutSeconds = int(sandbox.MaxTimeout / time.Second)
 
 func newTestSandboxStores(t *testing.T) (*bundle.Stores, *sql.DB) {
 	t.Helper()
@@ -67,8 +75,9 @@ func TestSandboxTools_ExecuteAndExternalize(t *testing.T) {
 		req := mcp.CallToolRequest{}
 		req.Params.Name = "cortex_execute"
 		req.Params.Arguments = map[string]any{
-			"language": lang,
-			"code":     smallScript,
+			"language":        lang,
+			"code":            smallScript,
+			"timeout_seconds": sandboxTimeoutSeconds,
 		}
 
 		handler := handleExecute(stores)
@@ -95,9 +104,10 @@ func TestSandboxTools_ExecuteAndExternalize(t *testing.T) {
 		req := mcp.CallToolRequest{}
 		req.Params.Name = "cortex_execute"
 		req.Params.Arguments = map[string]any{
-			"language": lang,
-			"code":     largeScript,
-			"project":  "test-proj",
+			"language":        lang,
+			"code":            largeScript,
+			"project":         "test-proj",
+			"timeout_seconds": sandboxTimeoutSeconds,
 		}
 
 		handler := handleExecute(stores)

@@ -26,6 +26,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -162,6 +163,10 @@ type FuseOptions struct {
 	LexicalWeight float64
 	// VectorWeight specifies the multiplier for dense vector similarity score (defaults to 1.0 if <= 0).
 	VectorWeight float64
+	// NoteWeight specifies the multiplier for the Chain-of-Note ranked list
+	// (defaults to 1.0 if <= 0). Note relevance never becomes an RRF input —
+	// only the note-ranked list POSITION contributes (REQ-LME-001).
+	NoteWeight float64
 }
 
 // FuseResults combines FTS5 full-text search results with vector similarity
@@ -176,48 +181,100 @@ func FuseResults(ftsResults []*domain.SearchResult, vecResults []*domain.VectorS
 // search results using Reciprocal Rank Fusion (k=60) with support for configurable
 // exponential temporal decay (Time-Decayed RRF) and lexical/vector weighting.
 func FuseResultsWithOptions(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, opts FuseOptions) []*domain.SearchResult {
+	return fuseInputs([]fuseInput{
+		{results: ftsResults, weight: opts.LexicalWeight, mode: fuseOverwrite, seed: true},
+		{results: vectorResultsForFusion(vecResults), weight: opts.VectorWeight, mode: fuseAccumulate, seed: true},
+	}, opts)
+}
+
+// FuseResultsWithNotes fuses FTS5, vector, and Chain-of-Note ranked lists
+// (REQ-LME-001). The note-ranked list is a third accumulate input: its
+// contribution is position-only — a note's Relevance score NEVER becomes an
+// RRF rank input (score-as-rank pin, REQ-RET-002). Temporal decay stays a
+// final multiplicative pass over the accumulated scores.
+func FuseResultsWithNotes(ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, noteRanked []*domain.SearchResult, opts FuseOptions) []*domain.SearchResult {
+	return fuseInputs([]fuseInput{
+		{results: ftsResults, weight: opts.LexicalWeight, mode: fuseOverwrite, seed: true},
+		{results: vectorResultsForFusion(vecResults), weight: opts.VectorWeight, mode: fuseAccumulate, seed: true},
+		{results: noteRanked, weight: opts.NoteWeight, mode: fuseAccumulate, seed: true},
+	}, opts)
+}
+
+// fuseMode selects how a repeated observation ID behaves inside one input list.
+type fuseMode int
+
+const (
+	// fuseOverwrite: a repeated ID replaces the previous entry entirely —
+	// the legacy FTS5 list semantic.
+	fuseOverwrite fuseMode = iota
+	// fuseAccumulate: a repeated ID adds RRF credit to the existing entry,
+	// keeping the first-seen result payload — the legacy vector semantic.
+	fuseAccumulate
+)
+
+// fuseInput is ONE true ranked list fed into RRF. Only list POSITION
+// contributes (score-as-rank pin, REQ-RET-002). seed controls whether this
+// input may introduce new candidate IDs into the pool (all current callers
+// seed; a credit-only input could pass seed=false).
+type fuseInput struct {
+	results []*domain.SearchResult
+	weight  float64
+	mode    fuseMode
+	seed    bool
+}
+
+// vectorResultsForFusion pre-converts vector candidates into SearchResult
+// payloads carrying Observation and Rank=Similarity, mirroring the legacy
+// inline conversion so vector-only IDs keep the same payload shape.
+func vectorResultsForFusion(vecResults []*domain.VectorSearchResult) []*domain.SearchResult {
+	out := make([]*domain.SearchResult, 0, len(vecResults))
+	for _, vr := range vecResults {
+		out = append(out, &domain.SearchResult{
+			Observation: vr.Observation,
+			Rank:        vr.Similarity,
+		})
+	}
+	return out
+}
+
+// fuseInputs is the generic RRF engine shared by FuseResultsWithOptions and
+// FuseResultsWithNotes. It preserves the EXACT legacy semantics: FTS
+// overwrite, vector/note accumulate, weights <= 0 normalize to 1.0, decay is
+// applied AFTER accumulation, sort is score DESC then ID DESC with
+// SliceStable, then truncate to limit.
+func fuseInputs(inputs []fuseInput, opts FuseOptions) []*domain.SearchResult {
 	type scored struct {
 		result *domain.SearchResult
 		score  float64
 	}
 
-	lexWeight := opts.LexicalWeight
-	if lexWeight <= 0 {
-		lexWeight = 1.0
-	}
-	vecWeight := opts.VectorWeight
-	if vecWeight <= 0 {
-		vecWeight = 1.0
-	}
-
 	scoreMap := make(map[int64]*scored)
-
-	// Score FTS5 results: 1-based rank position only.
-	for rank, r := range ftsResults {
-		scoreMap[r.ID] = &scored{
-			result: r,
-			score:  lexWeight / (rrfConstant + float64(rank+1)),
+	for _, input := range inputs {
+		weight := input.weight
+		if weight <= 0 {
+			weight = 1.0
 		}
-	}
-
-	// Add vector result scores: 1-based rank position only. An ID already
-	// present from FTS5 accumulates additive RRF credit.
-	for rank, vr := range vecResults {
-		rrf := vecWeight / (rrfConstant + float64(rank+1))
-		if existing, ok := scoreMap[vr.ID]; ok {
-			existing.score += rrf
-		} else {
-			scoreMap[vr.ID] = &scored{
-				result: &domain.SearchResult{
-					Observation: vr.Observation,
-					Rank:        vr.Similarity,
-				},
-				score: rrf,
+		for rank, r := range input.results {
+			credit := weight / (rrfConstant + float64(rank+1))
+			existing, ok := scoreMap[r.ID]
+			if !ok {
+				if !input.seed {
+					continue
+				}
+				scoreMap[r.ID] = &scored{result: r, score: credit}
+				continue
+			}
+			if input.mode == fuseOverwrite {
+				existing.result = r
+				existing.score = credit
+			} else {
+				existing.score += credit
 			}
 		}
 	}
 
-	// Apply exponential temporal decay if DecayHalfLifeDays > 0.
+	// Apply exponential temporal decay if DecayHalfLifeDays > 0 — a FINAL
+	// multiplicative pass over accumulated scores, never an RRF input.
 	if opts.DecayHalfLifeDays > 0 {
 		refTime := opts.ReferenceTime
 		if refTime.IsZero() {
@@ -424,4 +481,109 @@ func matchesFilters(obs domain.Observation, filters map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// Chain-of-Note reading stage (REQ-LME-001, LongMemEval arXiv:2410.10813)
+//
+// Chain-of-Note reads each candidate passage and writes a short note with a
+// relevance estimate, then re-orders candidates by note relevance. The notes
+// feed a THIRD ranked list into RRF via FuseResultsWithNotes: only the
+// note-ranked POSITION contributes to fusion — note Relevance is never an RRF
+// rank input, and recency/decay remain final multiplicative passes
+// (REQ-RET-002 contract preserved).
+// ---------------------------------------------------------------------------
+
+// answerBearingRelevance is the note relevance at which a note is marked as
+// likely answering the query.
+const answerBearingRelevance = 0.5
+
+// PassageNote is one Chain-of-Note reading note for a candidate passage.
+type PassageNote struct {
+	ObservationID int64
+	Note          string
+	Relevance     float64
+	AnswerBearing bool
+}
+
+// ChainOfNoteStage reads every candidate passage (Title + TopicKey + Content),
+// scores each sentence against the query with the late-interaction MaxSim
+// scorer, and returns the per-passage notes plus the candidates re-ordered by
+// note relevance (Relevance DESC, ID ASC, stable). An empty or untokenizable
+// query returns (nil, candidates) untouched — no notes, no reordering.
+func ChainOfNoteStage(query string, candidates []*domain.SearchResult) ([]PassageNote, []*domain.SearchResult) {
+	if strings.TrimSpace(query) == "" || len(candidates) == 0 {
+		return nil, candidates
+	}
+	queryTokens := TokenizeLateInteraction(query)
+	if len(queryTokens) == 0 {
+		return nil, candidates
+	}
+
+	notes := make([]PassageNote, 0, len(candidates))
+	relevance := make(map[int64]float64, len(candidates))
+	for _, c := range candidates {
+		passage := c.Title + " " + c.TopicKey + " " + c.Content
+		note, score := bestPassageNote(queryTokens, passage)
+		notes = append(notes, PassageNote{
+			ObservationID: c.ID,
+			Note:          note,
+			Relevance:     score,
+			AnswerBearing: score >= answerBearingRelevance,
+		})
+		relevance[c.ID] = score
+	}
+
+	noteRanked := make([]*domain.SearchResult, len(candidates))
+	copy(noteRanked, candidates)
+	sort.SliceStable(noteRanked, func(i, j int) bool {
+		si := relevance[noteRanked[i].ID]
+		sj := relevance[noteRanked[j].ID]
+		if si != sj {
+			return si > sj
+		}
+		return noteRanked[i].ID < noteRanked[j].ID
+	})
+	return notes, noteRanked
+}
+
+// bestPassageNote picks the sentence of the passage that maximizes the
+// weighted MaxSim score against the query. Ties keep the FIRST sentence
+// (strict greater), and an all-zero relevance set falls back to the first
+// sentence so the Note is never empty for non-empty text.
+func bestPassageNote(queryTokens []string, passage string) (string, float64) {
+	sentences := splitNoteSentences(passage)
+	if len(sentences) == 0 {
+		return "", 0
+	}
+	bestText := sentences[0]
+	bestScore := 0.0
+	for i, sentence := range sentences {
+		score := ComputeWeightedMaxSimScore(queryTokens, TokenizeLateInteraction(sentence))
+		if i == 0 || score > bestScore {
+			bestScore = score
+			bestText = sentence
+		}
+	}
+	return strings.TrimSpace(bestText), bestScore
+}
+
+// splitNoteSentences cuts text after sentence enders (. ! ? ; newline) and
+// keeps only non-blank trimmed segments.
+func splitNoteSentences(text string) []string {
+	var sentences []string
+	var builder strings.Builder
+	for _, r := range text {
+		builder.WriteRune(r)
+		if r == '.' || r == '!' || r == '?' || r == ';' || r == '\n' {
+			if seg := strings.TrimSpace(builder.String()); seg != "" {
+				sentences = append(sentences, seg)
+			}
+			builder.Reset()
+		}
+	}
+	if seg := strings.TrimSpace(builder.String()); seg != "" {
+		sentences = append(sentences, seg)
+	}
+	return sentences
 }

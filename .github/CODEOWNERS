@@ -1,0 +1,10 @@
+# Default owner: every path without a later match routes to the repository owner.
+* @lleontor705
+
+# Automation, community health files, and documentation.
+.github/ @lleontor705
+docs/ @lleontor705
+
+# web/, plugin/, and bench/ have no separate maintainers, so they intentionally
+# fall through to the default owner above. GitHub drops CODEOWNERS entries whose
+# owner lacks repository write access, so no finer-grained owners are declared.

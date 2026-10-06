@@ -773,9 +773,10 @@ $rw$`); err != nil {
 		}
 		// Fail closed on any ledger or checksum drift before a single
 		// assertion runs: the complete 100..head line must be ledgered with
-		// matching checksums and the head must be exactly migration 111.
+		// matching checksums and the head must be exactly the embedded
+		// migration head (asserted dynamically, never a hard-coded version).
 		assertServerMigrationHead(t, sqlDB)
-		if err := migrationHeadIs(t, sqlDB, 111); err != nil {
+		if err := migrationHeadIs(t, sqlDB); err != nil {
 			_ = sqlDB.Close()
 			t.Fatalf("rw-proof migration head: %v", err)
 		}
@@ -832,10 +833,13 @@ $rw$`); err != nil {
 	}
 }
 
-// migrationHeadIs proves the embedded server migration line's head version is
-// exactly the expected one, so the runtime proof cannot silently run against
-// a database whose routines were replaced by a later migration.
-func migrationHeadIs(t *testing.T, db *sql.DB, want int) error {
+// migrationHeadIs proves the database's applied server migration head is
+// exactly the embedded server migration line's head, so the runtime proof
+// cannot silently run against a database whose routines were replaced by an
+// older or newer migration set. The expected head is derived dynamically from
+// the embedded migrations registry, so shipping a new migration can never
+// stale-pin this assertion.
+func migrationHeadIs(t *testing.T, db *sql.DB) error {
 	t.Helper()
 	migrations, err := migration.NewPostgresServerMigrations()
 	if err != nil {
@@ -847,8 +851,12 @@ func migrationHeadIs(t *testing.T, db *sql.DB, want int) error {
 			head = m.Version()
 		}
 	}
-	if head != want {
-		return fmt.Errorf("embedded server migration head is %d, want exactly %d", head, want)
+	var appliedHead int
+	if err := db.QueryRow(`SELECT max(version) FROM cortex_server_migrations`).Scan(&appliedHead); err != nil {
+		return fmt.Errorf("read applied server migration head: %w", err)
+	}
+	if appliedHead != head {
+		return fmt.Errorf("applied server migration head is %d, want exactly the embedded head %d", appliedHead, head)
 	}
 	return nil
 }

@@ -177,6 +177,107 @@ func ComputePersonalizedPageRank(
 	return result
 }
 
+// PassageSeed pairs one passage's dense retrieval similarity with its lexical
+// hit score; both fuse into the PPR seed weight for that passage.
+type PassageSeed struct {
+	PassageID    int64
+	DenseScore   float64
+	LexicalScore float64
+}
+
+// HippoRAG2Request bundles one HippoRAG 2 retrieval pass: the heterogeneous
+// knowledge graph, per-passage dense-plus-lexical evidence, and
+// triple/concept match scores. A zero Options selects DefaultPPROptions.
+type HippoRAG2Request struct {
+	Nodes        []GraphAnalyticsNode
+	Edges        []GraphAnalyticsEdge
+	PassageSeeds []PassageSeed
+	ConceptSeeds map[string]float64
+	Options      PPROptions
+}
+
+// HippoRAG2Outcome reports the passage and concept score families from one
+// PPR pass. Applied is false when the graph is empty, too sparse, or misses
+// every seed; callers must then keep the dense-plus-lexical fusion path.
+type HippoRAG2Outcome struct {
+	PassageScores map[int64]float64
+	ConceptScores map[string]float64
+	Applied       bool
+}
+
+// RunHippoRAG2 fuses dense and lexical passage evidence into PPR seed weights
+// and propagates activation across the knowledge graph. It never errors: a
+// sparse or unreachable graph yields Applied=false with empty scores so the
+// caller falls back to dense-plus-lexical fusion.
+func RunHippoRAG2(req HippoRAG2Request) HippoRAG2Outcome {
+	fallback := func() HippoRAG2Outcome {
+		return HippoRAG2Outcome{
+			PassageScores: map[int64]float64{},
+			ConceptScores: map[string]float64{},
+			Applied:       false,
+		}
+	}
+
+	// A graph needs at least two nodes and one edge before propagation can
+	// carry associative evidence beyond teleportation.
+	if len(req.Nodes) < 2 || len(req.Edges) < 1 {
+		return fallback()
+	}
+
+	passageSeeds := fusePassageSeeds(req.PassageSeeds)
+	unifiedSeeds := unifyPPRSeeds(passageSeeds, req.ConceptSeeds)
+	if !seedReachesGraph(req.Nodes, unifiedSeeds) {
+		return fallback()
+	}
+
+	opts := req.Options
+	if opts == (PPROptions{}) {
+		opts = DefaultPPROptions()
+	}
+
+	passageScores, conceptScores := HippoRAG2Propagate(req.Nodes, req.Edges, passageSeeds, req.ConceptSeeds, opts)
+	return HippoRAG2Outcome{
+		PassageScores: passageScores,
+		ConceptScores: conceptScores,
+		Applied:       true,
+	}
+}
+
+// fusePassageSeeds folds dense and lexical evidence into one seed weight per
+// passage: dense similarity contributes exactly as much as lexical confidence,
+// so vector hits seed propagation even without a lexical match.
+func fusePassageSeeds(seeds []PassageSeed) map[int64]float64 {
+	weights := make(map[int64]float64, len(seeds))
+	for _, s := range seeds {
+		dense := math.Max(s.DenseScore, 0)
+		lexical := math.Max(s.LexicalScore, 0)
+		weight := dense + lexical
+		if weight <= 0 {
+			continue
+		}
+		weights[s.PassageID] += weight
+	}
+	return weights
+}
+
+// seedReachesGraph reports whether at least one canonical seed ID aliases a
+// node in the graph; otherwise PPR would degrade to uniform teleportation.
+func seedReachesGraph(nodes []GraphAnalyticsNode, unifiedSeeds map[string]float64) bool {
+	if len(unifiedSeeds) == 0 {
+		return false
+	}
+	present := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		present[n.ID] = struct{}{}
+	}
+	for seedID := range unifiedSeeds {
+		if _, ok := present[seedID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // HippoRAGPropagate applies Personalized PageRank on graph nodes and returns top-K ranked nodes.
 func HippoRAGPropagate(
 	nodes []GraphAnalyticsNode,
@@ -221,18 +322,27 @@ func HippoRAG2Propagate(
 	symbolSeeds map[string]float64,
 	opts PPROptions,
 ) (obsScores map[int64]float64, symScores map[string]float64) {
+	allScores := ComputePersonalizedPageRank(nodes, edges, unifyPPRSeeds(observationSeeds, symbolSeeds), opts)
+	return classifyPPRScores(allScores)
+}
+
+// unifyPPRSeeds registers every observation seed under its obs:, numeric, and
+// passage: aliases, and every symbol seed under its bare and sym: forms, so
+// seed weights reach nodes regardless of which canonical spelling a graph
+// builder used.
+func unifyPPRSeeds(observationSeeds map[int64]float64, symbolSeeds map[string]float64) map[string]float64 {
 	unifiedSeeds := make(map[string]float64, len(observationSeeds)+len(symbolSeeds))
 
-	// Match observation seeds by "obs:<id>" or numeric "<id>"
 	for obsID, score := range observationSeeds {
 		if score <= 0 {
 			continue
 		}
-		unifiedSeeds[fmt.Sprintf("obs:%d", obsID)] = score
-		unifiedSeeds[strconv.FormatInt(obsID, 10)] = score
+		id := strconv.FormatInt(obsID, 10)
+		unifiedSeeds[fmt.Sprintf("obs:%s", id)] = score
+		unifiedSeeds[id] = score
+		unifiedSeeds[passageNodePrefix+id] = score
 	}
 
-	// Match symbol seeds by "sym:<name>" or "<name>"
 	for sym, score := range symbolSeeds {
 		if score <= 0 {
 			continue
@@ -243,14 +353,24 @@ func HippoRAG2Propagate(
 		}
 	}
 
-	allScores := ComputePersonalizedPageRank(nodes, edges, unifiedSeeds, opts)
+	return unifiedSeeds
+}
 
+// classifyPPRScores splits a raw PPR distribution into passage-family scores
+// (obs:, passage:, and bare numeric nodes) and concept/symbol scores.
+func classifyPPRScores(allScores map[string]float64) (obsScores map[int64]float64, symScores map[string]float64) {
 	obsScores = make(map[int64]float64)
 	symScores = make(map[string]float64)
 
 	for nodeID, score := range allScores {
 		if strings.HasPrefix(nodeID, "obs:") {
 			if id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, "obs:"), 10, 64); err == nil {
+				obsScores[id] = score
+				continue
+			}
+		}
+		if strings.HasPrefix(nodeID, passageNodePrefix) {
+			if id, err := strconv.ParseInt(strings.TrimPrefix(nodeID, passageNodePrefix), 10, 64); err == nil {
 				obsScores[id] = score
 				continue
 			}

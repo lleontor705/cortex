@@ -184,8 +184,13 @@ func ReRankWithLateInteraction(query string, results []*domain.SearchResult) []*
 		}
 	}
 
+	// Ties break by descending observation ID — the RRF convention in
+	// fuseInputs — so equal blended scores order deterministically.
 	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].newScore > scored[j].newScore
+		if scored[i].newScore != scored[j].newScore {
+			return scored[i].newScore > scored[j].newScore
+		}
+		return scored[i].result.ID > scored[j].result.ID
 	})
 
 	output := make([]*domain.SearchResult, len(results))

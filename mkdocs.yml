@@ -1,0 +1,108 @@
+site_name: Cortex Documentation
+site_description: Self-hosted autonomous AI memory, project governance, and code knowledge graph for AI coding agents.
+site_url: https://lleontor705.github.io/cortex/
+repo_url: https://github.com/lleontor705/cortex
+repo_name: lleontor705/cortex
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# MkDocs already drops docs/README.md from the site because it collides with
+# index.md as the directory index; declaring the exclusion makes the drop
+# explicit and keeps `mkdocs build --strict` free of the conflict warning.
+exclude_docs: README.md
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: es
+          name: Español
+          build: true
+
+markdown_extensions:
+  - fenced_code
+  - tables
+  - toc:
+      permalink: true
+
+validation:
+  nav:
+    not_found: warn
+    omitted_files: warn
+  links:
+    # The frozen doc pages intentionally reference repository sources outside
+    # docs/ (../internal/..., ../AGENTS.md, ../Makefile, ...). MkDocs cannot
+    # resolve those inside the site, so body-link misses stay informational
+    # while nav resolution remains fatal under --strict.
+    not_found: info
+
+nav:
+  - Home: index.md
+  - Core:
+      - Architecture: ARCHITECTURE.md
+      - Configuration: CONFIGURATION.md
+      - Installation: INSTALLATION.md
+      - Distribution: distribution.md
+      - Graph intelligence: GRAPH_INTELLIGENCE.md
+  - Interfaces:
+      - MCP: MCP.md
+      - HTTP API: HTTP-API.md
+      - Agent setup: AGENT-SETUP.md
+      - Plugins: PLUGINS.md
+      - Embedded Web UI: embedded-web.md
+  - CLI and TUI:
+      - CLI: CLI.md
+      - CLI reference: CLI-REFERENCE.md
+      - TUI guide: TUI-GUIDE.md
+  - Deployment and operations:
+      - Server deployment: SERVER.md
+      - Self-hosted server identity: server-saas.md
+      - Railway deployment: RAILWAY_DEPLOYMENT.md
+      - Project context rollout runbook: project-context-protocol-identity-privilege.md
+      - Operator runbook: operator-runbook.md
+  - Data and evaluation:
+      - Obsidian export: OBSIDIAN_EXPORT.md
+      - Benchmarks: BENCHMARKS.md
+      - Coverage: COVERAGE.md
+      - Capability matrix: capability-matrix.md
+      - Verification matrix: verification-matrix.md
+  - Specifications:
+      - Plugin alignment: specs/plugin-alignment.md
+      - E2E audit remediation: specs/e2e-audit-remediation.md
+  - Contributing:
+      - Translation guide: TRANSLATING.md

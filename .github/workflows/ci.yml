@@ -1,9 +1,8 @@
 name: CI
 
-# NOTE: actions are pinned by major tag (not commit SHA) so dependabot keeps
-# them current. Full SHA pinning is a known follow-up and would require the
-# dependabot configuration to be updated in the same change to avoid silently
-# freezing these mutable references.
+# NOTE: actions are pinned to full commit SHAs with a trailing version comment
+# (ratchet pattern). .github/dependabot.yml keeps them current through the
+# github-actions ecosystem, which bumps each SHA and its version comment together.
 
 on:
   push:
@@ -14,376 +13,116 @@ on:
     branches:
       - main
       - develop
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build
+  gates:
+    name: Shared Gates
+    uses: ./.github/workflows/ci-reusable.yml
+    secrets: inherit
+
+  changelog:
+    name: Changelog
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          go-version: "1.26.5"
+          fetch-depth: 0
 
-      - name: Compile all packages
-        run: go build ./...
-
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run unit tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 ./... > unit_test.log 2>&1; then
-            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" unit_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
-            echo "::error title=Failed Unit Tests::$FAILED_TESTS"
-            cat unit_test.log
-            exit 1
-          fi
-
-  vector-tests:
-    name: Vector-enabled Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run vector-enabled tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 -tags cortex_vectors ./... > vector_test.log 2>&1; then
-            FAILED_TESTS=$(grep -E "^(FAIL|--- FAIL|panic:)" vector_test.log | head -n 10 | tr '\n' ' | ' || echo "unknown")
-            echo "::error title=Failed Vector Tests::$FAILED_TESTS"
-            cat vector_test.log
-            exit 1
-          fi
-
-  web-tests:
-    name: Web Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Enforce web client-core coverage
-        run: npm run test:coverage
-
-      - name: Upload web coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-coverage
-          path: web/coverage
-          if-no-files-found: error
-
-      - name: Build production application
-        run: npm run build
-
-  obsidian-path-portability:
-    name: Obsidian Path Portability (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Assert portability test contract
-        shell: bash
+      - name: Install git-cliff
         run: |
           set -euo pipefail
-          test -f internal/projection/obsidian/writer_test.go
-          grep -q 'TestSafeSlugRejectsWindowsDeviceBasenamesBeforeFirstDot' internal/projection/obsidian/writer_test.go
-          grep -q 'TestWindowsDeviceNameNearMissesAreNotReservedOrColliding' internal/projection/obsidian/writer_test.go
-          grep -q 'TestCanonicalPathKeyCollapsesWindowsDeviceExtensionsAndVariants' internal/projection/obsidian/writer_test.go
+          GIT_CLIFF_VERSION=2.14.2
+          asset="git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "${base}/${asset}"
+          curl -fsSLO "${base}/${asset}.sha512"
+          expected="$(grep -oE '[0-9a-fA-F]{128}' "${asset}.sha512" | head -n 1)"
+          actual="$(sha512sum "${asset}" | awk '{print $1}')"
+          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo "::error title=Checksum mismatch::sha512 verification failed for ${asset}"
+            exit 1
+          fi
+          mkdir -p git-cliff-extract
+          tar -xzf "${asset}" -C git-cliff-extract
+          sudo install -m 0755 "$(find git-cliff-extract -type f -name git-cliff | head -n 1)" /usr/local/bin/git-cliff
+          git-cliff --version
 
-      - name: Run focused Obsidian/path portability tests
-        run: go test -v -count=1 ./internal/projection/obsidian -run 'Test(SafeSlug|WindowsDeviceNameNearMisses|CanonicalPathKey|ExportCanonicalCollision|ExportRejectsCaseInsensitiveCollision)'
-
-  coverage:
-    name: Global Coverage
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: cortex_bootstrap
-          POSTGRES_PASSWORD: cortex_bootstrap
-          POSTGRES_DB: cortex_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      GOFLAGS: "-p=1"
-      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Create non-superuser application and authorization logins
-        run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
-
-      - name: Enforce whole-project coverage threshold
-        shell: bash
+      - name: Refresh versioned sections in CHANGELOG.md
         run: |
           set -euo pipefail
-          cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"
-          if ! go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./... > coverage.log 2>&1; then
-            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
-              echo "::error title=Coverage Test Failure::$line"
-            done
-            cat coverage.log
-            exit 1
+          work="$RUNNER_TEMP/changelog"
+          mkdir -p "$work"
+          git-cliff --output "$work/generated.md"
+          awk '/^## \[[0-9]/{keep=1} keep {
+                 if ($0 ~ /^## \[/ && prev != "") print ""
+                 print
+                 prev=$0
+               }' "$work/generated.md" > "$work/versions.md"
+          test -s "$work/versions.md"
+          awk '/^## \[[0-9]/{exit} {print}' CHANGELOG.md > "$work/maintained.md"
+          tail -n 1 "$work/maintained.md" | grep -q '^$' || echo >> "$work/maintained.md"
+          cat "$work/maintained.md" "$work/versions.md" > CHANGELOG.md
+
+      - name: Commit refreshed changelog
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md already reflects the release history."
+            exit 0
           fi
-          total_line="$(go tool cover -func coverage.out | awk '$1 == "total:" { print $3; exit }')"
-          total="${total_line%%%}"
-          awk -v coverage="$total" 'BEGIN {
-            if (coverage < 80.0) {
-              printf "global coverage %.2f%% is below 80.0%%\n", coverage
-              exit 1
-            }
-            printf "global coverage %.2f%% meets 80.0%% threshold\n", coverage
-          }'
-
-      - name: Upload Go coverage evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-coverage
-          path: |
-            coverage.out
-            coverage.log
-          if-no-files-found: warn
-
-  baseline-contracts:
-    name: Offline Retrieval Baseline Contracts
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Validate deterministic baseline contracts
-        run: go test -v -count=1 ./bench ./bench/common ./bench/cortex ./bench/fixtures/cortex-native ./bench/cortex/cmd/baseline
-
-  e2e-tests:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: cortex_bootstrap
-          POSTGRES_PASSWORD: cortex_bootstrap
-          POSTGRES_DB: cortex_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cortex_bootstrap -d cortex_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      GOFLAGS: "-p=1"
-      CORTEX_TEST_POSTGRES_DSN: postgres://cortex_test:cortex_test@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PG_ADMIN_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-      CORTEX_SPIKE_PGBOUNCER_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Create non-superuser application and authorization logins
-        run: |
-          PGPASSWORD=cortex_bootstrap psql "postgres://cortex_bootstrap@localhost:5432/cortex_test" -v ON_ERROR_STOP=1 -f scripts/postgres/bootstrap-authz.sql
-
-      - name: Run e2e tests
-        shell: bash
-        run: |
-          set -o pipefail
-          if ! go test -v -count=1 -tags "integration postgres_integration" ./... > e2e_test.log 2>&1; then
-            grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" e2e_test.log | head -n 50 | while IFS= read -r line; do
-              echo "::error title=E2E Failure::$line"
-            done
-            cat e2e_test.log
-            exit 1
-          fi
-
-      - name: Run Docker Compose boundary E2E tests
-        run: go test -v -count=1 -tags docker_e2e ./e2e
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.11.4
-
-  race-detector:
-    name: Race Detector
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-
-      - name: Run race detector on concurrent stores
-        run: go test -race -count=1 ./internal/store/search ./internal/store/bundle ./internal/mcp
-
-  plugin-opencode:
-    name: Plugin Tests (OpenCode)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: plugin/opencode
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: plugin/opencode/package-lock.json
-
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Run plugin contract tests
-        run: npm test
-
-  plugin-claude-code:
-    name: Plugin Tests (Claude Code)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install harness dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bash jq python3 coreutils
-
-      - name: Verify harness toolchain
-        run: |
-          for tool in bash jq python3 timeout; do
-            command -v "$tool" >/dev/null 2>&1 || {
-              echo "missing required harness tool: $tool" >&2
-              exit 127
-            }
-          done
-
-      - name: Run hooks contract harness
-        run: bash plugin/claude-code/scripts/hooks_test.sh
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore(changelog): refresh release history [skip ci]"
+          git push origin HEAD
 
   docker-compose-smoke-test:
     name: Docker Compose Smoke Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: docs i18n status
+        continue-on-error: true
+        run: bash scripts/check-doc-i18n.sh
 
       - name: Start stack with Docker Compose
+        timeout-minutes: 15
         run: docker compose up --build -d
 
       - name: Wait for services to be healthy
-        timeout-minutes: 3
+        timeout-minutes: 10
         run: |
-          echo "Waiting for services to become healthy..."
-          for i in $(seq 1 30); do
-            SERVER_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-server-1 2>/dev/null || echo "starting")
-            UI_STATUS=$(curl -fsS -o /dev/null http://localhost:7438/ 2>/dev/null && echo "healthy" || echo "starting")
-            DB_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-postgres-1 2>/dev/null || echo "starting")
-            echo "Status [db=$DB_STATUS, server=$SERVER_STATUS, ui=$UI_STATUS]"
+          ATTEMPTS=60
+          DELAY=5
+          echo "Waiting up to $((ATTEMPTS * DELAY))s for the stack to become healthy..."
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            SERVER_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-cortex-server-1 2>/dev/null || echo "missing")
+            UI_STATUS=$(curl -fsS -o /dev/null http://localhost:7438/ 2>/dev/null && echo "healthy" || echo "unreachable")
+            DB_STATUS=$(docker inspect --format='{{.State.Health.Status}}' cortex-postgres-1 2>/dev/null || echo "missing")
+            echo "[attempt $attempt/$ATTEMPTS] db=$DB_STATUS server=$SERVER_STATUS ui=$UI_STATUS"
             if [ "$SERVER_STATUS" = "healthy" ] && [ "$UI_STATUS" = "healthy" ] && [ "$DB_STATUS" = "healthy" ]; then
-              echo "All services are healthy!"
-              break
+              echo "All services healthy after ~$(( (attempt - 1) * DELAY ))s of polling."
+              exit 0
             fi
-            sleep 3
+            sleep "$DELAY"
           done
+          echo "::error::Stack did not become healthy within $((ATTEMPTS * DELAY))s of polling."
+          echo "docker compose ps -a:"
+          docker compose ps -a
+          echo "docker compose logs (last 100 lines per service):"
+          docker compose logs --no-color --tail 100
+          exit 1
 
       - name: Verify health endpoints
         run: |
@@ -399,17 +138,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: tools/e2e-web/package-lock.json
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.5"
 
@@ -430,7 +169,7 @@ jobs:
 
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-e2e-report
           path: tools/e2e-web/playwright-report
@@ -438,8 +177,17 @@ jobs:
 
       - name: Upload Playwright traces
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-e2e-traces
           path: tools/e2e-web/test-results
           if-no-files-found: warn
+
+  govulncheck:
+    name: Govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
+        with:
+          go-version-file: go.mod

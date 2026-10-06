@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -172,7 +173,82 @@ func NewAuthorizedStore(pool *pgxpool.Pool, ac authz.AuthorizedContext) (*Author
 	s.grantDigest = ac.GrantDigest
 	s.grantVersion = ac.Principal.GrantVersion
 	s.authorizer = authz.NewPolicy()
+	s.resolveDurableGrants()
 	return &AuthorizedStore{store: s, caps: newCapabilities(s)}, nil
+}
+
+// grantResolutionTimeout bounds the constructor-opened durable grant read: a
+// constructor must never hang on an unreachable database, and a principal
+// that cannot resolve simply keeps its supplied (denying) shape.
+const grantResolutionTimeout = 10 * time.Second
+
+// resolveDurableGrants fills a principal that carries no grant shape at all
+// from the durable principal_grants rows. The application role holds no
+// direct read on principal_grants (migration 106), so the only path is the
+// owner/admin-gated SECURITY DEFINER cortex_read_actor_grants, which requires
+// a caller bound earlier in the SAME transaction: resolution opens its own
+// transaction and runs the mediated bind first.
+//
+// The read is deliberately best-effort: any failure (unreachable pool, a
+// caller that is not a durable owner/admin, a missing actor) leaves the
+// principal exactly as supplied, so authorization keeps failing closed. An
+// ungranted principal never gains a grant it does not durably hold, and
+// already-shaped principals — token-verified, synthetic, or test-pinned —
+// are never re-resolved, so their explicit grants cannot be widened.
+func (s *Store) resolveDurableGrants() {
+	if len(s.principal.Roles) > 0 || len(s.principal.ProjectIDs) > 0 || len(s.principal.Scopes) > 0 || len(s.principal.ClassificationClearance) > 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), grantResolutionTimeout)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.bind(ctx, tx); err != nil {
+		return
+	}
+	rows, err := tx.Query(ctx, `SELECT grant_type,grant_value FROM public.cortex_read_actor_grants($1::uuid)`, s.principal.Subject)
+	if err != nil {
+		return
+	}
+	grants := map[string][]string{}
+	for rows.Next() {
+		var kind, value string
+		if err := rows.Scan(&kind, &value); err != nil {
+			rows.Close()
+			return
+		}
+		grants[kind] = append(grants[kind], value)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return
+	}
+	s.applyDurableGrants(grants)
+}
+
+// applyDurableGrants installs the durable grant rows on the principal. The
+// read only returns for a bound owner/admin caller, and an owner/admin
+// without explicit durable project grants carries the canonical wildcard
+// project shape (NewSyntheticPrincipal / the token-verify path), so project
+// authority stays exactly what the rows grant: explicit project rows win,
+// otherwise the owner/admin wildcard applies, otherwise projects stay empty
+// and project operations keep denying with project_not_granted.
+func (s *Store) applyDurableGrants(grants map[string][]string) {
+	s.principal.Roles = grants["role"]
+	s.principal.Scopes = grants["scope"]
+	s.principal.ClassificationClearance = grants["classification"]
+	if len(s.principal.WorkspaceIDs) == 0 {
+		s.principal.WorkspaceIDs = grants["workspace"]
+	}
+	projects := grants["project"]
+	if len(projects) == 0 && s.isAdmin() {
+		projects = []string{domain.SyntheticPrincipalGrantWildcard}
+	}
+	s.principal.ProjectIDs = projects
 }
 
 func (s *Store) Backend() string { return "postgres" }

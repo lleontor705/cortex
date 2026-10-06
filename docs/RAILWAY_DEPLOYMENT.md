@@ -55,7 +55,7 @@ Railway injects its own `PORT` variable, which Cortex does not read. Set `CORTEX
 | `CORTEX_SERVER_TENANT_ID` | Deployment constant: UUID of the single tenant | `00000000-0000-0000-0000-000000000001` |
 | `CORTEX_SERVER_WORKSPACE_ID` | Deployment constant: UUID of the default workspace | `00000000-0000-0000-0000-000000000002` |
 | `CORTEX_SERVER_PRINCIPAL_SUBJECT` | Deployment constant: subject of the bearer's synthetic principal | `00000000-0000-0000-0000-000000000003` |
-| `CORTEX_EMBEDDING_PROVIDER` | Embeddings provider | `ollama` / `openai` / `gemini` / `none` |
+| `CORTEX_EMBEDDING_PROVIDER` | Embeddings provider | `ollama` / `openai` / `openai-compatible` / `none` |
 | `CORTEX_EMBEDDING_MODEL` | Embeddings model | `qwen3-embedding:4b` / `text-embedding-3-small` |
 | `CORTEX_EMBEDDING_BASE_URL` | Embeddings provider URL | `http://ollama.railway.internal:11434` |
 | `CORTEX_SERVER_RAILWAY_INTERNAL_EMBEDDING_HOST` | Authorized private hostname for internal HTTP | `ollama.railway.internal` |

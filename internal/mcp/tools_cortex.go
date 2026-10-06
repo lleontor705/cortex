@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/config"
@@ -657,6 +658,107 @@ func handleArchive(stores *Stores) server.ToolHandlerFunc {
 	}
 }
 
+var (
+	rerankGateMu    sync.Mutex
+	rerankGateValue retrieval.Reranker
+	rerankGateReady bool
+)
+
+// resetRerankGate clears the process-wide rerank resolution so tests can
+// resolve search.rerank_provider against their own environment.
+func resetRerankGate() {
+	rerankGateMu.Lock()
+	defer rerankGateMu.Unlock()
+	rerankGateValue = nil
+	rerankGateReady = false
+}
+
+// configuredReranker resolves search.rerank_provider once per process. The
+// default "none" preset constructs no rerank machinery at all, and caching
+// keeps the disabled hot path free of per-query config reads (REQ-RNK-002).
+func configuredReranker() retrieval.Reranker {
+	rerankGateMu.Lock()
+	defer rerankGateMu.Unlock()
+	if !rerankGateReady {
+		rerankGateValue = resolveConfiguredReranker()
+		rerankGateReady = true
+	}
+	return rerankGateValue
+}
+
+// resolveConfiguredReranker builds the reranker named by config. The local
+// factory returns (nil, nil) for the disabled default and refuses the
+// openai-compatible preset fail-closed, so a reranker that cannot be
+// constructed locally degrades to "rerank off" with a warning instead of
+// failing the query (REQ-RNK-002).
+func resolveConfiguredReranker() retrieval.Reranker {
+	cfg, err := config.Load("")
+	if err != nil || cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+	reranker, err := retrieval.NewReranker(retrieval.RerankConfig{
+		Provider: cfg.Search.RerankProvider,
+		Model:    cfg.Search.RerankModel,
+		BaseURL:  cfg.Search.RerankBaseURL,
+	})
+	if err != nil {
+		log.Printf("warning: rerank disabled: %v", err)
+		return nil
+	}
+	return reranker
+}
+
+// fuseWithConfiguredRerank fuses lexical and vector candidates and applies the
+// configured reranker as a post-fusion PRE-limit step (REQ-RNK-002): when a
+// reranker is configured the whole fused candidate set is ordered first and
+// only then truncated to opts.Limit. With rerank disabled it is exactly the
+// plain fusion call, so default output stays byte-identical.
+func fuseWithConfiguredRerank(query string, ftsResults []*domain.SearchResult, vecResults []*domain.VectorSearchResult, opts retrieval.FuseOptions) []*domain.SearchResult {
+	reranker := configuredReranker()
+	if reranker == nil {
+		return retrieval.FuseResultsWithOptions(ftsResults, vecResults, opts)
+	}
+	unlimited := opts
+	unlimited.Limit = 0
+	fused := retrieval.FuseResultsWithOptions(ftsResults, vecResults, unlimited)
+	ordered, err := reranker.Rerank(query, fused)
+	if err != nil {
+		log.Printf("warning: rerank failed; keeping fusion order: %v", err)
+		return truncateFused(fused, opts.Limit)
+	}
+	if !sameResultSet(ordered, fused) {
+		log.Printf("warning: rerank changed the candidate set; keeping fusion order")
+		return truncateFused(fused, opts.Limit)
+	}
+	return truncateFused(ordered, opts.Limit)
+}
+
+func truncateFused(results []*domain.SearchResult, limit int) []*domain.SearchResult {
+	if limit <= 0 || len(results) <= limit {
+		return results
+	}
+	return results[:limit]
+}
+
+// sameResultSet enforces the Reranker contract (same pointers, same
+// multiplicity) so a misbehaving provider can never silently drop a candidate.
+func sameResultSet(got, want []*domain.SearchResult) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[*domain.SearchResult]int, len(want))
+	for _, r := range want {
+		seen[r]++
+	}
+	for _, r := range got {
+		if seen[r] == 0 {
+			return false
+		}
+		seen[r]--
+	}
+	return true
+}
+
 func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query := stringArg(req, "query")
@@ -726,7 +828,7 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 				}
 				vecResults, vecErr := retrieval.SearchVectors(ctx, stores.Vectors, vecQuery, stores.Observations)
 				if vecErr == nil && len(vecResults) > 0 {
-					ftsResults = retrieval.FuseResultsWithOptions(ftsResults, vecResults, retrieval.FuseOptions{
+					ftsResults = fuseWithConfiguredRerank(query, ftsResults, vecResults, retrieval.FuseOptions{
 						Limit:         limit,
 						LexicalWeight: lexicalWeight,
 						VectorWeight:  vectorWeight,
@@ -1593,7 +1695,8 @@ func handleGetStatus(stores *Stores) server.ToolHandlerFunc {
 				"symbol_search",
 				"agent_context",
 			},
-			"profiles": []string{"agent", "admin", "temporal"},
+			"vector_index": VectorIndexState(ctx, stores.Vectors),
+			"profiles":     SupportedProfiles(),
 		}
 		b, err := json.MarshalIndent(status, "", "  ")
 		if err != nil {

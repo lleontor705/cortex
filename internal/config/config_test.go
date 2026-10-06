@@ -1525,14 +1525,14 @@ func TestGetSetProperty_StandardizedAliases(t *testing.T) {
 	}
 
 	// 2. Setting embedding.provider sets search.embedding_provider independently
-	if err := cfg.SetProperty("embedding.provider", "cohere"); err != nil {
+	if err := cfg.SetProperty("embedding.provider", "openai"); err != nil {
 		t.Fatalf("SetProperty(embedding.provider) error: %v", err)
 	}
-	if v, err := cfg.GetProperty("embedding.provider"); err != nil || v != "cohere" {
-		t.Errorf("GetProperty(embedding.provider) = %q, want cohere", v)
+	if v, err := cfg.GetProperty("embedding.provider"); err != nil || v != "openai" {
+		t.Errorf("GetProperty(embedding.provider) = %q, want openai", v)
 	}
-	if v, err := cfg.GetProperty("search.embedding_provider"); err != nil || v != "cohere" {
-		t.Errorf("GetProperty(search.embedding_provider) = %q, want cohere", v)
+	if v, err := cfg.GetProperty("search.embedding_provider"); err != nil || v != "openai" {
+		t.Errorf("GetProperty(search.embedding_provider) = %q, want openai", v)
 	}
 	// LLM provider remains "ollama"
 	if v, err := cfg.GetProperty("llm.provider"); err != nil || v != "ollama" {
@@ -1559,6 +1559,104 @@ func TestGetSetProperty_StandardizedAliases(t *testing.T) {
 	}
 	if v, err := cfg.GetProperty("embedding.model"); err != nil || v != "nomic-embed-text" {
 		t.Errorf("GetProperty(embedding.model) = %q, want nomic-embed-text", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// openai-compatible embedding preset resolution (REQ-CFG-001)
+// ---------------------------------------------------------------------------
+
+func writeEmbeddingConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cortex.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func TestLoadResolvesOpenAICompatibleEmbeddingPreset(t *testing.T) {
+	clearEnvVars(t)
+	t.Setenv("CORTEX_EMBEDDING_API_KEY", "env-only-key")
+
+	path := writeEmbeddingConfig(t, "search:\n  embedding_provider: openai-compatible\n  embedding_model: qwen3-embedding-8B\n  embedding_base_url: https://embed.example.com/v1\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Search.EmbeddingProvider != "openai-compatible" {
+		t.Errorf("embedding_provider = %q, want openai-compatible", cfg.Search.EmbeddingProvider)
+	}
+	if cfg.Search.EmbeddingModel != "qwen3-embedding-8B" {
+		t.Errorf("embedding_model = %q, want qwen3-embedding-8B", cfg.Search.EmbeddingModel)
+	}
+	if cfg.Search.EmbeddingBaseURL != "https://embed.example.com/v1" {
+		t.Errorf("embedding_base_url = %q", cfg.Search.EmbeddingBaseURL)
+	}
+	if got := ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider); got != "env-only-key" {
+		t.Errorf("ResolveEmbeddingAPIKey = %q, want env-only-key", got)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), "env-only-key") {
+		t.Fatal("API key material serialized into the config file")
+	}
+}
+
+func TestLoadResolvesOpenAICompatibleFromEnvironment(t *testing.T) {
+	clearEnvVars(t)
+	t.Setenv("CORTEX_EMBEDDING_PROVIDER", "openai-compatible")
+	t.Setenv("CORTEX_EMBEDDING_MODEL", "qwen3-embedding-8B")
+	t.Setenv("CORTEX_EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+
+	path := writeEmbeddingConfig(t, "database:\n  in_memory: true\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Search.EmbeddingProvider != "openai-compatible" || cfg.Search.EmbeddingModel != "qwen3-embedding-8B" || cfg.Search.EmbeddingBaseURL != "https://embed.example.com/v1" {
+		t.Fatalf("env resolution = provider %q model %q base_url %q", cfg.Search.EmbeddingProvider, cfg.Search.EmbeddingModel, cfg.Search.EmbeddingBaseURL)
+	}
+}
+
+func TestLoadRejectsUnknownEmbeddingProvider(t *testing.T) {
+	clearEnvVars(t)
+	path := writeEmbeddingConfig(t, "search:\n  embedding_provider: cohere\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "embedding_provider") {
+		t.Fatalf("unknown embedding provider error = %v, want embedding_provider rejection", err)
+	}
+}
+
+// TestLoadWithoutEmbeddingConfigPinsBaseline is the no-config regression pin:
+// with no search.embedding_* keys and no CORTEX_EMBEDDING_* environment, the
+// resolved embedding configuration is byte-identical to the pre-preset
+// baseline (empty provider, model, and base URL -> local composition stays
+// embedding-disabled exactly as before).
+func TestLoadWithoutEmbeddingConfigPinsBaseline(t *testing.T) {
+	clearEnvVars(t)
+	t.Setenv("CORTEX_EMBEDDING_PROVIDER", "")
+	t.Setenv("CORTEX_EMBEDDING_MODEL", "")
+	t.Setenv("CORTEX_EMBEDDING_BASE_URL", "")
+
+	path := writeEmbeddingConfig(t, "database:\n  in_memory: true\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Search.EmbeddingProvider != "" {
+		t.Errorf("embedding_provider = %q, want empty", cfg.Search.EmbeddingProvider)
+	}
+	if cfg.Search.EmbeddingModel != "" {
+		t.Errorf("embedding_model = %q, want empty", cfg.Search.EmbeddingModel)
+	}
+	if cfg.Search.EmbeddingBaseURL != "" {
+		t.Errorf("embedding_base_url = %q, want empty", cfg.Search.EmbeddingBaseURL)
+	}
+	if defaults.Search.EmbeddingProvider != "" {
+		t.Errorf("default embedding_provider = %q, want empty", defaults.Search.EmbeddingProvider)
 	}
 }
 

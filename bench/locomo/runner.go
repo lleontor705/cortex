@@ -111,10 +111,36 @@ type Config struct {
 	JudgeCfg     *common.JudgeConfig
 	GraphBoost   bool
 	EmbeddingCfg *embedding.Config // If set, enables vector search
+
+	// Baseline records before-scores keyed by common.BaselineKey for the
+	// per-task comparison; nil publishes after-scores with an unevaluated gate.
+	Baseline common.EvalBaseline
+
+	// MinDelta is the per-task regression gate applied to every comparison
+	// row. Zero means a task may never fall below its recorded baseline.
+	MinDelta float64
+
+	// ReportPath writes the published evaluation JSON when non-empty.
+	ReportPath string
+
+	// LegacyPath keeps the original FTS + RRF fusion query instead of routing
+	// through retrieval.ExecuteAdaptiveSearch, so a before/after row can be
+	// reproduced with one flag flip and stays attributable to the adaptive
+	// wiring alone.
+	LegacyPath bool
 }
 
-// Run executes the LOCOMO benchmark against Cortex.
+// Run executes the LOCOMO benchmark against Cortex. When a judge is
+// configured the endpoint is probed first and any judge failure aborts the
+// run with a common.BlockedError: scores are never fabricated by falling back
+// to token overlap behind the judge's back.
 func Run(cfg Config) (*common.BenchmarkResult, error) {
+	if cfg.JudgeCfg != nil {
+		if err := common.RequireJudge(context.Background(), cfg.JudgeCfg); err != nil {
+			return nil, err
+		}
+	}
+
 	data, err := os.ReadFile(cfg.DataPath)
 	if err != nil {
 		return nil, fmt.Errorf("locomo: read dataset: %w", err)
@@ -149,7 +175,10 @@ func Run(cfg Config) (*common.BenchmarkResult, error) {
 				break
 			}
 
-			result := evaluateQuestion(ctx, stores, conv.SampleID, qa, cfg)
+			result, err := evaluateQuestion(ctx, stores, conv.SampleID, qa, cfg)
+			if err != nil {
+				return nil, err
+			}
 			results = append(results, result)
 		}
 	}
@@ -157,6 +186,39 @@ func Run(cfg Config) (*common.BenchmarkResult, error) {
 	agg := common.Aggregate(results)
 	agg.Benchmark = "LOCOMO"
 	return &agg, nil
+}
+
+// RunEval executes the published fixed-judge protocol: it fails BLOCKED when
+// the judge endpoint is unreachable, scores every question with the fixed
+// judge, publishes the per-task before/after comparison (including the
+// vector-scan row when embeddings are enabled), and returns a
+// *common.RegressionError when a task delta falls below Config.MinDelta.
+// Callers map the outcome to a process exit with common.EvalExitCode.
+func RunEval(cfg Config) (*common.EvalReport, error) {
+	if cfg.JudgeCfg == nil {
+		cfg.JudgeCfg = common.DefaultJudgeConfig()
+	}
+	result, err := Run(cfg)
+	if err != nil {
+		return nil, err
+	}
+	report, err := common.BuildEvalReport(
+		common.EvalBenchmarkLOCOMO,
+		*result,
+		cfg.EmbeddingCfg != nil,
+		common.DescribeJudgeProtocol(cfg.JudgeCfg),
+		cfg.Baseline,
+		cfg.MinDelta,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ReportPath != "" {
+		if err := common.PublishEvalReport(cfg.ReportPath, report); err != nil {
+			return nil, fmt.Errorf("locomo: %w", err)
+		}
+	}
+	return &report, report.RegressionError()
 }
 
 func ingestConversation(ctx context.Context, stores *common.BenchStores, conv Conversation) error {
@@ -204,9 +266,10 @@ func ingestConversation(ctx context.Context, stores *common.BenchStores, conv Co
 	return nil
 }
 
-func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project string, qa QA, cfg Config) common.QuestionResult {
-	// Use hybrid search (FTS5 + vector) when embeddings are available
-	searchResults, err := hybridSearch(ctx, stores, qa.Question, project, cfg)
+func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project string, qa QA, cfg Config) (common.QuestionResult, error) {
+	// Hybrid search: FTS5 + optional vector RRF fusion, either directly
+	// (LegacyPath) or as the prior stage feeding ExecuteAdaptiveSearch.
+	searchResults, err := queryPath(ctx, stores, qa.Question, project, cfg)
 
 	var got string
 	if err == nil {
@@ -226,9 +289,10 @@ func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project s
 	correct := f1 >= 0.3
 	if cfg.JudgeCfg != nil {
 		judgeScore, judgeErr := common.JudgeAnswer(cfg.JudgeCfg, qa.Question, answer, got)
-		if judgeErr == nil && judgeScore >= 0 {
-			correct = judgeScore > 0.5
+		if judgeErr != nil {
+			return common.QuestionResult{}, common.NewJudgeBlockedError(cfg.JudgeCfg.Endpoint, cfg.JudgeCfg.Model, judgeErr)
 		}
+		correct = judgeScore > 0.5
 	}
 
 	catName := categoryNames[qa.Category]
@@ -244,7 +308,7 @@ func evaluateQuestion(ctx context.Context, stores *common.BenchStores, project s
 		Got:      truncate(got, 500),
 		Score:    f1,
 		Correct:  correct,
-	}
+	}, nil
 }
 
 // hybridSearch performs FTS5 + optional vector search with RRF fusion.
@@ -282,6 +346,70 @@ func hybridSearch(ctx context.Context, stores *common.BenchStores, query, projec
 	}
 
 	return ftsResults, nil
+}
+
+// queryPath dispatches to the legacy FTS + RRF fusion pipeline or to the
+// adaptive pipeline, keeping both reachable so before/after deltas stay
+// attributable to the routing change alone.
+func queryPath(ctx context.Context, stores *common.BenchStores, query, project string, cfg Config) ([]*domain.SearchResult, error) {
+	if cfg.LegacyPath {
+		return hybridSearch(ctx, stores, query, project, cfg)
+	}
+	return adaptiveSearch(ctx, stores, query, project, cfg)
+}
+
+// adaptiveSearch runs the legacy fusion as a prior retrieval stage, feeds its
+// fusion output scores into AdaptiveSearchOptions.FusionScores so SkewRoute
+// routing (REQ-ROUTE-001) classifies the query, and returns the tier-selected
+// results. The query embedding is supplied only when embeddings are enabled;
+// without it the multi-hop tier degrades to lexical seeding instead of
+// failing, and an absent graph falls back to the legacy fusion path.
+func adaptiveSearch(ctx context.Context, stores *common.BenchStores, query, project string, cfg Config) ([]*domain.SearchResult, error) {
+	prior, err := hybridSearch(ctx, stores, query, project, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	opts := retrieval.AdaptiveSearchOptions{
+		Mode:         "auto",
+		Project:      project,
+		Limit:        10,
+		FusionScores: fusionScores(prior),
+	}
+
+	var vectorSearch func(context.Context, domain.VectorQuery) ([]*domain.VectorSearchResult, error)
+	if stores.Embedder != nil && domain.IsVectorIndexHealthy(ctx, stores.App.Stores.Vectors) {
+		opts.QueryVector = stores.EmbedQuery(ctx, query)
+		vectorSearch = func(ctx context.Context, vq domain.VectorQuery) ([]*domain.VectorSearchResult, error) {
+			return retrieval.SearchVectors(ctx, stores.App.Stores.Vectors, vq, stores.App.Stores.Observations)
+		}
+	}
+
+	adaptive, err := retrieval.ExecuteAdaptiveSearch(ctx, query, opts, lexicalSearch(stores, cfg), vectorSearch)
+	if err != nil {
+		return nil, err
+	}
+	return adaptive.Results, nil
+}
+
+// lexicalSearch adapts the FTS store to the adaptive engine's lexical leg and
+// re-applies GraphBoost, an option the engine's SearchOptions do not model.
+func lexicalSearch(stores *common.BenchStores, cfg Config) func(context.Context, domain.SearchOptions) ([]*domain.SearchResult, error) {
+	return func(ctx context.Context, opts domain.SearchOptions) ([]*domain.SearchResult, error) {
+		opts.GraphExpand = cfg.GraphBoost
+		return stores.App.Stores.Search.Search(ctx, opts.Query, opts)
+	}
+}
+
+// fusionScores reads the prior stage's fused relevance scores (Rank on the
+// fusion output) as the distribution ComputeFusionFeatures routes on; fewer
+// than two scores degrades to the heuristic classifier, never to an error.
+func fusionScores(results []*domain.SearchResult) []float64 {
+	scores := make([]float64, 0, len(results))
+	for _, r := range results {
+		scores = append(scores, r.Rank)
+	}
+	return scores
 }
 
 // parseObservations extracts observation texts from the raw JSON structure.

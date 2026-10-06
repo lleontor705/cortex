@@ -1,0 +1,484 @@
+{
+  "schema_version": "engine-ablation-audit/v1",
+  "generated_at": "2026-10-03T07:13:09Z",
+  "benchmark": "LOCOMO",
+  "publish_status": "staged_outside_repo_pending_authority_recovery",
+  "target_path": "bench/reports/engine-ablation-audit.json",
+  "staged_path": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/evalrun-ablate/staged/engine-ablation-audit.json",
+  "protocol": {
+    "judge": {
+      "protocol": "fixed-judge/ollama/v1",
+      "endpoint": "http://127.0.0.1:11434",
+      "model": "qwen2.5:7b-instruct",
+      "temperature": 0,
+      "seed": 42,
+      "format": "json"
+    },
+    "limit": 100,
+    "embedding": {
+      "dimensions": 768,
+      "endpoint": "http://127.0.0.1:11434",
+      "model": "nomic-embed-text",
+      "preflight_vector_point_served": true,
+      "provider": "ollama",
+      "vector_index_healthy": true
+    },
+    "dataset": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/locomo10.json",
+    "harness": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/evalrun-ablate (module github.com/lleontor705/cortex/v2/evalrun-ablate, replace -> repository root, built with -tags cortex_vectors; lives outside the repository, no repo source modified)",
+    "run_schedule": "control run standalone; ablation runs executed in 3 concurrent chains (up to 3 judge streams); every run made exactly 100 judge calls",
+    "judge_timeout_note": "harness widened the judge HTTP timeout to 120s (resilience only; prompt, temperature, seed and format unchanged)"
+  },
+  "control": {
+    "published_report": "bench/reports/eval-embeddings-locomo.json",
+    "published_overall": 0.44,
+    "published_by_slice": {
+      "multi-hop": 0.243,
+      "open-domain": 0.556,
+      "single-hop": 0.469,
+      "temporal": 0.769
+    },
+    "control_run": {
+      "path": "runs/full2.json",
+      "overall": 0.44,
+      "correct": 44,
+      "total": 100,
+      "by_slice": {
+        "multi-hop": 0.243,
+        "open-domain": 0.556,
+        "single-hop": 0.469,
+        "temporal": 0.769
+      },
+      "elapsed_secs": 322.579637792
+    },
+    "parity_checks": [
+      "Wrapper control reproduces the published 0.44 overall and every slice accuracy exactly (44/100).",
+      "Independent retrieval-only dump of the OFFICIAL bench/locomo query path vs wrapper: 0 of 100 top-5 contexts differ (judge disabled on both sides), so the wrapper is byte-faithful and judge noise is excluded as a divergence source.",
+      "Re-run of the official harness (evalrun-embed) during this audit reproduced 0.44 with identical slices.",
+      "no_dense run reproduces bench/reports/first-eval-locomo.json (embeddings off) exactly: 0.35 overall with multi-hop 0.189, open-domain 0.389, single-hop 0.375, temporal 0.692."
+    ],
+    "control_authority_note": "The first wrapper control scored 0.42 because the wrapper's observation Title format differed from the runner's ('%s %s observation' vs '%s observation from %s'); Title text is FTS5-indexed, which silently changed retrieval. After fixing the Title format to match bench/locomo/runner.go, contexts and scores match the official path exactly. The 0.42 run is discarded and not used anywhere in this audit."
+  },
+  "engines": [
+    {
+      "engine": "dense_vector",
+      "ablation": "embedding leg disabled (EmbeddingCfg-equivalent)",
+      "ablation_mode_file": "runs/no_dense.json",
+      "description": "Dense embedding leg (nomic-embed-text 768): vector RRF input in the prior fusion stage plus the multi-hop dense leg.",
+      "ablatability": "runtime_config",
+      "seam": "bench/locomo Config.EmbeddingCfg nil vs set (runner.go:113/155-156/328/381) — the seam honest-02 added; executed in the wrapper as no_dense and cross-checked against the published embeddings-off run.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "dense_leg_queries_with_hits": 138
+      },
+      "measured": {
+        "overall": 0.35,
+        "correct": 35,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.189,
+          "open-domain": 0.389,
+          "single-hop": 0.375,
+          "temporal": 0.692
+        },
+        "delta_overall_vs_control": -0.09,
+        "delta_by_slice_vs_control": {
+          "multi-hop": -0.054,
+          "open-domain": -0.167,
+          "single-hop": -0.094,
+          "temporal": -0.077
+        },
+        "delta_multi_hop": -0.054,
+        "questions_with_changed_context": 33
+      },
+      "recommendation": "keep",
+      "rationale": "Largest single-leg contribution: removing it costs -0.09 overall (0.44 -> 0.35) and -0.054 multi-hop, and the result reproduces the published embeddings-off row slice-for-slice (bench/reports/first-eval-locomo.json). Removing it also re-routes queries (multi-hop tier 38 -> 13) because SkewRoute routes on prior-stage fusion scores, so the delta includes that routing side effect.",
+      "cross_check": "matches bench/reports/first-eval-locomo.json (0.35) slice-for-slice"
+    },
+    {
+      "engine": "fts5_lexical_fusion",
+      "ablation": "FTS5 leg disabled in prior stage and in every tier",
+      "ablation_mode_file": "runs/no_lexical.json",
+      "description": "FTS5 lexical retrieval leg: prior-stage BM25 fusion input plus the lexical candidate pool of every adaptive tier.",
+      "ablatability": "wrapper_only",
+      "seam": "No shipped off-switch (AdaptiveSearchOptions carries no leg-disable flag; the runner always calls Search). Proposed seam: AdaptiveSearchOptions.SkipLexical bool (or a Legs bitmask) so the lexical leg can be disabled without re-implementing the tier.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "lexical_leg_queries_with_hits": 40
+      },
+      "measured": {
+        "overall": 0.4,
+        "correct": 40,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.189,
+          "open-domain": 0.5,
+          "single-hop": 0.438,
+          "temporal": 0.769
+        },
+        "delta_overall_vs_control": -0.04,
+        "delta_by_slice_vs_control": {
+          "multi-hop": -0.054,
+          "open-domain": -0.056,
+          "single-hop": -0.031,
+          "temporal": 0.0
+        },
+        "delta_multi_hop": -0.054,
+        "questions_with_changed_context": 19
+      },
+      "recommendation": "keep",
+      "rationale": "Removing it costs -0.04 overall (0.44 -> 0.40), -0.054 multi-hop, -0.056 open-domain on 19 questions whose context changed. The residual 0.40 is carried entirely by the dense leg, which is why the lexical delta looks smaller than the dense one under this ablation; without lexical, the direct and semantic tiers return nothing at all."
+    },
+    {
+      "engine": "hipporag2_multihop_tier",
+      "ablation": "TierMultiHopGraph forced down to TierSemanticHybrid per query",
+      "ablation_mode_file": "runs/no_multihop.json",
+      "description": "HippoRAG 2 multi-hop tier: 2x lexical+dense candidate pools, recognition filter, Chain-of-Note reading, three-input RRF (without the PPR graph core, which is unwired — see hipprag2_ppr_graph_propagation).",
+      "ablatability": "runtime_api_bench_not_exposed",
+      "seam": "AdaptiveSearchOptions.Mode accepts 'direct'|'semantic'|'multi_hop' (adaptive.go:232-242) but bench/locomo hardcodes Mode 'auto' (runner.go:374), so the bench runner exposes no tier switch; the wrapper used the same classifier and overrode TierMultiHopGraph -> TierSemanticHybrid per query. Minimal bench seam: expose Config.AdaptiveMode and pass it to AdaptiveSearchOptions.Mode.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "multi_hop_queries": 38,
+        "note_third_list_queries": 38
+      },
+      "measured": {
+        "overall": 0.34,
+        "correct": 34,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.162,
+          "open-domain": 0.389,
+          "single-hop": 0.375,
+          "temporal": 0.692
+        },
+        "delta_overall_vs_control": -0.1,
+        "delta_by_slice_vs_control": {
+          "multi-hop": -0.081,
+          "open-domain": -0.167,
+          "single-hop": -0.094,
+          "temporal": -0.077
+        },
+        "delta_multi_hop": -0.081,
+        "questions_with_changed_context": 34
+      },
+      "recommendation": "keep",
+      "rationale": "Highest measured contribution: -0.10 overall (0.44 -> 0.34), -0.081 multi-hop, plus -0.094 single-hop, -0.167 open-domain and -0.077 temporal; 34 of 100 questions changed context. Largest single lever on this benchmark."
+    },
+    {
+      "engine": "hipprag2_ppr_graph_propagation",
+      "ablation": "indirect only — graph seeds are absent from the published baseline",
+      "ablation_mode_file": "runs/no_multihop.json",
+      "description": "Personalized-PageRank propagation over the joint knowledge graph (RunHippoRAG2) inside the multi-hop tier.",
+      "ablatability": "unablatable_not_wired",
+      "seam": "bench/locomo/runner.go:373-386 never populates AdaptiveSearchOptions.GraphNodes/GraphEdges, so propagateMultiHopGraph returns at adaptive.go:427 and PPR runs 0 times in the published baseline — there is nothing to switch off. Proposed seam: (1) populate graph analytics in the bench runner's adaptiveSearch, (2) add AdaptiveSearchOptions.EnableGraphPropagation bool for an A/B toggle.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "graph_seeds_supplied": 0,
+        "ppr_applied_queries": 0
+      },
+      "measured": {
+        "overall": 0.34,
+        "correct": 34,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.162,
+          "open-domain": 0.389,
+          "single-hop": 0.375,
+          "temporal": 0.692
+        },
+        "delta_overall_vs_control": -0.1,
+        "delta_by_slice_vs_control": {
+          "multi-hop": -0.081,
+          "open-domain": -0.167,
+          "single-hop": -0.094,
+          "temporal": -0.077
+        },
+        "delta_multi_hop": -0.081,
+        "questions_with_changed_context": 34
+      },
+      "recommendation": "undetermined",
+      "rationale": "Not measurable on this benchmark: instrumentation proves 0 graph seeds supplied and 0 PPR passes in the control run, so the published 0.44 contains no PPR contribution at all. The multi-hop tier entry therefore measures the tier without its graph core. Re-measure after graph seeding is wired; this entry is undetermined, not zero-contribution.",
+      "measured_note": "No dedicated run is possible; the numbers shown under ablation_mode_file belong to the no_multihop tier ablation and must NOT be attributed to PPR. PPR-specific fields: graph_seeds_supplied=0, ppr_applied_queries=0 in the control run."
+    },
+    {
+      "engine": "recognition_filter",
+      "ablation": "recognition floors + TopK refill bypassed in the multi-hop tier",
+      "ablation_mode_file": "runs/no_recognition.json",
+      "description": "Post-PPR recognition-memory filter: relative/absolute Rank floors plus TopK refill inside the multi-hop tier.",
+      "ablatability": "unablatable_via_config",
+      "seam": "adaptive.go:344-346 hardcodes DefaultRecognitionConfig(); AdaptiveSearchOptions has no RecognitionConfig field. Proposed seam: AdaptiveSearchOptions.RecognitionConfig *RecognitionConfig (nil = engine default, non-nil = override, disabled value = pass-through).",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "recognition_filter_queries": 38,
+        "recognition_floor_pruned_candidates": 0
+      },
+      "measured": {
+        "overall": 0.44,
+        "correct": 44,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.243,
+          "open-domain": 0.556,
+          "single-hop": 0.469,
+          "temporal": 0.769
+        },
+        "delta_overall_vs_control": 0.0,
+        "delta_by_slice_vs_control": {
+          "multi-hop": 0.0,
+          "open-domain": 0.0,
+          "single-hop": 0.0,
+          "temporal": 0.0
+        },
+        "delta_multi_hop": 0.0,
+        "questions_with_changed_context": 0
+      },
+      "recommendation": "deprecate_candidate",
+      "rationale": "Measured 0.00 overall and 0.00 on every slice with 0 of 100 contexts changed. Instrumentation shows the floors pruned 0 candidates in the control run, so only TopK truncation was active and it never altered the judged top-5. Gate caveat: the filter exists to prune post-PPR candidates and PPR never runs today, so this measures it in its idle state — re-measure if graph seeding lands."
+    },
+    {
+      "engine": "lightrag_community_summary_boost",
+      "ablation": "architectural-tier +2.5 Rank boost disabled",
+      "ablation_mode_file": "runs/no_lightrag.json",
+      "description": "LightRAG architectural tier: x2 lexical pool plus +2.5 Rank boost for community_summary/pattern/decision documents on TierArchitecturalGlobal queries.",
+      "ablatability": "unablatable_via_config",
+      "seam": "adaptive.go:270-289 hardcodes the boost with no toggle; the tier is only reachable through keyword routing. Proposed seam: AdaptiveSearchOptions.ArchitecturalBoost float64 (0 disables) or DisableArchitecturalBoost bool.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "architectural_global_queries": 1,
+        "lightrag_boosted_results": 0
+      },
+      "measured": {
+        "overall": 0.44,
+        "correct": 44,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.243,
+          "open-domain": 0.556,
+          "single-hop": 0.469,
+          "temporal": 0.769
+        },
+        "delta_overall_vs_control": 0.0,
+        "delta_by_slice_vs_control": {
+          "multi-hop": 0.0,
+          "open-domain": 0.0,
+          "single-hop": 0.0,
+          "temporal": 0.0
+        },
+        "delta_multi_hop": 0.0,
+        "questions_with_changed_context": 0
+      },
+      "recommendation": "deprecate_candidate",
+      "rationale": "Measured 0.00 overall, 0.00 on every slice, 0 of 100 contexts changed, boost matched 0 documents: 1 of 100 queries routed to the architectural tier and the LOCOMO corpus holds no community_summary/pattern/decision documents to boost. Honest scope note: this benchmark cannot prove the boost useful for the code/architecture corpora it targets — deprecate on this evidence, or re-measure on a corpus that contains community summaries."
+    },
+    {
+      "engine": "colbert_late_interaction_and_chain_of_note",
+      "ablation": "plain two-list fusion (note-ranked third RRF input dropped)",
+      "ablation_mode_file": "runs/no_colbert.json",
+      "description": "Chain-of-Note reading scored with the ColBERT-style weighted MaxSim late-interaction scorer; its note-ranked list is the third RRF input.",
+      "ablatability": "unablatable_via_config",
+      "seam": "adaptive.go:348-349 hardcodes ChainOfNoteStage + FuseResultsWithNotes. FuseOptions.NoteWeight cannot disable it (weights <= 0 normalize to 1.0 in fuseInputs). Proposed seam: honor FuseOptions.NoteWeight < 0 as 'drop the note input', or add AdaptiveSearchOptions.EnableChainOfNote bool.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "colbert_con_third_list_queries": 38
+      },
+      "measured": {
+        "overall": 0.44,
+        "correct": 44,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.243,
+          "open-domain": 0.556,
+          "single-hop": 0.469,
+          "temporal": 0.769
+        },
+        "delta_overall_vs_control": 0.0,
+        "delta_by_slice_vs_control": {
+          "multi-hop": 0.0,
+          "open-domain": 0.0,
+          "single-hop": 0.0,
+          "temporal": 0.0
+        },
+        "delta_multi_hop": 0.0,
+        "questions_with_changed_context": 9
+      },
+      "recommendation": "tune",
+      "rationale": "Score delta 0.00 overall and 0.00 on every slice, but this ablation DID change retrieval on 9 of 100 questions — the engine is active, it just never flipped a judge verdict on LOCOMO. The stage was designed for long-context LongMemEval (REQ-LME-001), outside this audit's scope; tune and evaluate on LongMemEval rather than deprecate on a benchmark where it is neither proven nor disproven."
+    },
+    {
+      "engine": "crag_confidence_gating",
+      "ablation": "tier results returned unfiltered (EvaluateCRAG skipped)",
+      "ablation_mode_file": "runs/no_crag.json",
+      "description": "CRAG confidence evaluation: MinScoreFloor filtering of low-Rank results plus a confidence grade returned with the adaptive result.",
+      "ablatability": "partial_runtime_config",
+      "seam": "AdaptiveSearchOptions.CRAGConfig exists (adaptive.go:209/307-310) but has no disable flag; neutralizing it requires setting MinScoreFloor below every possible score, a workaround rather than a toggle. Proposed seam: CRAGConfig.Disabled bool. The wrapper ablated it by returning tier results unfiltered.",
+      "activation_in_control": {
+        "tier_counts": {
+          "architectural_global": 1,
+          "multi_hop_graph": 38,
+          "semantic_hybrid": 61
+        },
+        "crag_dropped_results": 0,
+        "crag_affected_queries": 0
+      },
+      "measured": {
+        "overall": 0.44,
+        "correct": 44,
+        "total": 100,
+        "by_slice": {
+          "multi-hop": 0.243,
+          "open-domain": 0.556,
+          "single-hop": 0.469,
+          "temporal": 0.769
+        },
+        "delta_overall_vs_control": 0.0,
+        "delta_by_slice_vs_control": {
+          "multi-hop": 0.0,
+          "open-domain": 0.0,
+          "single-hop": 0.0,
+          "temporal": 0.0
+        },
+        "delta_multi_hop": 0.0,
+        "questions_with_changed_context": 0
+      },
+      "recommendation": "tune",
+      "rationale": "Measured 0.00 overall, 0.00 on every slice, 0 of 100 contexts changed: MinScoreFloor (0.005) dropped 0 results in the control run. Root cause visible in code: on this path scores live in RRF space (~0.016-0.05), so they can never reach the 0.30/0.65 thresholds — the grade is structurally pinned low while the filter never fires. Tune the thresholds to the score space actually in use before deciding deprecation."
+    }
+  ],
+  "unablatable": [
+    {
+      "engine": "fts5_lexical_fusion",
+      "ablatability": "wrapper_only",
+      "missing_seam": "No shipped off-switch (AdaptiveSearchOptions carries no leg-disable flag; the runner always calls Search). Proposed seam: AdaptiveSearchOptions.SkipLexical bool (or a Legs bitmask) so the lexical leg can be disabled without re-implementing the tier.",
+      "recommendation": "keep"
+    },
+    {
+      "engine": "hipprag2_ppr_graph_propagation",
+      "ablatability": "unablatable_not_wired",
+      "missing_seam": "bench/locomo/runner.go:373-386 never populates AdaptiveSearchOptions.GraphNodes/GraphEdges, so propagateMultiHopGraph returns at adaptive.go:427 and PPR runs 0 times in the published baseline — there is nothing to switch off. Proposed seam: (1) populate graph analytics in the bench runner's adaptiveSearch, (2) add AdaptiveSearchOptions.EnableGraphPropagation bool for an A/B toggle.",
+      "recommendation": "undetermined"
+    },
+    {
+      "engine": "recognition_filter",
+      "ablatability": "unablatable_via_config",
+      "missing_seam": "adaptive.go:344-346 hardcodes DefaultRecognitionConfig(); AdaptiveSearchOptions has no RecognitionConfig field. Proposed seam: AdaptiveSearchOptions.RecognitionConfig *RecognitionConfig (nil = engine default, non-nil = override, disabled value = pass-through).",
+      "recommendation": "deprecate_candidate"
+    },
+    {
+      "engine": "lightrag_community_summary_boost",
+      "ablatability": "unablatable_via_config",
+      "missing_seam": "adaptive.go:270-289 hardcodes the boost with no toggle; the tier is only reachable through keyword routing. Proposed seam: AdaptiveSearchOptions.ArchitecturalBoost float64 (0 disables) or DisableArchitecturalBoost bool.",
+      "recommendation": "deprecate_candidate"
+    },
+    {
+      "engine": "colbert_late_interaction_and_chain_of_note",
+      "ablatability": "unablatable_via_config",
+      "missing_seam": "adaptive.go:348-349 hardcodes ChainOfNoteStage + FuseResultsWithNotes. FuseOptions.NoteWeight cannot disable it (weights <= 0 normalize to 1.0 in fuseInputs). Proposed seam: honor FuseOptions.NoteWeight < 0 as 'drop the note input', or add AdaptiveSearchOptions.EnableChainOfNote bool.",
+      "recommendation": "tune"
+    }
+  ],
+  "summary": {
+    "engines_measured": 7,
+    "engines_with_measured_penalty": [
+      "dense_vector",
+      "fts5_lexical_fusion",
+      "hipporag2_multihop_tier"
+    ],
+    "engines_with_zero_delta": [
+      "recognition_filter",
+      "lightrag_community_summary_boost",
+      "colbert_late_interaction_and_chain_of_note",
+      "crag_confidence_gating"
+    ],
+    "recommendation_counts": {
+      "keep": 3,
+      "tune": 2,
+      "deprecate_candidate": 2,
+      "undetermined": 1
+    },
+    "decision_gate": "Recommendations only. No engine removal, no product source change and no git commit happened in this task; removal is the orchestrator gate honest-06.",
+    "engines_not_measurable": [
+      "hipprag2_ppr_graph_propagation"
+    ],
+    "engines_not_measurable_note": "hipprag2_ppr_graph_propagation reuses the no_multihop run only as a container for its seam note; its measured numbers must not be attributed to PPR (graph_seeds_supplied=0, ppr_applied_queries=0)."
+  },
+  "limitations": [
+    "One judged run per ablation (100 questions each); judge determinism is supported by the official harness re-run and the wrapper control both reproducing 0.44 exactly, but no repeated-trial variance estimate exists.",
+    "Deltas for no_dense and no_lexical include SkewRoute routing side effects: both legs feed the prior-stage fusion scores that routing classifies on, so tier assignment shifts (multi-hop tier 38 -> 13 without dense).",
+    "The multi-hop tier entry excludes the PPR graph core because the bench runner never supplies graph seeds; hipprag2_ppr_graph_propagation is reported undetermined rather than zero.",
+    "The LightRAG boost could not be exercised: 1 architectural-tier query and 0 boostable document types in the LOCOMO corpus.",
+    "LongMemEval was not ablated (dispatch scope: LOCOMO); ColBERT/Chain-of-Note may behave differently there.",
+    "Zero-delta engines were verified at retrieval level: no_recognition, no_lightrag and no_crag changed 0 of 100 judged contexts, so their 0.00 is a true no-op, not a judge artifact; no_colbert changed 9 of 100 contexts with no verdict flips.",
+    "All numbers are measured; nothing is extrapolated. Engines that cannot be ablated through shipped configuration are listed under unablatable with a proposed seam instead of a fabricated score."
+  ],
+  "evidence": {
+    "run_directory": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/evalrun-ablate/runs",
+    "runs": [
+      "full2.json (control)",
+      "no_multihop.json",
+      "no_recognition.json",
+      "no_lightrag.json",
+      "no_colbert.json",
+      "no_crag.json",
+      "no_dense.json",
+      "no_lexical.json",
+      "official-contexts.json (official-path retrieval dump)",
+      "official-rerun.json (official harness re-run)"
+    ],
+    "context_parity_diff_vs_official_path": "0/100",
+    "acceptance_verification": "jq -e '.engines | length >= 6' bench/reports/engine-ablation-audit.json"
+  },
+  "code_provenance": {
+    "harness_built_at": "2026-10-03T06:04:51Z (2026-10-03 01:04:51 -0500)",
+    "harness_binary": "/private/var/folders/dm/4wl1sq8x2d17wf0ydqcw56d40000gn/T/opencode/evalrun-ablate/evalrun-ablate",
+    "repo_source_state": "linked against the repository working tree at build time (bench/locomo/runner.go mtime 2026-10-02 18:41:35; internal/retrieval linked at build time)",
+    "run_generated_at": {
+      "full-nojudge.json": "2026-10-03T06:11:59Z",
+      "full.json": "2026-10-03T05:51:28Z",
+      "full2.json": "2026-10-03T06:11:16Z",
+      "no_colbert.json": "2026-10-03T06:57:10Z",
+      "no_crag.json": "2026-10-03T07:04:26Z",
+      "no_dense.json": "2026-10-03T06:38:11Z",
+      "no_lexical.json": "2026-10-03T06:56:33Z",
+      "no_lightrag.json": "2026-10-03T06:38:19Z",
+      "no_multihop.json": "2026-10-03T06:38:16Z",
+      "no_recognition.json": "2026-10-03T06:57:08Z",
+      "official-rerun.json": "2026-10-03T05:57:22Z"
+    },
+    "concurrent_change_warning": "internal/retrieval/adaptive.go was modified at 2026-10-03 02:15:23 -0500 and internal/retrieval/adaptive_test.go at 01:22:08 -0500 by a concurrent task (honest-05 multi-hop tuning), AFTER every run in this audit completed. All runs used the single binary built at 01:04:51, so intra-audit comparisons are consistent; if honest-05's tuning lands, the multi-hop tier and downstream deltas must be re-measured against the tuned pipeline before the honest-06 gate acts on them."
+  },
+  "provenance": {
+    "measurement_binary_built_at": "2026-10-03 01:04:51 -0500 (local)",
+    "pipeline_state": "PRE-tuning: every ablation run used the single harness binary built at 01:04:51 local against the working tree as it stood before honest-05's adaptive tuning landed",
+    "concurrent_edit": "honest-05 edited internal/retrieval/adaptive.go at 2026-10-03 02:15:23 -0500 while this audit was being staged",
+    "delta_scope": "All marginal deltas describe the pre-tuning retrieval state; intra-audit comparisons are internally consistent because one binary produced every run",
+    "re_measure_requirement": "honest-06 must re-measure any engine whose seam honest-05 touched in internal/retrieval/adaptive.go before acting on these recommendations",
+    "mutation_note": "Provenance added at publication time; measured values and recommendations are unmodified from the staged measurement artifact"
+  }
+}

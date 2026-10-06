@@ -666,6 +666,11 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = a.Close() }()
+
+	if !domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
+		writeVectorDegradedGuidance(stderr, "cortex: ")
+	}
+
 	toolsFilter := ""
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--tools=") {
@@ -1561,6 +1566,14 @@ func runReindex(args []string, stdout, stderr io.Writer) int {
 
 // --- doctor -----------------------------------------------------------------
 
+// writeVectorDegradedGuidance names a degraded vector index and its rebuild
+// remediation. MCP stdio sessions must receive it on stderr because stdout
+// carries the JSON-RPC stream and stray bytes corrupt protocol framing.
+func writeVectorDegradedGuidance(w io.Writer, prefix string) {
+	writef(w, "%svector index is degraded: dense semantic search is unavailable; retrieval falls back to lexical FTS5 only\n", prefix)
+	writef(w, "%sremediation: go build -tags cortex_vectors ./cmd/cortex (or run 'make build', which enables the tag by default)\n", prefix)
+}
+
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	serverMode := false
 	serverURL := "http://localhost:7438"
@@ -1626,10 +1639,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// 4. Vector store
-	if domain.IsVectorIndexHealthy(context.Background(), a.Stores.Vectors) {
+	if domain.IsVectorIndexHealthy(ctx, a.Stores.Vectors) {
 		writef(stdout, "  [OK]   Vector store: enabled\n")
 	} else {
-		writef(stdout, "  [WARN] Vector store: disabled (build with -tags cortex_vectors)\n")
+		writef(stdout, "  [WARN] Vector store: disabled\n")
+		writeVectorDegradedGuidance(stdout, "        ")
 	}
 
 	// 5. Embedding service

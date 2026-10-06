@@ -54,6 +54,17 @@ tools/e2e-web/test-results/
 /cover.*
 /coverage*
 *.prof
+*.cov
+
+# Root-only profiling/benchmark artifacts (see REQ-REPO-001). Root-anchored so
+# real sources such as bench/*/baseline_adapter.go and setup scripts keep
+# matching; these names are exact, never globbed.
+/app_prof
+/baseline_server
+/baseline_tui
+/cov_sandbox
+/setup_cover_baseline
+/stale
 
 # Claude local settings
 .claude/settings.local.json
@@ -76,5 +87,8 @@ tools/e2e-web/test-results/
 !.goreleaser.yaml
 !.env.example
 !web/.env.example
+# Shared golangci-lint config: CI, release, and local lint all resolve
+# `--config .golangci.yml`, so it must survive the blanket `.*` dotfile rule.
+!.golangci.yml
 # Intentional tracked web lint config (see REQ-HYG-002).
 !web/.eslintrc.json

@@ -1,0 +1,9 @@
+version: "2"
+
+# Shared by local `make lint` and the CI lint job so enforcement is identical
+# regardless of any developer-level golangci-lint configuration.
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - staticcheck
