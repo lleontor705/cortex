@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
-## [2.4.0] - 2026-10-06
+## [2.4.0] - 2026-10-07
 
 ### 🚀 Features
 
@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - *(server)* Grant wildcard project/classification to auto-bootstrap principal (#96)
 - *(lint)* Resolve errcheck and staticcheck warnings in test suites (#57)
 - *(vector)* Adapt pgvector test fake to pgx 5.11.0 Rows interface (#99)
+- *(release)* Refresh embedded web dist + stale-dist guard (#100)
+- *(web)* Pin deterministic Next buildId for reproducible embedded dist (#101)
 
 ### 📚 Documentation
 
@@ -55,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - *(docker)* Fix compose smoke health-wait budget for cold-start builds (#87)
 - *(toolchain)* Align to Go 1.27.1 + golangci-lint v2.14.0 (#97)
 - *(toolchain)* Align release.yml and ci.yml Go pins to 1.27.1 (#98)
+- *(changelog)* Refresh release history [skip ci]
+- Re-trigger main CI after changelog refresh
 
 ### 💼 Other
 
