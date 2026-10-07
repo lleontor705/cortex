@@ -332,7 +332,7 @@ func TestBaselineWorkflowContract(t *testing.T) {
 	if !strings.Contains(coverageBlock, `cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`) {
 		t.Error("shared coverage job must compute coverpkg with go list excluding only vendored /node_modules/")
 	}
-	if !strings.Contains(coverageBlock, `go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`) {
+	if !strings.Contains(coverageBlock, `go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out -timeout 20m ./...`) {
 		t.Error("shared coverage job must collect whole-project atomic coverage with PostgreSQL integration")
 	}
 	if !strings.Contains(coverageBlock, "go tool cover -func coverage.out") {
@@ -458,7 +458,7 @@ func TestPostgresCoverageWorkflowContract(t *testing.T) {
 		"CORTEX_TEST_POSTGRES_MIGRATION_DSN: postgres://cortex_bootstrap:cortex_bootstrap@localhost:5432/cortex_test?sslmode=disable",
 		"CORTEX_TEST_POSTGRES_AUTHZ_ADMIN_DSN: postgres://cortex_admin_login:cortex_admin_login@localhost:5432/cortex_test?sslmode=disable",
 		`cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"`,
-		`go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./...`,
+		`go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out -timeout 20m ./...`,
 		"go tool cover -func coverage.out",
 		"awk '$1 == \"total:\"",
 		"coverage < 80.0",
