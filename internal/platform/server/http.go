@@ -1005,7 +1005,53 @@ func (a *apiHandler) ragStats(w http.ResponseWriter, r *http.Request) {
 		respondOperationError(w, err)
 		return
 	}
+	a.overlayLiveVectorState(r.Context(), stats)
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// overlayLiveVectorState replaces any store-level inference with the live
+// vector pipeline truth (issue #113): the resolved vector provider (same
+// resolution as GET /api/settings), the real embedding/vector dimension, and
+// whether a vector index is composed and reachable right now. A deployment
+// with provider "none" must never be described as running a pgvector/hnsw
+// pipeline, and a configured-but-unreachable adapter must not claim
+// vector_indexed.
+func (a *apiHandler) overlayLiveVectorState(ctx context.Context, stats *domain.RAGStats) {
+	provider := resolvedVectorProvider(a.cfg)
+	stats.VectorProvider = provider
+	// The model name comes from configuration only; the store's env fallback
+	// is overridden so an unconfigured deployment reports "" instead of an
+	// invented default.
+	stats.EmbeddingModel = strings.TrimSpace(a.cfg.Search.EmbeddingModel)
+	stats.EmbeddingDim = liveEmbeddingDimensions(a.cfg, a.hybrid.embeddings)
+	if provider == "none" || a.hybrid.vectors == nil {
+		stats.VectorIndexed = false
+		stats.VectorIndexType = ""
+		return
+	}
+	stats.VectorIndexed = domain.IsVectorIndexHealthy(ctx, a.hybrid.vectors)
+	stats.VectorIndexType = composedVectorIndexType(provider, stats.EmbeddingDim, a.cfg)
+}
+
+// composedVectorIndexType reports the ANN index type that actually exists for
+// the composed provider. pgvector skips ANN index DDL above its
+// 2000-dimension limit (exact-scan fallback), so no index type is claimed for
+// such dimensions even when the provider is pgvector. Qdrant is HNSW-based.
+func composedVectorIndexType(provider string, dimension int, cfg config.Config) string {
+	switch provider {
+	case "pgvector":
+		if dimension <= 0 || dimension > 2000 {
+			return ""
+		}
+		if t := strings.TrimSpace(cfg.Vector.Pgvector.IndexType); t != "" {
+			return t
+		}
+		return "hnsw"
+	case "qdrant":
+		return "hnsw"
+	default:
+		return ""
+	}
 }
 
 func (a *apiHandler) graphAnalytics(w http.ResponseWriter, r *http.Request) {

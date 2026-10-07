@@ -53,6 +53,15 @@ type RAGStats struct {
 	EmbeddingModel      string  `json:"embedding_model"`
 	EmbeddingDim        int     `json:"embedding_dimensions"`
 	VectorProvider      string  `json:"vector_provider"`
+	// VectorIndexType is the ANN index type that actually exists ("hnsw",
+	// "ivfflat"). Empty means no ANN index: provider "none", exact-scan
+	// storage (pgvector skips ANN DDL above its 2000-dimension limit), or an
+	// adapter that declares no index type. Never inferred from a provider name.
+	VectorIndexType string `json:"vector_index_type,omitempty"`
+	// VectorIndexed reports whether the vector pipeline is composed AND
+	// reachable right now. False with a non-"none" provider means the index
+	// is configured but currently unusable.
+	VectorIndexed bool `json:"vector_indexed"`
 }
 
 func (o Observation) MarshalJSON() ([]byte, error) {

@@ -1119,27 +1119,22 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 	if total > 0 {
 		coverage = float64(indexed) / float64(total) * 100.0
 	}
+	// Honest reporting (issue #113): never guess a dimension from the model
+	// name and never default to "pgvector/hnsw". Report only what is
+	// explicitly configured; the server handler overlays the live
+	// composition/adapter state on top of these fields.
 	embModel := os.Getenv("CORTEX_EMBEDDING_MODEL")
-	if embModel == "" {
-		embModel = "text-embedding-3-small"
-	}
 
-	embDim := 1536
+	embDim := 0
 	if dimStr := os.Getenv("CORTEX_VECTOR_PGVECTOR_DIMENSION"); dimStr != "" {
 		if d, err := strconv.Atoi(dimStr); err == nil && d > 0 {
 			embDim = d
 		}
-	} else if strings.Contains(embModel, "qwen") {
-		embDim = 2560
-	} else if strings.Contains(embModel, "nomic") {
-		embDim = 768
-	} else if strings.Contains(embModel, "bge-small") || strings.Contains(embModel, "minilm") {
-		embDim = 384
 	}
 
 	vecProvider := os.Getenv("CORTEX_VECTOR_PROVIDER")
 	if vecProvider == "" {
-		vecProvider = "pgvector/hnsw"
+		vecProvider = "none"
 	}
 
 	return &domain.RAGStats{
@@ -1152,5 +1147,6 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 		EmbeddingModel:      embModel,
 		EmbeddingDim:        embDim,
 		VectorProvider:      vecProvider,
+		VectorIndexed:       vecProvider != "none",
 	}, nil
 }

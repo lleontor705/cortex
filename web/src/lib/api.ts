@@ -31,6 +31,10 @@ export type RAGStats = {
   embedding_model: string;
   embedding_dimensions: number;
   vector_provider: string;
+  /** ANN index type that actually exists ("hnsw", "ivfflat"); empty = exact scan / none */
+  vector_index_type?: string;
+  /** True only when the vector pipeline is composed and reachable right now */
+  vector_indexed: boolean;
 };
 
 export type Session = {
