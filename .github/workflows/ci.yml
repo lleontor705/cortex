@@ -35,6 +35,14 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          # This job pushes the regenerated CHANGELOG.md directly to protected
+          # main. The default GITHUB_TOKEN cannot bypass the branch ruleset's
+          # 1-approving-review requirement (GH006: Protected branch update
+          # failed), and app/user bypass allowances are organization-only.
+          # The CHANGELOG_DEPLOY_KEY deploy key is registered as a bypass
+          # actor (always) on the "main-branch-protection" ruleset, so
+          # checkout authenticates the subsequent `git push` over SSH.
+          ssh-key: ${{ secrets.CHANGELOG_DEPLOY_KEY }}
 
       - name: Install git-cliff
         run: |
