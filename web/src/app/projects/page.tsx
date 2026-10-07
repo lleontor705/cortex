@@ -133,9 +133,10 @@ export default function ProjectsPage() {
         pending_observations: 0,
         failed_observations: 0,
         coverage_pct: 100.0,
-        embedding_model: "Auto-detectado",
+        embedding_model: "",
         embedding_dimensions: 0,
-        vector_provider: "Servidor Cortex",
+        vector_provider: "—",
+        vector_indexed: false,
       });
     } finally {
       setRagLoading(false);
@@ -1146,10 +1147,20 @@ export default function ProjectsPage() {
 
             <StatCard
               title="Motor Vectorial Activo"
-              value={ragStats?.vector_provider || "pgvector/hnsw"}
+              value={ragStats?.vector_provider || "—"}
               icon={Cpu}
-              iconClassName="text-primary"
-              subtext={`${ragStats?.embedding_model || "Configurado en Servidor"}${ragStats?.embedding_dimensions ? ` (${ragStats.embedding_dimensions}d)` : ""}`}
+              iconClassName={
+                ragStats?.vector_indexed === false && ragStats.vector_provider !== "none" ? "text-amber-500" : "text-primary"
+              }
+              subtext={`${ragStats?.embedding_model || "Modelo configurado en servidor"}${
+                ragStats?.embedding_dimensions ? ` (${ragStats.embedding_dimensions}d)` : ""
+              }${
+                ragStats?.vector_indexed === false
+                  ? " · sin índice vectorial activo"
+                  : ragStats?.vector_index_type
+                    ? ` · índice ${ragStats.vector_index_type}`
+                    : " · almacenamiento exacto (sin ANN)"
+              }`}
             />
           </div>
 

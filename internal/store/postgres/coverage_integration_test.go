@@ -876,9 +876,13 @@ func TestCoverageListTokens(t *testing.T) {
 	}
 }
 
-// TestCoverageGetRAGStats covers the RAG stats aggregation and embedding
-// model dimension inference paths.
+// TestCoverageGetRAGStats covers the RAG stats aggregation and the honest
+// vector reporting fallbacks (issue #113): with no vector configuration the
+// store must NOT invent a provider, dimension, or embedding model.
 func TestCoverageGetRAGStats(t *testing.T) {
+	t.Setenv("CORTEX_VECTOR_PROVIDER", "")
+	t.Setenv("CORTEX_VECTOR_PGVECTOR_DIMENSION", "")
+	t.Setenv("CORTEX_EMBEDDING_MODEL", "")
 	h := newPostgresHarness(t)
 	applyReceiptMigration(t)
 	ctx := context.Background()
@@ -900,6 +904,36 @@ func TestCoverageGetRAGStats(t *testing.T) {
 	}
 	if stats.Project != "rag" {
 		t.Fatalf("project=%s", stats.Project)
+	}
+	if stats.VectorProvider != "none" {
+		t.Fatalf("vector_provider=%q, want none without configuration (no invented pgvector/hnsw)", stats.VectorProvider)
+	}
+	if stats.VectorIndexed {
+		t.Fatal("vector_indexed=true, want false without a composed vector pipeline")
+	}
+	if stats.VectorIndexType != "" {
+		t.Fatalf("vector_index_type=%q, want empty", stats.VectorIndexType)
+	}
+	if stats.EmbeddingDim != 0 {
+		t.Fatalf("embedding_dimensions=%d, want 0 without configuration (no model-name guessing)", stats.EmbeddingDim)
+	}
+	if stats.EmbeddingModel != "" {
+		t.Fatalf("embedding_model=%q, want empty without configuration", stats.EmbeddingModel)
+	}
+
+	// Explicit operator configuration flows through without invention.
+	t.Setenv("CORTEX_VECTOR_PROVIDER", "pgvector")
+	t.Setenv("CORTEX_VECTOR_PGVECTOR_DIMENSION", "4096")
+	t.Setenv("CORTEX_EMBEDDING_MODEL", "qwen3-embedding")
+	stats, err = store.GetRAGStats(ctx, "rag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.VectorProvider != "pgvector" || stats.EmbeddingDim != 4096 || stats.EmbeddingModel != "qwen3-embedding" {
+		t.Fatalf("configured stats = provider %q dim %d model %q", stats.VectorProvider, stats.EmbeddingDim, stats.EmbeddingModel)
+	}
+	if !stats.VectorIndexed {
+		t.Fatal("vector_indexed=false, want true when a non-none provider is configured")
 	}
 }
 
