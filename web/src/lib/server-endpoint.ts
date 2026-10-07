@@ -36,12 +36,33 @@ function readRuntimeServerUrl(): string | undefined {
   return window.__CORTEX_WEB_CONFIG__?.serverUrl;
 }
 
-const runtimeServerUrl = readRuntimeServerUrl();
+// Resolution is deferred to first ACCESS, not module evaluation: the app
+// bundles ship as async scripts and the runtime /config.js script may execute
+// around them, so reading the injected config during module init would race
+// the injection and resurrect the localhost fallback. Consumers read this
+// during the React render/effect lifecycle, which always runs after every
+// document script has executed.
+let cachedEndpoint: ServerEndpoint | null = null;
+
+function runtimeEndpoint(): ServerEndpoint {
+  if (cachedEndpoint === null) {
+    const runtimeServerUrl = readRuntimeServerUrl();
+    cachedEndpoint = resolveServerEndpoint({
+      managed: runtimeServerUrl ? "true" : undefined,
+      url: runtimeServerUrl,
+    });
+  }
+  return cachedEndpoint;
+}
 
 // An injected runtime endpoint means the deployment dictates the API origin, so
 // the UI must not ask the operator to pick one. Absent config keeps the
 // unmanaged behavior and falls back to the documented default.
-export const serverEndpoint = resolveServerEndpoint({
-  managed: runtimeServerUrl ? "true" : undefined,
-  url: runtimeServerUrl,
-});
+export const serverEndpoint: ServerEndpoint = {
+  get managed(): boolean {
+    return runtimeEndpoint().managed;
+  },
+  get url(): string {
+    return runtimeEndpoint().url;
+  },
+};
