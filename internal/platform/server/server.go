@@ -900,7 +900,9 @@ func (r *Runtime) Close() error {
 	}
 	r.closeOnce.Do(func() {
 		var errs []error
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// 15s grace (was 5s): see http.go Serve teardown — StateNew connections can hold
+		// graceful Shutdown past a 5s deadline (issue #102).
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := r.shutdownTransport(shutdownCtx); err != nil {
 			errs = append(errs, err)

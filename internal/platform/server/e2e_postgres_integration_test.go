@@ -669,7 +669,7 @@ func (s *runningE2EServer) stop() error {
 			if err != nil {
 				s.stopErr = err
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(20 * time.Second):
 			s.stopErr = errors.New("timed out waiting for E2E server shutdown")
 		}
 		if err := s.runtime.Close(); err != nil {

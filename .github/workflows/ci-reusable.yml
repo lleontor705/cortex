@@ -188,7 +188,10 @@ jobs:
         run: |
           set -euo pipefail
           cover_pkgs="$(go list ./... | grep -v '/node_modules/' | paste -sd, -)"
-          if ! go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out ./... > coverage.log 2>&1; then
+          # -timeout 20m: coverage-instrumented builds (-covermode=atomic -coverpkg=./...) are
+          # much slower than plain builds, and the concurrent E2E suite can exceed the default
+          # 10m go test timeout in this job only (see issue #102).
+          if ! go test -tags postgres_integration -covermode=atomic -coverpkg="$cover_pkgs" -coverprofile=coverage.out -timeout 20m ./... > coverage.log 2>&1; then
             grep -B 1 -A 5 -E "^(--- FAIL:|panic:)" coverage.log | head -n 50 | while IFS= read -r line; do
               echo "::error title=Coverage Test Failure::$line"
             done

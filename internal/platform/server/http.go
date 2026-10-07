@@ -1636,7 +1636,10 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		}
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// 15s grace: a connection in StateNew (opened, request not yet parsed) can hold
+		// Shutdown until its header-read grace expires; a 5s deadline raced teardown and
+		// produced spurious "stop E2E server: context deadline exceeded" flakes (issue #102).
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_ = r.shutdownTransport(shutdownCtx)
 		if err := r.httpServer.Shutdown(shutdownCtx); err != nil {
