@@ -833,6 +833,37 @@ export class CortexClient {
     }>("/api/admin/ai/status");
   }
 
+  getSettings() {
+    return this.request<{
+      llm: {
+        provider: string;
+        model: string;
+        base_url: string;
+        configured: boolean;
+        timeout_seconds: number;
+      };
+      embedding: {
+        provider: string;
+        model: string;
+        base_url: string;
+        configured: boolean;
+        dimensions: number;
+      };
+      rerank: {
+        provider: string;
+        model: string;
+        base_url: string;
+      };
+      storage: {
+        driver: string;
+        vector_provider: string;
+      };
+      http: {
+        port: number;
+      };
+    }>("/api/settings");
+  }
+
   testLLM() {
     return this.request<{
       status: "ok" | "error" | "not_configured";

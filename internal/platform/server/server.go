@@ -199,19 +199,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	}
 	model.Dimension = liveEmbeddingDimensions(cfg, emb)
 	vectorCfg := cfg.Vector
-	if vectorCfg.Provider == "" {
-		if p := os.Getenv("CORTEX_VECTOR_PROVIDER"); p != "" {
-			vectorCfg.Provider = p
-		} else {
-			vectorCfg.Provider = cfg.Server.Provider.Vector
-		}
-	}
-	if vectorCfg.Provider == "" && cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none" {
-		vectorCfg.Provider = "pgvector"
-	}
-	if vectorCfg.Provider == "" {
-		vectorCfg.Provider = "none"
-	}
+	vectorCfg.Provider = resolvedVectorProvider(cfg)
 	if vectorCfg.Provider == "pgvector" && strings.TrimSpace(vectorCfg.Pgvector.MigrationDSN) == "" {
 		vectorCfg.Pgvector.MigrationDSN = cfg.Server.Storage.MigrationDSN
 	}
@@ -350,8 +338,8 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		return newAgentAuditor(sink), nil
 	})
 	adminProbes := composedAdminAIProbes{
-		llmStatus:       adminAIStatus{Provider: llm.Provider, Model: llm.Model, Configured: llm.Configured()},
-		embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: model.Name, Configured: emb != nil, Dimensions: model.Dimension},
+		llmStatus:       adminAIStatus{Provider: llm.Provider, Model: llm.Model, BaseURL: llm.BaseURL, TimeoutSeconds: int(llm.Timeout / time.Second), Configured: llm.Configured()},
+		embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: model.Name, BaseURL: cfg.Search.EmbeddingBaseURL, Configured: emb != nil, Dimensions: model.Dimension},
 		extractor:       extractor,
 		embeddings:      emb,
 	}

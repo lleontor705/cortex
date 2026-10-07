@@ -30,19 +30,32 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-interface AIStatusData {
+interface ServerSettingsData {
   llm: {
     provider: string;
     model: string;
     base_url: string;
     configured: boolean;
+    timeout_seconds: number;
   };
   embedding: {
     provider: string;
     model: string;
     base_url: string;
-    dimensions: number;
     configured: boolean;
+    dimensions: number;
+  };
+  rerank: {
+    provider: string;
+    model: string;
+    base_url: string;
+  };
+  storage: {
+    driver: string;
+    vector_provider: string;
+  };
+  http: {
+    port: number;
   };
 }
 
@@ -63,7 +76,7 @@ export default function SettingsPage() {
   const [serverSavedMessage, setServerSavedMessage] = useState(false);
 
   // Server AI Runtime Info State
-  const [aiStatus, setAiStatus] = useState<AIStatusData | null>(null);
+  const [settings, setSettings] = useState<ServerSettingsData | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
@@ -103,23 +116,23 @@ export default function SettingsPage() {
     setSecretBearer((state) => observeResetGeneration(state, resetGeneration));
   }, [resetGeneration]);
 
-  // Fetch Server AI Configuration on mount
-  const fetchAIStatus = async () => {
+  // Fetch the resolved server runtime configuration on mount
+  const fetchServerSettings = async () => {
     if (!client) return;
     setLoadingStatus(true);
     setStatusError(null);
     try {
-      const data = await client.getAIStatus();
-      setAiStatus(data);
+      const data = await client.getSettings();
+      setSettings(data);
     } catch (err: any) {
-      setStatusError(err.message || "No se pudo obtener el estado de IA del servidor");
+      setStatusError(err.message || "No se pudo obtener la configuración del servidor");
     } finally {
       setLoadingStatus(false);
     }
   };
 
   useEffect(() => {
-    fetchAIStatus();
+    fetchServerSettings();
   }, [client]);
 
   const handleSaveServer = async (e: React.FormEvent) => {
@@ -128,7 +141,7 @@ export default function SettingsPage() {
     if (success) {
       setServerSavedMessage(true);
       setTimeout(() => setServerSavedMessage(false), 3000);
-      fetchAIStatus();
+      fetchServerSettings();
     } else {
       alert("No se pudo conectar con las nuevas credenciales");
     }
@@ -340,7 +353,7 @@ export default function SettingsPage() {
         </div>
 
         <Button
-          onClick={fetchAIStatus}
+          onClick={fetchServerSettings}
           variant="outline"
           size="sm"
           disabled={loadingStatus}
@@ -444,7 +457,7 @@ export default function SettingsPage() {
               <Sparkles className="h-4 w-4 text-primary" />
               <span>Motor LLM del Servidor</span>
             </CardTitle>
-            {aiStatus?.llm.configured ? (
+            {settings?.llm.configured ? (
               <Badge variant="default" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25">
                 ● Servidor Activo
               </Badge>
@@ -459,13 +472,13 @@ export default function SettingsPage() {
             <div className="p-3 rounded-lg bg-secondary/50 border border-border">
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">PROVEEDOR</span>
               <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
-                {aiStatus?.llm.provider || "Cargando..."}
+                {settings?.llm.provider || "Cargando..."}
               </span>
             </div>
             <div className="p-3 rounded-lg bg-secondary/50 border border-border">
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">MODELO</span>
               <span className="text-sm font-semibold text-primary mt-0.5 block font-mono">
-                {aiStatus?.llm.model || "Cargando..."}
+                {settings?.llm.model || "Cargando..."}
               </span>
             </div>
           </div>
@@ -473,7 +486,7 @@ export default function SettingsPage() {
           <div className="p-3 rounded-lg bg-secondary/50 border border-border text-xs space-y-1">
             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">ENDPOINT BASE / BASE URL</span>
             <span className="text-xs text-muted-foreground font-mono block break-all">
-              {aiStatus?.llm.base_url || "Configuración por defecto del proveedor"}
+              {settings?.llm.base_url || "Predeterminado del proveedor"}
             </span>
           </div>
 
@@ -532,9 +545,9 @@ export default function SettingsPage() {
               <Bot className="h-4 w-4 text-primary" />
               <span>Motor de Embeddings & Vectores</span>
             </CardTitle>
-            {aiStatus?.embedding.configured ? (
+            {settings?.embedding.configured ? (
               <Badge variant="secondary" className="text-[10px] font-mono">
-                ● {aiStatus.embedding.model} ({aiStatus.embedding.dimensions || 2560}d)
+                ● {settings.embedding.model || "—"}{settings.embedding.dimensions ? ` (${settings.embedding.dimensions}d)` : ""}
               </Badge>
             ) : (
               <Badge variant="secondary" className="text-[10px] text-muted-foreground">
@@ -547,19 +560,19 @@ export default function SettingsPage() {
             <div className="p-3 rounded-lg bg-secondary/50 border border-border">
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">PROVEEDOR</span>
               <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
-                {aiStatus?.embedding.provider || "Ollama"}
+                {settings?.embedding.provider || "—"}
               </span>
             </div>
             <div className="p-3 rounded-lg bg-secondary/50 border border-border">
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">MODELO</span>
               <span className="text-sm font-semibold text-primary mt-0.5 block font-mono">
-                {aiStatus?.embedding.model || "bge-m3"}
+                {settings?.embedding.model || "—"}
               </span>
             </div>
             <div className="p-3 rounded-lg bg-secondary/50 border border-border">
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">DIMENSIONES</span>
               <span className="text-sm font-semibold text-emerald-500 dark:text-emerald-400 mt-0.5 block font-mono">
-                {aiStatus?.embedding.dimensions || 1024} floats
+                {settings?.embedding.dimensions ? `${settings.embedding.dimensions} floats` : "—"}
               </span>
             </div>
           </div>
@@ -567,7 +580,7 @@ export default function SettingsPage() {
           <div className="p-3 rounded-lg bg-secondary/50 border border-border text-xs space-y-1">
             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">ENDPOINT DE OLLAMA / EMBEDDINGS</span>
             <span className="text-xs text-muted-foreground font-mono block break-all">
-              {aiStatus?.embedding.base_url || "http://ollama.railway.internal:11434"}
+              {settings?.embedding.base_url || "No configurado"}
             </span>
           </div>
 
@@ -691,6 +704,49 @@ export default function SettingsPage() {
               </Button>
             </div>
           </form>
+        </Card>
+
+        {/* Server Runtime: Rerank, Storage & Vectors */}
+        <Card className="p-4 sm:p-5 bg-card border-border shadow-sm">
+          <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
+            <CardTitle className="text-sm text-foreground flex items-center gap-2">
+              <Layers className="h-4 w-4 text-primary" />
+              <span>Runtime del Servidor</span>
+            </CardTitle>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">RERANK</span>
+              <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
+                {settings?.rerank.provider || "—"}
+              </span>
+              <span className="text-[11px] text-muted-foreground font-mono block break-all mt-1">
+                {settings?.rerank.model || "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">ALMACENAMIENTO</span>
+              <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
+                {settings?.storage.driver || "—"}
+              </span>
+              <span className="text-[11px] text-muted-foreground font-mono block mt-1">
+                vectores: {settings?.storage.vector_provider || "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">PUERTO HTTP</span>
+              <span className="text-sm font-semibold text-foreground mt-0.5 block font-mono">
+                {settings?.http.port || "—"}
+              </span>
+            </div>
+            <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">RERANK ENDPOINT</span>
+              <span className="text-[11px] text-muted-foreground font-mono block break-all mt-0.5">
+                {settings?.rerank.base_url || "No configurado"}
+              </span>
+            </div>
+          </div>
         </Card>
       </div>
 
