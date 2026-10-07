@@ -2708,7 +2708,10 @@ func (a *apiHandler) settings(w http.ResponseWriter, r *http.Request) {
 			"model":      normalizedModel(emb.Model),
 			"base_url":   emb.BaseURL,
 			"configured": emb.Configured,
-			"dimensions": emb.Dimensions,
+			// Read at request time: the adapter caches dimensions from the
+			// first live embed, so the composition-time snapshot is zero
+			// until the service has served traffic.
+			"dimensions": liveEmbeddingDimensions(a.cfg, a.hybrid.embeddings),
 		},
 		"rerank": map[string]any{
 			"provider": normalizedProvider(a.cfg.Search.RerankProvider),
