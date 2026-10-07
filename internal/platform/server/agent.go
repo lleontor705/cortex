@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -291,6 +292,9 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
+		// Log the underlying transport error (dial/DNS/TLS details only; it
+		// never contains credentials) before returning the sanitized error.
+		log.Printf("server: agent provider request failed: %v", err)
 		return agentdomain.CompletionResult{}, errors.New("server: agent provider request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -644,17 +648,35 @@ func agentDialContext(cfg config.ServerLLMConfig, baseURL string) func(context.C
 		if err != nil || !ports[port] {
 			return nil, errors.New("server: agent provider dial rejected")
 		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, err := agentResolver.LookupIP(ctx, "ip", host)
 		if err != nil {
 			return nil, errors.New("server: agent provider resolution failed")
 		}
 		for _, ip := range ips {
-			if agentIPApproved(ip, cfg.AllowLoopback) {
-				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if !agentIPApproved(ip, cfg.AllowLoopback) {
+				continue
 			}
+			conn, err := agentDial(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err != nil {
+				// Dual-stack hosts may resolve an unreachable address
+				// family first (e.g. IPv6 on hosts without IPv6 egress);
+				// keep trying the remaining approved IPs before failing.
+				continue
+			}
+			return conn, nil
 		}
 		return nil, errors.New("server: agent provider dial rejected")
 	}
+}
+
+// agentResolver and agentDial are seams so the SSRF-safe dialer can be tested
+// without touching the network.
+var agentResolver interface {
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+} = net.DefaultResolver
+
+var agentDial = func(ctx context.Context, network, address string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
 
 func agentIPApproved(ip net.IP, allowLoopback bool) bool {
