@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -111,8 +112,12 @@ type hybridSearchDependencies struct {
 type adminAIStatus struct {
 	Provider   string
 	Model      string
+	BaseURL    string
 	Configured bool
 	Dimensions int
+	// TimeoutSeconds carries the resolved outbound LLM round-trip budget.
+	// It is zero for embedding status entries.
+	TimeoutSeconds int
 }
 
 type adminAIProbeResult struct {
@@ -294,8 +299,8 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	}
 	if api.adminAI == nil {
 		api.adminAI = composedAdminAIProbes{
-			llmStatus:       adminAIStatus{Provider: cfg.AI.Provider, Model: cfg.AI.Model, Configured: cfg.AI.Provider != "" && cfg.AI.Provider != "none"},
-			embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, Configured: cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none", Dimensions: liveEmbeddingDimensions(cfg, hybrid.embeddings)},
+			llmStatus:       adminAIStatus{Provider: cfg.AI.Provider, Model: cfg.AI.Model, BaseURL: cfg.AI.BaseURL, Configured: cfg.AI.Provider != "" && cfg.AI.Provider != "none"},
+			embeddingStatus: adminAIStatus{Provider: cfg.Search.EmbeddingProvider, Model: cfg.Search.EmbeddingModel, BaseURL: cfg.Search.EmbeddingBaseURL, Configured: cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none", Dimensions: liveEmbeddingDimensions(cfg, hybrid.embeddings)},
 			extractor:       extractor, embeddings: hybrid.embeddings,
 		}
 	}
@@ -372,6 +377,7 @@ func (a *apiHandler) routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/tokens/{id}/rotate", a.rotateToken)
 	mux.HandleFunc("DELETE /api/admin/tokens/{id}", a.revokeToken)
 	mux.HandleFunc("GET /api/admin/ai/status", a.aiStatus)
+	mux.HandleFunc("GET /api/settings", a.settings)
 	mux.HandleFunc("POST /api/admin/ai/test-llm", a.testLLM)
 	mux.HandleFunc("POST /api/admin/ai/test-embedding", a.testEmbedding)
 	mux.HandleFunc("GET /api/rag/stats", a.ragStats)
@@ -2675,6 +2681,70 @@ func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {
 			"dimensions": emb.Dimensions, "configured": emb.Configured,
 		},
 	})
+}
+
+// settings exposes the resolved server-mode runtime configuration for the
+// embedded settings surface. Unlike /api/admin/ai/status it may disclose
+// provider destinations (base URLs) so the operator UI reflects the real
+// runtime; credentials — LLM API keys, DSNs, and signing secrets — are never
+// serialized.
+func (a *apiHandler) settings(w http.ResponseWriter, r *http.Request) {
+	if err := a.ops.AuthorizeAdminManage(r.Context()); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	llm := a.adminAI.LLMStatus()
+	emb := a.adminAI.EmbeddingStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"llm": map[string]any{
+			"provider":        normalizedProvider(llm.Provider),
+			"model":           normalizedModel(llm.Model),
+			"base_url":        llm.BaseURL,
+			"configured":      llm.Configured,
+			"timeout_seconds": llm.TimeoutSeconds,
+		},
+		"embedding": map[string]any{
+			"provider":   normalizedProvider(emb.Provider),
+			"model":      normalizedModel(emb.Model),
+			"base_url":   emb.BaseURL,
+			"configured": emb.Configured,
+			"dimensions": emb.Dimensions,
+		},
+		"rerank": map[string]any{
+			"provider": normalizedProvider(a.cfg.Search.RerankProvider),
+			"model":    normalizedModel(a.cfg.Search.RerankModel),
+			"base_url": a.cfg.Search.RerankBaseURL,
+		},
+		"storage": map[string]any{
+			"driver":          a.cfg.Server.Storage.Driver,
+			"vector_provider": resolvedVectorProvider(a.cfg),
+		},
+		"http": map[string]any{
+			"port": a.cfg.HTTP.Port,
+		},
+	})
+}
+
+// resolvedVectorProvider mirrors the composition-time vector provider
+// resolution in Open: explicit config, then CORTEX_VECTOR_PROVIDER, then the
+// server provider preset, with an embedding-derived pgvector default and a
+// final "none" fallback.
+func resolvedVectorProvider(cfg config.Config) string {
+	provider := strings.TrimSpace(cfg.Vector.Provider)
+	if provider == "" {
+		if p := os.Getenv("CORTEX_VECTOR_PROVIDER"); p != "" {
+			provider = p
+		} else {
+			provider = cfg.Server.Provider.Vector
+		}
+	}
+	if provider == "" && cfg.Search.EmbeddingProvider != "" && cfg.Search.EmbeddingProvider != "none" {
+		provider = "pgvector"
+	}
+	if provider == "" {
+		provider = "none"
+	}
+	return provider
 }
 
 func (a *apiHandler) testLLM(w http.ResponseWriter, r *http.Request) {
