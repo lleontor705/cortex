@@ -1,27 +1,45 @@
 # =============================================================================
-# 🧠 CORTEX - PRODUCTION DOCKER COMPOSE STACK (docker-compose.prod.yml)
+# CORTEX - PRODUCTION COMPOSE STACK (docker/docker-compose.prod.yml)
 # =============================================================================
-# This file pulls official multi-arch images directly from GitHub Container Registry (ghcr.io).
-# No local source code, compilers, or Node.js runtime required.
+# One-command bring-up of the SAME stack deployed to Railway production:
+# cortex-server v2.4.1 (ghcr.io/lleontor705/cortex) + Postgres 18 (pgvector)
+# + the Nan LLM/embedding/rerank gateway.
 #
-# QUICK START:
-#   cp .env.example .env
+#   cp docker/.env.example docker/.env   # replace the REPLACE_WITH_NAN_API_KEY placeholders
 #   docker compose -f docker/docker-compose.prod.yml up -d
+#
+# Read the one-time tenant owner bearer from the first-start logs:
+#   docker compose -f docker/docker-compose.prod.yml logs cortex-server | grep tenant_owner_bearer
 # =============================================================================
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # Postgres 18 WITH the pgvector extension. The server auto-selects the
+    # pgvector vector provider whenever an embedding provider is configured,
+    # and its schema bootstrap runs CREATE EXTENSION vector: the stock
+    # postgres:18 image does not ship the extension and the server would fail
+    # startup ("extension vector is not available"). Railway's managed
+    # Postgres 18 provides pgvector; this image is the self-hosted equivalent.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cortex_bootstrap}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cortex_bootstrap}
-      POSTGRES_DB: ${POSTGRES_DB:-cortex_test}
+      POSTGRES_DB: ${POSTGRES_DB:-cortex}
+      # Postgres 18 data-directory gotcha (verified in production): initdb
+      # must not target the mount root itself; point PGDATA at a subdirectory
+      # of the mounted volume.
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Consumed by docker/postgres-init.sh (one-shot role bootstrap).
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-cortex_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-cortex_app_local}
+      POSTGRES_MIGRATION_USER: ${POSTGRES_MIGRATION_USER:-cortex_migration}
+      POSTGRES_MIGRATION_PASSWORD: ${POSTGRES_MIGRATION_PASSWORD:-cortex_migration_local}
     volumes:
       - cortex-postgres:/var/lib/postgresql/data
-      - ../scripts/postgres/bootstrap-authz.sql:/docker-entrypoint-initdb.d/001-bootstrap-authz.sql:ro
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/10-create-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cortex_bootstrap} -d ${POSTGRES_DB:-cortex_test}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cortex_bootstrap} -d ${POSTGRES_DB:-cortex}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -29,41 +47,58 @@ services:
   cortex-server:
     image: ghcr.io/lleontor705/cortex:latest
     restart: unless-stopped
-    command: ["/usr/local/bin/cortex", "--mode", "server"]
     depends_on:
       postgres:
         condition: service_healthy
+    # Optional full-passthrough env file (docker/.env). Every variable below
+    # also has a ${VAR:-default} default, so the stack boots even without it;
+    # values agree because compose interpolation reads the same file.
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # --- Storage (runtime and migration DSNs must name DISTINCT roles;
+      # --- startup fails closed otherwise) ---
       CORTEX_SERVER_STORAGE_DRIVER: postgres
-      CORTEX_SERVER_STORAGE_DSN: postgres://${POSTGRES_APP_USER:-cortex_test}:${POSTGRES_APP_PASSWORD:-cortex_test}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
-      CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://${POSTGRES_USER:-cortex_bootstrap}:${POSTGRES_PASSWORD:-cortex_bootstrap}@postgres:5432/${POSTGRES_DB:-cortex_test}?sslmode=disable
+      CORTEX_SERVER_STORAGE_DSN: postgres://${POSTGRES_APP_USER:-cortex_app}:${POSTGRES_APP_PASSWORD:-cortex_app_local}@postgres:5432/${POSTGRES_DB:-cortex}?sslmode=disable
+      CORTEX_SERVER_STORAGE_MIGRATION_DSN: postgres://${POSTGRES_MIGRATION_USER:-cortex_migration}:${POSTGRES_MIGRATION_PASSWORD:-cortex_migration_local}@postgres:5432/${POSTGRES_DB:-cortex}?sslmode=disable
+      # First start mints tenant/workspace/subject UUIDs and the tenant owner
+      # bearer, persists them in /home/cortex/.cortex/server-bootstrap.env,
+      # and prints the bearer ONCE to the logs.
       CORTEX_SERVER_AUTO_BOOTSTRAP: "${CORTEX_SERVER_AUTO_BOOTSTRAP:-true}"
-      # Local development opt-in: set CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT=true via env or .env to reuse the runtime DSN for migration/bootstrap.
+      # Local development opt-in only; distinct-role validation must run by default.
       CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT: "${CORTEX_SERVER_BOOTSTRAP_DEVELOPMENT:-false}"
-      CORTEX_SERVER_MULTI_TENANT: "${CORTEX_SERVER_MULTI_TENANT:-false}"
+      # --- HTTP (embedded UI, REST /api/*, and MCP /mcp share one port) ---
       CORTEX_HTTP_ENABLED: "true"
       CORTEX_HTTP_HOST: "${CORTEX_HTTP_HOST:-0.0.0.0}"
       CORTEX_HTTP_PORT: "${CORTEX_HTTP_PORT:-7438}"
       CORTEX_HTTP_TOKEN: "${CORTEX_HTTP_TOKEN:-}"
-      CORTEX_HTTP_ALLOWED_ORIGINS: "${CORTEX_HTTP_ALLOWED_ORIGINS:-http://localhost:7438,http://localhost:80,http://localhost:5173,http://127.0.0.1:7438}"
-      # External Vector Adapter
-      CORTEX_VECTOR_PROVIDER: "${CORTEX_VECTOR_PROVIDER:-none}"
-      # Embeddings
-      CORTEX_EMBEDDING_PROVIDER: "${CORTEX_EMBEDDING_PROVIDER:-none}"
-      CORTEX_EMBEDDING_MODEL: "${CORTEX_EMBEDDING_MODEL:-text-embedding-3-small}"
-      CORTEX_EMBEDDING_BASE_URL: "${CORTEX_EMBEDDING_BASE_URL:-}"
-      CORTEX_EMBEDDING_API_KEY: "${CORTEX_EMBEDDING_API_KEY:-}"
-      # LLM
+      CORTEX_HTTP_ALLOWED_ORIGINS: "${CORTEX_HTTP_ALLOWED_ORIGINS:-}"
+      # --- LLM (server-side extract/synthesize/agent) ---
       CORTEX_LLM_PROVIDER: "${CORTEX_LLM_PROVIDER:-openai}"
-      CORTEX_LLM_MODEL: "${CORTEX_LLM_MODEL:-gpt-4o-mini}"
-      CORTEX_LLM_BASE_URL: "${CORTEX_LLM_BASE_URL:-}"
-      CORTEX_LLM_API_KEY: "${CORTEX_LLM_API_KEY:-}"
+      CORTEX_LLM_BASE_URL: "${CORTEX_LLM_BASE_URL:-https://api.nan.builders/v1}"
+      CORTEX_LLM_MODEL: "${CORTEX_LLM_MODEL:-glm5.3-flash}"
+      CORTEX_LLM_API_KEY: "${CORTEX_LLM_API_KEY:-REPLACE_WITH_NAN_API_KEY}"
+      CORTEX_LLM_TIMEOUT: "${CORTEX_LLM_TIMEOUT:-90s}"
+      # --- Embeddings (openai-compatible REQUIRES an explicit base URL) ---
+      CORTEX_EMBEDDING_PROVIDER: "${CORTEX_EMBEDDING_PROVIDER:-openai-compatible}"
+      CORTEX_EMBEDDING_BASE_URL: "${CORTEX_EMBEDDING_BASE_URL:-https://api.nan.builders/v1}"
+      CORTEX_EMBEDDING_MODEL: "${CORTEX_EMBEDDING_MODEL:-qwen3-embedding}"
+      CORTEX_EMBEDDING_API_KEY: "${CORTEX_EMBEDDING_API_KEY:-REPLACE_WITH_NAN_API_KEY}"
+      # --- Rerank (openai-compatible REQUIRES an explicit base URL) ---
+      CORTEX_RERANK_PROVIDER: "${CORTEX_RERANK_PROVIDER:-openai-compatible}"
+      CORTEX_RERANK_BASE_URL: "${CORTEX_RERANK_BASE_URL:-https://api.nan.builders/v1}"
+      CORTEX_RERANK_MODEL: "${CORTEX_RERANK_MODEL:-qwen3-reranker}"
+      CORTEX_RERANK_API_KEY: "${CORTEX_RERANK_API_KEY:-REPLACE_WITH_NAN_API_KEY}"
+      # --- Logging ---
+      CORTEX_LOGGING_LEVEL: "${CORTEX_LOGGING_LEVEL:-info}"
+      CORTEX_LOGGING_FORMAT: "${CORTEX_LOGGING_FORMAT:-json}"
     ports:
-      - "7438:7438"
+      - "${CORTEX_HTTP_PORT:-7438}:${CORTEX_HTTP_PORT:-7438}"
     volumes:
       - cortex-server-state:/home/cortex/.cortex
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:7438/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${CORTEX_HTTP_PORT:-7438}/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12
