@@ -950,7 +950,11 @@ func (a *apiHandler) searchHybrid(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, searchResponse(lexical))
 		return
 	}
-	queryVector, err := a.hybrid.embeddings.Embed(r.Context(), query)
+	// Query-embedding cache (issue #126): a query embedding depends only on
+	// the text + model, never on the corpus, so identical repeated queries
+	// skip the provider round-trip. Lexical fusion and rerank below still
+	// run on every request.
+	queryVector, err := hybridQueryEmbeddingCache.embed(r.Context(), a.hybrid.embeddings, a.cfg.Search.EmbeddingModel, query)
 	if err != nil || len(queryVector) == 0 {
 		writeJSON(w, http.StatusOK, searchResponse(lexical))
 		return
