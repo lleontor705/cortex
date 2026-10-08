@@ -28,6 +28,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -53,6 +54,14 @@ type FactoryInput struct {
 	// VectorPoint.ModelInfo at upsert time, so the factory does not need to
 	// pre-declare it.
 	ModelInfo domain.ModelInfo
+
+	// StorageRole is the storage runtime PostgreSQL role (parsed from the
+	// server storage DSN). OPTIONAL, pgvector only: when set, the pgvector
+	// adapter bootstrap grants this role USAGE on the vector schema and SELECT
+	// on the embeddings table so the background embedding worker can check
+	// embedding existence from its RLS-bound storage connection (issue #115).
+	// Empty omits the grant entirely.
+	StorageRole string
 }
 
 // NewVectorIndex selects and constructs the concrete domain.VectorIndex for
@@ -115,7 +124,7 @@ func NewVectorIndex(ctx context.Context, cfg config.VectorConfig, in FactoryInpu
 			return nil, fmt.Errorf("external: pgvector provider requires FactoryInput.ModelInfo.Dimension > 0 (got %d); resolve from the configured embedding model before constructing the adapter",
 				in.ModelInfo.Dimension)
 		}
-		adapterCfg := mapPgvectorConfig(cfg.Pgvector, in.ModelInfo)
+		adapterCfg := mapPgvectorConfig(cfg.Pgvector, in.ModelInfo, in.StorageRole)
 		a, err := pgvector.New(ctx, adapterCfg)
 		if err != nil {
 			return nil, fmt.Errorf("external: construct pgvector adapter: %w", err)
@@ -152,8 +161,8 @@ func mapQdrantConfig(c config.QdrantConfig, model domain.ModelInfo) qdrant.Adapt
 
 // mapPgvectorConfig translates config.PGVectorConfig into pgvector.AdapterConfig.
 // See mapQdrantConfig for the mapping rationale.
-func mapPgvectorConfig(c config.PGVectorConfig, model domain.ModelInfo) pgvector.AdapterConfig {
-	return pgvector.AdapterConfig{
+func mapPgvectorConfig(c config.PGVectorConfig, model domain.ModelInfo, storageRole string) pgvector.AdapterConfig {
+	cfg := pgvector.AdapterConfig{
 		DSN:                c.DSN,
 		BootstrapDSN:       c.MigrationDSN,
 		Schema:             c.Schema,
@@ -169,4 +178,8 @@ func mapPgvectorConfig(c config.PGVectorConfig, model domain.ModelInfo) pgvector
 		MaxConns:           c.MaxConns,
 		StatementTimeoutMs: c.StatementTimeoutMs,
 	}
+	if role := strings.TrimSpace(storageRole); role != "" {
+		cfg.GrantRoles = []string{role}
+	}
+	return cfg
 }

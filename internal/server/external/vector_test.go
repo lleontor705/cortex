@@ -272,7 +272,7 @@ func TestMapPgvectorConfig_FieldsMapped(t *testing.T) {
 	in := validPgvectorCfg()
 	in.MigrationDSN = "postgres://vector_migration@db/cortex"
 	m := validModel()
-	out := mapPgvectorConfig(in, m)
+	out := mapPgvectorConfig(in, m, "cortex_runtime")
 	if out.DSN != in.DSN {
 		t.Errorf("DSN not mapped")
 	}
@@ -302,5 +302,28 @@ func TestMapPgvectorConfig_FieldsMapped(t *testing.T) {
 	}
 	if out.StatementTimeoutMs != in.StatementTimeoutMs {
 		t.Errorf("StatementTimeoutMs not mapped")
+	}
+}
+
+// TestMapPgvectorConfig_GrantRoles covers the issue #115 storage-runtime
+// reader grant plumbing: a non-empty StorageRole becomes a single-element
+// GrantRoles list, empty/whitespace input omits it entirely.
+func TestMapPgvectorConfig_GrantRoles(t *testing.T) {
+	in := validPgvectorCfg()
+	m := validModel()
+
+	withRole := mapPgvectorConfig(in, m, "cortex_runtime")
+	if len(withRole.GrantRoles) != 1 || withRole.GrantRoles[0] != "cortex_runtime" {
+		t.Errorf("GrantRoles = %v, want [cortex_runtime]", withRole.GrantRoles)
+	}
+
+	withoutRole := mapPgvectorConfig(in, m, "")
+	if len(withoutRole.GrantRoles) != 0 {
+		t.Errorf("GrantRoles = %v, want empty", withoutRole.GrantRoles)
+	}
+
+	blank := mapPgvectorConfig(in, m, "   ")
+	if len(blank.GrantRoles) != 0 {
+		t.Errorf("GrantRoles = %v, want empty for whitespace input", blank.GrantRoles)
 	}
 }

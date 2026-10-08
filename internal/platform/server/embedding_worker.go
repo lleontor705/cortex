@@ -6,24 +6,34 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/store/postgres"
 )
 
+// UnembeddedSource supplies tenant-bound batches of observations that have no
+// row in the vector replica yet. *postgresstore.SystemService implements it.
+// The indirection keeps the worker independent of the storage capability while
+// guaranteeing every read runs through the authorized (principal-bound,
+// tenant-scoped) path — a raw pool handle is RLS-blind and silently returns
+// zero rows (issue #115).
+type UnembeddedSource interface {
+	ListUnembedded(ctx context.Context, limit int) ([]postgres.UnembeddedObservation, error)
+}
+
 type backgroundEmbeddingWorker struct {
-	pool       *pgxpool.Pool
+	source     UnembeddedSource
 	embeddings embedding.Service
 	vectors    domain.VectorIndex
 	interval   time.Duration
 }
 
-func startBackgroundEmbeddingWorker(ctx context.Context, pool *pgxpool.Pool, emb embedding.Service, vec domain.VectorIndex) {
-	if pool == nil || emb == nil || vec == nil {
+func startBackgroundEmbeddingWorker(ctx context.Context, source UnembeddedSource, emb embedding.Service, vec domain.VectorIndex) {
+	if source == nil || emb == nil || vec == nil {
 		return
 	}
 	worker := &backgroundEmbeddingWorker{
-		pool:       pool,
+		source:     source,
 		embeddings: emb,
 		vectors:    vec,
 		interval:   5 * time.Second,
@@ -50,48 +60,22 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		return
 	}
 
-	query := `
-		SELECT o.id, o.title, o.content, COALESCE(o.project_key, ''), COALESCE(p.public_id::text, ''),
-		       COALESCE(o.scope, ''), COALESCE(o.tenant_id::text, ''), COALESCE(o.workspace_id::text, ''),
-		       COALESCE(o.source, ''), COALESCE(o.type, '')
-		  FROM observations o
-		  LEFT JOIN projects p ON p.tenant_id = o.tenant_id AND p.workspace_id = o.workspace_id AND p.name = o.project_key
-		 WHERE o.deleted_at IS NULL
-		   AND NOT EXISTS (
-		       SELECT 1 FROM cortex_vector.embeddings e WHERE e.id = o.id
-		   )
-		 LIMIT 32`
-
-	rows, err := w.pool.Query(ctx, query)
+	batch, err := w.source.ListUnembedded(ctx, 32)
 	if err != nil {
+		// Never swallow fetch failures: an unlogged error here was the reason
+		// production accumulated zero vectors for the worker's whole lifetime
+		// (issue #115).
+		log.Printf("server: background embedding worker list unembedded error: %v", err)
 		return
 	}
-	defer rows.Close()
-
-	type unindexedObservation struct {
-		id                                            int64
-		title, content, projectKey, projectPublicID   string
-		scope, tenantID, workspaceID, source, obsType string
-	}
-
-	batch := make([]unindexedObservation, 0, 32)
-	for rows.Next() {
-		var item unindexedObservation
-		if err := rows.Scan(&item.id, &item.title, &item.content, &item.projectKey, &item.projectPublicID,
-			&item.scope, &item.tenantID, &item.workspaceID, &item.source, &item.obsType); err == nil {
-			batch = append(batch, item)
-		}
-	}
-	rows.Close()
-
 	if len(batch) == 0 {
 		return
 	}
 
-	validObs := make([]unindexedObservation, 0, len(batch))
+	validObs := make([]postgres.UnembeddedObservation, 0, len(batch))
 	texts := make([]string, 0, len(batch))
 	for _, obs := range batch {
-		text := strings.TrimSpace(obs.title + "\n" + obs.content)
+		text := strings.TrimSpace(obs.Title + "\n" + obs.Content)
 		if text == "" {
 			continue
 		}
@@ -129,20 +113,20 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 			continue
 		}
 		points = append(points, domain.VectorPoint{
-			ID:     obs.id,
+			ID:     obs.ID,
 			Vector: vec,
 			ModelInfo: domain.ModelInfo{
 				Name:      w.embeddings.Model(),
 				Dimension: w.embeddings.Dimensions(),
 			},
 			Metadata: map[string]any{
-				"project":      obs.projectKey,
-				"project_id":   obs.projectPublicID,
-				"scope":        obs.scope,
-				"tenant_id":    obs.tenantID,
-				"workspace_id": obs.workspaceID,
-				"source":       obs.source,
-				"type":         obs.obsType,
+				"project":      obs.ProjectKey,
+				"project_id":   obs.ProjectPublicID,
+				"scope":        obs.Scope,
+				"tenant_id":    obs.TenantID,
+				"workspace_id": obs.WorkspaceID,
+				"source":       obs.Source,
+				"type":         obs.Type,
 			},
 		})
 	}

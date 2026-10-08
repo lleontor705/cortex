@@ -1151,3 +1151,19 @@ func TestDefaultTimeout_Constant(t *testing.T) {
 		t.Errorf("defaultTimeout = %v, want 30s", defaultTimeout)
 	}
 }
+
+// TestReaderGrantStatements_Shape pins the issue #115 reader-grant SQL: USAGE
+// on the schema plus read-only SELECT on the table, role interpolated from a
+// pre-validated identifier.
+func TestReaderGrantStatements_Shape(t *testing.T) {
+	stmts := readerGrantStatements("cortex_vector", "embeddings", "cortex_runtime")
+	if len(stmts) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(stmts))
+	}
+	if stmts[0] != "GRANT USAGE ON SCHEMA cortex_vector TO cortex_runtime" {
+		t.Errorf("stmt[0] = %q", stmts[0])
+	}
+	if stmts[1] != "GRANT SELECT ON cortex_vector.embeddings TO cortex_runtime" {
+		t.Errorf("stmt[1] = %q", stmts[1])
+	}
+}
