@@ -633,3 +633,171 @@ func TestWorker_IsSaturated_PropagatesPendingCountError(t *testing.T) {
 		t.Fatal("saturated must be false when the probe errors (caller checks err first)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// LeaseBatch composition configurability (REQ-RET-105)
+// ---------------------------------------------------------------------------
+
+func TestLeaseBatchFromEnv(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"", 0},    // unset/empty: caller keeps default
+		{"   ", 0}, // whitespace-only: caller keeps default
+		{"8", 8},   // positive override
+		{" 12 ", 12},
+		{"0", 0},   // zero is not a batch
+		{"-3", 0},  // negative is not a batch
+		{"abc", 0}, // invalid keeps default (fail open to 1)
+		{"8x", 0},
+	}
+	for _, tc := range cases {
+		got := LeaseBatchFromEnv(func(string) string { return tc.raw })
+		if got != tc.want {
+			t.Errorf("LeaseBatchFromEnv(%q) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+	if LeaseBatchFromEnv(nil) != 0 {
+		t.Error("nil getenv must yield 0")
+	}
+}
+
+// TestWorkerConfig_DefaultLeaseBatchStays1 pins the local-mode default: with
+// the env unset and no explicit config, the worker leases one intent per poll
+// (REQ-RET-105 "keep default 1 in local mode").
+func TestWorkerConfig_DefaultLeaseBatchStays1(t *testing.T) {
+	t.Setenv(EnvLeaseBatch, "")
+	cfg := WorkerConfig{}.withDefaults()
+	if cfg.LeaseBatch != defaultLeaseBatch {
+		t.Fatalf("default LeaseBatch = %d, want %d", cfg.LeaseBatch, defaultLeaseBatch)
+	}
+}
+
+// TestWorkerConfig_LeaseBatchEnvOverride verifies the composition knob: unset
+// config field + env override wins; explicit config field wins over env.
+func TestWorkerConfig_LeaseBatchEnvOverride(t *testing.T) {
+	t.Setenv(EnvLeaseBatch, "8")
+	cfg := WorkerConfig{}.withDefaults()
+	if cfg.LeaseBatch != 8 {
+		t.Fatalf("env override LeaseBatch = %d, want 8", cfg.LeaseBatch)
+	}
+	if got := (WorkerConfig{LeaseBatch: 4}).withDefaults().LeaseBatch; got != 4 {
+		t.Fatalf("explicit config must win over env: got %d, want 4", got)
+	}
+	// Invalid env values are ignored (stay at default 1).
+	t.Setenv(EnvLeaseBatch, "not-a-number")
+	if got := (WorkerConfig{}).withDefaults().LeaseBatch; got != defaultLeaseBatch {
+		t.Fatalf("invalid env must keep default: got %d, want %d", got, defaultLeaseBatch)
+	}
+}
+
+// TestWorker_LeaseBatch8_LeasesAndEmbedsInOneBatch is the REQ-RET-105
+// acceptance scenario: 8 pending intents + LeaseBatch=8 → ONE lease of 8 and
+// ONE EmbedBatch call, all intents completed and upserted.
+func TestWorker_LeaseBatch8_LeasesAndEmbedsInOneBatch(t *testing.T) {
+	fakeSvc := &fakeBatchService{model: "batch-model", dims: 3}
+	obs := make(map[int64]*domain.Observation, 8)
+	intents := make([]sqlitestore.OutboxIntent, 0, 8)
+	for i := int64(1); i <= 8; i++ {
+		obs[i] = &domain.Observation{ID: i, Title: fmt.Sprintf("Obs %d", i), Content: fmt.Sprintf("Content %d", i)}
+		intents = append(intents, sqlitestore.OutboxIntent{ID: 100 + i, ObservationID: i})
+	}
+	outbox := &fakeOutbox{intents: intents, completed: make(map[int64]bool), failed: make(map[int64]error)}
+	vecWriter := newFakeVectorWriter()
+
+	worker := &Worker{
+		outbox:     outbox,
+		obs:        &fakeObsReader{obs: obs},
+		embeddings: fakeSvc,
+		vectors:    vecWriter,
+		config:     WorkerConfig{Concurrency: 1, LeaseBatch: 8},
+	}
+
+	if !worker.processOne(context.Background(), context.Background()) {
+		t.Fatal("expected processed=true")
+	}
+	if got := atomic.LoadInt32(&fakeSvc.batchCount); got != 1 {
+		t.Fatalf("EmbedBatch calls = %d, want 1 (all 8 intents embed together)", got)
+	}
+	for i := int64(1); i <= 8; i++ {
+		if !vecWriter.has(i) {
+			t.Errorf("observation %d not upserted", i)
+		}
+		if !outbox.completed[100+i] {
+			t.Errorf("intent %d not completed", 100+i)
+		}
+	}
+	if len(outbox.failed) != 0 {
+		t.Fatalf("unexpected failures: %+v", outbox.failed)
+	}
+}
+
+// TestWorker_LeaseBatch_DefaultOneProcessesIndividually pins the dead-batch
+// fix boundary: with the default LeaseBatch=1 (env unset) the worker never
+// takes the batch path — matching pre-change behavior.
+func TestWorker_LeaseBatch_DefaultOneProcessesIndividually(t *testing.T) {
+	t.Setenv(EnvLeaseBatch, "")
+	fakeSvc := &fakeBatchService{model: "batch-model", dims: 3}
+	obsStore := &fakeObsReader{obs: map[int64]*domain.Observation{
+		1: {ID: 1, Title: "Obs 1", Content: "Content 1"},
+		2: {ID: 2, Title: "Obs 2", Content: "Content 2"},
+	}}
+	outbox := &fakeOutbox{
+		intents: []sqlitestore.OutboxIntent{
+			{ID: 101, ObservationID: 1},
+			{ID: 102, ObservationID: 2},
+		},
+		completed: make(map[int64]bool),
+		failed:    make(map[int64]error),
+	}
+	w := NewWorker(outbox, obsStore, fakeSvc, newFakeVectorWriter(), WorkerConfig{Concurrency: 1})
+	if w.config.LeaseBatch != 1 {
+		t.Fatalf("default LeaseBatch = %d, want 1", w.config.LeaseBatch)
+	}
+	// Two sequential polls, each handling exactly one intent.
+	for i := 0; i < 2; i++ {
+		if !w.processOne(context.Background(), context.Background()) {
+			t.Fatalf("poll %d: expected processed=true", i)
+		}
+	}
+	if got := atomic.LoadInt32(&fakeSvc.batchCount); got != 0 {
+		t.Fatalf("EmbedBatch calls = %d, want 0 (LeaseBatch=1 keeps the single-embed path)", got)
+	}
+	if got := atomic.LoadInt32(&fakeSvc.embedCount); got != 2 {
+		t.Fatalf("Embed calls = %d, want 2", got)
+	}
+	if !outbox.completed[101] || !outbox.completed[102] {
+		t.Fatal("expected both intents completed")
+	}
+}
+
+// TestWorker_SaturationFailsClosedRegardlessOfLeaseBatch pins the REQ-EMB-001
+// fail-closed guarantee: MaxBacklog saturation is evaluated on PendingCount
+// alone, never weakened by a raised LeaseBatch.
+func TestWorker_SaturationFailsClosedRegardlessOfLeaseBatch(t *testing.T) {
+	// 9 pending, MaxBacklog 5: saturated even though LeaseBatch could drain 8.
+	outbox := &fakeOutbox{intents: make([]sqlitestore.OutboxIntent, 9), completed: map[int64]bool{}, failed: map[int64]error{}}
+	for i := range outbox.intents {
+		outbox.intents[i] = sqlitestore.OutboxIntent{ID: int64(i + 1), ObservationID: int64(i + 1)}
+	}
+	w := NewWorker(outbox, &fakeObsReader{}, &fakeEmbeddingService{dims: 3, model: "m"}, newFakeVectorWriter(),
+		WorkerConfig{LeaseBatch: 8, MaxBacklog: 5})
+	saturated, err := w.IsSaturated(context.Background())
+	if err != nil {
+		t.Fatalf("IsSaturated: %v", err)
+	}
+	if !saturated {
+		t.Fatal("pending=9 > MaxBacklog=5 must fail closed regardless of LeaseBatch=8")
+	}
+
+	// Below threshold: not saturated.
+	outbox.intents = outbox.intents[:4]
+	saturated, err = w.IsSaturated(context.Background())
+	if err != nil {
+		t.Fatalf("IsSaturated: %v", err)
+	}
+	if saturated {
+		t.Fatal("pending=4 <= MaxBacklog=5 must not be saturated")
+	}
+}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -29,17 +30,36 @@ type backgroundEmbeddingWorker struct {
 	embeddings embedding.Service
 	vectors    domain.VectorIndex
 	interval   time.Duration
+	// batchSize is how many unembedded observations one drain leases. It is
+	// always > 1 (the server drains in batches by design — one EmbedBatch
+	// call per drain when the provider supports batching); the
+	// CORTEX_EMBEDDING_LEASE_BATCH composition knob (REQ-RET-105) can raise
+	// or lower it, but the default keeps the pre-existing 32.
+	batchSize int
 }
+
+// defaultDrainBatch is the server background embedding worker's drain batch
+// size (issue #115/#117 era default; kept unchanged unless overridden).
+const defaultDrainBatch = 32
 
 func startBackgroundEmbeddingWorker(ctx context.Context, source UnembeddedSource, emb embedding.Service, vec domain.VectorIndex) {
 	if source == nil || emb == nil || vec == nil {
 		return
+	}
+	// Composition-configurable drain batch (REQ-RET-105): the shared
+	// CORTEX_EMBEDDING_LEASE_BATCH knob, defaulting to the historical 32.
+	// Invalid or unset env keeps the default — the drain stays batched (> 1)
+	// in every configuration.
+	batchSize := defaultDrainBatch
+	if n := embedding.LeaseBatchFromEnv(os.Getenv); n > 0 {
+		batchSize = n
 	}
 	worker := &backgroundEmbeddingWorker{
 		source:     source,
 		embeddings: emb,
 		vectors:    vec,
 		interval:   5 * time.Second,
+		batchSize:  batchSize,
 	}
 	go worker.run(ctx)
 }
@@ -63,7 +83,7 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		return
 	}
 
-	batch, err := w.source.ListUnembedded(ctx, 32)
+	batch, err := w.source.ListUnembedded(ctx, w.batchSize)
 	if err != nil {
 		// Never swallow fetch failures: an unlogged error here was the reason
 		// production accumulated zero vectors for the worker's whole lifetime

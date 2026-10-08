@@ -15,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +70,35 @@ const (
 	defaultMaxBackoff  = 30 * time.Second
 )
 
+// EnvLeaseBatch is the composition-level override for WorkerConfig.LeaseBatch
+// (REQ-RET-105). When the config field is unset (<= 0) and this environment
+// variable holds a positive integer, the worker leases that many intents per
+// poll, which makes the batch-embed path (processBatch) live: the leased
+// intents hydrate and embed in ONE EmbedBatch call. Unset, invalid, or
+// non-positive values keep defaultLeaseBatch (1), so the local-mode default is
+// unchanged. Fail-closed saturation is independent of this knob: the save path
+// still fails when PendingCount exceeds MaxBacklog (REQ-EMB-001) regardless of
+// the configured LeaseBatch.
+const EnvLeaseBatch = "CORTEX_EMBEDDING_LEASE_BATCH"
+
+// LeaseBatchFromEnv parses EnvLeaseBatch through the injected getenv function.
+// It returns 0 when the variable is unset, empty, non-numeric, or <= 0 — the
+// caller then keeps its own default. Exported so composition paths (server
+// background worker) can share the same knob semantics.
+func LeaseBatchFromEnv(getenv func(string) string) int {
+	if getenv == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(getenv(EnvLeaseBatch))
+	if raw == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return n
+	}
+	return 0
+}
+
 // WorkerConfig configures the embedding worker.
 type WorkerConfig struct {
 	// Concurrency is the bounded worker pool size (goroutines). Default 2.
@@ -95,6 +126,11 @@ func (c WorkerConfig) withDefaults() WorkerConfig {
 	}
 	if c.LeaseBatch <= 0 {
 		c.LeaseBatch = defaultLeaseBatch
+		// Composition-level override (REQ-RET-105): only when the config
+		// field is unset. An explicitly configured LeaseBatch always wins.
+		if n := LeaseBatchFromEnv(os.Getenv); n > 0 {
+			c.LeaseBatch = n
+		}
 	}
 	if c.MaxBacklog <= 0 {
 		c.MaxBacklog = defaultMaxBacklog
