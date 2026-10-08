@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
@@ -133,4 +134,76 @@ func assertSemanticStage(t *testing.T, trace agentdomain.RetrievalTrace, name, s
 		}
 	}
 	t.Fatalf("stage %s=%s absent from %#v", name, status, trace.Stages)
+}
+
+// countingAgentEmbedding records provider round-trips per query text for the
+// ret-103 query-embedding-cache wiring tests.
+type countingAgentEmbedding struct {
+	mu    sync.Mutex
+	calls map[string]int
+	err   error
+}
+
+func (f *countingAgentEmbedding) Embed(_ context.Context, text string) ([]float32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[text]++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []float32{0.5, 0.5}, nil
+}
+func (f *countingAgentEmbedding) Dimensions() int { return 2 }
+func (f *countingAgentEmbedding) Model() string   { return "ret-103-fake-model" }
+
+func (f *countingAgentEmbedding) callsFor(t *testing.T, text string) int {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[text]
+}
+
+// TestAgentRetrieverQueryEmbeddingCacheSkipsProviderRoundTrip verifies the
+// agent retriever serves a repeated query embedding from the shared cache
+// without a second provider round-trip.
+func TestAgentRetrieverQueryEmbeddingCacheSkipsProviderRoundTrip(t *testing.T) {
+	ops := &recordingAgentOperations{}
+	vectors := &agentRecordingVectorIndex{}
+	embed := &countingAgentEmbedding{calls: map[string]int{}}
+	ctx := context.WithValue(context.Background(), agentProjectIDKey{}, recordingAgentProjectID)
+	retriever := scopedAgentRetriever{ops: ops, vectors: vectors, embeddings: embed}
+	scope := agentdomain.Scope{TenantID: "tenant-a", WorkspaceID: "workspace-a", Project: "cortex"}
+	// Unique query: avoids cache-key collisions with other tests sharing the
+	// process-wide hybridQueryEmbeddingCache.
+	query := "ret103 unique cache probe hybrid round trip"
+
+	for i := 0; i < 2; i++ {
+		if _, err := retriever.RetrieveScoped(ctx, scope, query, 5); err != nil {
+			t.Fatalf("RetrieveScoped() run %d = %v", i+1, err)
+		}
+	}
+	if got := embed.callsFor(t, query); got != 1 {
+		t.Fatalf("provider round-trips = %d, want exactly 1 (second embed must hit the cache)", got)
+	}
+}
+
+// TestAgentRetrieverQueryEmbeddingCacheNeverCachesProviderErrors verifies a
+// provider failure is retried (never cached) on the next retrieval.
+func TestAgentRetrieverQueryEmbeddingCacheNeverCachesProviderErrors(t *testing.T) {
+	ops := &recordingAgentOperations{}
+	vectors := &agentRecordingVectorIndex{}
+	embed := &countingAgentEmbedding{calls: map[string]int{}, err: errors.New("provider unavailable")}
+	ctx := context.WithValue(context.Background(), agentProjectIDKey{}, recordingAgentProjectID)
+	retriever := scopedAgentRetriever{ops: ops, vectors: vectors, embeddings: embed}
+	scope := agentdomain.Scope{TenantID: "tenant-a", WorkspaceID: "workspace-a", Project: "cortex"}
+	query := "ret103 unique failing provider probe"
+
+	for i := 0; i < 2; i++ {
+		if _, err := retriever.RetrieveScoped(ctx, scope, query, 5); err != nil {
+			t.Fatalf("RetrieveScoped() must degrade lexical-only on embed failure, run %d = %v", i+1, err)
+		}
+	}
+	if got := embed.callsFor(t, query); got != 2 {
+		t.Fatalf("provider round-trips = %d, want 2 (errors must not be cached)", got)
+	}
 }
