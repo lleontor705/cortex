@@ -1097,28 +1097,19 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 	if s == nil || s.store == nil {
 		return nil, errors.New(authz.DenyRole)
 	}
-	obsList, err := s.ListObservations(ctx, domain.ObservationFilter{Project: project, Limit: 10000})
+	// Coverage derives from the persisted per-observation embedding state
+	// (migration 113, issue #119) over the same authorized rows List would
+	// return. The pre-113 in-memory HasEmbedding/RAGStatus fields were never
+	// populated by this store, so counting them reported pending: N /
+	// coverage: 0 forever while the vector replica filled up (issue #115).
+	stateCounts, err := s.store.observations().EmbeddingStateCounts(ctx, project)
 	if err != nil {
 		return nil, err
 	}
-	total := len(obsList)
-	indexed := 0
-	pending := 0
-	failed := 0
-
-	for _, o := range obsList {
-		switch {
-		case o.HasEmbedding || o.RAGStatus == "indexed":
-			indexed++
-		case o.RAGStatus == "failed":
-			failed++
-		default:
-			// Empty status counts as pending, never indexed (issue #115): the
-			// store persists no embedding flag, so claiming default coverage
-			// would report vectors that were never generated.
-			pending++
-		}
-	}
+	indexed := stateCounts["indexed"]
+	failed := stateCounts["failed"]
+	pending := stateCounts["pending"]
+	total := indexed + failed + pending
 	coverage := 100.0
 	if total > 0 {
 		coverage = float64(indexed) / float64(total) * 100.0

@@ -129,6 +129,11 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 	}
 	sql112 := normalizeLF(servermigrations.ServerStaticBindContractSQL)
 	sum112 := sha256.Sum256([]byte(sql112))
+	if servermigrations.ServerEmbeddingStateSQL == "" {
+		return nil, errors.New("migration: embedded PostgreSQL embedding state SQL is empty")
+	}
+	sql113 := normalizeLF(servermigrations.ServerEmbeddingStateSQL)
+	sum113 := sha256.Sum256([]byte(sql113))
 	migrations := []*PostgresServerMigration{baseline, identityGraph, syncMigration, {
 		version:  103,
 		name:     "sync_identity",
@@ -189,6 +194,16 @@ func NewPostgresServerMigrations() ([]*PostgresServerMigration, error) {
 		name:     "static_bind_contract",
 		sql:      sql112,
 		checksum: hex.EncodeToString(sum112[:]),
+	}, {
+		// Version 113 persists the per-observation embedding state
+		// (pending | indexed | failed plus embedded_at) so the RAG stats
+		// plane and the background embedding worker share one honest source
+		// of truth (issue #115 follow-up, issue #119). Additive and
+		// forward-only; the columns inherit the table's grants and RLS.
+		version:  113,
+		name:     "embedding_state",
+		sql:      sql113,
+		checksum: hex.EncodeToString(sum113[:]),
 	}}
 	// Every migration carries the runtime head so any single Apply refuses
 	// databases ledgered by a newer runtime (ErrFutureMigration).

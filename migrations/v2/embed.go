@@ -209,3 +209,14 @@ var ServerMultiTenantVerifierSQL string
 //
 //go:embed 112_static_bind_contract.sql
 var ServerStaticBindContractSQL string
+
+// ServerEmbeddingStateSQL is PostgreSQL migration 113. It adds the persisted
+// per-observation embedding state (embedding_state: pending | indexed |
+// failed, plus embedded_at) so the RAG stats plane and the background
+// embedding worker share one honest source of truth instead of the
+// never-populated in-memory HasEmbedding/RAGStatus fields (issue #115
+// follow-up, issue #119). The migration is additive and forward-only; the
+// new columns inherit the table's existing grants and RLS.
+//
+//go:embed 113_embedding_state.sql
+var ServerEmbeddingStateSQL string

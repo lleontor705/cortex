@@ -618,12 +618,16 @@ type UnembeddedObservation struct {
 	Type            string
 }
 
-// ListUnembedded returns the oldest tenant-scoped observations that have no
-// embedding in the vector replica (cortex_vector.embeddings). The query MUST
-// run inside a bound transaction (Store.BeginTx binds the verified principal
-// through cortex_bind_principal): RLS hides every row otherwise, and the
-// runtime role needs the bootstrap-granted SELECT on the vector schema for
-// the NOT EXISTS probe (issue #115). Workspace scoping matches ListArchivable.
+// ListUnembedded returns the oldest tenant-scoped observations whose
+// persisted embedding state is still 'pending' (migration 113, issue #119).
+// The flag is stamped by the worker after a SUCCESSFUL vector upsert, so a
+// failed stamp self-heals: the row stays unembedded and is retried on the
+// next pass. (Before migration 113 this probed cortex_vector.embeddings via
+// NOT EXISTS, which required a bootstrap-granted cross-schema SELECT; the
+// flag is now the single source of truth, issue #115 follow-up.) The query
+// MUST run inside a bound transaction (Store.BeginTx binds the verified
+// principal through cortex_bind_principal): RLS hides every row otherwise.
+// Workspace scoping matches ListArchivable.
 //
 // Only project-resolvable observations are candidates (inner join): the
 // server-scoped vector trust model stamps every point with a project_id
@@ -649,9 +653,7 @@ func (r *ObservationRepository) ListUnembedded(ctx context.Context, limit int) (
 		   AND o.workspace_id = (SELECT id FROM workspaces WHERE tenant_id = public.cortex_current_tenant() AND public_id = $2::uuid)
 		   AND o.deleted_at IS NULL
 		   AND (COALESCE(o.title, '') <> '' OR COALESCE(o.content, '') <> '')
-		   AND NOT EXISTS (
-		       SELECT 1 FROM cortex_vector.embeddings e WHERE e.id = o.id
-		   )
+		   AND o.embedding_state = 'pending'
 		 ORDER BY o.id
 		 LIMIT $1`, limit, r.tenant.WorkspaceID)
 		if err != nil {
@@ -669,6 +671,97 @@ func (r *ObservationRepository) ListUnembedded(ctx context.Context, limit int) (
 		return rows.Err()
 	})
 	return out, err
+}
+
+// MarkEmbedded stamps the persisted embedding state on observations whose
+// vectors were successfully upserted into the vector replica (migration 113,
+// issue #119). The query MUST run inside a bound transaction: RLS scopes the
+// UPDATE to the verified principal's tenant, and the workspace guard mirrors
+// every other observations DML. Only rows still 'pending' are stamped, so a
+// concurrently re-embedded row can never be resurrected from 'failed'. The
+// caller treats this best-effort: a failed stamp leaves the row unembedded
+// and self-heals on the next worker pass.
+func (r *ObservationRepository) MarkEmbedded(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		ct, err := tx.Exec(ctx, `UPDATE observations
+		   SET embedding_state='indexed', embedded_at=now(), updated_at=now(), updated_by=$3
+		 WHERE tenant_id=public.cortex_current_tenant() AND workspace_id=$1
+		   AND id = ANY($2) AND embedding_state='pending'`, ws, ids, actorFromContext(ctx))
+		if err != nil {
+			return fmt.Errorf("postgres observations: mark embedded: %w", err)
+		}
+		_ = ct
+		return nil
+	})
+}
+
+// EmbeddingStateCounts aggregates the persisted per-observation embedding
+// state (migration 113, issue #119) with the same tenant, workspace, grant,
+// and visibility predicates List applies, so GetRAGStats coverage is
+// computed over exactly the rows ListObservations would return instead of
+// the never-populated in-memory HasEmbedding/RAGStatus fields (issue #115).
+// The project filter, when set, matches the plain project_key equality List
+// uses.
+func (r *ObservationRepository) EmbeddingStateCounts(ctx context.Context, project string) (map[string]int, error) {
+	counts := map[string]int{}
+	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ws, err := requireWorkspaceScope(ctx)
+		if err != nil {
+			return err
+		}
+		q := `SELECT COALESCE(embedding_state, 'pending'), count(*)
+		  FROM observations
+		 WHERE tenant_id=public.cortex_current_tenant() AND deleted_at IS NULL`
+		args := []any{}
+		n := 1
+		q += fmt.Sprintf(" AND workspace_id=$%d", n)
+		args = append(args, ws)
+		n++
+		if projects, wildcard := r.projectGrantFilter(); r.authorized && !wildcard {
+			if len(projects) == 0 {
+				q += ` AND FALSE`
+			} else {
+				q += fmt.Sprintf(" AND project_key = ANY($%d)", n)
+				args = append(args, projects)
+				n++
+			}
+		}
+		if r.authorized {
+			q, args = r.appendObservationVisibilityPredicate(q, args, false)
+			n = len(args) + 1
+		}
+		if project != "" {
+			q += fmt.Sprintf(" AND project_key=$%d", n)
+			args = append(args, project)
+			n++
+		}
+		q += ` GROUP BY 1`
+		rows, err := tx.Query(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var state string
+			var count int
+			if err := rows.Scan(&state, &count); err != nil {
+				return err
+			}
+			counts[state] = count
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 // ListArchivable returns old, low-importance observations for lifecycle jobs.
