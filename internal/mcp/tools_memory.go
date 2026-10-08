@@ -1051,7 +1051,7 @@ func handleSearch(stores *Stores) server.ToolHandlerFunc {
 
 			if stores.Embeddings != nil {
 				var embedErr error
-				queryVec, embedErr = stores.Embeddings.Embed(ctx, query)
+				queryVec, embedErr = embedTieredSearchQuery(ctx, stores.Embeddings, query)
 				if embedErr != nil {
 					log.Printf("warning: search embed failed, falling back to FTS5: %v", embedErr)
 				}
