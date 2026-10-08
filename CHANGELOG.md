@@ -12,6 +12,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.15] - 2026-10-08
+
+### 🚀 Features
+
+- *(bench)* Add fusion A/B decision-gate harness (RRF k=60 vs calibrated convex combination) (#137)
+- *(retrieval)* Add tier-gated cached HyDE generation, default-off (#139)
+
+### 📚 Documentation
+
+- *(retrieval)* Document pgvector tuning knobs and expose them in /api/settings (#143)
+
+### ⚡ Performance
+
+- *(embedding)* Make worker LeaseBatch configurable at composition (#136)
+- *(retrieval)* Rework rerank pacer to per-query token-bucket budget limiter (#138)
+- *(server)* Route agent retriever query embedding through shared cache (#141)
+- *(mcp)* Route tiered search query embeddings through shared cache (#142)
+- *(pgvector)* Replace per-point upsert with chunked multi-row INSERT (#144)
+
+### 🚜 Refactor
+
+- *(server)* Delegate queryEmbeddingCache to retrieval.QueryEmbeddingCache (#140)
+
+### ⚙️ Miscellaneous Tasks
+
+- *(changelog)* Refresh release history [skip ci]
+
 ## [2.4.14] - 2026-10-08
 
 ### 🐛 Bug Fixes
