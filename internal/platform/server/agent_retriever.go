@@ -504,7 +504,10 @@ func (r scopedAgentRetriever) semanticDense(ctx context.Context, scope agentdoma
 	if r.embeddings == nil || !domain.IsVectorIndexHealthy(ctx, r.vectors) {
 		return nil, errors.New("agent dense retrieval unavailable")
 	}
-	vector, err := r.embeddings.Embed(ctx, query)
+	// Route the query embedding through the shared query-embedding cache
+	// (ret-103 / REQ-RET-101): identical repeated queries skip the provider
+	// round-trip. Reindex/document paths never consult this cache.
+	vector, err := hybridQueryEmbeddingCache.embed(ctx, r.embeddings, r.embeddings.Model(), query)
 	if err != nil || len(vector) == 0 {
 		return nil, errors.New("agent query embedding unavailable")
 	}
