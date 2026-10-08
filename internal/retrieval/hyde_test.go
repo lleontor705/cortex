@@ -81,9 +81,8 @@ func TestHyDEDisabledMakesNoGenerationCall(t *testing.T) {
 		t.Fatal("generator must be disabled when the flag is off")
 	}
 	for _, tier := range []QueryTier{TierSemanticHybrid, TierMultiHopGraph, TierDirectFactual} {
-		if vec, ok := gen.VectorForQuery(context.Background(), tier, "any query"); ok {
+		if _, ok := gen.VectorForQuery(context.Background(), tier, "any query"); ok {
 			t.Fatalf("disabled generator returned a vector for tier %s", tier)
-			_ = vec
 		}
 	}
 	if got := gen.Calls(); got != 0 {
