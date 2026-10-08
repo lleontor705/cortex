@@ -391,6 +391,12 @@ func NewServiceWithPolicy(cfg Config, policy OutboundPolicy) *Service {
 	}
 	policy.normalize()
 	transport := &http.Transport{DialContext: policy.dialContext}
+	// Extraction calls are infrequent and the provider path kills idle
+	// keep-alive connections within ~90s (issue #129): requests written on a
+	// dead pooled connection stall ~20s until the middlebox drops the
+	// half-open connection. Pooled idle connections are therefore closed from
+	// this side well inside the observed safe window.
+	transport.IdleConnTimeout = 15 * time.Second
 	if policy.TLSConfig != nil {
 		transport.TLSClientConfig = policy.TLSConfig.Clone()
 	}
