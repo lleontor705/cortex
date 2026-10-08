@@ -248,8 +248,41 @@ func (h *httpReranker) rerankBatch(query string, batch []*domain.SearchResult) (
 
 // post performs one batch request with 429 backoff (1s<<attempt, at most 3
 // retries) and paces every attempt against the RPM budget.
+// rerankEndpoint builds the provider URL (issue #123): operators configure
+// the base URL in the same version-inclusive preset shape as the embedding
+// provider (e.g. "https://host/v1", which the embedding client turns into
+// /v1/embeddings). A base whose path already ends in a version segment gets
+// only "/rerank" appended — appending "/v1/rerank" produced /v1/v1/rerank
+// and a deterministic 404 that made the gate fail open on every search. A
+// bare host keeps the documented "/v1/rerank" default.
+func rerankEndpoint(baseURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if u, err := url.Parse(base); err == nil && rerankVersionedPath(u.Path) {
+		return base + "/rerank"
+	}
+	return base + "/v1/rerank"
+}
+
+func rerankVersionedPath(path string) bool {
+	trimmed := strings.TrimSuffix(path, "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx < 0 {
+		return false
+	}
+	segment := strings.ToLower(trimmed[idx+1:])
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *httpReranker) post(body []byte) (*rerankResponse, error) {
-	endpoint := h.baseURL + "/v1/rerank"
+	endpoint := rerankEndpoint(h.baseURL)
 	for attempt := 0; ; attempt++ {
 		h.pacer.wait()
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
