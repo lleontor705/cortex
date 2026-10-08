@@ -72,6 +72,13 @@ const (
 	defaultIVFFlatLists       = 100
 )
 
+// maxSearchCapacityHint bounds the upfront capacity hint for the search result
+// slice. The SQL LIMIT stays caller-controlled (query semantics unchanged), but
+// the allocation hint must not scale with unbounded caller-provided values
+// (CodeQL go/uncontrolled-allocation-size): results grow by append as rows
+// stream in, so the hint only avoids re-allocation for sane limits.
+const maxSearchCapacityHint = 1000
+
 // identifierRe matches safe PostgreSQL identifiers (schema/table/index names).
 // Only lowercase letters, digits, and underscores, starting with a letter or
 // underscore. This prevents SQL injection via identifier interpolation.
@@ -537,7 +544,11 @@ func (a *Adapter) Search(ctx context.Context, q domain.VectorQuery) ([]domain.Ve
 
 	candidates, scanErr := func() ([]domain.VectorCandidate, error) {
 		defer rows.Close()
-		candidates := make([]domain.VectorCandidate, 0, limit)
+		capHint := limit
+		if capHint > maxSearchCapacityHint {
+			capHint = maxSearchCapacityHint
+		}
+		candidates := make([]domain.VectorCandidate, 0, capHint)
 		for rows.Next() {
 			var id int64
 			var similarity float64
