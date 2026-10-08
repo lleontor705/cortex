@@ -199,6 +199,35 @@ func ValidateServerLLM(cfg *ServerLLMConfig) error {
 	return nil
 }
 
+// Agent answer deadline defaults: the request-scoped agent chat deadline is
+// an upper bound that includes provider retries, so operators can raise it
+// (up to the hard cap) when the configured provider is slow.
+const (
+	AgentAnswerDefaultTimeout = 30 * time.Second
+	AgentAnswerMaxTimeout     = 5 * time.Minute
+)
+
+// AgentAnswerTimeoutFromEnv reads the server-owned agent answer deadline from
+// CORTEX_AGENT_ANSWER_TIMEOUT (Go duration syntax). An unset variable keeps
+// the historical fixed 30s deadline; a malformed, non-positive, or over-cap
+// value is an error so callers fail closed. Like CORTEX_LLM_TIMEOUT, the
+// value is trusted administrator configuration and is never supplied by
+// request data.
+func AgentAnswerTimeoutFromEnv() (time.Duration, error) {
+	p := &envParser{}
+	timeout := p.durationEnv("CORTEX_AGENT_ANSWER_TIMEOUT")
+	if err := p.err(); err != nil {
+		return 0, err
+	}
+	if timeout == 0 {
+		return AgentAnswerDefaultTimeout, nil
+	}
+	if timeout < 0 || timeout > AgentAnswerMaxTimeout {
+		return 0, fmt.Errorf("invalid agent answer timeout: must be greater than zero and at most %s", AgentAnswerMaxTimeout)
+	}
+	return timeout, nil
+}
+
 func normalizeLLMBoundInt(name string, value *int, def, min, max int) error {
 	if *value == 0 {
 		*value = def

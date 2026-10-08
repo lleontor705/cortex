@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -212,13 +213,22 @@ func (r agentCodeRetriever) Retrieve(ctx context.Context, scope agentdomain.Scop
 	return evidence, nil
 }
 
+// agentChatMaxRetries bounds the extra attempts after the first one on the
+// non-streaming chat completion call: transient transport failures, timeouts,
+// provider 5xx, and 429 are retried with exponential backoff; client errors
+// are never retried. The request context deadline (the agent answer timeout)
+// remains the overall upper bound that includes every retry and backoff.
+const agentChatMaxRetries = 2
+
 type configuredChatProvider struct {
-	cfg      config.ServerLLMConfig
-	baseURL  string
-	client   *http.Client
-	sem      chan struct{}
-	maxBody  int64
-	maxError int64
+	cfg        config.ServerLLMConfig
+	baseURL    string
+	client     *http.Client
+	sem        chan struct{}
+	maxBody    int64
+	maxError   int64
+	maxRetries int
+	sleep      func(time.Duration)
 }
 
 func newConfiguredChatProvider(cfg config.ServerLLMConfig) (agentdomain.CompletionProvider, error) {
@@ -246,9 +256,17 @@ func newConfiguredChatProvider(cfg config.ServerLLMConfig) (agentdomain.Completi
 		}
 		return validateAgentProviderURL(cfg, baseURL, req.URL)
 	}}
-	return &configuredChatProvider{cfg: cfg, baseURL: strings.TrimRight(baseURL, "/"), client: client, sem: make(chan struct{}, cfg.MaxConcurrent), maxBody: cfg.MaxResponseBodyBytes, maxError: cfg.MaxErrorBodyBytes}, nil
+	return &configuredChatProvider{cfg: cfg, baseURL: strings.TrimRight(baseURL, "/"), client: client, sem: make(chan struct{}, cfg.MaxConcurrent), maxBody: cfg.MaxResponseBodyBytes, maxError: cfg.MaxErrorBodyBytes, maxRetries: agentChatMaxRetries, sleep: time.Sleep}, nil
 }
 
+// Complete performs one non-streaming chat completion with bounded
+// retry-with-backoff: provider transport errors, timeouts, 5xx responses,
+// and 429 are retried up to agentChatMaxRetries extra attempts with
+// exponential backoff plus jitter; any other client error (4xx) fails
+// immediately. After the final attempt the sanitized fail-closed error is
+// returned unchanged, preserving the provider_unavailable / agent_timeout
+// mapping done by the agent domain. The caller's context deadline remains
+// the overall upper bound that includes every retry and backoff wait.
 func (p *configuredChatProvider) Complete(ctx context.Context, req agentdomain.CompletionRequest) (agentdomain.CompletionResult, error) {
 	type chatMessage struct {
 		Role    string `json:"role"`
@@ -271,14 +289,48 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 	if err != nil {
 		return agentdomain.CompletionResult{}, errors.New("server: agent provider request encoding failed")
 	}
+	for attempt := 0; ; attempt++ {
+		result, retryable, err := p.completeOnce(ctx, body)
+		if err == nil {
+			return result, nil
+		}
+		if !retryable || attempt >= p.maxRetries {
+			return agentdomain.CompletionResult{}, err
+		}
+		if p.sleep != nil {
+			p.sleep(agentRetryBackoff(attempt + 1))
+		}
+		// Fail closed on an expired or cancelled request context instead of
+		// starting another attempt that cannot succeed.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return agentdomain.CompletionResult{}, ctxErr
+		}
+	}
+}
+
+// agentRetryBackoff returns the wait before the 1-based retry attempt:
+// exponential (1s, 2s, ...) with up to 250ms of added jitter so concurrent
+// agent requests do not retry in lockstep.
+func agentRetryBackoff(attempt int) time.Duration {
+	base := time.Second << (attempt - 1)
+	if base > 8*time.Second {
+		base = 8 * time.Second
+	}
+	return base + time.Duration(rand.Int64N(int64(250*time.Millisecond)))
+}
+
+// completeOnce performs exactly one provider round-trip. The retryable flag
+// reports whether the failure class is transient (transport error, timeout,
+// 5xx, 429) and may be retried by the caller.
+func (p *configuredChatProvider) completeOnce(ctx context.Context, body []byte) (agentdomain.CompletionResult, bool, error) {
 	endpoint := p.baseURL + "/chat/completions"
 	u, _ := url.Parse(endpoint)
 	if err := validateAgentProviderURL(p.cfg, p.baseURL, u); err != nil {
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider destination rejected")
+		return agentdomain.CompletionResult{}, false, errors.New("server: agent provider destination rejected")
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider request construction failed")
+		return agentdomain.CompletionResult{}, false, errors.New("server: agent provider request construction failed")
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.cfg.APIKey != "" {
@@ -288,23 +340,29 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 	case p.sem <- struct{}{}:
 		defer func() { <-p.sem }()
 	case <-ctx.Done():
-		return agentdomain.CompletionResult{}, ctx.Err()
+		return agentdomain.CompletionResult{}, false, ctx.Err()
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		// Log the underlying transport error (dial/DNS/TLS details only; it
 		// never contains credentials) before returning the sanitized error.
 		log.Printf("server: agent provider request failed: %v", err)
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider request failed")
+		return agentdomain.CompletionResult{}, true, errors.New("server: agent provider request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, p.maxError+1))
+		// 429 and 5xx are provider-side transient conditions; retry with
+		// backoff after draining the error body.
+		return agentdomain.CompletionResult{}, true, fmt.Errorf("server: agent provider rejected request: status %d", resp.StatusCode)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, p.maxError+1))
-		return agentdomain.CompletionResult{}, fmt.Errorf("server: agent provider rejected request: status %d", resp.StatusCode)
+		return agentdomain.CompletionResult{}, false, fmt.Errorf("server: agent provider rejected request: status %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBody+1))
 	if err != nil || int64(len(data)) > p.maxBody {
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider response invalid")
+		return agentdomain.CompletionResult{}, false, errors.New("server: agent provider response invalid")
 	}
 	var envelope struct {
 		Choices []struct {
@@ -318,7 +376,7 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 		} `json:"usage"`
 	}
 	if json.Unmarshal(data, &envelope) != nil || len(envelope.Choices) == 0 {
-		return agentdomain.CompletionResult{}, errors.New("server: agent provider response invalid")
+		return agentdomain.CompletionResult{}, false, errors.New("server: agent provider response invalid")
 	}
 	raw := strings.TrimSpace(envelope.Choices[0].Message.Content)
 	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "```json"), "```"), "```"))
@@ -335,17 +393,17 @@ Split distinct factual statements into distinct claims. Omit any claim that cann
 		for i, c := range answer.Claims {
 			domainClaims[i] = c.toDomain()
 		}
-		return agentdomain.CompletionResult{Claims: domainClaims, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+		return agentdomain.CompletionResult{Claims: domainClaims, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, false, nil
 	}
 	var singleClaim llmClaim
 	if json.Unmarshal([]byte(raw), &singleClaim) == nil && strings.TrimSpace(singleClaim.Text) != "" {
-		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{singleClaim.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{singleClaim.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, false, nil
 	}
 	if raw != "" {
 		c := llmClaim{Text: raw}
-		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{c.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, nil
+		return agentdomain.CompletionResult{Claims: []agentdomain.CompletionClaim{c.toDomain()}, InputTokens: envelope.Usage.Prompt, OutputTokens: envelope.Usage.Completion}, false, nil
 	}
-	return agentdomain.CompletionResult{}, errors.New("server: agent provider response invalid")
+	return agentdomain.CompletionResult{}, false, errors.New("server: agent provider response invalid")
 }
 
 func (p *configuredChatProvider) Stream(ctx context.Context, req agentdomain.CompletionRequest, emit func(agentdomain.CompletionClaim) error) (agentdomain.CompletionUsage, error) {

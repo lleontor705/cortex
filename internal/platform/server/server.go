@@ -340,6 +340,14 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		pool.Close()
 		return nil, fmt.Errorf("server: outbound llm configuration: %w", err)
 	}
+	// The agent answer deadline is trusted administrator configuration (issue
+	// #125): it is the request-scoped upper bound that includes provider
+	// retries. Invalid values fail closed at startup.
+	agentAnswerTimeout, err := config.AgentAnswerTimeoutFromEnv()
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: agent answer timeout configuration: %w", err)
+	}
 	var extractor *extraction.Service
 	if llm.Configured() {
 		extractor = newConfiguredExtractor(llm)
@@ -365,6 +373,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	}
 	handler, transport := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, pool.Ping, authenticator.middleware, hybridSearchDependencies{
 		vectors: vec, embeddings: emb, reranker: reranker, adminAI: adminProbes, agent: agentService, agentAuditor: agentAuditor,
+		agentLimits: agentdomain.DefaultLimitPolicy().WithJSONTimeout(agentAnswerTimeout),
 	}, extractor)
 	rt := &Runtime{
 		Config:     &cfg,
