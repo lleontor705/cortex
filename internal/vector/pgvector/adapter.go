@@ -125,6 +125,13 @@ type AdapterConfig struct {
 	// NOT EXISTS on this table (issue #115). Best-effort: a vector-dedicated
 	// database may legitimately not contain the storage role.
 	GrantRoles []string
+
+	// Tuning carries the config-gated exact-scan tuning knobs (REQ-RET-102).
+	// The zero value is fully disabled (byte-identical default cosine exact
+	// scan). The factory constructor New() populates it from the
+	// CORTEX_VECTOR_PGVECTOR_* environment pattern; NewWithDB callers set it
+	// explicitly (tests and external compositions stay deterministic).
+	Tuning SearchTuning
 }
 
 // Adapter implements domain.VectorIndex over a PostgreSQL database with the
@@ -143,9 +150,10 @@ type Adapter struct {
 	maxBatchSize       int
 	timeout            time.Duration
 	statementTimeout   int
-	password           string // extracted from DSN for redaction (never logged)
-	ownDB              bool   // Close should close the underlying pool (factory-built)
-	created            bool   // schema/table/index have been verified this session
+	password           string       // extracted from DSN for redaction (never logged)
+	ownDB              bool         // Close should close the underlying pool (factory-built)
+	created            bool         // schema/table/index have been verified this session
+	tuning             SearchTuning // config-gated exact-scan tuning (zero = disabled)
 	caps               domain.Capabilities
 }
 
@@ -200,6 +208,13 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 		return nil, fmt.Errorf("pgvector: create pool: %w", redactDSN(err, password))
 	}
 
+	// Exact-scan tuning (REQ-RET-102): read from the CORTEX_VECTOR_PGVECTOR_*
+	// environment pattern. Unset env = zero tuning = byte-identical default.
+	envTuning := SearchTuningFromOS()
+	if cfg.Tuning != (SearchTuning{}) {
+		envTuning = cfg.Tuning // explicit config wins over env
+	}
+
 	return &Adapter{
 		db:                 &poolDB{pool: pool},
 		schema:             cfg.Schema,
@@ -217,6 +232,7 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 		password:           password,
 		ownDB:              true,
 		created:            true, // schema already bootstrapped above
+		tuning:             envTuning,
 		caps:               defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
 	}, nil
 }
@@ -244,6 +260,7 @@ func NewWithDB(db pgvectorDB, cfg AdapterConfig) (*Adapter, error) {
 		statementTimeout:   cfg.StatementTimeoutMs,
 		password:           extractPassword(cfg.DSN),
 		ownDB:              false,
+		tuning:             cfg.Tuning,
 		caps:               defaultCapabilities(cfg.Dimension, cfg.MaxBatchSize),
 	}, nil
 }
@@ -498,38 +515,61 @@ func (a *Adapter) Search(ctx context.Context, q domain.VectorQuery) ([]domain.Ve
 	args = append(args, limit) // last param is LIMIT
 	limitParam := paramIdx
 
-	sql := fmt.Sprintf(
-		`SELECT id, 1 - (embedding <=> $1::vector) AS similarity
-FROM %s%s
-ORDER BY embedding <=> $1::vector
-LIMIT $%d`,
-		a.qualifiedTable, whereSQL, limitParam,
-	)
+	// The SQL shape is owned by the tuning mode (REQ-RET-102): with the zero
+	// tuning this renders the pre-tuning exact '<=>' cosine scan byte-identical.
+	sql := a.tuning.searchSQL(a.qualifiedTable, whereSQL, limitParam)
 
-	rows, err := a.db.Query(ctx, sql, args...)
+	// Tuning path: when the parallel-gather knob is enabled the statement runs
+	// inside a dedicated transaction whose SET LOCAL
+	// max_parallel_workers_per_gather is scoped to that transaction only.
+	// Default (knob unset): pre-tuning pool-level query, no transaction.
+	var tunedTx pgvectorTx
+	var rows pgx.Rows
+	var err error
+	if a.tuning.MaxParallelWorkersPerGather > 0 {
+		tunedTx, rows, err = a.beginTunedSearchTx(ctx, sql, args)
+	} else {
+		rows, err = a.db.Query(ctx, sql, args...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pgvector: search: %w", a.redact(err))
 	}
-	defer rows.Close()
 
-	candidates := make([]domain.VectorCandidate, 0, limit)
-	for rows.Next() {
-		var id int64
-		var similarity float64
-		if err := rows.Scan(&id, &similarity); err != nil {
-			return nil, fmt.Errorf("pgvector: scan result: %w", a.redact(err))
+	candidates, scanErr := func() ([]domain.VectorCandidate, error) {
+		defer rows.Close()
+		candidates := make([]domain.VectorCandidate, 0, limit)
+		for rows.Next() {
+			var id int64
+			var similarity float64
+			if err := rows.Scan(&id, &similarity); err != nil {
+				return nil, fmt.Errorf("pgvector: scan result: %w", a.redact(err))
+			}
+			if q.Threshold > 0 && similarity < q.Threshold {
+				continue // client-side threshold enforcement
+			}
+			candidates = append(candidates, domain.VectorCandidate{
+				ID:         id,
+				Score:      similarity,
+				Provenance: adapterID,
+			})
 		}
-		if q.Threshold > 0 && similarity < q.Threshold {
-			continue // client-side threshold enforcement
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("pgvector: rows iteration: %w", a.redact(err))
 		}
-		candidates = append(candidates, domain.VectorCandidate{
-			ID:         id,
-			Score:      similarity,
-			Provenance: adapterID,
-		})
+		return candidates, nil
+	}()
+
+	// Finalize the tuned transaction AFTER the rows are consumed and closed.
+	// SET LOCAL is transaction-scoped, so commit/rollback discards it.
+	if tunedTx != nil {
+		if scanErr != nil {
+			_ = tunedTx.Rollback(ctx)
+		} else if err := tunedTx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("pgvector: commit search: %w", a.redact(err))
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("pgvector: rows iteration: %w", a.redact(err))
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return candidates, nil
 }
