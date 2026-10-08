@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -17,37 +16,31 @@ import (
 // across searches (including searches scoped to different projects) is
 // therefore semantically safe, and a cache hit still runs the full lexical
 // fusion + rerank pipeline afterwards.
-//
-// Cache key: embedding model id + normalized (lowercased, whitespace-collapsed)
-// query text. Bounded by an LRU cache with TTL so memory stays capped even
-// under arbitrary query cardinality.
 const (
 	queryEmbeddingCacheCapacity = 128
 	queryEmbeddingCacheTTL      = 10 * time.Minute
 )
 
-// queryEmbeddingCache caches hybrid-search query embeddings. Concurrency-safe
-// via the underlying ScopedCache; hits/misses are exported through atomic
-// counters for observability without changing the response shape.
+// queryEmbeddingCache caches hybrid-search query embeddings by delegating to
+// the shared retrieval.QueryEmbeddingCache helper (ret-101 / REQ-RET-101):
+// the same key normalization (embedding model id + lowercased,
+// whitespace-collapsed query), LRU+TTL bounding, and never-cached provider
+// errors. The wrapper keeps its own hits/misses counters so the existing
+// server-side observability surface (and tests) stay stable while the shared
+// helper owns storage and key semantics.
 type queryEmbeddingCache struct {
-	cache  *retrieval.ScopedCache[[]float32]
+	cache  *retrieval.QueryEmbeddingCache
 	hits   atomic.Int64
 	misses atomic.Int64
 }
 
 func newQueryEmbeddingCache(capacity int, ttl time.Duration) *queryEmbeddingCache {
-	return &queryEmbeddingCache{cache: retrieval.NewScopedCache[[]float32](capacity, ttl)}
+	return &queryEmbeddingCache{cache: retrieval.NewQueryEmbeddingCache(capacity, ttl)}
 }
 
 // hybridQueryEmbeddingCache is the process-wide cache shared by hybrid search
 // handlers; identical repeated queries skip the provider round-trip.
 var hybridQueryEmbeddingCache = newQueryEmbeddingCache(queryEmbeddingCacheCapacity, queryEmbeddingCacheTTL)
-
-func queryEmbeddingCacheKey(model, query string) string {
-	// Normalization collapses all whitespace runs to single spaces and
-	// case-folds, so "Find  Symbols" and "  find symbols " share one entry.
-	return model + "\x00" + strings.ToLower(strings.Join(strings.Fields(query), " "))
-}
 
 // embed returns the cached vector for (model, query) or performs one provider
 // round-trip and caches the result. Provider errors are never cached.
@@ -55,16 +48,15 @@ func (c *queryEmbeddingCache) embed(ctx context.Context, svc embedding.Service, 
 	if c == nil || c.cache == nil || svc == nil {
 		return svc.Embed(ctx, query)
 	}
-	key := queryEmbeddingCacheKey(model, query)
-	if vector, ok := c.cache.Get(key); ok {
+	// Mirror the shared helper's hit/miss outcome: a provider round-trip
+	// always advances the helper's miss counter, so an unchanged miss count
+	// means the vector was served from cache.
+	missesBefore := c.cache.Misses()
+	vector, err := c.cache.Embed(ctx, model, query, svc.Embed)
+	if c.cache.Misses() == missesBefore {
 		c.hits.Add(1)
-		return vector, nil
+	} else {
+		c.misses.Add(1)
 	}
-	c.misses.Add(1)
-	vector, err := svc.Embed(ctx, query)
-	if err != nil || len(vector) == 0 {
-		return vector, err
-	}
-	c.cache.Set(key, vector)
-	return vector, nil
+	return vector, err
 }
