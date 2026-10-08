@@ -22,11 +22,28 @@ import (
 	graphdomain "github.com/lleontor705/cortex/v2/internal/domain/graph"
 	"github.com/lleontor705/cortex/v2/internal/domain/privacy"
 	scoringdomain "github.com/lleontor705/cortex/v2/internal/domain/scoring"
+	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/store/bundle"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// tieredSearchQueryEmbeddingCache is the shared query-embedding cache for the
+// MCP tiered search surfaces (ret-104 / REQ-RET-101). internal/mcp must not
+// import internal/platform/server (architecture gate), so it uses the shared
+// internal/retrieval.QueryEmbeddingCache helper directly: same key
+// normalization (embedding model + whitespace-collapsed lowercase query),
+// bounded LRU+TTL, and provider errors never cached. Reindex/document
+// embedding paths never consult this cache.
+var tieredSearchQueryEmbeddingCache = retrieval.NewQueryEmbeddingCache(128, 10*time.Minute)
+
+// embedTieredSearchQuery returns the cached query embedding for svc or
+// performs one provider round-trip through it. Provider errors and empty
+// vectors are never cached. The caller must guard against a nil service.
+func embedTieredSearchQuery(ctx context.Context, svc embedding.Service, query string) ([]float32, error) {
+	return tieredSearchQueryEmbeddingCache.Embed(ctx, svc.Model(), query, svc.Embed)
+}
 
 // registerCortexTools registers Cortex-native MCP tools (graph, scoring,
 // search, consolidation, and admin tools) in the cortex_* namespace.
@@ -810,7 +827,7 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			// Prefer generating a real query embedding via the embedding service
 			if stores.Embeddings != nil {
 				var embedErr error
-				queryVec, embedErr = stores.Embeddings.Embed(ctx, query)
+				queryVec, embedErr = embedTieredSearchQuery(ctx, stores.Embeddings, query)
 				if embedErr != nil {
 					log.Printf("warning: hybrid search embed failed, falling back to FTS5: %v", embedErr)
 				}
