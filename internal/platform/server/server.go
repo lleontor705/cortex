@@ -35,6 +35,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/server/external"
 	postgresstore "github.com/lleontor705/cortex/v2/internal/store/postgres"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -222,6 +223,18 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 			return nil, fmt.Errorf("server: scope vector provider: %w", err)
 		}
 	}
+	// SEC-02: the rerank provider composes exclusively from trusted
+	// administrator configuration and fails startup like the embedding and
+	// LLM providers when a configured provider cannot be constructed. A
+	// configured-but-unbuilt reranker would be dead configuration: the
+	// /api/search/hybrid gate would silently report applied=false forever
+	// (issue #121). The credential resolves only from CORTEX_RERANK_API_KEY
+	// and the destination is approved on the shared outbound policy.
+	reranker, err := newServerReranker(cfg)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: outbound rerank configuration: %w", err)
+	}
 
 	reindexDeps := reindexCommandDeps{
 		target: vec,
@@ -351,7 +364,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		embeddings:      emb,
 	}
 	handler, transport := newHTTPHandlerWithHybridSearch(cfg, requestOperations{}, pool.Ping, authenticator.middleware, hybridSearchDependencies{
-		vectors: vec, embeddings: emb, adminAI: adminProbes, agent: agentService, agentAuditor: agentAuditor,
+		vectors: vec, embeddings: emb, reranker: reranker, adminAI: adminProbes, agent: agentService, agentAuditor: agentAuditor,
 	}, extractor)
 	rt := &Runtime{
 		Config:     &cfg,
@@ -807,6 +820,37 @@ func liveEmbeddingDimensions(cfg config.Config, service embedding.Service) int {
 		return dimensions
 	}
 	return cfg.Vector.Qdrant.Dimension
+}
+
+// newServerReranker composes the server-mode rerank gate (issue #121). The
+// "none" default returns (nil, nil): zero machinery and an honestly
+// reported applied=false. "late-interaction" composes the local zero-network
+// reranker. "openai-compatible" composes the secure HTTP reranker, which
+// requires an explicit base URL (approved on the outbound policy) and the
+// env-only CORTEX_RERANK_API_KEY credential.
+func newServerReranker(cfg config.Config) (retrieval.Reranker, error) {
+	policy := embedding.OutboundPolicy{
+		AllowLoopback:             cfg.Server.BootstrapDevelopment,
+		AllowInsecureLoopbackHTTP: cfg.Server.BootstrapDevelopment,
+		MaxRedirects:              3,
+		MaxResponseBodyBytes:      4 << 20,
+		Timeout:                   30 * time.Second,
+	}
+	// NewSecureReranker validates the destination against the policy's
+	// approved hosts, so the configured rerank base URL must be approved
+	// before construction (same trust shape as newServerEmbedding).
+	if strings.EqualFold(strings.TrimSpace(cfg.Search.RerankProvider), "openai-compatible") {
+		if destination := strings.TrimSpace(cfg.Search.RerankBaseURL); destination != "" {
+			if err := policy.ApproveDestination(destination); err != nil {
+				return nil, fmt.Errorf("rerank: approve outbound destination: %w", err)
+			}
+		}
+	}
+	return retrieval.NewSecureReranker(retrieval.RerankConfig{
+		Provider: cfg.Search.RerankProvider,
+		Model:    cfg.Search.RerankModel,
+		BaseURL:  cfg.Search.RerankBaseURL,
+	}, policy)
 }
 
 func newServerEmbedding(cfg config.Config) (embedding.Service, error) {

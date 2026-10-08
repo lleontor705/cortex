@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -103,10 +104,51 @@ type healthCheck func(context.Context) error
 type hybridSearchDependencies struct {
 	vectors      domain.VectorIndex
 	embeddings   embedding.Service
+	reranker     retrieval.Reranker
 	adminAI      adminAIProbes
 	agent        agentAnswerer
 	agentLimits  agentdomain.LimitPolicy
 	agentAuditor agentAuditorFactory
+}
+
+// rerankCandidatePoolCap bounds the fused candidate pool the reranker sees:
+// large enough to re-order beyond the caller's limit, small enough to keep
+// the remote rerank cost bounded (the HTTP reranker batches in chunks of
+// 32). The pool never shrinks below the caller's limit, so enabling rerank
+// can never truncate results.
+const rerankCandidatePoolCap = 64
+
+// rerankCandidatePool widens the fusion limit for the rerank path: rerank
+// re-orders candidates before the final limit, so it must see more than the
+// caller asked for. Without a reranker the caller's limit is used unchanged.
+func rerankCandidatePool(limit int) int {
+	pool := limit * 4
+	if pool > rerankCandidatePoolCap {
+		pool = rerankCandidatePoolCap
+	}
+	if pool < limit {
+		pool = limit
+	}
+	return pool
+}
+
+// rerankObservability carries the honest engagement state of the rerank
+// gate (issue #121): applied is true only when a composed reranker actually
+// re-ordered the fused list. Base URLs and API keys are never included.
+type rerankObservability struct {
+	Provider   string
+	Model      string
+	Applied    bool
+	Candidates int
+}
+
+func (r *rerankObservability) setHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Rerank-Provider", normalizedProvider(r.Provider))
+	w.Header().Set("X-Rerank-Model", normalizedModel(r.Model))
+	w.Header().Set("X-Rerank-Applied", fmt.Sprintf("%t", r.Applied))
+	if r.Applied {
+		w.Header().Set("X-Rerank-Candidates", strconv.Itoa(r.Candidates))
+	}
 }
 
 type adminAIStatus struct {
@@ -885,7 +927,15 @@ func (a *apiHandler) searchHybrid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := queryInt(q.Get("limit"), a.defaultLimit, 1, a.maxLimit)
-	opts := domain.SearchOptions{Query: query, Type: q.Get("type"), Project: q.Get("project"), Scope: q.Get("scope"), Limit: limit}
+	// Rerank gate (issue #121): when a reranker is composed, the fusion path
+	// fetches a wider candidate pool so rerank can re-order beyond the
+	// caller's limit before the final truncation. Without one, behavior is
+	// byte-identical to the pre-rerank hybrid path.
+	rerankPool := limit
+	if a.hybrid.reranker != nil {
+		rerankPool = rerankCandidatePool(limit)
+	}
+	opts := domain.SearchOptions{Query: query, Type: q.Get("type"), Project: q.Get("project"), Scope: q.Get("scope"), Limit: rerankPool}
 	lexical, err := a.ops.SearchObservations(r.Context(), query, opts)
 	if err != nil {
 		respondOperationError(w, err)
@@ -918,12 +968,47 @@ func (a *apiHandler) searchHybrid(w http.ResponseWriter, r *http.Request) {
 		"type":         opts.Type,
 	}
 	vectorResults, vectorErr := retrieval.SearchVectors(r.Context(), a.hybrid.vectors, domain.VectorQuery{
-		Vector: queryVector, Limit: limit, Threshold: 0.3, Filters: filters,
+		Vector: queryVector, Limit: rerankPool, Threshold: 0.3, Filters: filters,
 	}, operationObservationLookup{ops: a.ops})
+	rerankMeta := a.rerankObservability()
 	if vectorErr == nil && len(vectorResults) > 0 {
-		lexical = retrieval.FuseResults(lexical, vectorResults, limit)
+		lexical = retrieval.FuseResults(lexical, vectorResults, rerankPool)
 	}
+	lexical = a.applyRerank(w, query, lexical, rerankMeta)
 	writeJSON(w, http.StatusOK, searchResponse(lexical))
+}
+
+// rerankObservability builds the gate metadata from trusted configuration
+// only; credentials and base URLs never enter the response.
+func (a *apiHandler) rerankObservability() *rerankObservability {
+	return &rerankObservability{
+		Provider: a.cfg.Search.RerankProvider,
+		Model:    a.cfg.Search.RerankModel,
+	}
+}
+
+// applyRerank runs the composed reranker over the fused candidate list
+// (post-fusion, pre-limit, issue #121) and writes the honest observability
+// headers. Rerank fails open: on any reranker error the pre-rerank fused
+// order is returned and applied=false is reported, never a failed request.
+// When no reranker is composed the metadata reports applied=false for the
+// fusion path so operators can distinguish "configured off" from "engaged".
+func (a *apiHandler) applyRerank(w http.ResponseWriter, query string, fused []*domain.SearchResult, meta *rerankObservability) []*domain.SearchResult {
+	if meta == nil {
+		return fused
+	}
+	defer func() { meta.setHeaders(w) }()
+	if a.hybrid.reranker == nil || len(fused) == 0 {
+		return fused
+	}
+	reranked, err := a.hybrid.reranker.Rerank(query, fused)
+	if err != nil || len(reranked) == 0 {
+		log.Printf("server: hybrid rerank gate failed open: %v", err)
+		return fused
+	}
+	meta.Applied = true
+	meta.Candidates = len(fused)
+	return reranked
 }
 
 func (a *apiHandler) createEdge(w http.ResponseWriter, r *http.Request) {
