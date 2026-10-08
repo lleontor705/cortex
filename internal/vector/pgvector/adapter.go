@@ -360,7 +360,12 @@ func (a *Adapter) Capabilities(_ context.Context) (domain.Capabilities, error) {
 
 // Upsert stores a batch of vectors. Dimension and model-namespace mismatch are
 // rejected FAIL-CLOSED before any DB call (REQ-VEC-001 dim-mismatch pin; model
-// mismatch). The batch is chunked at maxBatchSize within a transaction.
+// mismatch). The batch is chunked at maxBatchSize within a transaction, and
+// each chunk is written as ONE multi-row INSERT ... ON CONFLICT (id) DO UPDATE
+// statement (pgvector batch pattern), removing the per-point round-trips.
+// Duplicate ids inside a chunk are collapsed to the last occurrence (latest
+// write wins) because ON CONFLICT DO UPDATE cannot affect the same row twice
+// within a single statement.
 func (a *Adapter) Upsert(ctx context.Context, points []domain.VectorPoint) error {
 	if len(points) == 0 {
 		return nil
@@ -386,18 +391,18 @@ func (a *Adapter) Upsert(ctx context.Context, points []domain.VectorPoint) error
 		return fmt.Errorf("pgvector: set statement_timeout: %w", a.redact(err))
 	}
 
-	upsertSQL := a.upsertSQL()
-
 	for start := 0; start < len(points); start += a.maxBatchSize {
 		end := start + a.maxBatchSize
 		if end > len(points) {
 			end = len(points)
 		}
-		batch := points[start:end]
-		for _, p := range batch {
-			if _, err := tx.Exec(ctx, upsertSQL, a.pointArgs(p)...); err != nil {
-				return fmt.Errorf("pgvector: upsert point %d: %w", p.ID, a.redact(err))
-			}
+		chunk := dedupeUpsertChunk(points[start:end])
+		args := make([]any, 0, len(chunk)*upsertColumnCount)
+		for _, p := range chunk {
+			args = append(args, a.pointArgs(p)...)
+		}
+		if _, err := tx.Exec(ctx, a.upsertChunkSQL(len(chunk)), args...); err != nil {
+			return fmt.Errorf("pgvector: upsert chunk [%d,%d): %w", start, end, a.redact(err))
 		}
 	}
 
@@ -426,15 +431,17 @@ func (a *Adapter) validatePoint(p domain.VectorPoint) error {
 	return nil
 }
 
-// upsertSQL builds the parameterized INSERT ... ON CONFLICT statement. The
-// table name is interpolated (validated safe identifier); all values use $N
-// placeholders. On conflict the updated_at timestamp is refreshed to NOW() so
-// re-upserts keep the row's modification time current.
-func (a *Adapter) upsertSQL() string {
-	return fmt.Sprintf(
-		`INSERT INTO %s (id, embedding, model, model_version, dimension, project, project_id, scope, tenant_id, workspace_id, source, type)
-VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-ON CONFLICT (id) DO UPDATE SET
+// upsertColumnCount is the number of parameters each upserted point
+// contributes to a multi-row INSERT statement (see pointArgs).
+const upsertColumnCount = 12
+
+// upsertColumnList is the shared column list of the upsert INSERT statement.
+const upsertColumnList = `(id, embedding, model, model_version, dimension, project, project_id, scope, tenant_id, workspace_id, source, type)`
+
+// upsertConflictClause is the shared ON CONFLICT body. On conflict the
+// updated_at timestamp is refreshed to NOW() so re-upserts keep the row's
+// modification time current.
+const upsertConflictClause = ` ON CONFLICT (id) DO UPDATE SET
     embedding = EXCLUDED.embedding,
     model = EXCLUDED.model,
     model_version = EXCLUDED.model_version,
@@ -446,9 +453,51 @@ ON CONFLICT (id) DO UPDATE SET
 	workspace_id = EXCLUDED.workspace_id,
     source = EXCLUDED.source,
     type = EXCLUDED.type,
-    updated_at = NOW()`,
-		a.qualifiedTable,
-	)
+    updated_at = NOW()`
+
+// upsertChunkSQL builds a parameterized multi-row INSERT ... ON CONFLICT
+// statement for n points. The table name is interpolated (validated safe
+// identifier); all values use $N placeholders with the same column order as
+// pointArgs. n MUST be >= 1.
+func (a *Adapter) upsertChunkSQL(n int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "INSERT INTO %s %s VALUES ", a.qualifiedTable, upsertColumnList)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		base := i * upsertColumnCount
+		fmt.Fprintf(&b, "($%d, $%d::vector", base+1, base+2)
+		for j := 3; j <= upsertColumnCount; j++ {
+			fmt.Fprintf(&b, ", $%d", base+j)
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(upsertConflictClause)
+	return b.String()
+}
+
+// dedupeUpsertChunk collapses duplicate ids to their last occurrence so a
+// multi-row ON CONFLICT DO UPDATE statement never affects the same row twice
+// (PostgreSQL rejects that with "cannot affect row a second time"). The
+// surviving value for a duplicated id is the latest write in the chunk,
+// preserving per-point upsert semantics. Relative order of distinct ids is
+// preserved.
+func dedupeUpsertChunk(points []domain.VectorPoint) []domain.VectorPoint {
+	if len(points) == 0 {
+		return nil
+	}
+	last := make(map[int64]int, len(points))
+	out := make([]domain.VectorPoint, 0, len(points))
+	for _, p := range points {
+		if idx, ok := last[p.ID]; ok {
+			out[idx] = p
+			continue
+		}
+		last[p.ID] = len(out)
+		out = append(out, p)
+	}
+	return out
 }
 
 // pointArgs extracts the parameterized values for a VectorPoint upsert.

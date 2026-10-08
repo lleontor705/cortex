@@ -434,15 +434,17 @@ func TestAdapter_Upsert_GeneratesParameterizedSQL(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	// Find the upsert exec call (skip statement_timeout set_config).
+	// Find the upsert exec call (skip statement_timeout set_config). The
+	// batch is one multi-row INSERT statement (ret-302): both points land in
+	// a single chunk, so one exec carries 24 flattened args.
 	var upsertExecs []execCall
 	for _, c := range db.execCalls {
 		if strings.Contains(c.sql, "INSERT INTO") {
 			upsertExecs = append(upsertExecs, c)
 		}
 	}
-	if len(upsertExecs) != 2 {
-		t.Fatalf("expected 2 INSERT calls, got %d", len(upsertExecs))
+	if len(upsertExecs) != 1 {
+		t.Fatalf("expected 1 multi-row INSERT call, got %d", len(upsertExecs))
 	}
 
 	// Verify the SQL contains ON CONFLICT (parameterized upsert).
@@ -453,18 +455,26 @@ func TestAdapter_Upsert_GeneratesParameterizedSQL(t *testing.T) {
 	if !strings.Contains(upsertExecs[0].sql, "$2::vector") {
 		t.Errorf("SQL should use $2::vector for embedding: %s", upsertExecs[0].sql)
 	}
+	// Verify the second row continues at $13 (multi-row chunking).
+	if !strings.Contains(upsertExecs[0].sql, "$14::vector") {
+		t.Errorf("SQL should continue placeholders at $13/$14 for row 2: %s", upsertExecs[0].sql)
+	}
 	// Verify qualified table name.
 	if !strings.Contains(upsertExecs[0].sql, "cortex_test.embeddings") {
 		t.Errorf("SQL should use qualified table name: %s", upsertExecs[0].sql)
 	}
 
-	// Verify first point's args include tenant and workspace boundaries.
+	// Verify the flattened args include both points with tenant and
+	// workspace boundaries.
 	args := upsertExecs[0].args
-	if len(args) != 12 {
-		t.Fatalf("expected 12 args, got %d", len(args))
+	if len(args) != 24 {
+		t.Fatalf("expected 24 flattened args (2 points x 12), got %d", len(args))
 	}
 	if args[0] != int64(1) {
 		t.Errorf("arg[0] (id) = %v, want 1", args[0])
+	}
+	if args[12] != int64(2) {
+		t.Errorf("arg[12] (second point id) = %v, want 2", args[12])
 	}
 	// arg[1] is pgvector.Vector (check via fmt)
 	if !strings.Contains(fmt.Sprintf("%v", args[1]), "0.1") {
