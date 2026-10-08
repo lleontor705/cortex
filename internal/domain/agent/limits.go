@@ -69,6 +69,24 @@ func DefaultLimitPolicy() LimitPolicy {
 	}}
 }
 
+// WithJSONTimeout returns a copy of the policy in which every tier's JSON
+// transport deadline is replaced by the given server-owned timeout. The
+// receiver is never mutated, and a non-positive timeout leaves the policy
+// unchanged so an unconfigured override cannot invalidate the tiers. Stream
+// deadlines are intentionally untouched: the JSON answer deadline is the
+// operator-tunable upper bound that includes provider retries.
+func (p LimitPolicy) WithJSONTimeout(d time.Duration) LimitPolicy {
+	if d <= 0 {
+		return p
+	}
+	tiers := make(map[string]Limits, len(p.Tiers))
+	for tier, limits := range p.Tiers {
+		limits.JSONTimeout = d
+		tiers[tier] = limits
+	}
+	return LimitPolicy{Tiers: tiers}
+}
+
 func (p LimitPolicy) ForTier(tier LimitTier) (Limits, error) {
 	limits, ok := p.Tiers[string(tier)]
 	if !ok || !limits.valid() {

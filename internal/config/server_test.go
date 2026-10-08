@@ -72,6 +72,47 @@ func TestServerLLMFromEnvAbsentConfigIsValidAndUnconfigured(t *testing.T) {
 	}
 }
 
+func TestAgentAnswerTimeoutFromEnvDefaultsTo30sWhenUnset(t *testing.T) {
+	setenvForTest(t, "CORTEX_AGENT_ANSWER_TIMEOUT", "")
+	timeout, err := AgentAnswerTimeoutFromEnv()
+	if err != nil {
+		t.Fatalf("unset timeout must be valid: %v", err)
+	}
+	if timeout != AgentAnswerDefaultTimeout {
+		t.Fatalf("default timeout = %s, want %s", timeout, AgentAnswerDefaultTimeout)
+	}
+}
+
+func TestAgentAnswerTimeoutFromEnvAcceptsValidDurations(t *testing.T) {
+	for _, raw := range []string{"45s", "90s", "5m"} {
+		setenvForTest(t, "CORTEX_AGENT_ANSWER_TIMEOUT", raw)
+		timeout, err := AgentAnswerTimeoutFromEnv()
+		if err != nil {
+			t.Fatalf("timeout %q rejected: %v", raw, err)
+		}
+		want, _ := time.ParseDuration(raw)
+		if timeout != want {
+			t.Fatalf("timeout %q mapped to %s, want %s", raw, timeout, want)
+		}
+	}
+}
+
+func TestAgentAnswerTimeoutFromEnvFailsClosedOnInvalidValues(t *testing.T) {
+	for _, raw := range []string{"nonsense", "-5s", "6m", "5m1s"} {
+		setenvForTest(t, "CORTEX_AGENT_ANSWER_TIMEOUT", raw)
+		if _, err := AgentAnswerTimeoutFromEnv(); err == nil {
+			t.Fatalf("timeout %q must fail closed", raw)
+		}
+	}
+	// "0s" follows the CORTEX_LLM_TIMEOUT convention: zero means unset, so
+	// the historical default applies instead of failing closed.
+	setenvForTest(t, "CORTEX_AGENT_ANSWER_TIMEOUT", "0s")
+	timeout, err := AgentAnswerTimeoutFromEnv()
+	if err != nil || timeout != AgentAnswerDefaultTimeout {
+		t.Fatalf("zero timeout = %s, %v; want default %s", timeout, err, AgentAnswerDefaultTimeout)
+	}
+}
+
 func TestServerLLMFromEnvMapsValidConfiguration(t *testing.T) {
 	setLLMEnv(t, map[string]string{
 		"CORTEX_LLM_PROVIDER":                "generic",
