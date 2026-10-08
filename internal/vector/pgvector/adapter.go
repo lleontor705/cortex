@@ -38,6 +38,7 @@ package pgvector
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"regexp"
 	"strings"
@@ -116,6 +117,14 @@ type AdapterConfig struct {
 	Timeout            time.Duration // per-operation timeout (default 30s)
 	MaxConns           int32         // pool max connections (default 10)
 	StatementTimeoutMs int           // PostgreSQL statement_timeout in ms (default 5000)
+
+	// GrantRoles names additional PostgreSQL roles to receive USAGE on the
+	// schema and SELECT on the table during bootstrap. The server composition
+	// passes the storage runtime role so the background embedding worker's
+	// RLS-bound observation query can check embedding existence through
+	// NOT EXISTS on this table (issue #115). Best-effort: a vector-dedicated
+	// database may legitimately not contain the storage role.
+	GrantRoles []string
 }
 
 // Adapter implements domain.VectorIndex over a PostgreSQL database with the
@@ -173,6 +182,9 @@ func New(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	if err := grantRuntimeAccess(ctx, conn, cfg); err != nil {
 		return nil, fmt.Errorf("pgvector: grant runtime access: %w", redactDSN(err, bootstrapPassword))
 	}
+	// Read-only grants for the storage runtime role (issue #115): best-effort,
+	// logged failures only — a vector-dedicated database may not hold the role.
+	grantReaderRoles(ctx, conn, cfg, bootstrapPassword)
 
 	// Create the pool.
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
@@ -752,6 +764,38 @@ func grantRuntimeAccess(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig) 
 		}
 	}
 	return nil
+}
+
+// readerGrantStatements renders the idempotent read-only grants for one extra
+// role: USAGE on the schema plus SELECT on the table. Exposed as a pure
+// function for SQL-shape unit tests; identifiers are pre-validated by the
+// caller.
+func readerGrantStatements(schema, table, role string) []string {
+	qualified := schema + "." + table
+	return []string{
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, schema, role),
+		fmt.Sprintf(`GRANT SELECT ON %s TO %s`, qualified, role),
+	}
+}
+
+// grantReaderRoles extends USAGE on the vector schema and SELECT on the table
+// to the additional roles named in cfg.GrantRoles. Unlike grantRuntimeAccess
+// this is best-effort: the vector database may be dedicated and not contain
+// the storage runtime role at all, and a missing grant only degrades the
+// worker's existence check (which logs its own query failures). Password
+// redaction mirrors the bootstrap error paths.
+func grantReaderRoles(ctx context.Context, conn *pgx.Conn, cfg AdapterConfig, bootstrapPassword string) {
+	for _, role := range cfg.GrantRoles {
+		if !identifierRe.MatchString(role) {
+			log.Printf("pgvector: skipping grant to invalid reader role name")
+			continue
+		}
+		for _, stmt := range readerGrantStatements(cfg.Schema, cfg.Table, role) {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				log.Printf("pgvector: grant reader role %q failed: %v", role, redactDSN(err, bootstrapPassword))
+			}
+		}
+	}
 }
 
 // bootstrapSchema runs the schema/table/index DDL on a raw pgx.Conn.

@@ -44,6 +44,17 @@ func (s *SystemService) ListArchivable(ctx context.Context, cutoff time.Time, mi
 	return s.caps.raw.store.observations().ListArchivable(ctx, cutoff, minScore, limit)
 }
 
+// ListUnembedded supplies the background embedding worker with the next
+// tenant-scoped batch of observations missing from the vector replica. It
+// follows the ListArchivable precedent: the read is tenant-bound through the
+// verified server principal, never through a raw pool handle (issue #115).
+func (s *SystemService) ListUnembedded(ctx context.Context, limit int) ([]UnembeddedObservation, error) {
+	if err := s.authorize(ctx, authz.ActionRead, ""); err != nil {
+		return nil, err
+	}
+	return s.caps.raw.store.observations().ListUnembedded(ctx, limit)
+}
+
 func (s *SystemService) Delete(ctx context.Context, id int64) error {
 	raw := s.caps.raw.store
 	ref, err := (&AuthorizedStore{store: raw, caps: s.caps}).observationResource(ctx, id)

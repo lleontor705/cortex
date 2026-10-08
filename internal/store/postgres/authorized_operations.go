@@ -1107,12 +1107,16 @@ func (s *AuthorizedStore) GetRAGStats(ctx context.Context, project string) (*dom
 	failed := 0
 
 	for _, o := range obsList {
-		if o.HasEmbedding || o.RAGStatus == "indexed" || o.RAGStatus == "" {
+		switch {
+		case o.HasEmbedding || o.RAGStatus == "indexed":
 			indexed++
-		} else if o.RAGStatus == "pending" {
-			pending++
-		} else if o.RAGStatus == "failed" {
+		case o.RAGStatus == "failed":
 			failed++
+		default:
+			// Empty status counts as pending, never indexed (issue #115): the
+			// store persists no embedding flag, so claiming default coverage
+			// would report vectors that were never generated.
+			pending++
 		}
 	}
 	coverage := 100.0

@@ -601,6 +601,65 @@ func (r *ObservationRepository) GetByPublicID(ctx context.Context, publicID stri
 	return &o, err
 }
 
+// UnembeddedObservation is one observation that has no row in the vector
+// replica yet, projected for the background embedding worker. Tenant and
+// workspace identifiers are carried per row so the worker can stamp vector
+// metadata without widening its own authorization.
+type UnembeddedObservation struct {
+	ID              int64
+	Title           string
+	Content         string
+	ProjectKey      string
+	ProjectPublicID string
+	Scope           string
+	TenantID        string
+	WorkspaceID     string
+	Source          string
+	Type            string
+}
+
+// ListUnembedded returns the oldest tenant-scoped observations that have no
+// embedding in the vector replica (cortex_vector.embeddings). The query MUST
+// run inside a bound transaction (Store.BeginTx binds the verified principal
+// through cortex_bind_principal): RLS hides every row otherwise, and the
+// runtime role needs the bootstrap-granted SELECT on the vector schema for
+// the NOT EXISTS probe (issue #115). Workspace scoping matches ListArchivable.
+func (r *ObservationRepository) ListUnembedded(ctx context.Context, limit int) ([]UnembeddedObservation, error) {
+	if limit <= 0 {
+		limit = 32
+	}
+	var out []UnembeddedObservation
+	err := r.transaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT o.id, o.title, o.content, COALESCE(o.project_key, ''), COALESCE(p.public_id::text, ''),
+		       COALESCE(o.scope, ''), COALESCE(o.tenant_id::text, ''), COALESCE(o.workspace_id::text, ''),
+		       COALESCE(o.source, ''), COALESCE(o.type, '')
+		  FROM observations o
+		  LEFT JOIN projects p ON p.tenant_id = o.tenant_id AND p.workspace_id = o.workspace_id AND p.name = o.project_key
+		 WHERE o.tenant_id = public.cortex_current_tenant()
+		   AND o.workspace_id = (SELECT id FROM workspaces WHERE tenant_id = public.cortex_current_tenant() AND public_id = $2::uuid)
+		   AND o.deleted_at IS NULL
+		   AND NOT EXISTS (
+		       SELECT 1 FROM cortex_vector.embeddings e WHERE e.id = o.id
+		   )
+		 ORDER BY o.id
+		 LIMIT $1`, limit, r.tenant.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var item UnembeddedObservation
+			if err := rows.Scan(&item.ID, &item.Title, &item.Content, &item.ProjectKey, &item.ProjectPublicID,
+				&item.Scope, &item.TenantID, &item.WorkspaceID, &item.Source, &item.Type); err != nil {
+				return err
+			}
+			out = append(out, item)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // ListArchivable returns old, low-importance observations for lifecycle jobs.
 // Importance is currently represented by the supplied score threshold; the
 // server schema keeps lifecycle filtering tenant-scoped inside the transaction.

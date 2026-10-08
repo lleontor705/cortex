@@ -203,7 +203,14 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if vectorCfg.Provider == "pgvector" && strings.TrimSpace(vectorCfg.Pgvector.MigrationDSN) == "" {
 		vectorCfg.Pgvector.MigrationDSN = cfg.Server.Storage.MigrationDSN
 	}
-	vec, err := external.NewVectorIndex(ctx, vectorCfg, external.FactoryInput{ModelInfo: model})
+	// The pgvector bootstrap grants the storage runtime role read access to
+	// the vector schema (issue #115): the background embedding worker checks
+	// embedding existence through the RLS-bound storage connection.
+	storageRole, roleErr := postgresRole(runtimeDSN)
+	if roleErr != nil {
+		storageRole = ""
+	}
+	vec, err := external.NewVectorIndex(ctx, vectorCfg, external.FactoryInput{ModelInfo: model, StorageRole: storageRole})
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: construct vector provider: %w", err)
@@ -371,7 +378,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if cfg.Lifecycle.EnableAutoArchive {
 		rt.stopLifecycle = rt.Lifecycle.Start(ctx)
 	}
-	startBackgroundEmbeddingWorker(ctx, pool, emb, vec)
+	startBackgroundEmbeddingWorker(ctx, system, emb, vec)
 	return rt, nil
 }
 

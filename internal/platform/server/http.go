@@ -1588,12 +1588,17 @@ func observationResponse(observation *domain.Observation) map[string]any {
 		"topic_key":     observation.TopicKey, "confidence": observation.Confidence,
 		"source": observation.Source, "created_at": observation.CreatedAt,
 		"updated_at":    observation.UpdatedAt,
-		"has_embedding": observation.HasEmbedding || (observation.RAGStatus == "" || observation.RAGStatus == "indexed"),
+		"has_embedding": observation.HasEmbedding,
 		"rag_status": func() string {
 			if observation.RAGStatus != "" {
 				return observation.RAGStatus
 			}
-			return "indexed"
+			if observation.HasEmbedding {
+				return "indexed"
+			}
+			// Honest default (issue #115): the store carries no per-observation
+			// embedding state, so an absent status means pending, never indexed.
+			return "pending"
 		}(),
 		"embedding_model":      observation.EmbeddingModel,
 		"embedding_dimensions": observation.EmbeddingDim,
