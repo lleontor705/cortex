@@ -23,7 +23,10 @@ func NewSystemService(store *AuthorizedStore) (*SystemService, error) {
 	p := store.store.principal
 	p.Type = "service_account"
 	p.Roles = []string{"service-account"}
-	p.Scopes = []string{"memory:read", "memory:delete", "project:*"}
+	// memory:write covers MarkEmbedded: the background embedding worker
+	// stamps the persisted embedding state after a successful vector upsert
+	// (migration 113, issue #119) through this service capability only.
+	p.Scopes = []string{"memory:read", "memory:write", "memory:delete", "project:*"}
 	caps := store.caps
 	if caps == nil {
 		caps = newCapabilities(store.store)
@@ -53,6 +56,20 @@ func (s *SystemService) ListUnembedded(ctx context.Context, limit int) ([]Unembe
 		return nil, err
 	}
 	return s.caps.raw.store.observations().ListUnembedded(ctx, limit)
+}
+
+// MarkEmbedded stamps the persisted per-observation embedding state after a
+// successful vector upsert (migration 113, issue #119). It follows the
+// ListUnembedded precedent: the write is tenant-bound through the verified
+// server principal, never through a raw pool handle.
+func (s *SystemService) MarkEmbedded(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := s.authorize(ctx, authz.ActionWrite, ""); err != nil {
+		return err
+	}
+	return s.caps.raw.store.observations().MarkEmbedded(ctx, ids)
 }
 
 func (s *SystemService) Delete(ctx context.Context, id int64) error {

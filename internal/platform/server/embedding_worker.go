@@ -12,13 +12,16 @@ import (
 )
 
 // UnembeddedSource supplies tenant-bound batches of observations that have no
-// row in the vector replica yet. *postgresstore.SystemService implements it.
-// The indirection keeps the worker independent of the storage capability while
-// guaranteeing every read runs through the authorized (principal-bound,
-// tenant-scoped) path — a raw pool handle is RLS-blind and silently returns
-// zero rows (issue #115).
+// row in the vector replica yet, and stamps the persisted embedding state
+// after a successful upsert (migration 113, issue #119).
+// *postgresstore.SystemService implements it. The indirection keeps the
+// worker independent of the storage capability while guaranteeing every read
+// and write runs through the authorized (principal-bound, tenant-scoped)
+// path — a raw pool handle is RLS-blind and silently returns zero rows
+// (issue #115).
 type UnembeddedSource interface {
 	ListUnembedded(ctx context.Context, limit int) ([]postgres.UnembeddedObservation, error)
+	MarkEmbedded(ctx context.Context, ids []int64) error
 }
 
 type backgroundEmbeddingWorker struct {
@@ -142,6 +145,18 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 	if len(points) > 0 {
 		if err := w.vectors.Upsert(ctx, points); err != nil {
 			log.Printf("server: background embedding worker upsert error: %v", err)
+			return
+		}
+		// Best-effort coupling (issue #119): the flag is stamped only after a
+		// SUCCESSFUL upsert, through the authorized path. If the stamp fails
+		// the rows still count as unembedded and the next pass retries the
+		// (idempotent) upsert, so state can never drift ahead of the replica.
+		stamped := make([]int64, 0, len(points))
+		for _, point := range points {
+			stamped = append(stamped, point.ID)
+		}
+		if err := w.source.MarkEmbedded(ctx, stamped); err != nil {
+			log.Printf("server: background embedding worker mark embedded error: %v", err)
 		}
 	}
 }

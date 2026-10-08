@@ -69,6 +69,12 @@ var postgresHistoricalChecksums = map[int]string{
 	// context under the canonical shared advisory gate. Still unshipped, so
 	// its pin moves with the reviewed bytes until release.
 	112: "f8653459fb835fb7ec1e05be88a396078e9835e546165a78b5d0f85c9aa2529d",
+	// 113 persists the per-observation embedding state (embedding_state:
+	// pending | indexed | failed plus embedded_at) so the RAG stats plane and
+	// the background embedding worker share one honest source of truth
+	// (issue #115 follow-up, issue #119). Still unshipped, so its pin moves
+	// with the reviewed bytes until release.
+	113: "a5f7982bc4be3bc6a6c6ad0bd0ab0593ed3de79e2bcb1ae056bf03a413516934",
 }
 
 // mustPostgresMigrations loads the full PostgreSQL migration line or fails
@@ -105,10 +111,10 @@ func TestPostgresServerMigrationMetadata(t *testing.T) {
 
 func TestPostgresServerMigrationSequence(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
-	if len(migrations) != 13 {
-		t.Fatalf("migration count = %d, want 13", len(migrations))
+	if len(migrations) != 14 {
+		t.Fatalf("migration count = %d, want 14", len(migrations))
 	}
-	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112} {
+	for i, want := range []int{100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113} {
 		if migrations[i].Version() != want {
 			t.Fatalf("migration %d version = %d, want %d", i, migrations[i].Version(), want)
 		}
@@ -444,14 +450,16 @@ func TestPostgresServerMigration107WorkspaceSync(t *testing.T) {
 	}
 }
 
-// TestPostgresServerMigrationHeadIs112 pins the runtime head so older
-// binaries fail closed against a database that has applied the static bind
-// contract for the configuration-derived single-tenant principal.
-func TestPostgresServerMigrationHeadIs112(t *testing.T) {
+// migrationHeadIs pins the runtime head so older binaries fail closed
+// against a database that has applied the newest registered migration. It is
+// dynamic: bump the expected version here together with the registration in
+// NewPostgresServerMigrations and the runbook pins.
+func migrationHeadIs(t *testing.T, head int) {
+	t.Helper()
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.maxKnownVersion != 112 {
-			t.Errorf("migration %d maxKnownVersion = %d, want 112", migration.Version(), migration.maxKnownVersion)
+		if migration.maxKnownVersion != head {
+			t.Errorf("migration %d maxKnownVersion = %d, want %d", migration.Version(), migration.maxKnownVersion, head)
 		}
 		if err := migration.Down(context.Background(), (*sql.DB)(nil)); err == nil || !strings.Contains(err.Error(), "nil") {
 			// Down(nil) must fail on the nil connection before any DDL; the
@@ -460,6 +468,13 @@ func TestPostgresServerMigrationHeadIs112(t *testing.T) {
 			t.Errorf("Down(nil) for migration %d err=%v, want nil-connection failure", migration.Version(), err)
 		}
 	}
+}
+
+// TestPostgresServerMigrationHeadIsDynamic pins the current head 113 (the
+// per-observation embedding state migration, issue #119) through the shared
+// dynamic helper.
+func TestPostgresServerMigrationHeadIsDynamic(t *testing.T) {
+	migrationHeadIs(t, 113)
 }
 
 func TestPostgresServerMigrationIsServerOnly(t *testing.T) {
@@ -1384,8 +1399,8 @@ func TestPostgresPreflightAndVerifyAppliedContract(t *testing.T) {
 func TestPostgresPreflightHeadChecksumsMatchPins(t *testing.T) {
 	migrations := mustPostgresMigrations(t)
 	for _, migration := range migrations {
-		if migration.Version() > 112 {
-			t.Errorf("migration %d registered beyond head 112", migration.Version())
+		if migration.Version() > 113 {
+			t.Errorf("migration %d registered beyond head 113", migration.Version())
 		}
 		if migration.Version() >= 106 && migration.Checksum() != postgresHistoricalChecksums[migration.Version()] {
 			t.Errorf("migration %d checksum %s does not match the reviewed pin %s", migration.Version(), migration.Checksum(), postgresHistoricalChecksums[migration.Version()])
