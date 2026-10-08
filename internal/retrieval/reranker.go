@@ -318,20 +318,39 @@ func (h *httpReranker) post(body []byte) (*rerankResponse, error) {
 	}
 }
 
-// rerankPacer spaces outbound rerank requests to at most one per minute/60.
+// rerankPacer is a per-query token-bucket budget limiter for the shared 60
+// rpm rerank provider key. Tokens accrue at the provider rate (60/min: one
+// per second) up to the per-minute budget as burst capacity, and every wait
+// consumes one token. Unlike the former mutex-sleep pacer, the lock only
+// guards bucket bookkeeping — callers NEVER hold it while sleeping:
+//
+//   - callers within budget (a token is available) proceed immediately, so
+//     independent concurrent searches are never serialized;
+//   - excess callers reserve a future refill slot by letting the balance go
+//     negative and then concurrently sleep only their own computed delay;
+//     no caller waits behind another caller's sleep;
+//   - the provider rate is respected globally: emissions are spaced by the
+//     refill rate and instantaneous burst is bounded by the accrued budget
+//     (up to one full minute's worth after sustained idleness; the existing
+//     429 backoff path remains the guard for provider-side sliding windows).
+//
 // now and sleep are injectable so tests never wait on wall time.
 type rerankPacer struct {
-	minGap time.Duration
-	now    func() time.Time
-	sleep  func(time.Duration)
+	rate  float64 // refill rate in tokens per second (rerankRequestsPerMin/60)
+	burst float64 // bucket capacity: the shared per-minute budget
+	now   func() time.Time
+	sleep func(time.Duration)
 
-	mu   sync.Mutex
-	last time.Time
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
 }
 
 func newRerankPacer() *rerankPacer {
 	return &rerankPacer{
-		minGap: time.Minute / rerankRequestsPerMin,
+		rate:   float64(rerankRequestsPerMin) / 60.0,
+		burst:  float64(rerankRequestsPerMin),
+		tokens: 1, // one immediate call; further calls pace on refill or accrued budget
 		now:    time.Now,
 		sleep:  time.Sleep,
 	}
@@ -339,13 +358,27 @@ func newRerankPacer() *rerankPacer {
 
 func (p *rerankPacer) wait() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.last.IsZero() {
-		if gap := p.minGap - p.now().Sub(p.last); gap > 0 {
-			p.sleep(gap)
-		}
+	now := p.now()
+	if p.last.IsZero() {
+		p.last = now
 	}
-	p.last = p.now()
+	p.tokens += now.Sub(p.last).Seconds() * p.rate
+	if p.tokens > p.burst {
+		p.tokens = p.burst
+	}
+	p.last = now
+	p.tokens--
+	delay := time.Duration(0)
+	if p.tokens < 0 {
+		// Reserve the future refill token and wait only until the moment it
+		// exists; a negative balance is the count of outstanding concurrent
+		// reservations, each spaced by exactly one provider-rate interval.
+		delay = time.Duration(-p.tokens / p.rate * float64(time.Second))
+	}
+	p.mu.Unlock()
+	if delay > 0 {
+		p.sleep(delay)
+	}
 }
 
 // approveRerankURL re-validates a rerank destination against the approved
