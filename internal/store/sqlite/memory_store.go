@@ -1008,6 +1008,27 @@ func (s *Store) OrphanObservations(ctx context.Context, project string, limit in
 	return s.scanObservations(rows)
 }
 
+// CountOrphanObservations returns the total count of live observations with no
+// graph edges across all projects. Unlike OrphanObservations it is not
+// project-scoped or LIMIT-capped, so it shares the same population as
+// Stats.TotalObservations and can be used as a global graph-health ratio.
+func (s *Store) CountOrphanObservations(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM observations o
+		LEFT JOIN edges e1 ON e1.from_obs_id = o.id
+		LEFT JOIN edges e2 ON e2.to_obs_id = o.id
+		WHERE o.deleted_at IS NULL
+		  AND e1.id IS NULL
+		  AND e2.id IS NULL
+	`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("memory store: count orphan observations: %w", err)
+	}
+	return count, nil
+}
+
 // CountAll counts all non-deleted observations in the system.
 func (s *Store) CountAll(ctx context.Context) (int, error) {
 	var count int
@@ -2242,12 +2263,17 @@ func (s *Store) ImportData(ctx context.Context, data *ExportData) (*SyncImportRe
 type MergeResult struct {
 	Canonical           string   `json:"canonical"`
 	SourcesMerged       []string `json:"sources_merged"`
+	SourcesNoMatch      []string `json:"sources_no_match"`
 	ObservationsUpdated int64    `json:"observations_updated"`
 	SessionsUpdated     int64    `json:"sessions_updated"`
 }
 
 // MergeProjects moves all observations and sessions from source projects into a canonical project name.
-// Sources that normalize to the canonical name are silently skipped.
+// Sources are matched against stored project values case-insensitively, so
+// mixed-case variants of a listed source are moved too. Sources whose lowercased
+// form equals the canonical name are skipped as self-merges. Sources that match
+// zero stored rows are reported in SourcesNoMatch instead of falsely counted as
+// merged.
 func (s *Store) MergeProjects(ctx context.Context, sources []string, canonical string) (*MergeResult, error) {
 	canonical = strings.TrimSpace(strings.ToLower(canonical))
 	if canonical == "" {
@@ -2255,27 +2281,70 @@ func (s *Store) MergeProjects(ctx context.Context, sources []string, canonical s
 	}
 
 	result := &MergeResult{Canonical: canonical}
+	seen := map[string]bool{}
 
 	return result, s.withTx(ctx, func(tx *sql.Tx) error {
 		for _, src := range sources {
-			src = strings.TrimSpace(strings.ToLower(src))
+			src = strings.TrimSpace(src)
 			if src == "" || src == canonical {
 				continue
 			}
-
-			res, err := tx.ExecContext(ctx, `UPDATE observations SET project = ? WHERE project = ?`, canonical, src)
-			if err != nil {
-				return fmt.Errorf("merge observations %q -> %q: %w", src, canonical, err)
+			key := strings.ToLower(src)
+			if seen[key] {
+				continue
 			}
-			n, _ := res.RowsAffected()
-			result.ObservationsUpdated += n
+			seen[key] = true
 
-			res, err = tx.ExecContext(ctx, `UPDATE sessions SET project = ? WHERE project = ?`, canonical, src)
+			// Resolve the source against the exact stored project values with
+			// a case-insensitive comparison; the UPDATE below is BINARY and
+			// would silently miss mixed-case rows if given the lowercased input.
+			rows, err := tx.QueryContext(ctx, `
+				SELECT DISTINCT project FROM (
+					SELECT project FROM observations WHERE project = ? COLLATE NOCASE
+					UNION
+					SELECT project FROM sessions WHERE project = ? COLLATE NOCASE
+				)`, src, src)
 			if err != nil {
-				return fmt.Errorf("merge sessions %q -> %q: %w", src, canonical, err)
+				return fmt.Errorf("merge resolve source %q: %w", src, err)
 			}
-			n, _ = res.RowsAffected()
-			result.SessionsUpdated += n
+			var stored []string
+			for rows.Next() {
+				var p string
+				if err := rows.Scan(&p); err != nil {
+					_ = rows.Close()
+					return fmt.Errorf("merge scan source %q: %w", src, err)
+				}
+				if p == canonical {
+					continue
+				}
+				stored = append(stored, p)
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("merge iterate source %q: %w", src, err)
+			}
+			_ = rows.Close()
+
+			if len(stored) == 0 {
+				result.SourcesNoMatch = append(result.SourcesNoMatch, src)
+				continue
+			}
+
+			for _, p := range stored {
+				res, err := tx.ExecContext(ctx, `UPDATE observations SET project = ? WHERE project = ?`, canonical, p)
+				if err != nil {
+					return fmt.Errorf("merge observations %q -> %q: %w", p, canonical, err)
+				}
+				n, _ := res.RowsAffected()
+				result.ObservationsUpdated += n
+
+				res, err = tx.ExecContext(ctx, `UPDATE sessions SET project = ? WHERE project = ?`, canonical, p)
+				if err != nil {
+					return fmt.Errorf("merge sessions %q -> %q: %w", p, canonical, err)
+				}
+				n, _ = res.RowsAffected()
+				result.SessionsUpdated += n
+			}
 
 			result.SourcesMerged = append(result.SourcesMerged, src)
 		}

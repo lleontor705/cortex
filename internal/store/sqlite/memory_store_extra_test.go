@@ -716,14 +716,16 @@ func TestStore_MergeProjects(t *testing.T) {
 	if res.ObservationsUpdated != 2 {
 		t.Errorf("ObservationsUpdated = %d, want 2", res.ObservationsUpdated)
 	}
-	// Both non-canonical sources are recorded as merged even when one matched
-	// zero rows; only sources equal to canonical are skipped.
-	if len(res.SourcesMerged) != 2 {
-		t.Fatalf("SourcesMerged = %+v, want 2 entries", res.SourcesMerged)
+	// Only sources that matched stored rows are recorded as merged; the
+	// zero-match source is reported under SourcesNoMatch, not SourcesMerged.
+	if len(res.SourcesMerged) != 1 {
+		t.Fatalf("SourcesMerged = %+v, want 1 entry", res.SourcesMerged)
 	}
-	merged := map[string]bool{res.SourcesMerged[0]: true, res.SourcesMerged[1]: true}
-	if !merged["myapp2"] || !merged["myapp-x"] {
-		t.Errorf("SourcesMerged = %+v, want myapp2 and myapp-x", res.SourcesMerged)
+	if res.SourcesMerged[0] != "MyApp2" {
+		t.Errorf("SourcesMerged = %+v, want [MyApp2]", res.SourcesMerged)
+	}
+	if len(res.SourcesNoMatch) != 1 || res.SourcesNoMatch[0] != "myapp-x" {
+		t.Errorf("SourcesNoMatch = %+v, want [myapp-x]", res.SourcesNoMatch)
 	}
 
 	// All observations now belong to canonical project.

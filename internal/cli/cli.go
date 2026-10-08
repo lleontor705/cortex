@@ -1382,6 +1382,9 @@ func runMergeProjects(args []string, stdout, stderr io.Writer) int {
 	if len(result.SourcesMerged) > 0 {
 		writef(stdout, "Sources merged: %v\n", result.SourcesMerged)
 	}
+	if len(result.SourcesNoMatch) > 0 {
+		writef(stderr, "WARNING: no rows matched these sources, they were NOT merged: %v\n", result.SourcesNoMatch)
+	}
 	return 0
 }
 
@@ -1653,18 +1656,17 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		writef(stdout, "  [WARN] Embeddings: not configured (set search.embedding_provider or ai.provider)\n")
 	}
 
-	// 6. Orphan count
-	if stats != nil && len(stats.Projects) > 0 {
-		orphans, orphErr := a.Stores.Observations.OrphanObservations(ctx, stats.Projects[0], 1000)
+	// 6. Orphan count (global numerator over global denominator; per-project
+	// counts flip with the most-recently-active project and never reflect
+	// overall graph connectivity).
+	if stats != nil && stats.TotalObservations > 0 {
+		orphanCount, orphErr := a.Stores.Observations.CountOrphanObservations(ctx)
 		if orphErr == nil {
-			pct := 0.0
-			if stats.TotalObservations > 0 {
-				pct = float64(len(orphans)) / float64(stats.TotalObservations) * 100
-			}
+			pct := float64(orphanCount) / float64(stats.TotalObservations) * 100
 			if pct > 50 {
-				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use cortex_relate to connect observations\n", len(orphans), pct)
+				writef(stdout, "  [WARN] Orphans: %d (%.0f%%) — use cortex_relate to connect observations\n", orphanCount, pct)
 			} else {
-				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", len(orphans), pct)
+				writef(stdout, "  [OK]   Orphans: %d (%.0f%%)\n", orphanCount, pct)
 			}
 		}
 	}

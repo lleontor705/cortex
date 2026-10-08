@@ -947,8 +947,12 @@ func handleMergeProjects(stores *Stores) server.ToolHandlerFunc {
 			return errorResult("merge failed: %s", localErrorText(err))
 		}
 
-		return textResult("Merged into %q: %d observations, %d sessions updated. Sources merged: %v",
+		text := fmt.Sprintf("Merged into %q: %d observations, %d sessions updated. Sources merged: %v",
 			result.Canonical, result.ObservationsUpdated, result.SessionsUpdated, result.SourcesMerged)
+		if len(result.SourcesNoMatch) > 0 {
+			text += fmt.Sprintf(". WARNING: no rows matched these sources, they were NOT merged: %v", result.SourcesNoMatch)
+		}
+		return textResult("%s", text)
 	}
 }
 
