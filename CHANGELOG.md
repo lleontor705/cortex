@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.13] - 2026-10-08
+
+### 🐛 Bug Fixes
+
+- *(server)* Retry agent chat on transient provider failures and make the answer deadline configurable (#127)
+
+### ⚡ Performance
+
+- *(server)* Cache hybrid search query embeddings to skip repeated provider round-trips (#128)
+
+### ⚙️ Miscellaneous Tasks
+
+- *(changelog)* Refresh release history [skip ci]
+
 ## [2.4.12] - 2026-10-08
 
 ### 🐛 Bug Fixes
