@@ -740,7 +740,6 @@ func (r *ObservationRepository) EmbeddingStateCounts(ctx context.Context, projec
 		if project != "" {
 			q += fmt.Sprintf(" AND project_key=$%d", n)
 			args = append(args, project)
-			n++
 		}
 		q += ` GROUP BY 1`
 		rows, err := tx.Query(ctx, q, args...)
