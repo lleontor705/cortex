@@ -2861,6 +2861,7 @@ func (a *apiHandler) settings(w http.ResponseWriter, r *http.Request) {
 		"storage": map[string]any{
 			"driver":          a.cfg.Server.Storage.Driver,
 			"vector_provider": resolvedVectorProvider(a.cfg),
+			"pgvector_tuning": pgvectorTuningStatus(),
 		},
 		"http": map[string]any{
 			"port": a.cfg.HTTP.Port,

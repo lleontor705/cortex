@@ -1543,6 +1543,8 @@ configuración ni la variable.
 | `CORTEX_LIFECYCLE_ARCHIVE_CHECK_INTERVAL` | `lifecycle.archive_check_interval` | `1h` | Intervalo de comprobación de archivo. |
 | `CORTEX_VECTOR_PROVIDER` | `vector.provider` | *(vacío → `sqlite_blob`)* | Backend vectorial: sin fijar (BLOB local), `qdrant`, o `pgvector`. |
 | `CORTEX_VECTOR_PGVECTOR_DIMENSION` | *(server pgvector)* | resuelto desde el modelo | Override de dimensión pgvector. |
+| `CORTEX_VECTOR_PGVECTOR_MAX_PARALLEL_WORKERS_PER_GATHER` | *(tuning pgvector del servidor)* | *(sin fijar → desactivado)* | Activa `SET LOCAL max_parallel_workers_per_gather = N` dentro de las transacciones de búsqueda exact-scan pgvector. Un entero positivo activa el ajuste; sin fijar, no numérico o `<= 0` mantiene el valor por defecto (sin `SET LOCAL`). |
+| `CORTEX_VECTOR_PGVECTOR_DISTANCE_MODE` | *(tuning pgvector del servidor)* | `cosine` | Operador de distancia exact-scan: `cosine` (`<=>`, por defecto) o `ip` (`<#>` producto interno normalizado, para corpus pre-normalizados). Los valores no reconocidos vuelven a `cosine`. |
 | `CORTEX_VECTOR_QDRANT_HOST` | `vector.qdrant.host` | `localhost` | Host de Qdrant (auto-mapeado; el adaptador es solo-servidor). |
 | `CORTEX_VECTOR_QDRANT_PORT` | `vector.qdrant.port` | `6334` | Puerto de Qdrant (auto-mapeado). |
 | `CORTEX_VECTOR_QDRANT_COLLECTION` | `vector.qdrant.collection` | `cortex` | Colección de Qdrant (auto-mapeada). |
