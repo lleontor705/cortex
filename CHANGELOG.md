@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.8] - 2026-10-08
+
+### 🐛 Bug Fixes
+
+- *(server)* Tenant-scope embedding worker, grant vector reads, log errors (#116)
+
 ## [2.4.7] - 2026-10-07
 
 ### 🐛 Bug Fixes
