@@ -602,3 +602,18 @@ func TestResolveRerankAPIKeyEnvOnly(t *testing.T) {
 		t.Fatalf("ResolveRerankAPIKey = %q, want empty when unset", got)
 	}
 }
+
+func TestRerankEndpointVersionInclusiveBase(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{"https://api.nan.builders/v1", "https://api.nan.builders/v1/rerank"},
+		{"https://api.nan.builders/v1/", "https://api.nan.builders/v1/rerank"},
+		{"https://api.nan.builders/v2", "https://api.nan.builders/v2/rerank"},
+		{"https://api.nan.builders", "https://api.nan.builders/v1/rerank"},
+		{"https://api.nan.builders/", "https://api.nan.builders/v1/rerank"},
+		{"https://host.example/rerank-api", "https://host.example/rerank-api/v1/rerank"},
+	} {
+		if got := rerankEndpoint(tc.base); got != tc.want {
+			t.Errorf("rerankEndpoint(%q) = %q, want %q", tc.base, got, tc.want)
+		}
+	}
+}
