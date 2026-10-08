@@ -624,6 +624,12 @@ type UnembeddedObservation struct {
 // through cortex_bind_principal): RLS hides every row otherwise, and the
 // runtime role needs the bootstrap-granted SELECT on the vector schema for
 // the NOT EXISTS probe (issue #115). Workspace scoping matches ListArchivable.
+//
+// Only project-resolvable observations are candidates (inner join): the
+// server-scoped vector trust model stamps every point with a project_id
+// public UUID, so a project-less observation can never be embedded here —
+// excluding it up front also keeps it from churning the batch forever. Empty
+// text rows are excluded for the same churn reason.
 func (r *ObservationRepository) ListUnembedded(ctx context.Context, limit int) ([]UnembeddedObservation, error) {
 	if limit <= 0 {
 		limit = 32
@@ -634,10 +640,11 @@ func (r *ObservationRepository) ListUnembedded(ctx context.Context, limit int) (
 		       COALESCE(o.scope, ''), COALESCE(o.tenant_id::text, ''), COALESCE(o.workspace_id::text, ''),
 		       COALESCE(o.source, ''), COALESCE(o.type, '')
 		  FROM observations o
-		  LEFT JOIN projects p ON p.tenant_id = o.tenant_id AND p.workspace_id = o.workspace_id AND p.name = o.project_key
+		  JOIN projects p ON p.tenant_id = o.tenant_id AND p.workspace_id = o.workspace_id AND p.name = o.project_key
 		 WHERE o.tenant_id = public.cortex_current_tenant()
 		   AND o.workspace_id = (SELECT id FROM workspaces WHERE tenant_id = public.cortex_current_tenant() AND public_id = $2::uuid)
 		   AND o.deleted_at IS NULL
+		   AND (COALESCE(o.title, '') <> '' OR COALESCE(o.content, '') <> '')
 		   AND NOT EXISTS (
 		       SELECT 1 FROM cortex_vector.embeddings e WHERE e.id = o.id
 		   )

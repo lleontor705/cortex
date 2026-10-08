@@ -112,6 +112,14 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		if len(vec) == 0 {
 			continue
 		}
+		// Defense in depth for the scoped trust model: every server vector
+		// point must carry a trusted project_id, and the scoped wrapper
+		// rejects the whole batch otherwise (issue #115 follow-up). The
+		// repository query already inner-joins projects; this guard keeps a
+		// future query drift from silently stalling the worker.
+		if strings.TrimSpace(obs.ProjectPublicID) == "" {
+			continue
+		}
 		points = append(points, domain.VectorPoint{
 			ID:     obs.ID,
 			Vector: vec,
