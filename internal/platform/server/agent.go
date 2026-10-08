@@ -213,6 +213,13 @@ func (r agentCodeRetriever) Retrieve(ctx context.Context, scope agentdomain.Scop
 	return evidence, nil
 }
 
+// agentProviderIdleConnTimeout bounds how long a pooled provider connection
+// may sit idle before this side closes it (issue #129). Measured live: a
+// connection idle for ~3s served requests fine while one idle for ~90s was
+// already dead and stalled every request written on it for ~20s. 15s closes
+// pooled connections well inside the observed safe window.
+const agentProviderIdleConnTimeout = 15 * time.Second
+
 // agentChatMaxRetries bounds the extra attempts after the first one on the
 // non-streaming chat completion call: transient transport failures, timeouts,
 // provider 5xx, and 429 are retried with exponential backoff; client errors
@@ -247,6 +254,14 @@ func newConfiguredChatProvider(cfg config.ServerLLMConfig) (agentdomain.Completi
 		return nil, errors.New("server: agent provider destination rejected")
 	}
 	transport := &http.Transport{DialContext: agentDialContext(cfg, baseURL)}
+	// Chat calls are infrequent and the provider path kills idle keep-alive
+	// connections within ~90s (issue #129): requests written on a dead pooled
+	// connection stall ~20s until the middlebox drops the half-open
+	// connection. Fresh connections succeed 100% of the time, so pooled idle
+	// connections are closed from this side well before that window.
+	// (IdleConnTimeout rather than DisableKeepAlives: Connection: close stops
+	// request-cancellation from propagating upstream on streaming responses.)
+	transport.IdleConnTimeout = agentProviderIdleConnTimeout
 	if cfg.CACertPool != nil {
 		transport.TLSClientConfig = &tls.Config{RootCAs: cfg.CACertPool}
 	}
