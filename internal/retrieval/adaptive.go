@@ -157,6 +157,20 @@ func ClassifyQueryWithFusion(query string, features FusionRouteFeatures) QueryTi
 	return base
 }
 
+// HyDEAllowedForTier reports whether the retrieval tier may engage HyDE
+// hypothetical-document generation (REQ-RET-108). Only high-uncertainty
+// conceptual tiers qualify: TierSemanticHybrid and TierMultiHopGraph.
+// TierDirectFactual (cheap lookups) and TierArchitecturalGlobal (community
+// summaries) NEVER trigger a generation call, regardless of the feature flag.
+func HyDEAllowedForTier(tier QueryTier) bool {
+	switch tier {
+	case TierSemanticHybrid, TierMultiHopGraph:
+		return true
+	default:
+		return false
+	}
+}
+
 // ClassifyQueryComplexity routes a query to the optimal retrieval tier in < 0.1ms.
 func ClassifyQueryComplexity(query string) QueryTier {
 	trimmed := strings.TrimSpace(query)
