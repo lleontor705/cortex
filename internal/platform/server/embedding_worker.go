@@ -85,6 +85,7 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 
 	batch, err := w.source.ListUnembedded(ctx, w.batchSize)
 	if err != nil {
+		prometheusMetrics.workerErrors.Inc()
 		// Never swallow fetch failures: an unlogged error here was the reason
 		// production accumulated zero vectors for the worker's whole lifetime
 		// (issue #115).
@@ -110,11 +111,13 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 		return
 	}
 
+	prometheusMetrics.workerEmbeddingBatches.Inc()
 	var vectors [][]float32
 	if batcher, ok := w.embeddings.(embedding.BatchEmbedder); ok {
 		var err error
 		vectors, err = batcher.EmbedBatch(ctx, texts)
 		if err != nil {
+			prometheusMetrics.workerErrors.Inc()
 			log.Printf("server: background embedding worker batch embed error: %v", err)
 			vectors = nil
 		}
@@ -163,7 +166,9 @@ func (w *backgroundEmbeddingWorker) drainBatch(ctx context.Context) {
 	}
 
 	if len(points) > 0 {
+		prometheusMetrics.workerEmbeddings.Add(int64(len(points)))
 		if err := w.vectors.Upsert(ctx, points); err != nil {
+			prometheusMetrics.workerErrors.Inc()
 			log.Printf("server: background embedding worker upsert error: %v", err)
 			return
 		}

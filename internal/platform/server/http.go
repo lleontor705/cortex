@@ -347,6 +347,11 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 		}
 	}
 	mux.Handle("/api/", protect(api.routes()))
+	// Prometheus exposition on the SAME authenticated origin (no separate
+	// unauthenticated metrics port): the bearer gate wraps the handler and
+	// the handler itself enforces the admin capability, identical to
+	// /api/admin/ai/status. Registered ahead of the web-surface catch-all.
+	mux.Handle("/metrics", protect(http.HandlerFunc(api.prometheusMetrics)))
 	mux.Handle("/mcp", protect(guard.wrap(transport)))
 	if surface := webSurface.Load(); surface != nil {
 		// The embedded web surface answers only the residual namespace; every
@@ -1007,9 +1012,11 @@ func (a *apiHandler) applyRerank(w http.ResponseWriter, query string, fused []*d
 	}
 	reranked, err := a.hybrid.reranker.Rerank(query, fused)
 	if err != nil || len(reranked) == 0 {
+		prometheusMetrics.rerankGateFails.Inc()
 		log.Printf("server: hybrid rerank gate failed open: %v", err)
 		return fused
 	}
+	prometheusMetrics.rerankApplied.Inc()
 	meta.Applied = true
 	meta.Candidates = len(fused)
 	return reranked
@@ -2802,6 +2809,19 @@ func (a *apiHandler) mergeProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// prometheusMetrics serves the hand-rolled v0.0.4 text exposition over the
+// process-wide counter registry. Admin-gated exactly like /api/admin/ai/status:
+// the values are runtime telemetry (cache hit-rates, gate outcomes, worker
+// activity) and are never exposed unauthenticated.
+func (a *apiHandler) prometheusMetrics(w http.ResponseWriter, r *http.Request) {
+	if err := a.ops.AuthorizeAdminManage(r.Context()); err != nil {
+		respondOperationError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	prometheusMetrics.render(w)
 }
 
 func (a *apiHandler) aiStatus(w http.ResponseWriter, r *http.Request) {
