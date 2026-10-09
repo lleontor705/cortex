@@ -62,12 +62,3 @@ func assertNoSecrets(payload []byte, secrets []Secret) error {
 	}
 	return nil
 }
-
-// formatSecretNames renders the guarded secret names for diagnostics.
-func formatSecretNames(secrets []Secret) string {
-	names := make([]string, 0, len(secrets))
-	for _, s := range secrets {
-		names = append(names, s.Name)
-	}
-	return strings.Join(names, ", ")
-}
