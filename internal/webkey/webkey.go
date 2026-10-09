@@ -238,6 +238,11 @@ func parseRecord(raw []byte) (Record, error) {
 	return rec, nil
 }
 
+// constantTimeEqual reports whether a and b are equal in constant time.
+func constantTimeEqual(a, b []byte) bool {
+	return hmac.Equal(a, b)
+}
+
 func (s *Store) enforcePermissions() error {
 	info, err := os.Stat(s.path)
 	if err != nil {

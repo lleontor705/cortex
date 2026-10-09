@@ -161,3 +161,53 @@ func TestServeNonLoopbackRefusalPrecedesWebMint(t *testing.T) {
 		t.Fatalf("refused serve still minted a web key at %q (stat err = %v)", keyPath, err)
 	}
 }
+
+// TestServePinnedWebKeySkipsMintAndFile pins the ephemeral-host contract: with
+// CORTEX_WEB_KEY set, serve never mints or writes a key file, never reprints
+// the plaintext, and reports the pin in its output.
+func TestServePinnedWebKeySkipsMintAndFile(t *testing.T) {
+	setCLIEnv(t)
+	t.Setenv("CORTEX_HTTP_HOST", "127.0.0.1")
+	keyPath := filepath.Join(t.TempDir(), "web.key")
+	launched := stubServe(t, keyPath)
+	pinned := mustMintFormatKey(t)
+	t.Setenv(webkey.EnvKey, pinned)
+
+	code, stdout, stderr := run(t, "cortex", "serve")
+	if code != 0 {
+		t.Fatalf("pinned serve code = %d, stderr = %q", code, stderr)
+	}
+	if !*launched {
+		t.Fatal("pinned serve never reached ListenAndServe")
+	}
+	if plaintextKeyPattern.MatchString(stdout) {
+		t.Fatalf("pinned serve reprinted a plaintext key:\n%s", stdout)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pinned serve created a key file at %q (stat err = %v)", keyPath, err)
+	}
+	if !strings.Contains(stdout, "pinned by "+webkey.EnvKey) {
+		t.Fatalf("pinned serve output missing pin report:\n%s", stdout)
+	}
+}
+
+// TestServeInvalidPinnedWebKeyFailsClosed pins the fail-closed rule: an
+// invalid CORTEX_WEB_KEY aborts serve instead of silently regenerating.
+func TestServeInvalidPinnedWebKeyFailsClosed(t *testing.T) {
+	setCLIEnv(t)
+	t.Setenv("CORTEX_HTTP_HOST", "127.0.0.1")
+	keyPath := filepath.Join(t.TempDir(), "web.key")
+	stubServe(t, keyPath)
+	t.Setenv(webkey.EnvKey, "not-a-valid-key")
+
+	code, _, stderr := run(t, "cortex", "serve")
+	if code == 0 {
+		t.Fatal("serve with an invalid pinned key must fail, got exit 0")
+	}
+	if !strings.Contains(stderr, "web access key unavailable") {
+		t.Fatalf("serve stderr missing fail-closed reason: %q", stderr)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed serve must not create a key file at %q (stat err = %v)", keyPath, err)
+	}
+}

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -183,4 +185,49 @@ func TestWebKeyCLIUsageAndDispatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWebKeyCLIPinnedByEnv(t *testing.T) {
+	key := mustMintFormatKey(t)
+	t.Run("show reports the pin and never reads the file", func(t *testing.T) {
+		t.Setenv(webkey.EnvKey, key)
+		code, stdout, _ := runWebCLI(t, "web", "key", "show")
+		if code != 0 {
+			t.Fatalf("show code = %d", code)
+		}
+		if !strings.Contains(stdout, "pinned by "+webkey.EnvKey) {
+			t.Fatalf("show stdout missing pin report: %q", stdout)
+		}
+	})
+	t.Run("regenerate refuses while pinned", func(t *testing.T) {
+		t.Setenv(webkey.EnvKey, key)
+		code, _, stderr := runWebCLI(t, "web", "key", "regenerate")
+		if code != 1 {
+			t.Fatalf("regenerate code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr, "pinned by "+webkey.EnvKey) {
+			t.Fatalf("regenerate stderr missing pin refusal: %q", stderr)
+		}
+	})
+	t.Run("invalid pin fails closed", func(t *testing.T) {
+		t.Setenv(webkey.EnvKey, "garbage-key")
+		code, _, stderr := runWebCLI(t, "web", "key", "show")
+		if code != 1 {
+			t.Fatalf("show with invalid pin code = %d, want 1", code)
+		}
+		if !strings.Contains(stderr, webkey.ErrInvalidPinnedKey.Error()) {
+			t.Fatalf("show stderr missing fail-closed error: %q", stderr)
+		}
+	})
+}
+
+// mustMintFormatKey mints a format-valid key (ctx_ + 43 base64url chars) for
+// env-pin tests without touching any store.
+func mustMintFormatKey(t *testing.T) string {
+	t.Helper()
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	return "ctx_" + base64.RawURLEncoding.EncodeToString(buf)
 }

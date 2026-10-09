@@ -104,7 +104,7 @@ Never point `CORTEX_SERVER_STORAGE_DSN` at the migration role: startup refuses i
 4. **One-time tenant owner bearer**: on first start the entrypoint prints
    `cortex: tenant_owner_bearer=…` **exactly once** to the deploy logs and then persists it to `/home/cortex/.cortex/server-bootstrap.env`. Copy it immediately from **Deployments → logs** of the first deploy — it authenticates `/api/*` and MCP (`Authorization: Bearer …`) and is not re-printed. Rotating it later means replacing the token in the DB or re-running bootstrap on a fresh volume.
 5. **Digest-pinned image**: the service is pinned to `@sha256:ca4282e3…`, not `:latest`. Redeploys are reproducible; bumps are an explicit act.
-6. **Volume is state**: `/home/cortex/.cortex` holds the bootstrap state file **and** the web access key. Attach a Railway volume there or every redeploy mints a new tenant identity and web key.
+6. **Volume is state**: `/home/cortex/.cortex` holds the bootstrap state file **and** the web access key. Attach a Railway volume there or every redeploy mints a new tenant identity and web key. When no volume is possible (root-owned mount + non-root `USER`), use the **ephemeral-host contract** below: pin the identity and the web key through environment variables so redeploys keep the same credentials.
 
 ---
 
@@ -119,6 +119,24 @@ cortex: web access key ctx_...
 ```
 
 Open the service's public domain and paste that key once to unlock the surface. It is independent of `CORTEX_HTTP_TOKEN`: it never authenticates `/api/*`, and the API bearer never unlocks the UI. See [embedded-web.md](embedded-web.md).
+
+### Ephemeral-host contract (no writable volume)
+
+On hosts where `/home/cortex/.cortex` cannot persist (e.g. Railway with a
+root-owned mount and a non-root `USER`), pin both credentials through the
+environment so every redeploy keeps the same identity and web key:
+
+1. **Identity**: set `CORTEX_SERVER_TENANT_ID`, `CORTEX_SERVER_WORKSPACE_ID`,
+   `CORTEX_SERVER_PRINCIPAL_SUBJECT`, and `CORTEX_HTTP_TOKEN` explicitly. The
+   entrypoint detects the persisted-vs-explicit conflict rules and honors
+   explicit values, so the bootstrap state file becomes unnecessary.
+2. **Web key**: set `CORTEX_WEB_KEY` to the `ctx_…` web access key from the
+   first deploy's logs. While pinned, no key file is minted or read, the
+   plaintext is never reprinted, and the value is validated fail-closed
+   (an invalid key aborts startup instead of silently regenerating).
+
+Rotation under the pin = deploy a new `CORTEX_WEB_KEY` value. File-based
+`cortex web key regenerate` is disabled while the key is pinned.
 
 ---
 

@@ -805,8 +805,25 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 // mountWebSurface mints the web credential on first boot (printing the
 // plaintext exactly once) and returns the guarded web handler plus the resolved
 // key file path. Any store failure is fail-closed: serve aborts non-zero.
+//
+// A CORTEX_WEB_KEY pin replaces the file lifecycle: verification uses the
+// pinned secret in memory, no key file is minted or consulted, and the
+// plaintext is never reprinted (the operator set it). An invalid pin fails
+// closed — serve aborts instead of silently regenerating.
 func mountWebSurface(stdout io.Writer) (http.Handler, string, error) {
 	keyFile := webKeyFileFn()
+	pinned, err := webkey.ResolveEnvOverride()
+	if err != nil {
+		return nil, "", fmt.Errorf("web access key unavailable: %w", err)
+	}
+	if pinned != "" {
+		verifier, err := webkey.NewEnvVerifier(pinned)
+		if err != nil {
+			return nil, "", fmt.Errorf("web access key unavailable: %w", err)
+		}
+		writef(stdout, "Web access key pinned by %s; key file %s unused.\n", webkey.EnvKey, keyFile)
+		return web.NewHandler(web.Config{}, verifier), keyFile, nil
+	}
 	store, err := webkey.NewStore(keyFile)
 	if err != nil {
 		return nil, "", fmt.Errorf("web access key unavailable: %w", err)
