@@ -68,6 +68,35 @@ local development only. Invalid destination policy fails server startup; an
 unconfigured provider leaves the agent endpoints fail-closed with a sanitized
 unavailable response.
 
+### Prometheus Metrics
+
+`GET /metrics` serves a hand-rolled Prometheus text exposition (v0.0.4,
+`# HELP`/`# TYPE` counters and gauges — no scrape dependency needed). It is
+**admin-gated on the same authenticated origin (7438)**: the bearer
+authentication wraps the handler and the handler enforces the same
+administrative capability as `GET /api/admin/ai/status`; there is no separate
+unauthenticated metrics port. Scrape config needs only the bearer token:
+
+```yaml
+scrape_configs:
+  - job_name: cortex
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials: <server bearer>
+```
+
+Exposed series: `cortex_query_embedding_cache_{hits,total}`-style counters for
+the query-embedding cache (`cortex_query_embedding_cache_hits_total`,
+`cortex_query_embedding_cache_misses_total`), rerank gate outcomes
+(`cortex_rerank_applied_total`, `cortex_rerank_gate_fail_total`), provider
+traffic (`cortex_embedding_provider_requests_total`,
+`cortex_embedding_provider_errors_total`), background embedding worker
+activity (`cortex_worker_embedding_batches_total`,
+`cortex_worker_embeddings_total`, `cortex_worker_errors_total`), and the
+`cortex_process_uptime_seconds` gauge.
+
+
 ### Authenticated API
 
 - `GET /api/agent/projects` returns only projects for which the verified

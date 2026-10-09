@@ -55,8 +55,16 @@ func (c *queryEmbeddingCache) embed(ctx context.Context, svc embedding.Service, 
 	vector, err := c.cache.Embed(ctx, model, query, svc.Embed)
 	if c.cache.Misses() == missesBefore {
 		c.hits.Add(1)
+		prometheusMetrics.queryEmbeddingCacheHits.Inc()
 	} else {
 		c.misses.Add(1)
+		prometheusMetrics.queryEmbeddingCacheMisses.Inc()
+		// A miss IS one provider round-trip on this path: count the request,
+		// and classify the outcome for the provider error surface.
+		prometheusMetrics.embeddingProviderRequests.Inc()
+		if err != nil {
+			prometheusMetrics.embeddingProviderErrors.Inc()
+		}
 	}
 	return vector, err
 }
