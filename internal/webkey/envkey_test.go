@@ -91,7 +91,14 @@ func TestEnvVerifier(t *testing.T) {
 	if err := v.Verify(key); err != nil {
 		t.Fatalf("Verify(pinned) = %v, want nil", err)
 	}
-	if err := v.Verify(key[:len(key)-1] + "A"); !errors.Is(err, ErrInvalidKey) {
+	// Deterministic near-miss: same shape, one guaranteed-different payload
+	// character (a random key can legitimately end in 'A', so the mutation
+	// must be anchored to a position that cannot alias, issue: CI flake).
+	wrong := keyNamespace + "B" + key[len(keyNamespace)+1:]
+	if wrong == key {
+		wrong = keyNamespace + "C" + key[len(keyNamespace)+1:]
+	}
+	if err := v.Verify(wrong); !errors.Is(err, ErrInvalidKey) {
 		t.Fatalf("Verify(wrong) = %v, want ErrInvalidKey", err)
 	}
 	if err := v.Verify(""); !errors.Is(err, ErrInvalidKey) {
