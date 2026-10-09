@@ -124,6 +124,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runWatch(args[2:], stdout, stderr)
 	case "backup":
 		exitCode = runBackup(args[2:], stdout, stderr)
+	case "restore":
+		exitCode = runRestoreCmd(args[2:], stdout, stderr)
 	case "update":
 		exitCode = runUpdate(args[2:], stdout, stderr)
 	default:
@@ -161,6 +163,8 @@ Commands:
   doctor                 Run health checks on the database
   gc [--days N]          Garbage collect archived observations (default: 90 days)
   backup [path]          Create an atomic online backup snapshot of the SQLite database
+  backup --out FILE      Create a portable logical snapshot (tar.gz; restorable via restore)
+  restore --from FILE    Restore a portable logical snapshot (idempotent; embeddings re-embed after)
   watch [path]           Watch repository for real-time incremental AST indexing
   config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard [--cli|--tui])
   web <subcommand>       Manage the embedded web UI credential (key show, key regenerate)
@@ -1823,7 +1827,34 @@ func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
 
 // --- backup (atomic sqlite snapshot) ----------------------------------------
 
+// runBackup routes between the physical SQLite snapshot (positional
+// destination, VACUUM INTO) and the portable logical snapshot (--out tar.gz).
 func runBackup(args []string, stdout, stderr io.Writer) int {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--out" || strings.HasPrefix(args[i], "--out=") {
+			a, err := openApp()
+			if err != nil {
+				writef(stderr, "cortex: %v\n", err)
+				return 1
+			}
+			defer func() { _ = a.Close() }()
+			return runBackupLogical(args, a, stdout, stderr)
+		}
+	}
+	return runBackupPhysical(args, stdout, stderr)
+}
+
+func runRestoreCmd(args []string, stdout, stderr io.Writer) int {
+	a, err := openApp()
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	defer func() { _ = a.Close() }()
+	return runRestore(args, a, stdout, stderr)
+}
+
+func runBackupPhysical(args []string, stdout, stderr io.Writer) int {
 	dest := ""
 	for i := 0; i < len(args); i++ {
 		if !strings.HasPrefix(args[i], "-") {
