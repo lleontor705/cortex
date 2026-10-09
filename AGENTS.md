@@ -3,7 +3,7 @@
 ## Sources Of Truth
 
 - This is a Go repository; `package.json` exists only to install Husky. `npm test` intentionally fails. Use the Makefile, Go commands, and `.github/workflows/ci.yml` for verification.
-- Use Go 1.27.1 (pinned by `go.mod` and CI) and golangci-lint v2.14.0 (pinned by CI).
+- Use Go 1.27.2 (pinned by `go.mod` and CI) and golangci-lint v2.14.0 (pinned by CI).
 - `AGENTS.md` is the canonical engineering guide. `CLAUDE.md` only points here; current product references live under `docs/`.
 
 ## Runtime Boundaries
