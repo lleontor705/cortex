@@ -13,12 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 )
 
 // Presets accepted by search.rerank_provider. The set is shared by config
@@ -59,6 +59,11 @@ type RerankConfig struct {
 	Provider string
 	Model    string
 	BaseURL  string
+	// Budget is the shared provider rate budget drawn by every subsystem
+	// dialing the same provider base URL (rerank, embedding, agent chat).
+	// When nil the reranker builds its own private budget at the provider's
+	// advertised rpm, which is the historical per-subsystem behavior.
+	Budget *ratelimit.Limiter
 }
 
 // DefaultLateInteractionReranker is the zero-network local default. It
@@ -131,12 +136,16 @@ func NewSecureReranker(cfg RerankConfig, policy embedding.OutboundPolicy) (Reran
 			return approveRerankURL(policy, req.URL.String())
 		},
 	}
+	budget := cfg.Budget
+	if budget == nil {
+		budget = ratelimit.New(rerankRequestsPerMin)
+	}
 	return &httpReranker{
 		model:   strings.TrimSpace(cfg.Model),
 		baseURL: base,
 		apiKey:  key,
 		client:  client,
-		pacer:   newRerankPacer(),
+		budget:  budget,
 		sleep:   time.Sleep,
 	}, nil
 }
@@ -176,7 +185,7 @@ type httpReranker struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
-	pacer   *rerankPacer
+	budget  *ratelimit.Limiter
 	sleep   func(time.Duration)
 }
 
@@ -247,7 +256,8 @@ func (h *httpReranker) rerankBatch(query string, batch []*domain.SearchResult) (
 }
 
 // post performs one batch request with 429 backoff (1s<<attempt, at most 3
-// retries) and paces every attempt against the RPM budget.
+// retries) and paces every attempt against the provider rate budget (the
+// shared bucket when one is composed, the private 60-rpm default otherwise).
 // rerankEndpoint builds the provider URL (issue #123): operators configure
 // the base URL in the same version-inclusive preset shape as the embedding
 // provider (e.g. "https://host/v1", which the embedding client turns into
@@ -284,7 +294,7 @@ func rerankVersionedPath(path string) bool {
 func (h *httpReranker) post(body []byte) (*rerankResponse, error) {
 	endpoint := rerankEndpoint(h.baseURL)
 	for attempt := 0; ; attempt++ {
-		h.pacer.wait()
+		h.budget.Wait()
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("rerank: build request: %w", err)
@@ -315,69 +325,6 @@ func (h *httpReranker) post(body []byte) (*rerankResponse, error) {
 			return nil, fmt.Errorf("rerank: decode response: %w", decodeErr)
 		}
 		return &parsed, nil
-	}
-}
-
-// rerankPacer is a per-query token-bucket budget limiter for the shared 60
-// rpm rerank provider key. Tokens accrue at the provider rate (60/min: one
-// per second) up to the per-minute budget as burst capacity, and every wait
-// consumes one token. Unlike the former mutex-sleep pacer, the lock only
-// guards bucket bookkeeping — callers NEVER hold it while sleeping:
-//
-//   - callers within budget (a token is available) proceed immediately, so
-//     independent concurrent searches are never serialized;
-//   - excess callers reserve a future refill slot by letting the balance go
-//     negative and then concurrently sleep only their own computed delay;
-//     no caller waits behind another caller's sleep;
-//   - the provider rate is respected globally: emissions are spaced by the
-//     refill rate and instantaneous burst is bounded by the accrued budget
-//     (up to one full minute's worth after sustained idleness; the existing
-//     429 backoff path remains the guard for provider-side sliding windows).
-//
-// now and sleep are injectable so tests never wait on wall time.
-type rerankPacer struct {
-	rate  float64 // refill rate in tokens per second (rerankRequestsPerMin/60)
-	burst float64 // bucket capacity: the shared per-minute budget
-	now   func() time.Time
-	sleep func(time.Duration)
-
-	mu     sync.Mutex
-	tokens float64
-	last   time.Time
-}
-
-func newRerankPacer() *rerankPacer {
-	return &rerankPacer{
-		rate:   float64(rerankRequestsPerMin) / 60.0,
-		burst:  float64(rerankRequestsPerMin),
-		tokens: 1, // one immediate call; further calls pace on refill or accrued budget
-		now:    time.Now,
-		sleep:  time.Sleep,
-	}
-}
-
-func (p *rerankPacer) wait() {
-	p.mu.Lock()
-	now := p.now()
-	if p.last.IsZero() {
-		p.last = now
-	}
-	p.tokens += now.Sub(p.last).Seconds() * p.rate
-	if p.tokens > p.burst {
-		p.tokens = p.burst
-	}
-	p.last = now
-	p.tokens--
-	delay := time.Duration(0)
-	if p.tokens < 0 {
-		// Reserve the future refill token and wait only until the moment it
-		// exists; a negative balance is the count of outstanding concurrent
-		// reservations, each spaced by exactly one provider-rate interval.
-		delay = time.Duration(-p.tokens / p.rate * float64(time.Second))
-	}
-	p.mu.Unlock()
-	if delay > 0 {
-		p.sleep(delay)
 	}
 }
 

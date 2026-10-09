@@ -190,7 +190,7 @@ func TestConfiguredChatProviderUsesOnlyAdminConfigurationAndHardenedTransport(t 
 		Provider: "generic", BaseURL: provider.URL + "/v1", APIKey: apiKey, Model: "admin-model",
 		AllowLoopback: true, MaxConcurrent: 1, MaxRedirects: 1, MaxResponseBodyBytes: 4096,
 		MaxErrorBodyBytes: 1024, CACertPool: pool,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newConfiguredChatProvider() = %v", err)
 	}
@@ -221,7 +221,7 @@ func TestConfiguredChatProviderStreamsOpenAICompatibleClaimsProgressively(t *tes
 	completion, err := newConfiguredChatProvider(config.ServerLLMConfig{
 		Provider: "generic", BaseURL: provider.URL, Model: "admin-model", AllowLoopback: true,
 		MaxConcurrent: 1, MaxRedirects: 1, MaxResponseBodyBytes: 4096, MaxErrorBodyBytes: 1024, CACertPool: pool,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newConfiguredChatProvider: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestConfiguredChatProviderStreamPropagatesCancellationUpstream(t *testing.T
 	completion, err := newConfiguredChatProvider(config.ServerLLMConfig{
 		Provider: "generic", BaseURL: provider.URL, Model: "admin-model", AllowLoopback: true,
 		MaxConcurrent: 1, MaxRedirects: 1, MaxResponseBodyBytes: 4096, MaxErrorBodyBytes: 1024, CACertPool: pool,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newConfiguredChatProvider: %v", err)
 	}

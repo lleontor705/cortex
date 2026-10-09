@@ -228,6 +228,24 @@ func AgentAnswerTimeoutFromEnv() (time.Duration, error) {
 	return timeout, nil
 }
 
+// ProviderRPMFromEnv resolves the shared outbound provider rate budget in
+// requests per minute. All server provider subsystems dialing the same base
+// URL (rerank, embedding, agent chat) draw from one shared token bucket so a
+// shared API key's advertised rpm is never oversubscribed by a single
+// subsystem. The unset default is 0 = unlimited, preserving current
+// behavior; malformed or negative values fail startup.
+func ProviderRPMFromEnv() (int, error) {
+	p := &envParser{}
+	rpm := p.intEnv("CORTEX_PROVIDER_RPM")
+	if err := p.err(); err != nil {
+		return 0, err
+	}
+	if rpm < 0 {
+		return 0, fmt.Errorf("invalid CORTEX_PROVIDER_RPM: must be zero (unlimited) or a positive requests-per-minute budget")
+	}
+	return rpm, nil
+}
+
 func normalizeLLMBoundInt(name string, value *int, def, min, max int) error {
 	if *value == 0 {
 		*value = def

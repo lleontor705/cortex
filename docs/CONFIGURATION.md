@@ -284,6 +284,26 @@ constructed, and search output is byte-identical to a build without the feature.
   response that changes the candidate set keeps the unreranked fusion order (with
   a warning) and never drops or fails a search.
 
+### Shared provider rate budget (`CORTEX_PROVIDER_RPM`)
+
+When embedding, rerank, and agent chat are configured against the **same
+provider base URL** (e.g. one Nan API key advertising 60 rpm), each subsystem
+pacing independently still oversubscribes the shared key: agent traffic can
+starve hybrid searches of their quota. `CORTEX_PROVIDER_RPM` composes **one
+shared token-bucket budget per provider base URL** in the server composition,
+drawn by all three subsystems (rerank batches, embedding requests, chat
+completions — streaming and non-streaming).
+
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `CORTEX_PROVIDER_RPM` | `0` | Shared outbound provider budget in requests per minute, keyed by provider base URL. `0` (unset) = unlimited: rerank keeps its historical private 60-rpm pacing and embedding/chat are unpaced. Malformed or negative values fail startup. |
+
+Set it to the provider's advertised rpm (e.g. `60` for Nan) whenever more than
+one subsystem shares a provider key. Budgets are enforced client-side with the
+same token-bucket semantics as the rerank pacer (burst capped at one minute's
+worth, callers never serialized within budget) and are unit-tested against a
+fake clock.
+
 ### LLM (Agent Reasoning, Extraction & Synthesis)
 
 | Configuration Key | Environment Variable | Default | Description |

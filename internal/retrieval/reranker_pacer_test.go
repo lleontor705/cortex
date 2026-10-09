@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 )
 
 // pacerTestClock is a wall-time-free clock seam dedicated to the pacer tests.
@@ -45,11 +47,10 @@ func (c *pacerTestClock) recordedSleeps() []time.Duration {
 	return append([]time.Duration(nil), c.sleeps...)
 }
 
-func newPacedTestPacer(clock *pacerTestClock) *rerankPacer {
-	p := newRerankPacer()
-	p.now = clock.Now
-	p.sleep = clock.Sleep
-	return p
+// newPacedTestBudget builds the shared-budget limiter with the wall-time-free
+// clock seam so the provider pacing contract stays pinned at its new home.
+func newPacedTestBudget(clock *pacerTestClock) *ratelimit.Limiter {
+	return ratelimit.New(rerankRequestsPerMin, ratelimit.WithClock(clock.Now), ratelimit.WithSleep(clock.Sleep))
 }
 
 // TestRerankPacerWithinBudgetDoesNotSleep pins the REQ-RET-107 behavior
@@ -57,16 +58,16 @@ func newPacedTestPacer(clock *pacerTestClock) *rerankPacer {
 // spaced at the provider rate never wait.
 func TestRerankPacerWithinBudgetDoesNotSleep(t *testing.T) {
 	clock := &pacerTestClock{now: time.Unix(1_700_000_000, 0), advance: true}
-	p := newPacedTestPacer(clock)
+	p := newPacedTestBudget(clock)
 
-	p.wait() // first call: the single initial token
+	p.Wait() // first call: the single initial token
 	if sleeps := clock.recordedSleeps(); len(sleeps) != 0 {
 		t.Fatalf("first wait must not sleep, got %v", sleeps)
 	}
 
 	// Advance exactly one provider-rate interval; the next call is within budget.
 	clock.add(time.Second)
-	p.wait()
+	p.Wait()
 	if sleeps := clock.recordedSleeps(); len(sleeps) != 0 {
 		t.Fatalf("wait one gap later must not sleep, got %v", sleeps)
 	}
@@ -76,9 +77,9 @@ func TestRerankPacerWithinBudgetDoesNotSleep(t *testing.T) {
 // accrued budget covers them: none may sleep.
 func TestRerankPacerConcurrentWithinBudget(t *testing.T) {
 	clock := &pacerTestClock{now: time.Unix(1_700_000_000, 0), advance: false}
-	p := newPacedTestPacer(clock)
+	p := newPacedTestBudget(clock)
 
-	p.wait() // stamp the accrual epoch with the initial free token
+	p.Wait() // stamp the accrual epoch with the initial free token
 
 	// Accrue 10 extra tokens of budget (10s idle at 1 token/s).
 	clock.add(10 * time.Second)
@@ -91,7 +92,7 @@ func TestRerankPacerConcurrentWithinBudget(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.wait()
+			p.Wait()
 			mu.Lock()
 			proceeded++
 			mu.Unlock()
@@ -111,7 +112,7 @@ func TestRerankPacerConcurrentWithinBudget(t *testing.T) {
 // (1s, 2s, 3s, ...) — never a queued concatenation of other callers' gaps.
 func TestRerankPacerExcessCallersWait(t *testing.T) {
 	clock := &pacerTestClock{now: time.Unix(1_700_000_000, 0), advance: false}
-	p := newPacedTestPacer(clock)
+	p := newPacedTestBudget(clock)
 
 	const n = 5
 	var wg sync.WaitGroup
@@ -121,7 +122,7 @@ func TestRerankPacerExcessCallersWait(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.wait()
+			p.Wait()
 			mu.Lock()
 			defer mu.Unlock()
 			if len(clock.recordedSleeps()) == 0 {
@@ -151,11 +152,11 @@ func TestRerankPacerExcessCallersWait(t *testing.T) {
 // provider-rate interval, keeping the shared key at or under 60 rpm.
 func TestRerankPacerSustainedRateNotExceeded(t *testing.T) {
 	clock := &pacerTestClock{now: time.Unix(1_700_000_000, 0), advance: true}
-	p := newPacedTestPacer(clock)
+	p := newPacedTestBudget(clock)
 
 	emissions := make([]time.Time, 0, 120)
 	for i := 0; i < 120; i++ {
-		p.wait()
+		p.Wait()
 		emissions = append(emissions, clock.Now())
 	}
 	for i := 1; i < len(emissions); i++ {
@@ -169,9 +170,9 @@ func TestRerankPacerSustainedRateNotExceeded(t *testing.T) {
 // provider rate and never exceeds the per-minute budget.
 func TestRerankPacerBurstCappedAtBudget(t *testing.T) {
 	clock := &pacerTestClock{now: time.Unix(1_700_000_000, 0), advance: true}
-	p := newPacedTestPacer(clock)
+	p := newPacedTestBudget(clock)
 
-	p.wait() // stamp the accrual epoch with the initial free token
+	p.Wait() // stamp the accrual epoch with the initial free token
 
 	// Two minutes idle: credit must cap at the 60-request budget.
 	clock.add(2 * time.Minute)
@@ -181,7 +182,7 @@ func TestRerankPacerBurstCappedAtBudget(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.wait()
+			p.Wait()
 		}()
 	}
 	wg.Wait()
@@ -190,7 +191,7 @@ func TestRerankPacerBurstCappedAtBudget(t *testing.T) {
 	}
 
 	// One more caller exceeds the budget and must wait for the next refill.
-	p.wait()
+	p.Wait()
 	sleeps := clock.recordedSleeps()
 	if len(sleeps) != 1 {
 		t.Fatalf("expected exactly one paced sleep past the budget, got %v", sleeps)
