@@ -1,0 +1,35 @@
+{
+  "schema_version": "1",
+  "config": {
+    "CorpusSize": 200,
+    "QueryCount": 60,
+    "TopK": 10,
+    "Seed": 4027392038,
+    "TuningFraction": 0.5,
+    "AlphaGridStep": 0.05
+  },
+  "tuning_queries": 30,
+  "eval_queries": 30,
+  "calibrated_alpha": 0.4,
+  "strategies": [
+    {
+      "name": "rrf-k60",
+      "recall_at_k": 0.6022222222222223,
+      "precision_at_k": 0.35666666666666663,
+      "ndcg_at_k": 0.514023999386211,
+      "mrr": 0.7544444444444445,
+      "latency_ns_per_query": 53333
+    },
+    {
+      "name": "convex-combination",
+      "recall_at_k": 0.7266666666666667,
+      "precision_at_k": 0.42999999999999994,
+      "ndcg_at_k": 0.6924689096091173,
+      "mrr": 1,
+      "latency_ns_per_query": 53959
+    }
+  ],
+  "recommendation": "convex-combination",
+  "rationale": "convex combination (alpha=0.40) improves recall@k by 0.1244 with nDCG@k not worse (0.6925 vs 0.5140) on the eval split; decision-gate approval still required before any production flip",
+  "contract_note": "Advisory report only: production fusion remains position-only RRF k=60 with the REQ-RET-002 score-as-rank contract intact. Adopting the convex combination requires an explicit decision-gate approval and a reviewed contract change."
+}

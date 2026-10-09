@@ -200,3 +200,34 @@ jobs:
         with:
           go-version-input: "1.27.2"
           go-version-file: go.mod
+
+  # Recall Gate (P8, issue #162) — ADVISORY. It measures recall@10 / nDCG@10
+  # of the production fusion semantics over the offline deterministic golden
+  # corpus and compares against the pinned thresholds in
+  # bench/recall/thresholds.json (golden artifact: golden-report.json).
+  #
+  # PROMOTION PATH TO REQUIRED (documented in bench/recall/gate.go):
+  #   1. Let this job run across model/provider/fusion changes and confirm
+  #      the pinned floors keep headroom over measured values.
+  #   2. Add this job to the branch-protection required checks ruleset.
+  #   3. Note the promotion in docs/BENCHMARKS.md.
+  # The job is intentionally named "(Advisory)" so the eventual required job
+  # is a distinct ruleset entry; failures here must be triaged, never ignored.
+  recall-gate:
+    name: Recall Gate (Advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run recall gate against pinned thresholds
+        run: go run ./cmd/recallgate
+
+      - name: Verify offline determinism (pure Go, no network, no live provider)
+        run: go test -count=1 ./bench/recall/
