@@ -20,11 +20,12 @@ func TestGoToolchainContract(t *testing.T) {
 	if !strings.Contains(goMod, "go 1.27.0\n") {
 		t.Error("go.mod must declare Go language version 1.27.0")
 	}
-	if !strings.Contains(goMod, "toolchain go1.27.1\n") {
-		t.Error("go.mod must require toolchain go1.27.1")
+	if !strings.Contains(goMod, "toolchain go1.27.2\n") {
+		t.Error("go.mod must require toolchain go1.27.2")
 	}
 	for _, dependency := range []string{
-		"golang.org/x/text v0.41.0",
+		"golang.org/x/net v0.60.0",
+		"golang.org/x/text v0.42.0",
 		"google.golang.org/grpc v1.84.0",
 	} {
 		if !strings.Contains(goMod, dependency) {
