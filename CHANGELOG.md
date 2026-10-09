@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.19] - 2026-10-09
+
+### 🚀 Features
+
+- *(backup)* Portable logical snapshot — cortex backup --out / restore --from: JSONL parts in a tar.gz with a sha256-verified manifest, ID-preserving idempotent restore, secret fail-closed export (#164, #165)
+- *(embedding)* Optional near-duplicate detection at ingest: duplicates_of graph relations, default OFF via CORTEX_INGEST_DEDUP (#166, #167)
+
+### ⚡ Performance
+
+- *(embedding)* Provider-native MRL dimensions via CORTEX_EMBEDDING_DIMENSIONS (default 0 = provider default): unlocks the pgvector HNSW chain for dims ≤ 2000; live probe confirmed qwen3-embedding matryoshka support (#168, #169)
+
 ## [2.4.18] - 2026-10-09
 
 ### 🚀 Features
