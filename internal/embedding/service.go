@@ -365,7 +365,7 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: API returned status %d", s.provider, resp.StatusCode)
+		return nil, NewAPIError(s.provider, resp.StatusCode, resp.Body)
 	}
 
 	var result struct {
@@ -421,7 +421,7 @@ func (s *openAIService) EmbedBatch(ctx context.Context, texts []string) ([][]flo
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: API returned status %d", s.provider, resp.StatusCode)
+		return nil, NewAPIError(s.provider, resp.StatusCode, resp.Body)
 	}
 
 	var result struct {
