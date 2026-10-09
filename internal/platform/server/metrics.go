@@ -59,7 +59,9 @@ func (r *metricsRegistry) render(w io.Writer) {
 	counters := append([]*metricsCounter(nil), r.counters...)
 	r.mu.Unlock()
 	for _, c := range counters {
-		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", c.name, c.help, c.name, c.name, c.Value())
+		// The exposition is a best-effort render over an io.Writer the HTTP
+		// layer owns; a mid-scrape write failure aborts the response there.
+		_, _ = fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", c.name, c.help, c.name, c.name, c.Value())
 	}
 }
 
@@ -110,7 +112,7 @@ func newServerMetrics() *serverMetrics {
 // gauge (process uptime).
 func (m *serverMetrics) render(w io.Writer) {
 	m.registry.render(w)
-	fmt.Fprintf(w, "# HELP cortex_process_uptime_seconds Server process uptime in seconds.\n")
-	fmt.Fprintf(w, "# TYPE cortex_process_uptime_seconds gauge\n")
-	fmt.Fprintf(w, "cortex_process_uptime_seconds %.3f\n", time.Since(serverStartTime).Seconds())
+	_, _ = fmt.Fprintf(w, "# HELP cortex_process_uptime_seconds Server process uptime in seconds.\n")
+	_, _ = fmt.Fprintf(w, "# TYPE cortex_process_uptime_seconds gauge\n")
+	_, _ = fmt.Fprintf(w, "cortex_process_uptime_seconds %.3f\n", time.Since(serverStartTime).Seconds())
 }
