@@ -1596,19 +1596,26 @@ func writeVectorDegradedGuidance(w io.Writer, prefix string) {
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	serverMode := false
+	deepMode := false
 	serverURL := "http://localhost:7438"
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--server" {
+		switch args[i] {
+		case "--server":
 			serverMode = true
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				serverURL = args[i+1]
 				i++
 			}
+		case "--deep":
+			deepMode = true
 		}
 	}
 
 	if serverMode {
 		return runDoctorServer(serverURL, stdout, stderr)
+	}
+	if deepMode {
+		return runDoctorDeep(stdout, stderr)
 	}
 
 	a, err := openApp()

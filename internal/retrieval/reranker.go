@@ -265,6 +265,14 @@ func (h *httpReranker) rerankBatch(query string, batch []*domain.SearchResult) (
 // only "/rerank" appended — appending "/v1/rerank" produced /v1/v1/rerank
 // and a deterministic 404 that made the gate fail open on every search. A
 // bare host keeps the documented "/v1/rerank" default.
+// RerankEndpoint exposes the provider URL construction rule (issue #123) for
+// diagnostics that probe the same contract (doctor --deep, conformance
+// suites). Keeping one implementation prevents endpoint drift between the
+// client and its probes.
+func RerankEndpoint(baseURL string) string {
+	return rerankEndpoint(baseURL)
+}
+
 func rerankEndpoint(baseURL string) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if u, err := url.Parse(base); err == nil && rerankVersionedPath(u.Path) {
