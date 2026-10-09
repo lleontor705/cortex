@@ -85,9 +85,16 @@ func (r *Restorer) Restore(ctx context.Context, opts RestoreOptions) (*RestoreRe
 	defer cleanupTempDir(tmpDir)
 
 	// Verify manifest hashes BEFORE touching the database (tamper rejection).
-	for name, want := range manifest.Parts {
-		got, ok := parts[name]
+	// Only the known parts are verified against staged data; unknown entries
+	// in a newer archive format are ignored (forward compatibility) and are
+	// never written to disk by this version.
+	for _, name := range []string{ObservationsPart, EdgesPart, SessionsPart} {
+		want, ok := manifest.Parts[name]
 		if !ok {
+			continue
+		}
+		got, staged := parts[name]
+		if !staged {
 			return nil, fmt.Errorf("restore: manifest references missing part %q", name)
 		}
 		if got.hash != want.SHA256 {
@@ -147,16 +154,25 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 			cleanupTempDir(tmpDir)
 			return nil, nil, "", fmt.Errorf("restore: read archive: %w", err)
 		}
-		name := filepath.Clean(hdr.Name)
-		if strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
+
+		// Allow-list archive entry names: nothing attacker-controlled ever
+		// reaches a filesystem path (Zip Slip / CWE-022 prevention). Unknown
+		// entries from a newer archive format are ignored, never written.
+		// All allow-listed names are flat constants without separators.
+		switch hdr.Name {
+		case ManifestName, ObservationsPart, EdgesPart, SessionsPart:
+		default:
+			continue
+		}
+		if hdr.Typeflag != tar.TypeReg {
 			cleanupTempDir(tmpDir)
-			return nil, nil, "", fmt.Errorf("restore: refusing unsafe archive entry %q", hdr.Name)
+			return nil, nil, "", fmt.Errorf("restore: refusing non-regular archive entry %q", hdr.Name)
 		}
 
 		hasher := sha256.New()
 		body := io.TeeReader(tr, hasher)
 
-		if name == ManifestName {
+		if hdr.Name == ManifestName {
 			dec := json.NewDecoder(body)
 			m := &Manifest{}
 			if err := dec.Decode(m); err != nil {
@@ -179,12 +195,13 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 			continue
 		}
 
-		// Stage data parts.
-		stagePath := filepath.Join(tmpDir, name)
+		// Stage data parts. hdr.Name is one of the flat allow-listed
+		// constants, so the join cannot escape tmpDir.
+		stagePath := filepath.Join(tmpDir, hdr.Name)
 		out, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			cleanupTempDir(tmpDir)
-			return nil, nil, "", fmt.Errorf("restore: stage %q: %w", name, err)
+			return nil, nil, "", fmt.Errorf("restore: stage %q: %w", hdr.Name, err)
 		}
 		count := 0
 		scanner := bufio.NewScanner(body)
@@ -197,7 +214,7 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 			if _, err := out.Write(append(bytes.Clone(line), '\n')); err != nil {
 				_ = out.Close()
 				cleanupTempDir(tmpDir)
-				return nil, nil, "", fmt.Errorf("restore: stage %q: %w", name, err)
+				return nil, nil, "", fmt.Errorf("restore: stage %q: %w", hdr.Name, err)
 			}
 			count++
 			if err := assertNoSecrets(line, secrets); err != nil {
@@ -209,13 +226,13 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 		if err := scanner.Err(); err != nil {
 			_ = out.Close()
 			cleanupTempDir(tmpDir)
-			return nil, nil, "", fmt.Errorf("restore: scan %q: %w", name, err)
+			return nil, nil, "", fmt.Errorf("restore: scan %q: %w", hdr.Name, err)
 		}
 		if err := out.Close(); err != nil {
 			cleanupTempDir(tmpDir)
-			return nil, nil, "", fmt.Errorf("restore: stage %q: %w", name, err)
+			return nil, nil, "", fmt.Errorf("restore: stage %q: %w", hdr.Name, err)
 		}
-		parts[name] = staged{path: stagePath, count: count, hash: hex.EncodeToString(hasher.Sum(nil))}
+		parts[hdr.Name] = staged{path: stagePath, count: count, hash: hex.EncodeToString(hasher.Sum(nil))}
 	}
 
 	if manifest == nil {

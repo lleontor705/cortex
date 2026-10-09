@@ -440,6 +440,88 @@ func TestExportRefusesNonV2Database(t *testing.T) {
 	}
 }
 
+// TestRestoreIgnoresTraversalEntries proves Zip Slip immunity: an archive
+// containing a traversal entry must not write anything outside the staging
+// directory, and the restore of the legit parts still succeeds.
+func TestRestoreIgnoresTraversalEntries(t *testing.T) {
+	src := newV2TestDB(t)
+	seedFixture(t, src)
+	out := filepath.Join(t.TempDir(), "zipslip.tar.gz")
+	mustExport(t, src, out)
+
+	// Rebuild the archive with an extra malicious traversal entry.
+	malicious := filepath.Join(t.TempDir(), "zipslip-copy.tar.gz")
+	if err := appendTarEntry(out, malicious, "../evil.txt", []byte("pwned")); err != nil {
+		t.Fatalf("append entry: %v", err)
+	}
+	outside := filepath.Join(filepath.Dir(t.TempDir()), "evil.txt")
+
+	dst := newV2TestDB(t)
+	res, err := (&Restorer{DB: dst}).Restore(context.Background(), RestoreOptions{From: malicious})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if res.ObservationsRestored != 3 {
+		t.Fatalf("observations restored = %d, want 3", res.ObservationsRestored)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("traversal entry escaped the staging directory: %v", err)
+	}
+}
+
+// appendTarEntry copies the archive adding one extra entry.
+func appendTarEntry(srcPath, dstPath, name string, data []byte) error {
+	in, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	gz, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gz.Close() }()
+	tr := tar.NewReader(gz)
+
+	outFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = outFile.Close() }()
+	gzOut := gzip.NewWriter(outFile)
+	tw := tar.NewWriter(gzOut)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			return err
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write(body); err != nil {
+			return err
+		}
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(data); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return gzOut.Close()
+}
+
 func TestManifestShape(t *testing.T) {
 	src := newV2TestDB(t)
 	seedFixture(t, src)
