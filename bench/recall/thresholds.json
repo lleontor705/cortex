@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "fusion": "rrf-k60",
+  "seed": 4027392038,
+  "top_k": 10,
+  "corpus_size": 200,
+  "query_count": 60,
+  "min_recall_at_k": 0.58,
+  "min_ndcg_at_k": 0.48,
+  "note": "Pinned from the golden corpus run committed at bench/recall/golden-report.json. Update in the same PR as any fusion/corpus change."
+}
