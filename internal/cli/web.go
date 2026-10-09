@@ -44,6 +44,16 @@ func runWebKey(args []string, stdout, stderr io.Writer) int {
 // runWebKeyShow reports whether a web key exists and where it lives. It never
 // prints the plaintext secret, which is only ever emitted by regeneration.
 func runWebKeyShow(args []string, stdout, stderr io.Writer) int {
+	pinned, err := webkey.ResolveEnvOverride()
+	if err != nil {
+		writef(stderr, "error: %v\n", err)
+		return 1
+	}
+	if pinned != "" {
+		writef(stdout, "Web access key: pinned by %s\n", webkey.EnvKey)
+		writef(stdout, "Key file:       unused (file-based operations are disabled while the key is pinned)\n")
+		return 0
+	}
 	store, err := webKeyStore(args)
 	if err != nil {
 		writef(stderr, "error: %v\n", err)
@@ -77,6 +87,16 @@ func runWebKeyShow(args []string, stdout, stderr io.Writer) int {
 // runWebKeyRegenerate rotates the persisted key and prints the fresh plaintext
 // exactly once. Rotation is atomic, so a failure leaves the previous key valid.
 func runWebKeyRegenerate(args []string, stdout, stderr io.Writer) int {
+	pinned, err := webkey.ResolveEnvOverride()
+	if err != nil {
+		writef(stderr, "error: %v\n", err)
+		return 1
+	}
+	if pinned != "" {
+		writef(stderr, "error: the web access key is pinned by %s; file rotation is disabled\n", webkey.EnvKey)
+		writef(stderr, "Unset %s (or deploy a new pinned value) to rotate the key.\n", webkey.EnvKey)
+		return 1
+	}
 	store, err := webKeyStore(args)
 	if err != nil {
 		writef(stderr, "error: %v\n", err)

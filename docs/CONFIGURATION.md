@@ -144,10 +144,13 @@ lifecycle, at-rest format, and rotation semantics.
 | `web.host` | `CORTEX_WEB_HOST` | inherits `http.host` (`localhost`) | Listener host for the web surface. Empty inherits `http.host`; accepts an IP literal or bare hostname (no scheme, path, userinfo, or port). |
 | `web.port` | `CORTEX_WEB_PORT` | inherits `http.port` (`7438`) | Listener port for the web surface. `0` inherits `http.port`; valid range `1`–`65535`. |
 | `web.key_file` | `CORTEX_WEB_KEY_FILE` | `~/.cortex/web.key` | Path to the embedded web access-key store. Empty or blank resolves to the default inside the Cortex config directory. |
+| *(Credential)* | `CORTEX_WEB_KEY` | `""` | **Pinned web access key, environment-only.** Replaces the key-file lifecycle entirely: no key is minted, no file is read or written, and verification uses the pinned value in memory. Must match the minted format (`ctx_` + 43 base64url characters); an invalid value **aborts startup** (fail closed) instead of silently regenerating. While pinned, `cortex web key show` reports the pin and `cortex web key regenerate` refuses (file rotation is disabled). |
 
 The web access key is an independent `ctx_`-prefixed credential: it is never used
 as, defaulted to, or derived from `http.token`, and the `/api/*` endpoints never
-accept it. On first boot Cortex mints the key and prints the plaintext exactly once;
+accept it. On first boot Cortex mints the key and prints the plaintext exactly once
+(or, when `CORTEX_WEB_KEY` is pinned, verification uses the pinned value and no
+plaintext is ever printed);
 afterwards the plaintext is never shown again. Manage it with
 `cortex web key show` and `cortex web key regenerate` (both accept
 `--key-file PATH`).

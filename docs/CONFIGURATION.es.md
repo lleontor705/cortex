@@ -144,6 +144,7 @@ de vida de la clave, el formato en reposo y la semántica de rotación.
 | `web.host` | `CORTEX_WEB_HOST` | hereda `http.host` (`localhost`) | Host del escuchador de la superficie web. Vacío hereda `http.host`; acepta una IP literal o un nombre de host simple (sin esquema, ruta, userinfo ni puerto). |
 | `web.port` | `CORTEX_WEB_PORT` | hereda `http.port` (`7438`) | Puerto del escuchador de la superficie web. `0` hereda `http.port`; rango válido `1`–`65535`. |
 | `web.key_file` | `CORTEX_WEB_KEY_FILE` | `~/.cortex/web.key` | Ruta al almacén de clave de acceso web incrustada. Vacío o en blanco resuelve al valor por defecto dentro del directorio de configuración de Cortex. |
+| *(Credencial)* | `CORTEX_WEB_KEY` | `""` | **Clave de acceso web fijada, solo entorno.** Sustituye por completo el ciclo de vida del fichero: no se acuña ninguna clave, no se lee ni escribe ningún fichero, y la verificación usa el valor fijado en memoria. Debe coincidir con el formato acuñado (`ctx_` + 43 caracteres base64url); un valor inválido **aborta el arranque** (fail closed) en lugar de regenerar silenciosamente. Con la clave fijada, `cortex web key show` informa del anclaje y `cortex web key regenerate` se niega (la rotación por fichero queda deshabilitada). |
 
 La clave de acceso web es una credencia independiente con prefijo `ctx_`: nunca se usa
 como `http.token`, no se deriva de él ni se le da como valor por defecto, y los endpoints

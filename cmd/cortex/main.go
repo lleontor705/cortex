@@ -180,7 +180,7 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 				invocation.projectID, result.Total, result.Upserted, result.ReEmbedded, result.Skipped, result.Batches)
 			return 0
 		}
-		webStore, err := mountServerWebSurface()
+		webSurface, err := mountServerWebSurface()
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "cortex: server web key: %v\n", err)
 			return 2
@@ -193,16 +193,22 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		defer func() { _ = rt.Close() }()
 		// The credential is minted only after the server composition opens, so a
 		// failed bootstrap never creates a key file or claims a web surface.
-		secret, minted, err := webStore.EnsureFirstBoot()
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "cortex: server web key: %v\n", err)
-			return 2
-		}
+		// A CORTEX_WEB_KEY pin replaces the file lifecycle entirely: no mint,
+		// no write, and the plaintext is never reprinted (the operator set it).
 		baseURL := "http://" + rt.Address()
 		_, _ = fmt.Fprintf(stdout, "cortex: server endpoint %s\ncortex: readiness %s/health\ncortex: API %s/api/\ncortex: MCP %s/mcp\n", baseURL, baseURL, baseURL, baseURL)
-		_, _ = fmt.Fprintf(stdout, "cortex: web %s/\ncortex: web key file %s\n", baseURL, webStore.Path())
-		if minted {
-			_, _ = fmt.Fprintf(stdout, "cortex: web access key %s\ncortex: web access key shown once; paste it into the UI to unlock the surface\n", secret)
+		if webSurface.pinned {
+			_, _ = fmt.Fprintf(stdout, "cortex: web %s/\ncortex: web access key pinned by %s; key file %s unused\n", baseURL, webkey.EnvKey, webSurface.path)
+		} else {
+			secret, minted, err := webSurface.store.EnsureFirstBoot()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "cortex: server web key: %v\n", err)
+				return 2
+			}
+			_, _ = fmt.Fprintf(stdout, "cortex: web %s/\ncortex: web key file %s\n", baseURL, webSurface.path)
+			if minted {
+				_, _ = fmt.Fprintf(stdout, "cortex: web access key %s\ncortex: web access key shown once; paste it into the UI to unlock the surface\n", secret)
+			}
 		}
 		if err := rt.Serve(ctx); err != nil {
 			_, _ = fmt.Fprintf(stderr, "cortex: server: %v\n", err)
@@ -222,13 +228,40 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 // boots, so a bootstrap failure never creates a key file. The key lives at the
 // same DefaultWebKeyFile location the local serve path uses, and its namespace
 // stays independent of http.token.
-func mountServerWebSurface() (*webkey.Store, error) {
-	store, err := webkey.NewStore(config.DefaultWebKeyFile())
+// serverWebSurface carries the composed web credential: the verifier the
+// embedded surface gates with, the resolved key file path, and whether the
+// credential is pinned by CORTEX_WEB_KEY (file lifecycle disabled).
+type serverWebSurface struct {
+	verifier webkey.Verifier
+	store    *webkey.Store // nil when pinned
+	path     string
+	pinned   bool
+}
+
+func mountServerWebSurface() (*serverWebSurface, error) {
+	path := config.DefaultWebKeyFile()
+	// A CORTEX_WEB_KEY pin is the ephemeral-host contract: verification uses
+	// the pinned secret in memory and no key file is minted or read. An
+	// invalid pin fails closed here, aborting startup, instead of silently
+	// regenerating a key the operator cannot discover.
+	pinned, err := webkey.ResolveEnvOverride()
+	if err != nil {
+		return nil, err
+	}
+	if pinned != "" {
+		verifier, err := webkey.NewEnvVerifier(pinned)
+		if err != nil {
+			return nil, err
+		}
+		serverplatform.MountWebSurface(web.NewHandler(web.Config{}, verifier))
+		return &serverWebSurface{verifier: verifier, path: path, pinned: true}, nil
+	}
+	store, err := webkey.NewStore(path)
 	if err != nil {
 		return nil, err
 	}
 	serverplatform.MountWebSurface(web.NewHandler(web.Config{}, store))
-	return store, nil
+	return &serverWebSurface{verifier: store, store: store, path: path}, nil
 }
 
 func isInteractive(w io.Writer) bool {
