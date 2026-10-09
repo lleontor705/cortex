@@ -12,6 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.16] - 2026-10-09
+
+### 🐛 Bug Fixes
+
+- *(store)* Merge-projects case-insensitive matching and global doctor orphan count
+
+### 📚 Documentation
+
+- ANN strategy decision record — MRL NO-GO, exact-scan+tuning retained, RaBitQ fallback (ret-206) (#147)
+
+### ⚙️ Miscellaneous Tasks
+
+- *(changelog)* Refresh release history [skip ci]
+
+### 💼 Other
+
+- *(mrl)* REQ-RET-103 MRL 2048 recall decision gate (ret-201) — VERDICT: NO-GO (#145)
+
 ## [2.4.15] - 2026-10-08
 
 ### 🚀 Features
