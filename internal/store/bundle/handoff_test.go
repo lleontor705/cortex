@@ -119,8 +119,19 @@ func TestSQLiteHandoff_REQ_HANDOFF_002_ReplayConflictConcurrencyAndRestart(t *te
 		db, _ := openHandoffDB(t)
 		db.SetMaxOpenConns(12)
 		canonical := handoffCanonical("concurrent exact replay", "one materialization under real SQLite contention")
-		executor := newTestHandoffExecutor(db, nil)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// Contention-sized retry budget (flake root cause, issue #154): the
+		// default budget (3 retries, ≤50ms backoff) is sized for isolated
+		// calls. Under 8-way write contention on a loaded CI runner, snapshot
+		// losers can exhaust it and surface a BUSY error even though
+		// exactly-once held — the release-run flake. Every interleaving still
+		// converges to exactly one materialization given a budget that dwarfs
+		// the contention window, so the assertions below stay strict; the
+		// deadline is sized for driver busy_timeout waits under load, not a
+		// timing assumption.
+		executor := newTestHandoffExecutorWithRetry(db, nil, domain.BusyRetryConfig{
+			MaxRetries: 40, BaseBackoff: 5 * time.Millisecond, MaxBackoff: 200 * time.Millisecond, JitterFactor: 0.2,
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		const callers = 8
 		start := make(chan struct{})
@@ -273,11 +284,18 @@ func closeAndReopenHandoffDB(t *testing.T, db *sql.DB, path string, check func(*
 }
 
 func newTestHandoffExecutor(db *sql.DB, failpoint func(sqliteHandoffStage) error) *SQLiteHandoffExecutor {
+	return newTestHandoffExecutorWithRetry(db, failpoint, domain.DefaultBusyRetryConfig())
+}
+
+// newTestHandoffExecutorWithRetry builds an executor with an explicit busy
+// retry budget, so contention-heavy scenarios can size the budget for the
+// scenario instead of inheriting the isolated-call default.
+func newTestHandoffExecutorWithRetry(db *sql.DB, failpoint func(sqliteHandoffStage) error, cfg domain.BusyRetryConfig) *SQLiteHandoffExecutor {
 	observations := sqlitestore.NewStore(db)
 	stores := &Stores{
 		Observations: observations,
 		Graph:        graphstore.NewStore(db),
-		UnitOfWork:   NewSQLiteUnitOfWork(db, domain.DefaultBusyRetryConfig()),
+		UnitOfWork:   NewSQLiteUnitOfWork(db, cfg),
 	}
 	executor := NewSQLiteHandoffExecutor(stores)
 	executor.failpoint = failpoint
