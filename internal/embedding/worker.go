@@ -155,6 +155,11 @@ type Worker struct {
 	vectors    vectorWriter
 	config     WorkerConfig
 	backoffFn  func(attempt int) time.Duration
+
+	// Optional near-duplicate detection (default OFF; see dedup.go). Set via
+	// EnableDedup by the composition root.
+	dedup      *DedupConfig
+	dedupEdges edgeCreator
 }
 
 // NewWorker creates an embedding worker. The concrete *sqlitestore.OutboxStore
@@ -485,13 +490,17 @@ func (w *Worker) processIntent(ctx, finalizeCtx context.Context, in sqlitestore.
 		return
 	}
 
-	// 5. Update index_state namespace tracking (coverage/parity) — finalize-bounded.
+	// 5. Optional near-duplicate linkage (default OFF). Best-effort: never
+	// fails the embed outcome (see dedup.go).
+	w.maybeLinkDuplicate(ctx, in.ObservationID, vec)
+
+	// 6. Update index_state namespace tracking (coverage/parity) — finalize-bounded.
 	namespace := w.embeddings.Model() + ":" + strconv.Itoa(expectedDims)
 	if err := w.outbox.UpdateIndexState(finalizeCtx, namespace, 1.0, 1); err != nil {
 		log.Printf("embedding worker: update index_state for namespace %q: %v", namespace, err)
 	}
 
-	// 6. Mark complete — finalize-bounded outcome.
+	// 7. Mark complete — finalize-bounded outcome.
 	if err := w.outbox.MarkComplete(finalizeCtx, in.ID); err != nil {
 		log.Printf("embedding worker: mark complete for intent %d: %v", in.ID, err)
 	}

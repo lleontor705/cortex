@@ -195,6 +195,10 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 			stores.Vectors,
 			embedding.WorkerConfig{},
 		)
+		// Optional near-duplicate detection at ingest (default OFF; enable
+		// with CORTEX_INGEST_DEDUP=true). Wired only when the graph store is
+		// available so duplicates_of edges can be recorded.
+		stores.Worker.EnableDedup(stores.Graph, embedding.DedupConfigFromEnv())
 		a.workerCancel = stores.Worker.Start(ctx)
 	}
 
