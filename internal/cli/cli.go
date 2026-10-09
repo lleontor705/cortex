@@ -1599,14 +1599,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	deepMode := false
 	serverURL := "http://localhost:7438"
 	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--server":
+		switch args[i] {
+		case "--server":
 			serverMode = true
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				serverURL = args[i+1]
 				i++
 			}
-		case args[i] == "--deep":
+		case "--deep":
 			deepMode = true
 		}
 	}
