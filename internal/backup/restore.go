@@ -155,12 +155,21 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 			return nil, nil, "", fmt.Errorf("restore: read archive: %w", err)
 		}
 
-		// Allow-list archive entry names: nothing attacker-controlled ever
-		// reaches a filesystem path (Zip Slip / CWE-022 prevention). Unknown
+		// Allow-list archive entry names. The staging filename is derived
+		// purely from compile-time constants — the archive-controlled
+		// hdr.Name is never used in a filesystem path (Zip Slip / CWE-022
+		// prevention, CodeQL go/zipslip-clean by construction). Unknown
 		// entries from a newer archive format are ignored, never written.
-		// All allow-listed names are flat constants without separators.
+		var stageFile string
 		switch hdr.Name {
-		case ManifestName, ObservationsPart, EdgesPart, SessionsPart:
+		case ManifestName:
+			stageFile = "manifest.json"
+		case ObservationsPart:
+			stageFile = "observations.jsonl"
+		case EdgesPart:
+			stageFile = "edges.jsonl"
+		case SessionsPart:
+			stageFile = "sessions.jsonl"
 		default:
 			continue
 		}
@@ -197,7 +206,7 @@ func extractArchive(f *os.File, secrets []Secret) (*Manifest, map[string]staged,
 
 		// Stage data parts. hdr.Name is one of the flat allow-listed
 		// constants, so the join cannot escape tmpDir.
-		stagePath := filepath.Join(tmpDir, hdr.Name)
+		stagePath := filepath.Join(tmpDir, stageFile)
 		out, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			cleanupTempDir(tmpDir)

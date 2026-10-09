@@ -402,8 +402,21 @@ func scanArchiveForSecret(t *testing.T, path, secret string) {
 
 func TestCollectEnvSecretsIgnoresShortValues(t *testing.T) {
 	t.Setenv("CORTEX_HTTP_TOKEN", "abc")
-	if secrets := CollectEnvSecrets(); len(secrets) != 0 {
-		t.Fatalf("short env values collected: %+v", secrets)
+	for _, s := range CollectEnvSecrets() {
+		if s.Name == "CORTEX_HTTP_TOKEN" {
+			t.Fatalf("short env value collected: %+v", s)
+		}
+	}
+	// Long values are collected.
+	t.Setenv("CORTEX_HTTP_TOKEN", "a-really-long-token-value")
+	found := false
+	for _, s := range CollectEnvSecrets() {
+		if s.Name == "CORTEX_HTTP_TOKEN" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("long CORTEX_HTTP_TOKEN not collected")
 	}
 }
 
