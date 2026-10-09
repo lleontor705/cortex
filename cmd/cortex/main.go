@@ -144,6 +144,9 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		// Byte-identical local path: cli.Run delegates to app.Open internally
 		// via openApp(). No double-wiring — platform.Select is proven by tests;
 		// the live execution path preserves the existing main→cli→app chain.
+		// doctor --deep additionally receives the PostgreSQL probe opener from
+		// the server composition (cmd/cortex is the sole bridge; issue #158).
+		cli.SetDeepDBOpener(serverplatform.DeepProbeDBOpener())
 		return cli.Run(cleanArgs, stdout, stderr)
 	case platform.ModeServer:
 		invocation, err := parseServerInvocation(cleanArgs)
