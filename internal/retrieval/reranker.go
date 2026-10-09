@@ -315,8 +315,9 @@ func (h *httpReranker) post(body []byte) (*rerankResponse, error) {
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
+			apiErr := embedding.NewAPIError("rerank", resp.StatusCode, resp.Body)
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("rerank: API returned status %d", resp.StatusCode)
+			return nil, apiErr
 		}
 		var parsed rerankResponse
 		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, rerankMaxResponseLen)).Decode(&parsed)
