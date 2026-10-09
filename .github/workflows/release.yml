@@ -103,7 +103,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.27.1"
+          go-version: "1.27.2"
 
       # GoReleaser shells out to syft for the per-archive SBOMs declared in
       # .goreleaser.yaml; without this install the publish step fails at runtime.

@@ -33,15 +33,15 @@ func TestGoToolchainContract(t *testing.T) {
 		}
 	}
 
-	// ci.yml and release.yml were flipped to the aligned 1.27.1 pins by the tc2
-	// alignment task; ci-reusable.yml carries the same aligned 1.27.1 pins.
+	// ci.yml and release.yml carry the aligned 1.27.2 pins from the govulncheck
+	// toolchain remediation; ci-reusable.yml carries the same aligned 1.27.2 pins.
 	for _, workflow := range []struct {
 		path    string
 		version string
 	}{
-		{".github/workflows/ci-reusable.yml", "1.27.1"},
-		{".github/workflows/ci.yml", "1.27.1"},
-		{".github/workflows/release.yml", "1.27.1"},
+		{".github/workflows/ci-reusable.yml", "1.27.2"},
+		{".github/workflows/ci.yml", "1.27.2"},
+		{".github/workflows/release.yml", "1.27.2"},
 	} {
 		text := readContractFile(t, filepath.Join(root, filepath.FromSlash(workflow.path)))
 		exact := `go-version: "` + workflow.version + `"`
@@ -58,8 +58,8 @@ func TestGoToolchainContract(t *testing.T) {
 	}
 
 	dockerfile := readContractFile(t, filepath.Join(root, "docker", "Dockerfile"))
-	if !strings.Contains(dockerfile, "FROM golang:1.27.1-alpine AS builder") {
-		t.Error("Docker builder must use Go 1.27.1")
+	if !strings.Contains(dockerfile, "FROM golang:1.27.2-alpine AS builder") {
+		t.Error("Docker builder must use Go 1.27.2")
 	}
 	if !strings.Contains(dockerfile, "CGO_ENABLED=0 go build") {
 		t.Error("Docker build must preserve zero-CGO")
