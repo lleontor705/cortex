@@ -187,7 +187,7 @@ func TestNewServerEmbeddingFailsClosedForUnsafeDestination(t *testing.T) {
 	cfg := validBootstrapConfig()
 	cfg.Search.EmbeddingProvider = "ollama"
 	cfg.Search.EmbeddingBaseURL = "http://169.254.169.254"
-	if _, err := newServerEmbedding(cfg); err == nil {
+	if _, err := newServerEmbedding(cfg, nil); err == nil {
 		t.Fatal("unsafe embedding destination accepted")
 	}
 }
@@ -197,7 +197,7 @@ func TestNewServerEmbeddingAllowsExactRailwayPrivateDestination(t *testing.T) {
 	cfg.Search.EmbeddingProvider = "ollama"
 	cfg.Search.EmbeddingBaseURL = "http://ollama.railway.internal:11434"
 	cfg.Server.RailwayInternalEmbeddingHost = "ollama.railway.internal"
-	service, err := newServerEmbedding(cfg)
+	service, err := newServerEmbedding(cfg, nil)
 	if err != nil {
 		t.Fatalf("exact Railway private embedding destination rejected: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNewServerEmbeddingAllowsExactRailwayPrivateDestination(t *testing.T) {
 func TestNewServerEmbeddingOpenAICompatibleNeedsConfiguredDestination(t *testing.T) {
 	cfg := validBootstrapConfig()
 	cfg.Search.EmbeddingProvider = "openai-compatible"
-	if _, err := newServerEmbedding(cfg); err == nil || !strings.Contains(err.Error(), "explicit base URL") {
+	if _, err := newServerEmbedding(cfg, nil); err == nil || !strings.Contains(err.Error(), "explicit base URL") {
 		t.Fatalf("newServerEmbedding() error = %v, want explicit base URL requirement", err)
 	}
 
@@ -218,7 +218,7 @@ func TestNewServerEmbeddingOpenAICompatibleNeedsConfiguredDestination(t *testing
 	cfg.Search.EmbeddingBaseURL = "http://127.0.0.1:11434/v1"
 	cfg.Search.EmbeddingModel = "qwen3-embedding-8B"
 	t.Setenv("CORTEX_EMBEDDING_API_KEY", "test-key")
-	service, err := newServerEmbedding(cfg)
+	service, err := newServerEmbedding(cfg, nil)
 	if err != nil {
 		t.Fatalf("configured compatible destination rejected: %v", err)
 	}

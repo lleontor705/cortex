@@ -11,7 +11,7 @@ func TestConfiguredChatProviderIdleConnTimeout(t *testing.T) {
 	provider, err := newConfiguredChatProvider(config.ServerLLMConfig{
 		Provider: "generic", BaseURL: "https://provider.test/v1", Model: "admin-model",
 		MaxConcurrent: 1, MaxRedirects: 1, MaxResponseBodyBytes: 4096, MaxErrorBodyBytes: 1024,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newConfiguredChatProvider: %v", err)
 	}

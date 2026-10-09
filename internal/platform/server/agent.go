@@ -25,6 +25,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/domain/extraction"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 )
@@ -236,9 +237,10 @@ type configuredChatProvider struct {
 	maxError   int64
 	maxRetries int
 	sleep      func(time.Duration)
+	budget     *ratelimit.Limiter
 }
 
-func newConfiguredChatProvider(cfg config.ServerLLMConfig) (agentdomain.CompletionProvider, error) {
+func newConfiguredChatProvider(cfg config.ServerLLMConfig, budgets *ratelimit.Registry) (agentdomain.CompletionProvider, error) {
 	if !cfg.Configured() {
 		return nil, nil
 	}
@@ -271,7 +273,7 @@ func newConfiguredChatProvider(cfg config.ServerLLMConfig) (agentdomain.Completi
 		}
 		return validateAgentProviderURL(cfg, baseURL, req.URL)
 	}}
-	return &configuredChatProvider{cfg: cfg, baseURL: strings.TrimRight(baseURL, "/"), client: client, sem: make(chan struct{}, cfg.MaxConcurrent), maxBody: cfg.MaxResponseBodyBytes, maxError: cfg.MaxErrorBodyBytes, maxRetries: agentChatMaxRetries, sleep: time.Sleep}, nil
+	return &configuredChatProvider{cfg: cfg, baseURL: strings.TrimRight(baseURL, "/"), client: client, sem: make(chan struct{}, cfg.MaxConcurrent), maxBody: cfg.MaxResponseBodyBytes, maxError: cfg.MaxErrorBodyBytes, maxRetries: agentChatMaxRetries, sleep: time.Sleep, budget: budgets.For(baseURL)}, nil
 }
 
 // Complete performs one non-streaming chat completion with bounded
@@ -338,6 +340,10 @@ func agentRetryBackoff(attempt int) time.Duration {
 // reports whether the failure class is transient (transport error, timeout,
 // 5xx, 429) and may be retried by the caller.
 func (p *configuredChatProvider) completeOnce(ctx context.Context, body []byte) (agentdomain.CompletionResult, bool, error) {
+	// Every attempt (including 429/5xx retries) draws one token from the
+	// shared provider budget so chat traffic cannot starve embedding and
+	// rerank traffic on the same key.
+	p.budget.Wait()
 	endpoint := p.baseURL + "/chat/completions"
 	u, _ := url.Parse(endpoint)
 	if err := validateAgentProviderURL(p.cfg, p.baseURL, u); err != nil {
@@ -465,6 +471,9 @@ Split distinct factual statements into distinct lines. Omit any claim that canno
 	case <-ctx.Done():
 		return agentdomain.CompletionUsage{}, ctx.Err()
 	}
+	// Streaming shares the same provider budget as non-streaming chat,
+	// embedding, and rerank traffic on the same key.
+	p.budget.Wait()
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return agentdomain.CompletionUsage{}, errors.New("server: agent provider request failed")

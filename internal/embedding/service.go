@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 )
 
 // Service generates embeddings from text.
@@ -56,6 +58,10 @@ type Config struct {
 	APIKey   string // API key (OpenAI only; defaults to env var)
 	Model    string // Model name override
 	BaseURL  string // Base URL override (Ollama: default http://localhost:11434)
+	// Budget is the shared provider rate budget handed out by the server
+	// composition for this provider base URL, so embedding requests pace
+	// against the same bucket as rerank and agent chat. nil = unlimited.
+	Budget *ratelimit.Limiter
 }
 
 // Provider preset names shared by the local factory and the secure allowlist.
@@ -113,7 +119,7 @@ func newWithClient(cfg Config, client *http.Client, maxBody int64, maxConcurrent
 		if cfg.Provider == providerOpenAICompatible {
 			defaultDims = 0
 		}
-		return &openAIService{provider: cfg.Provider, apiKey: key, model: model, baseURL: strings.TrimRight(baseURL, "/"), defaultDimensions: defaultDims, client: client, maxResponseBody: maxBody, sem: sem}
+		return &openAIService{provider: cfg.Provider, apiKey: key, model: model, baseURL: strings.TrimRight(baseURL, "/"), defaultDimensions: defaultDims, client: client, maxResponseBody: maxBody, sem: sem, budget: cfg.Budget}
 	default:
 		return nil
 	}
@@ -327,9 +333,14 @@ type openAIService struct {
 	mu                sync.Mutex
 	maxResponseBody   int64
 	sem               chan struct{}
+	budget            *ratelimit.Limiter
 }
 
 func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, error) {
+	// Pace against the shared provider budget BEFORE taking a concurrency
+	// slot: a caller waiting for the next refill token must not hold one of
+	// the limited request slots hostage while it sleeps.
+	s.budget.Wait()
 	if err := acquire(ctx, s.sem); err != nil {
 		return nil, err
 	}
@@ -385,6 +396,7 @@ func (s *openAIService) EmbedBatch(ctx context.Context, texts []string) ([][]flo
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	s.budget.Wait()
 	if err := acquire(ctx, s.sem); err != nil {
 		return nil, err
 	}

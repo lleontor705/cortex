@@ -35,6 +35,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/domain/lifecycle"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 	"github.com/lleontor705/cortex/v2/internal/migration"
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 	"github.com/lleontor705/cortex/v2/internal/retrieval"
 	"github.com/lleontor705/cortex/v2/internal/server/external"
 	postgresstore "github.com/lleontor705/cortex/v2/internal/store/postgres"
@@ -186,11 +187,22 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 		return nil, fmt.Errorf("server: construct storage: %w", err)
 	}
 
+	// Shared provider rate budget (CORTEX_PROVIDER_RPM, default 0 =
+	// unlimited): rerank, embedding and agent chat dialing the same provider
+	// base URL draw from ONE token bucket so a shared API key's advertised
+	// rpm is never oversubscribed by a single subsystem. Invalid values fail
+	// closed at startup.
+	providerRPM, err := config.ProviderRPMFromEnv()
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("server: provider rate budget configuration: %w", err)
+	}
+	budgets := ratelimit.NewRegistry(providerRPM)
 	// Dimension comes only from the live service below (or from the operator's
 	// vector configuration): a static provider-to-dimension mirror desyncs as
 	// soon as a preset ships or a model is overridden (REQ-EMB-002).
 	model := domain.ModelInfo{Name: cfg.Search.EmbeddingModel}
-	emb, err := newServerEmbedding(cfg)
+	emb, err := newServerEmbedding(cfg, budgets)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: outbound embedding configuration: %w", err)
@@ -230,7 +242,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	// /api/search/hybrid gate would silently report applied=false forever
 	// (issue #121). The credential resolves only from CORTEX_RERANK_API_KEY
 	// and the destination is approved on the shared outbound policy.
-	reranker, err := newServerReranker(cfg)
+	reranker, err := newServerReranker(cfg, budgets)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: outbound rerank configuration: %w", err)
@@ -352,7 +364,7 @@ func openRuntime(ctx context.Context, cfg config.Config, withServerSurfaces bool
 	if llm.Configured() {
 		extractor = newConfiguredExtractor(llm)
 	}
-	chatProvider, err := newConfiguredChatProvider(llm)
+	chatProvider, err := newConfiguredChatProvider(llm, budgets)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("server: outbound agent configuration: %w", err)
@@ -837,7 +849,7 @@ func liveEmbeddingDimensions(cfg config.Config, service embedding.Service) int {
 // reranker. "openai-compatible" composes the secure HTTP reranker, which
 // requires an explicit base URL (approved on the outbound policy) and the
 // env-only CORTEX_RERANK_API_KEY credential.
-func newServerReranker(cfg config.Config) (retrieval.Reranker, error) {
+func newServerReranker(cfg config.Config, budgets *ratelimit.Registry) (retrieval.Reranker, error) {
 	policy := embedding.OutboundPolicy{
 		AllowLoopback:             cfg.Server.BootstrapDevelopment,
 		AllowInsecureLoopbackHTTP: cfg.Server.BootstrapDevelopment,
@@ -855,14 +867,22 @@ func newServerReranker(cfg config.Config) (retrieval.Reranker, error) {
 			}
 		}
 	}
+	// The shared budget is keyed by the rerank provider base URL; with no
+	// configured budget (CORTEX_PROVIDER_RPM unset) the reranker keeps its
+	// historical private 60-rpm pacing.
+	var budget *ratelimit.Limiter
+	if destination := strings.TrimSpace(cfg.Search.RerankBaseURL); destination != "" {
+		budget = budgets.For(destination)
+	}
 	return retrieval.NewSecureReranker(retrieval.RerankConfig{
 		Provider: cfg.Search.RerankProvider,
 		Model:    cfg.Search.RerankModel,
 		BaseURL:  cfg.Search.RerankBaseURL,
+		Budget:   budget,
 	}, policy)
 }
 
-func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
+func newServerEmbedding(cfg config.Config, budgets *ratelimit.Registry) (embedding.Service, error) {
 	provider := strings.TrimSpace(cfg.Search.EmbeddingProvider)
 	if provider == "" || provider == "none" {
 		return nil, nil
@@ -898,6 +918,7 @@ func newServerEmbedding(cfg config.Config) (embedding.Service, error) {
 		APIKey:   config.ResolveEmbeddingAPIKey(provider),
 		Model:    cfg.Search.EmbeddingModel,
 		BaseURL:  baseURL,
+		Budget:   budgets.For(baseURL),
 	}, policy)
 }
 

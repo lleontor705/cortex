@@ -13,6 +13,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/ratelimit"
 	"github.com/lleontor705/cortex/v2/internal/embedding"
 )
 
@@ -112,8 +113,7 @@ func newRerankHarness(t *testing.T, handler http.HandlerFunc) *rerankHarness {
 		t.Fatalf("secure factory returned %T, want *httpReranker", r)
 	}
 	clock := &fakeClock{now: time.Unix(1700000000, 0)}
-	hr.pacer.now = clock.Now
-	hr.pacer.sleep = clock.Sleep
+	hr.budget = ratelimit.New(rerankRequestsPerMin, ratelimit.WithClock(clock.Now), ratelimit.WithSleep(clock.Sleep))
 	hr.sleep = clock.Sleep
 	return &rerankHarness{reranker: r, clock: clock, capture: &rerankCapture{}}
 }
