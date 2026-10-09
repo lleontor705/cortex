@@ -58,6 +58,13 @@ type Config struct {
 	APIKey   string // API key (OpenAI only; defaults to env var)
 	Model    string // Model name override
 	BaseURL  string // Base URL override (Ollama: default http://localhost:11434)
+	// Dimensions requests a provider-native embedding dimension via the
+	// OpenAI `dimensions` request parameter (MRL/Matryoshka models, e.g.
+	// qwen3-embedding). 0 = provider default (4096 for qwen3-embedding).
+	// Only honored by the openai/openai-compatible backends. Validated
+	// upstream (config) to the 8..4096 range; providers may further
+	// restrict to their matryoshka dimension list.
+	Dimensions int
 	// Budget is the shared provider rate budget handed out by the server
 	// composition for this provider base URL, so embedding requests pace
 	// against the same bucket as rerank and agent chat. nil = unlimited.
@@ -119,7 +126,7 @@ func newWithClient(cfg Config, client *http.Client, maxBody int64, maxConcurrent
 		if cfg.Provider == providerOpenAICompatible {
 			defaultDims = 0
 		}
-		return &openAIService{provider: cfg.Provider, apiKey: key, model: model, baseURL: strings.TrimRight(baseURL, "/"), defaultDimensions: defaultDims, client: client, maxResponseBody: maxBody, sem: sem, budget: cfg.Budget}
+		return &openAIService{provider: cfg.Provider, apiKey: key, model: model, baseURL: strings.TrimRight(baseURL, "/"), defaultDimensions: defaultDims, configuredDimensions: cfg.Dimensions, client: client, maxResponseBody: maxBody, sem: sem, budget: cfg.Budget}
 	default:
 		return nil
 	}
@@ -329,11 +336,23 @@ type openAIService struct {
 	baseURL           string
 	dims              int
 	defaultDimensions int // reported until dims is cached from a live response
-	client            *http.Client
-	mu                sync.Mutex
-	maxResponseBody   int64
-	sem               chan struct{}
-	budget            *ratelimit.Limiter
+	// configuredDimensions is the operator-requested native dimension
+	// (MRL `dimensions` request parameter). 0 = provider default; when set
+	// it is authoritative for both the request body and Dimensions().
+	configuredDimensions int
+	client               *http.Client
+	mu                   sync.Mutex
+	maxResponseBody      int64
+	sem                  chan struct{}
+	budget               *ratelimit.Limiter
+}
+
+// requestDimensions returns the `dimensions` request parameter value, or 0
+// when the provider default should be used.
+func (s *openAIService) requestDimensions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.configuredDimensions
 }
 
 func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -348,6 +367,9 @@ func (s *openAIService) Embed(ctx context.Context, text string) ([]float32, erro
 	body := map[string]any{
 		"model": s.model,
 		"input": text,
+	}
+	if d := s.requestDimensions(); d > 0 {
+		body["dimensions"] = d
 	}
 	data, _ := json.Marshal(body)
 
@@ -404,6 +426,9 @@ func (s *openAIService) EmbedBatch(ctx context.Context, texts []string) ([][]flo
 	body := map[string]any{
 		"model": s.model,
 		"input": texts,
+	}
+	if d := s.requestDimensions(); d > 0 {
+		body["dimensions"] = d
 	}
 	data, _ := json.Marshal(body)
 
@@ -486,6 +511,13 @@ func decodeBounded(r io.Reader, max int64, dst any) error {
 }
 
 func (s *openAIService) Dimensions() int {
+	// The configured native dimension is authoritative: the provider was
+	// explicitly told what to produce, so no live-response caching is needed
+	// and the composition-time value is correct at boot (unblocks the
+	// pgvector HNSW chain for dims <= 2000 without waiting for traffic).
+	if d := s.requestDimensions(); d > 0 {
+		return d
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dims > 0 {

@@ -175,18 +175,19 @@ type LoggingConfig struct {
 
 // SearchConfig holds search-related configuration
 type SearchConfig struct {
-	DefaultLimit      int     `yaml:"default_limit,omitempty" json:"default_limit,omitempty" toml:"default_limit,omitempty" mapstructure:"default_limit"`
-	MaxLimit          int     `yaml:"max_limit,omitempty" json:"max_limit,omitempty" toml:"max_limit,omitempty" mapstructure:"max_limit"`
-	FTS5              bool    `yaml:"fts5,omitempty" json:"fts5,omitempty" toml:"fts5,omitempty" mapstructure:"fts5"`
-	Vector            bool    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
-	FusionK           float64 `yaml:"fusion_k,omitempty" json:"fusion_k,omitempty" toml:"fusion_k,omitempty" mapstructure:"fusion_k"`
-	EmbeddingProvider string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"` // "ollama", "openai", "openai-compatible", "none" (default)
-	EmbeddingModel    string  `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty" toml:"embedding_model,omitempty" mapstructure:"embedding_model"`             // Model name override (e.g. "qwen3-embedding:8b")
-	EmbeddingBaseURL  string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"` // Ollama base URL override (default: http://localhost:11434)
-	OllamaAutoStart   bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`     // Auto-start Ollama when configured as provider
-	RerankProvider    string  `yaml:"rerank_provider,omitempty" json:"rerank_provider,omitempty" toml:"rerank_provider,omitempty" mapstructure:"rerank_provider"`             // "none" (default), "late-interaction", "openai-compatible"
-	RerankModel       string  `yaml:"rerank_model,omitempty" json:"rerank_model,omitempty" toml:"rerank_model,omitempty" mapstructure:"rerank_model"`                         // Rerank model override (e.g. "qwen3-Reranker-8B")
-	RerankBaseURL     string  `yaml:"rerank_base_url,omitempty" json:"rerank_base_url,omitempty" toml:"rerank_base_url,omitempty" mapstructure:"rerank_base_url"`             // Base URL for the openai-compatible rerank preset
+	DefaultLimit        int     `yaml:"default_limit,omitempty" json:"default_limit,omitempty" toml:"default_limit,omitempty" mapstructure:"default_limit"`
+	MaxLimit            int     `yaml:"max_limit,omitempty" json:"max_limit,omitempty" toml:"max_limit,omitempty" mapstructure:"max_limit"`
+	FTS5                bool    `yaml:"fts5,omitempty" json:"fts5,omitempty" toml:"fts5,omitempty" mapstructure:"fts5"`
+	Vector              bool    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
+	FusionK             float64 `yaml:"fusion_k,omitempty" json:"fusion_k,omitempty" toml:"fusion_k,omitempty" mapstructure:"fusion_k"`
+	EmbeddingProvider   string  `yaml:"embedding_provider,omitempty" json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty" mapstructure:"embedding_provider"`         // "ollama", "openai", "openai-compatible", "none" (default)
+	EmbeddingModel      string  `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty" toml:"embedding_model,omitempty" mapstructure:"embedding_model"`                     // Model name override (e.g. "qwen3-embedding:8b")
+	EmbeddingBaseURL    string  `yaml:"embedding_base_url,omitempty" json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty" mapstructure:"embedding_base_url"`         // Ollama base URL override (default: http://localhost:11434)
+	EmbeddingDimensions int     `yaml:"embedding_dimensions,omitempty" json:"embedding_dimensions,omitempty" toml:"embedding_dimensions,omitempty" mapstructure:"embedding_dimensions"` // Provider-native MRL dimension via the `dimensions` request parameter (0 = provider default; 8..4096)
+	OllamaAutoStart     bool    `yaml:"ollama_auto_start,omitempty" json:"ollama_auto_start,omitempty" toml:"ollama_auto_start,omitempty" mapstructure:"ollama_auto_start"`             // Auto-start Ollama when configured as provider
+	RerankProvider      string  `yaml:"rerank_provider,omitempty" json:"rerank_provider,omitempty" toml:"rerank_provider,omitempty" mapstructure:"rerank_provider"`                     // "none" (default), "late-interaction", "openai-compatible"
+	RerankModel         string  `yaml:"rerank_model,omitempty" json:"rerank_model,omitempty" toml:"rerank_model,omitempty" mapstructure:"rerank_model"`                                 // Rerank model override (e.g. "qwen3-Reranker-8B")
+	RerankBaseURL       string  `yaml:"rerank_base_url,omitempty" json:"rerank_base_url,omitempty" toml:"rerank_base_url,omitempty" mapstructure:"rerank_base_url"`                     // Base URL for the openai-compatible rerank preset
 }
 
 // MemoryConfig holds memory management configuration
@@ -383,6 +384,18 @@ func Load(configPath string) (*Config, error) {
 	if cfg.Search.EmbeddingBaseURL == "" {
 		if u := os.Getenv("CORTEX_EMBEDDING_BASE_URL"); u != "" {
 			cfg.Search.EmbeddingBaseURL = u
+		}
+	}
+	// EmbeddingDimensions: config file search.embedding_dimensions takes
+	// precedence; CORTEX_EMBEDDING_DIMENSIONS applies when unset (0 =
+	// provider default = full native dimension, e.g. 4096 for qwen3-embedding).
+	if cfg.Search.EmbeddingDimensions == 0 {
+		if d := strings.TrimSpace(os.Getenv("CORTEX_EMBEDDING_DIMENSIONS")); d != "" {
+			if parsed, err := strconv.Atoi(d); err == nil {
+				cfg.Search.EmbeddingDimensions = parsed
+			} else {
+				return nil, fmt.Errorf("invalid CORTEX_EMBEDDING_DIMENSIONS %q: must be an integer (0 = provider default, or 8..4096)", d)
+			}
 		}
 	}
 
@@ -719,6 +732,14 @@ func validate(cfg *Config) error {
 	case "", "none", "ollama", "openai", "openai-compatible":
 	default:
 		return fmt.Errorf("invalid search.embedding_provider: %q (valid: none, ollama, openai, openai-compatible)", cfg.Search.EmbeddingProvider)
+	}
+	// Native MRL dimension: 0 = provider default; otherwise the OpenAI
+	// `dimensions` parameter range. Providers may further restrict to their
+	// matryoshka dimension list (e.g. qwen3-embedding: 32..4096 matryoshka
+	// steps) and return a 400 for other values — that provider-side
+	// contract is enforced live, not mirrored here.
+	if cfg.Search.EmbeddingDimensions < 0 || (cfg.Search.EmbeddingDimensions > 0 && (cfg.Search.EmbeddingDimensions < 8 || cfg.Search.EmbeddingDimensions > 4096)) {
+		return fmt.Errorf("invalid search.embedding_dimensions: %d (valid: 0 = provider default, or 8..4096)", cfg.Search.EmbeddingDimensions)
 	}
 
 	// Rerank provider acceptance mirrors the runtime factories for the same

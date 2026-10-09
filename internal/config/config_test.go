@@ -1707,3 +1707,28 @@ func TestGetSetProperty_MCPProfile(t *testing.T) {
 		}
 	}
 }
+
+// TestValidate_EmbeddingDimensionsRange verifies the native MRL dimension
+// contract: 0 (provider default) and 8..4096 are accepted; anything else is
+// rejected with a clear range error.
+func TestValidate_EmbeddingDimensionsRange(t *testing.T) {
+	for _, dims := range []int{0, 8, 512, 1024, 1536, 2048, 4096} {
+		cfg := validBaseline()
+		cfg.Search.EmbeddingDimensions = dims
+		if err := validate(cfg); err != nil {
+			t.Errorf("embedding_dimensions %d should be valid, got: %v", dims, err)
+		}
+	}
+	for _, dims := range []int{-1, 1, 7, 4097, 8192} {
+		cfg := validBaseline()
+		cfg.Search.EmbeddingDimensions = dims
+		err := validate(cfg)
+		if err == nil {
+			t.Errorf("embedding_dimensions %d should be REJECTED", dims)
+			continue
+		}
+		if !strings.Contains(err.Error(), "embedding_dimensions") {
+			t.Errorf("error should mention 'embedding_dimensions', got: %v", err)
+		}
+	}
+}
