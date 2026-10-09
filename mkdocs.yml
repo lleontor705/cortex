@@ -101,6 +101,7 @@ nav:
       - Coverage: COVERAGE.md
       - Capability matrix: capability-matrix.md
       - Verification matrix: verification-matrix.md
+      - ANN fallback decision record: ann-fallback-rabitq.md
   - Specifications:
       - Plugin alignment: specs/plugin-alignment.md
       - E2E audit remediation: specs/e2e-audit-remediation.md
