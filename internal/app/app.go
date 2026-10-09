@@ -164,10 +164,11 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 
 	// Initialize embedding service if configured
 	embCfg := embedding.Config{
-		Provider: cfg.Search.EmbeddingProvider,
-		APIKey:   config.ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider),
-		Model:    cfg.Search.EmbeddingModel,
-		BaseURL:  cfg.Search.EmbeddingBaseURL,
+		Provider:   cfg.Search.EmbeddingProvider,
+		APIKey:     config.ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider),
+		Model:      cfg.Search.EmbeddingModel,
+		BaseURL:    cfg.Search.EmbeddingBaseURL,
+		Dimensions: cfg.Search.EmbeddingDimensions,
 	}
 	stores.Embeddings = embedding.New(embCfg)
 
@@ -341,10 +342,11 @@ func (a *App) ReloadConfig() error {
 
 	// Reinitialize embedding service
 	a.Stores.Embeddings = embedding.New(embedding.Config{
-		Provider: cfg.Search.EmbeddingProvider,
-		APIKey:   config.ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider),
-		Model:    cfg.Search.EmbeddingModel,
-		BaseURL:  cfg.Search.EmbeddingBaseURL,
+		Provider:   cfg.Search.EmbeddingProvider,
+		APIKey:     config.ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider),
+		Model:      cfg.Search.EmbeddingModel,
+		BaseURL:    cfg.Search.EmbeddingBaseURL,
+		Dimensions: cfg.Search.EmbeddingDimensions,
 	})
 
 	return nil

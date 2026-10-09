@@ -827,15 +827,21 @@ func validateBearerToken(token string) error {
 }
 
 // liveEmbeddingDimensions resolves the embedding dimension from the only
-// trusted sources: the composed embedder's live service state, then the
-// operator's vector configuration. A static provider-to-dimension mirror
-// desyncs from shipped presets and silently mismatches 4096-dim endpoints
-// (REQ-EMB-002), so no provider-name lookup may answer this question.
+// trusted sources: the composed embedder's live service state (which carries
+// the operator's native MRL dimension at boot since the `dimensions`
+// parameter is authoritative), then the operator's embedding dimension
+// configuration, then the operator's vector configuration. A static
+// provider-to-dimension mirror desyncs from shipped presets and silently
+// mismatches 4096-dim endpoints (REQ-EMB-002), so no provider-name lookup
+// may answer this question.
 func liveEmbeddingDimensions(cfg config.Config, service embedding.Service) int {
 	if service != nil {
 		if dimensions := service.Dimensions(); dimensions > 0 {
 			return dimensions
 		}
+	}
+	if dimensions := cfg.Search.EmbeddingDimensions; dimensions > 0 {
+		return dimensions
 	}
 	if dimensions := cfg.Vector.Pgvector.Dimension; dimensions > 0 {
 		return dimensions
@@ -914,11 +920,12 @@ func newServerEmbedding(cfg config.Config, budgets *ratelimit.Registry) (embeddi
 		return nil, err
 	}
 	return embedding.NewSecure(embedding.Config{
-		Provider: provider,
-		APIKey:   config.ResolveEmbeddingAPIKey(provider),
-		Model:    cfg.Search.EmbeddingModel,
-		BaseURL:  baseURL,
-		Budget:   budgets.For(baseURL),
+		Provider:   provider,
+		APIKey:     config.ResolveEmbeddingAPIKey(provider),
+		Model:      cfg.Search.EmbeddingModel,
+		BaseURL:    baseURL,
+		Dimensions: cfg.Search.EmbeddingDimensions,
+		Budget:     budgets.For(baseURL),
 	}, policy)
 }
 

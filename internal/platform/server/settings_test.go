@@ -107,6 +107,37 @@ func TestSettingsEndpointReportsResolvedRuntimeConfiguration(t *testing.T) {
 	}
 }
 
+// TestSettingsEndpointReportsConfiguredEmbeddingDimension verifies the
+// settings surface reports the operator's native MRL embedding dimension
+// (search.embedding_dimensions / CORTEX_EMBEDDING_DIMENSIONS) even before
+// the embedder has served traffic — the dimension is authoritative at
+// composition time, which is what unlocks the pgvector HNSW chain at boot.
+func TestSettingsEndpointReportsConfiguredEmbeddingDimension(t *testing.T) {
+	ops := newFakeOperations()
+	cfg := settingsTestConfig()
+	cfg.Search.EmbeddingDimensions = 1024
+	cfg.Vector.Pgvector.Dimension = 4096 // vector config must NOT outrank the operator's embedding dimension
+	h, _ := newVerifiedHTTPHandler(cfg, ops, func(context.Context) error { return nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Embedding struct {
+			Dimensions int `json:"dimensions"`
+		} `json:"embedding"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Embedding.Dimensions != 1024 {
+		t.Fatalf("embedding dimensions = %d, want configured 1024", payload.Embedding.Dimensions)
+	}
+}
+
 func TestSettingsEndpointOmitsCredentials(t *testing.T) {
 	ops := newFakeOperations()
 	cfg := settingsTestConfig()

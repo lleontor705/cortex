@@ -643,6 +643,12 @@ func TestLiveEmbeddingDimensions(t *testing.T) {
 			want:    768,
 		},
 		{
+			name:    "operator embedding dimension outranks vector configuration",
+			cfg:     config.Config{Search: config.SearchConfig{EmbeddingDimensions: 1024}, Vector: config.VectorConfig{Pgvector: config.PGVectorConfig{Dimension: 4096}}},
+			service: staticEmbeddingService{dimensions: 0},
+			want:    1024,
+		},
+		{
 			name: "no embedder resolves operator configuration",
 			cfg:  config.Config{Vector: config.VectorConfig{Qdrant: config.QdrantConfig{Dimension: 1024}}},
 			want: 1024,
