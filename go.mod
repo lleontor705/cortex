@@ -18,7 +18,7 @@ require (
 	github.com/qdrant/go-client v1.19.3
 	github.com/spf13/viper v1.21.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
