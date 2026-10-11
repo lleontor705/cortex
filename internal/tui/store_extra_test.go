@@ -276,7 +276,9 @@ func TestLoadActivityDataNilDepsReturnsEmptySlice(t *testing.T) {
 	}
 }
 
-func TestLoadActivityDataRealStoreReturnsSevenBuckets(t *testing.T) {
+// The sparkline data loading was dropped (design D5): loadActivityData must no
+// longer query the store, so a seeded observation leaves every bucket at zero.
+func TestLoadActivityDataRealStoreSkipsQueries(t *testing.T) {
 	deps := newTUIStoreDeps(t)
 	seedSession(t, deps, "s1", "cortex")
 	seedObservation(t, deps, "s1", "cortex", domain.TypeManual, "Today", "created now")
@@ -285,12 +287,10 @@ func TestLoadActivityDataRealStoreReturnsSevenBuckets(t *testing.T) {
 	if len(msg.daily) != 7 {
 		t.Fatalf("daily length = %d, want 7", len(msg.daily))
 	}
-	total := 0
-	for _, v := range msg.daily {
-		total += v
-	}
-	if total < 1 {
-		t.Fatalf("expected at least 1 observation across the 7-day window, got total=%d", total)
+	for i, v := range msg.daily {
+		if v != 0 {
+			t.Fatalf("daily[%d] = %d, want 0 after query removal", i, v)
+		}
 	}
 }
 
