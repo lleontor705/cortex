@@ -96,7 +96,7 @@ func TestViewRoutesAllScreens(t *testing.T) {
 			m.EmbCfgSaved, m.EmbCfgProvider, m.EmbCfgOllamaChecked, m.EmbCfgOllamaRunning, m.EmbCfgOllamaHasModel = true, 1, true, true, true
 		}},
 		{"localConfig", ScreenLocalConfig, nil},
-		{"help", ScreenHelp, func(m *Model) { m.PrevScreen = ScreenDashboard }},
+		{"help", ScreenHelp, nil},
 		{"dashboard", ScreenDashboard, func(m *Model) { m.Stats = &combinedStats{TotalObservations: 5} }},
 		{"recent", ScreenRecent, seedRecentItems},
 		{"observationDetail", ScreenObservationDetail, func(m *Model) {
@@ -196,27 +196,14 @@ func TestViewEmbeddingConfigBranches(t *testing.T) {
 }
 
 func TestStaticViewsAndOverlays(t *testing.T) {
-	auth := newTestModel(120, 40)
-	auth.AuthModalOpen = true
-	for _, want := range []string{"Connect to Cortex Server", "Server URL", "Bearer Token", "Hybrid", "Fast local SQLite"} {
-		if !strings.Contains(auth.renderAuthModal(), want) {
-			t.Errorf("renderAuthModal missing %q", want)
-		}
-	}
-	for _, field := range []int{0, 1, 2} {
-		m := newTestModel(120, 40)
-		m.AuthFocusField = field
-		if m.renderAuthModal() == "" {
-			t.Errorf("auth modal focus %d empty", field)
-		}
-	}
 	palette := newTestModel(120, 40)
 	palette.CmdPaletteOpen = true
 	if !strings.Contains(palette.viewCmdPalette(), "Type a command") {
 		t.Error("missing palette input")
 	}
 	help := newTestModel(120, 40)
-	for _, want := range []string{"Keyboard Reference", "Global", "Embedding Settings", "Detail View"} {
+	seedNavFrom(&help, ScreenObservationDetail, ScreenObservationDetail)
+	for _, want := range []string{"Keyboard Reference", "Global", "Command palette (ctrl+k)", "Detail"} {
 		if !strings.Contains(help.viewHelp(), want) {
 			t.Errorf("viewHelp missing %q", want)
 		}
@@ -248,7 +235,7 @@ func TestStaticViewsAndOverlays(t *testing.T) {
 		{"confirm-delete", func(m *Model) { m.ConfirmDelete, m.DeleteTargetTitle = true, "Some Observation" }, "Some Observation"},
 		{"confirm-delete-truncation", func(m *Model) { m.ConfirmDelete, m.DeleteTargetTitle = true, strings.Repeat("A", 50) }, "..."},
 		{"cmd-palette", func(m *Model) { m.CmdPaletteOpen = true }, "Type a command"},
-		{"auth-modal", func(m *Model) { m.AuthModalOpen = true }, "Connect to Cortex Server"},
+		{"connect-flow", func(m *Model) { m.Screen = ScreenConnect }, "Connect to server"},
 		{"new-obs-modal", func(m *Model) { m.NewObsModalOpen = true }, "Quick Create Memory"},
 	}
 	for _, tc := range overlays {

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
@@ -578,4 +579,240 @@ func (m Model) viewEmbeddingConfig() string {
 	}
 
 	return b.String()
+}
+
+// ─── Unified Configuration view (REQ-CFG-001 .. REQ-CFG-006) ────────────────
+
+// unifiedConfigFormatNote documents the shipped config-layer behavior: a format
+// change writes the new file and moves the previous one to a .bak sibling. The
+// historic "delete the old file manually" warning is therefore obsolete
+// (verified against internal/config.Save -> retireConfigFile).
+const unifiedConfigFormatNote = "Format change: the previous config file is moved to a .bak backup automatically — no manual deletion needed."
+
+// viewUnifiedConfig renders the single Configuration screen. The active tab is
+// derived from the shared focus field, so a fresh install opens on Essential.
+func (m Model) viewUnifiedConfig() string {
+	tab := unifiedConfigTabForField(m.LocalCfgFocusField)
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("  Configuration"))
+	b.WriteString("   " + unifiedConfigTabBar(tab) + "\n")
+	b.WriteString("  " + lipgloss.NewStyle().Foreground(colorSubtext).Render("Essential covers the defaults; Advanced is opt-in.") + "\n\n")
+
+	label := lipgloss.NewStyle().Width(18).Foreground(colorText)
+	value := lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(colorSubtext)
+
+	fields := unifiedConfigFields()
+	section := ""
+	var panel strings.Builder
+	for i, f := range fields {
+		if f.Tab != tab {
+			continue
+		}
+		group := unifiedConfigGroup(f.Tab, f.Key)
+		if group != section {
+			if section != "" {
+				panel.WriteString("\n")
+			}
+			panel.WriteString(lipgloss.NewStyle().Foreground(colorPurple).Bold(true).Render(group) + "\n")
+			section = group
+		}
+		panel.WriteString(m.unifiedConfigFieldLine(unifiedConfigFieldNumber(i), f, label, value, dim))
+	}
+
+	panelWidth := 76
+	if m.Width > 0 && m.Width < 82 {
+		panelWidth = max(44, m.Width-8)
+	}
+	b.WriteString(lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorCyan).Padding(1, 2).Width(panelWidth).Render(panel.String()))
+
+	if tab == ConfigTabAdvanced && unifiedConfigFormatChanged(m) {
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("⚠ "+unifiedConfigFormatNote))
+	}
+	if m.LocalCfgSaving {
+		b.WriteString("\n\n  " + m.LocalCfgSpinner.View() + " Saving configuration...")
+	}
+	if m.LocalCfgError != "" {
+		b.WriteString("\n\n  " + errorStyle.Render("Error: "+m.LocalCfgError))
+	}
+	if m.LocalCfgDirty {
+		b.WriteString("\n\n  " + lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("● unsaved changes"))
+	}
+
+	b.WriteString(helpStyle.Render("\n\n  [tab] tab • [j/k] navigate • [enter] edit/activate • [s] Save & apply • [r] Reload from disk • [c] Connect • [esc] Back"))
+	return b.String()
+}
+
+// viewConfiguration is the stable name the View router and the pinned
+// view_test.go call. All rendering now lives in viewUnifiedConfig; this is a
+// pure alias so the two entry points can never drift apart again.
+func (m Model) viewConfiguration() string {
+	return m.viewUnifiedConfig()
+}
+
+func unifiedConfigTabBar(active ConfigTab) string {
+	render := func(tab ConfigTab) string {
+		if tab == active {
+			return lipgloss.NewStyle().Background(colorCyan).Foreground(activePalette.BaseBg).Bold(true).Padding(0, 1).Render(tab.String())
+		}
+		return lipgloss.NewStyle().Foreground(colorSubtext).Render(tab.String())
+	}
+	return render(ConfigTabEssential) + "   " + render(ConfigTabAdvanced)
+}
+
+func unifiedConfigGroup(tab ConfigTab, key string) string {
+	if tab == ConfigTabEssential {
+		switch key {
+		case "ai_provider", "ai_model", "ai_base_url":
+			return "AI PROVIDER"
+		case "embedding_provider", "embedding_model":
+			return "EMBEDDING"
+		case "save_essential":
+			return "APPLY"
+		default:
+			return "SERVER"
+		}
+	}
+	switch key {
+	case "database_path", "config_format":
+		return "STORAGE"
+	case "http_enabled", "http_host", "http_port", "http_token":
+		return "HTTP API"
+	case "mcp_profile", "mcp_remote", "mcp_url", "mcp_token_env":
+		return "MCP"
+	case "sync_enabled", "sync_url", "sync_token_env", "sync_interval":
+		return "SYNC"
+	case "save_advanced":
+		return "APPLY"
+	default:
+		return "EMBEDDING ADVANCED"
+	}
+}
+
+func (m Model) unifiedConfigFieldLine(num int, f configField, label, value, dim lipgloss.Style) string {
+	marker := "  "
+	if m.LocalCfgFocusField == num {
+		marker = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("▸ ")
+	}
+	return marker + label.Render(f.Label+":") + " " + m.unifiedConfigFieldValue(f, value, dim) + "\n"
+}
+
+func (m Model) unifiedConfigFieldValue(f configField, value, dim lipgloss.Style) string {
+	switch f.Key {
+	case "ai_provider":
+		return value.Render("◂ " + providerDisplayName(m.effectiveAIProviderIndex()) + " ▸")
+	case "ai_model":
+		return inputValue(m.LocalCfgLLMModel, value, dim, "nomic-embed-text")
+	case "ai_base_url":
+		return inputValue(m.LocalCfgLLMBaseURL, value, dim, "http://localhost:11434")
+	case "embedding_provider":
+		return value.Render("◂ " + providerDisplayName(m.effectiveEmbeddingProviderIndex()) + " ▸")
+	case "embedding_model":
+		return inputValue(m.EmbCfgModel, value, dim, defaultEmbeddingModel)
+	case "embedding_dimensions":
+		return inputValue(m.LocalCfgEmbeddingDimensions, value, dim, "0 (provider default)")
+	case "server_status":
+		chip := m.configServerChip()
+		return chipTextStyle(chip).Render(chip.Text()) + "  " + dim.Render("[ Connect... -> ]")
+	case "save_essential", "save_advanced":
+		return value.Render("[ Save & apply ]")
+	case "database_path":
+		return inputValue(m.LocalCfgDatabasePath, value, dim, "~/.cortex/cortex.db")
+	case "config_format":
+		return value.Render("◂ " + configFormatLabel(m.LocalCfgFormat) + " ▸")
+	case "http_enabled":
+		return toggleText(m.LocalCfgHTTPEnabled, dim)
+	case "http_host":
+		return inputValue(m.LocalCfgHTTPHost, value, dim, "127.0.0.1")
+	case "http_port":
+		return inputValue(m.LocalCfgHTTPPort, value, dim, "7438")
+	case "http_token":
+		if strings.TrimSpace(m.AuthTokenInput.Value()) == "" {
+			return dim.Render("(unchanged)")
+		}
+		return value.Render("••••••••")
+	case "mcp_profile":
+		return value.Render("◂ " + mcpProfileLabel(m.LocalCfgMCPProfile) + " ▸")
+	case "mcp_remote":
+		return toggleText(m.LocalCfgMCPRemote, dim)
+	case "mcp_url":
+		return inputValue(m.LocalCfgMCPURL, value, dim, "(not set)")
+	case "mcp_token_env":
+		return inputValue(m.LocalCfgMCPTokenEnv, value, dim, "CORTEX_REMOTE_TOKEN")
+	case "sync_enabled":
+		return toggleText(m.LocalCfgSyncEnabled, dim)
+	case "sync_url":
+		return inputValue(m.LocalCfgSyncURL, value, dim, "(not set)")
+	case "sync_token_env":
+		return inputValue(m.LocalCfgSyncTokenEnv, value, dim, "CORTEX_REMOTE_TOKEN")
+	case "sync_interval":
+		return inputValue(m.LocalCfgSyncInterval, value, dim, "30s")
+	case "embedding_autostart":
+		return toggleText(m.EmbCfgAutoStart, dim)
+	case "theme":
+		return value.Render("◂ " + themeLabel(m.IsDarkTheme) + " ▸")
+	}
+	return dim.Render("(not set)")
+}
+
+func inputValue(input textinput.Model, value, dim lipgloss.Style, fallback string) string {
+	if input.Focused() {
+		return input.View()
+	}
+	if v := input.Value(); v != "" {
+		return value.Render(v)
+	}
+	return dim.Render(fallback)
+}
+
+func toggleText(on bool, dim lipgloss.Style) string {
+	if on {
+		return lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("[x] On")
+	}
+	return dim.Render("[ ] Off")
+}
+
+func configFormatLabel(format int) string {
+	switch format {
+	case 1:
+		return "json"
+	case 2:
+		return "toml"
+	default:
+		return "yaml"
+	}
+}
+
+func mcpProfileLabel(profile string) string {
+	if strings.TrimSpace(profile) == "" {
+		return "agent"
+	}
+	return strings.ToLower(strings.TrimSpace(profile))
+}
+
+func themeLabel(dark bool) string {
+	if dark {
+		return "dark"
+	}
+	return "light"
+}
+
+// configServerChip derives the honest server status shown on the Essential tab
+// (REQ-CFG-005/REQ-SYNC-003).
+func (m Model) configServerChip() SyncChip {
+	hasEndpoint := false
+	var interval time.Duration
+	if m.deps != nil && m.deps.Config != nil {
+		cfg := m.deps.Config
+		hasEndpoint = strings.TrimSpace(cfg.Sync.URL) != "" || strings.TrimSpace(cfg.MCP.Remote.URL) != ""
+		interval = cfg.Sync.Interval
+	}
+	return dashboardSyncChipFor(m.authSyncStatus(), hasEndpoint, interval)
+}
+
+func chipTextStyle(chip SyncChip) lipgloss.Style {
+	if chip.IsSuccess() {
+		return lipgloss.NewStyle().Foreground(colorGreen).Bold(true)
+	}
+	return lipgloss.NewStyle().Foreground(colorAmber).Bold(true)
 }

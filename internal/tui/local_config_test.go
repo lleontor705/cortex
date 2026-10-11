@@ -25,43 +25,35 @@ func testLocalConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
-func TestDashboardOpensLocalSettings(t *testing.T) {
+func TestDashboardOpensConfiguration(t *testing.T) {
 	cfg := testLocalConfig(t)
 	m := New(&Deps{Config: cfg})
-	m.Cursor = 7
-	updated, _ := m.handleDashboardSelection()
+	updated, _ := m.navigateDashboard(ScreenLocalConfig)
 	result := updated.(Model)
 	if result.Screen != ScreenLocalConfig || result.LocalCfgDatabasePath.Value() != "test.db" {
-		t.Fatalf("local settings = %+v", result)
+		t.Fatalf("configuration = %+v", result)
 	}
 	view := result.View()
-	for _, want := range []string{"Configuration Center", "LOCAL ONLY", "Local Storage", "1 Storage"} {
+	for _, want := range []string{"Configuration", "Essential", "Advanced", "AI PROVIDER", "EMBEDDING", "SERVER"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q", want)
 		}
 	}
-	result.LocalCfgSaved = true
-	if saved := result.View(); !strings.Contains(saved, "Restart") {
-		t.Fatal("saved view does not explain restart requirement")
-	}
 }
 
-func TestLocalSettingsSectionNavigationAndReview(t *testing.T) {
+func TestConfigurationTabsAndFields(t *testing.T) {
 	m := New(&Deps{Config: testLocalConfig(t)}).openLocalConfig()
-	for _, step := range []struct {
-		key   string
-		field int
-	}{{"tab", 2}, {"tab", 5}, {"right", 8}, {"tab", 12}, {"tab", 16}} {
-		updated, _ := m.handleLocalConfigKeys(step.key)
-		m = updated.(Model)
-		if m.LocalCfgFocusField != step.field {
-			t.Fatalf("after %q field=%d, want %d", step.key, m.LocalCfgFocusField, step.field)
-		}
+	updated, _ := m.handleUnifiedConfigKeys("tab")
+	m = updated.(Model)
+	if unifiedConfigTabForField(m.LocalCfgFocusField) != ConfigTabAdvanced {
+		t.Fatalf("tab did not open Advanced (field=%d)", m.LocalCfgFocusField)
 	}
+	updated, _ = m.handleUnifiedConfigKeys("j")
+	m = updated.(Model)
 	view := m.View()
-	for _, want := range []string{"Review & Apply", "Storage", "HTTP API", "MCP Profile", "MCP Proxy", "Sync", "Validate & Save"} {
+	for _, want := range []string{"Database path", "Config format", "HTTP API", "MCP", "SYNC", "EMBEDDING ADVANCED", "Vector dim"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("review missing %q", want)
+			t.Errorf("advanced view missing %q:\n%s", want, view)
 		}
 	}
 }
@@ -239,90 +231,40 @@ func TestAuthAndIdentityModel(t *testing.T) {
 	}
 }
 
-func TestConnectToCortexServerModalSave(t *testing.T) {
-	cfg := testLocalConfig(t)
-	m := New(&Deps{Config: cfg, Version: "2.0.0"})
-	if m.UploadToCortex {
-		t.Fatal("expected sync to be disabled initially")
+// TestConnectEntryPointsRouteToGuidedFlow covers REQ-SYNC-001 acceptance 3: the
+// dashboard entry, the unified Configuration Connect entry, and the L key all
+// open the first-class guided flow, and the Auth modal no longer exists.
+func TestConnectEntryPointsRouteToGuidedFlow(t *testing.T) {
+	m := New(&Deps{Config: testLocalConfig(t), Version: "2.0.0"})
+
+	entryPoints := []struct {
+		name string
+		open func() (tea.Model, tea.Cmd)
+	}{
+		{"L key", func() (tea.Model, tea.Cmd) { return m.handleKeyPress("L") }},
+		{"unified Configuration Connect", func() (tea.Model, tea.Cmd) { return m.openUnifiedConnect() }},
+		{"guided flow opener", func() (tea.Model, tea.Cmd) { return m.openConnectFlow() }},
+	}
+	for _, ep := range entryPoints {
+		out, _ := ep.open()
+		res := out.(Model)
+		if res.Screen != ScreenConnect || res.ConnectStep != ConnectStepURL {
+			t.Fatalf("%s: screen=%v step=%v, want ScreenConnect/step 1", ep.name, res.Screen, res.ConnectStep)
+		}
 	}
 
-	// Open Connect to Server modal
-	m.openAuthModal()
-	if !m.AuthModalOpen {
-		t.Fatal("expected AuthModalOpen to be true")
+	opened := false
+	for i, item := range flattenDashboardItems() {
+		if item.action != dashboardConnect {
+			continue
+		}
+		out, _ := m.activateDashboardItem(i)
+		if out.(Model).Screen != ScreenConnect {
+			t.Fatalf("dashboard Connect did not open the flow: %v", out.(Model).Screen)
+		}
+		opened = true
 	}
-
-	// Set Server URL and switch focus
-	m.AuthServerURLInput.SetValue("http://localhost:7438")
-	updated, _ := m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
-	if m.AuthFocusField != 1 {
-		t.Fatalf("expected focus on Bearer Token (field 1), got %d", m.AuthFocusField)
-	}
-
-	// Set Bearer Token and submit
-	m.AuthTokenInput.SetValue("ctx_secret_test_token_123")
-	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
-
-	if m.AuthModalOpen {
-		t.Fatal("expected AuthModal to be closed after submit")
-	}
-	if !m.UploadToCortex {
-		t.Fatal("expected UploadToCortex to be true after server connection")
-	}
-	if m.UserRole != "admin" {
-		t.Fatalf("expected role admin, got %s", m.UserRole)
-	}
-
-	// Verify YAML content was written
-	data, err := os.ReadFile(cfg.LoadedFrom)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "ctx_secret_test_token_123") {
-		t.Errorf("expected token in saved YAML, got:\n%s", content)
-	}
-	if !strings.Contains(content, "http://localhost:7438") {
-		t.Errorf("expected sync URL in saved YAML, got:\n%s", content)
-	}
-}
-
-func TestConnectToCortexServerModalToggleRemoteMode(t *testing.T) {
-	cfg := testLocalConfig(t)
-	m := New(&Deps{Config: cfg, Version: "2.0.0"})
-
-	m.openAuthModal()
-	m.AuthServerURLInput.SetValue("http://localhost:7438")
-
-	// Tab to Token
-	updated, _ := m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
-	m.AuthTokenInput.SetValue("ctx_secret_token")
-
-	// Tab to Mode selector (field 2)
-	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
-	if m.AuthFocusField != 2 {
-		t.Fatalf("expected focus on Mode Selector (field 2), got %d", m.AuthFocusField)
-	}
-
-	// Toggle mode with Space to Remote MCP Proxy
-	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeySpace})
-	m = updated.(Model)
-	if m.AuthModeHybrid {
-		t.Fatal("expected AuthModeHybrid to be false after toggle")
-	}
-
-	// Submit
-	updated, _ = m.handleAuthModalKeys(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
-
-	if m.UploadToCortex {
-		t.Fatal("expected UploadToCortex to be false in Remote MCP mode")
-	}
-	if !m.deps.Config.MCP.Remote.Enabled {
-		t.Fatal("expected MCP.Remote.Enabled to be true in Remote MCP mode")
+	if !opened {
+		t.Fatal("dashboard menu has no Connect entry")
 	}
 }

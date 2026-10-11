@@ -378,3 +378,48 @@ func TestLoadGraphWithNilDeps(t *testing.T) {
 		t.Fatal("expected error with nil deps")
 	}
 }
+
+// TestNewModelSeedsLiveNavStack pins the live multi-level stack wiring on the
+// constructors (tui-redesign-022): New starts at the Dashboard floor, a
+// non-Dashboard launch seeds one level, and reset collapses back to the floor.
+func TestNewModelSeedsLiveNavStack(t *testing.T) {
+	m := New(&Deps{Version: "test"})
+	if got := m.NavDepth(); got != 1 {
+		t.Fatalf("fresh model NavDepth() = %d, want 1", got)
+	}
+	if m.Screen != ScreenDashboard {
+		t.Fatalf("fresh model screen = %v, want Dashboard", m.Screen)
+	}
+
+	graph := NewWithScreen(&Deps{Version: "test"}, ScreenGraph)
+	if got := graph.NavDepth(); got != 2 {
+		t.Fatalf("seeded model NavDepth() = %d, want 2", got)
+	}
+	if got := graph.NavBreadcrumb(); got != "Dashboard / Graph" {
+		t.Fatalf("seeded NavBreadcrumb() = %q, want %q", got, "Dashboard / Graph")
+	}
+	graph.NavReset()
+	if got := graph.NavDepth(); got != 1 {
+		t.Fatalf("reset seeded model NavDepth() = %d, want 1", got)
+	}
+	if graph.Screen != ScreenDashboard {
+		t.Fatalf("reset seeded model screen = %v, want Dashboard", graph.Screen)
+	}
+}
+
+// TestModelNavMultiLevelSupportsFourLevelWalk mirrors the nav_test.go oracle at
+// the model_test boundary to keep the push/pop sequence covered here too.
+func TestModelNavMultiLevelSupportsFourLevelWalk(t *testing.T) {
+	m := New(&Deps{Version: "test"})
+	for _, s := range []Screen{ScreenSearch, ScreenSearchResults, ScreenObservationDetail, ScreenTimeline} {
+		m.NavPush(s)
+	}
+	if got := m.NavDepth(); got != 5 {
+		t.Fatalf("NavDepth() = %d, want 5", got)
+	}
+	for _, w := range []Screen{ScreenObservationDetail, ScreenSearchResults, ScreenSearch, ScreenDashboard} {
+		if got := m.NavPop(); got != w {
+			t.Fatalf("NavPop() = %v, want %v", got, w)
+		}
+	}
+}
