@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"log"
@@ -46,9 +47,30 @@ type App struct {
 	Stores         *bundle.Stores
 	archivalCancel context.CancelFunc
 	workerCancel   context.CancelFunc // embedding worker drain (W4.1, REQ-EMB-001)
-	syncCancel     context.CancelFunc
-	syncDone       <-chan struct{}
+
+	// reloadMu serializes ReloadConfig so concurrent reloads cannot interleave
+	// embedding reinitialization or sync-loop reconciliation.
+	reloadMu sync.Mutex
+
+	// syncMu guards the mutable sync-lifecycle fields below and the Config
+	// pointer they fingerprint. Config is read under syncMu by SyncStatus so a
+	// concurrent ReloadConfig cannot race the pointer swap. closed is set by
+	// Close under syncMu, serializing shutdown against reconcileSyncLoop.
+	syncMu        sync.Mutex
+	syncCancel    context.CancelFunc
+	syncDone      <-chan struct{}
+	syncSignature string
+	syncHybrid    bool
+	syncDisabled  bool
+	closed        bool
+	baseCtx       context.Context
+	syncStarter   syncLoopStarter
 }
+
+// syncLoopStarter starts a replication loop and returns its cancel function and
+// completion channel, or (nil, nil) when no loop is warranted. It is a seam so
+// the restart logic can be exercised deterministically without a live endpoint.
+type syncLoopStarter func(ctx context.Context, cfg *config.Config, db *database.Manager, stores *bundle.Stores, isHybrid, disabled bool) (context.CancelFunc, <-chan struct{})
 
 // Open loads configuration, opens the database, applies migrations, and wires stores.
 func Open(ctx context.Context, opts Options) (*App, error) {
@@ -218,7 +240,11 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		a.archivalCancel = archivalSvc.Start(ctx)
 	}
 
-	a.syncCancel, a.syncDone = startHybridReplication(ctx, cfg, manager, stores, hybridRequested(), opts.DisableRemoteSync)
+	a.syncHybrid = hybridRequested()
+	a.syncDisabled = opts.DisableRemoteSync
+	a.baseCtx = ctx
+	a.syncStarter = startHybridReplication
+	a.reconcileSyncLoop(ctx, cfg)
 
 	return a, nil
 }
@@ -318,19 +344,128 @@ func startHybridReplication(ctx context.Context, cfg *config.Config, db *databas
 	return cancel, done
 }
 
-// ReloadConfig re-reads the configuration from disk and reinitializes
-// the embedding service. Useful after manual edits to cortex.yaml.
+// syncSignature fingerprints every input that determines whether the running
+// replication loop must be rebuilt. The loop captures its syncer (endpoint +
+// token) at construction, so a change to any of these requires a fresh loop.
+func syncSignature(cfg *config.Config, isHybrid, disabled bool) string {
+	if cfg == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("hybrid=%t", isHybrid),
+		fmt.Sprintf("disabled=%t", disabled),
+		fmt.Sprintf("enabled=%t", cfg.Sync.Enabled),
+		cfg.Sync.URL,
+		resolveSyncToken(cfg),
+		cfg.Sync.Interval.String(),
+		cfg.Sync.Timeout.String(),
+	}, "\x1f")
+}
+
+// reconcileSyncLoop makes the live replication loop match cfg. It is
+// idempotent: an unchanged signature leaves the running loop untouched, so
+// exactly one loop runs at any time regardless of how often ReloadConfig fires.
+// After Close it is a no-op: a reconcile that completes concurrently with
+// shutdown must not resurrect a loop on a closed App.
+func (a *App) reconcileSyncLoop(ctx context.Context, cfg *config.Config) {
+	if a == nil || cfg == nil {
+		return
+	}
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	if a.closed {
+		return
+	}
+
+	signature := syncSignature(cfg, a.syncHybrid, a.syncDisabled)
+	if signature == a.syncSignature {
+		return
+	}
+	a.stopSyncLocked()
+
+	starter := a.syncStarter
+	if starter == nil {
+		starter = startHybridReplication
+	}
+	a.syncCancel, a.syncDone = starter(ctx, cfg, a.DB, a.Stores, a.syncHybrid, a.syncDisabled)
+	a.syncSignature = signature
+}
+
+// stopSyncLocked cancels the running loop and waits for its goroutine to exit.
+// The caller must hold syncMu.
+func (a *App) stopSyncLocked() {
+	if a.syncCancel != nil {
+		a.syncCancel()
+		if a.syncDone != nil {
+			<-a.syncDone
+		}
+	}
+	a.syncCancel, a.syncDone = nil, nil
+}
+
+// SyncStatus reports the live state of the hybrid replication loop so status
+// surfaces can report honest progress instead of assuming success.
+type SyncStatus struct {
+	Configured bool // a sync endpoint is configured (hybrid or sync.enabled)
+	Running    bool // a replication loop goroutine is currently active
+	TokenSet   bool // a bearer token resolves through the precedence chain
+}
+
+// SyncStatus returns a race-safe snapshot of the live sync state.
+func (a *App) SyncStatus() SyncStatus {
+	if a == nil {
+		return SyncStatus{}
+	}
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	status := SyncStatusFor(a.Config, a.syncHybrid)
+	if a.syncDisabled {
+		status.Configured = false
+	}
+	status.Running = a.syncCancel != nil
+	return status
+}
+
+// SyncStatusFor derives the sync state implied by a configuration alone, using
+// the same token precedence as the runtime. It is used by status surfaces that
+// have no live App (for example a config-only test or a pre-reload snapshot).
+func SyncStatusFor(cfg *config.Config, hybridMode bool) SyncStatus {
+	if cfg == nil {
+		return SyncStatus{}
+	}
+	configured := (hybridMode || cfg.Sync.Enabled) && strings.TrimSpace(cfg.Sync.URL) != ""
+	return SyncStatus{
+		Configured: configured,
+		Running:    false,
+		TokenSet:   resolveSyncToken(cfg) != "",
+	}
+}
+
+// SyncLoopRunning reports whether a replication loop is currently active.
+func (a *App) SyncLoopRunning() bool {
+	return a.SyncStatus().Running
+}
+
+// ReloadConfig re-reads the configuration from disk, reinitializes the
+// embedding service, and reconciles the hybrid replication loop so a changed
+// sync configuration takes effect without a process restart. Useful after
+// manual edits to cortex.yaml or a TUI save.
 func (a *App) ReloadConfig() error {
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
+
 	// Reload from the same file that was originally loaded
 	configPath := ""
+	a.syncMu.Lock()
 	if a.Config != nil && a.Config.LoadedFrom != "" {
 		configPath = a.Config.LoadedFrom
 	}
+	a.syncMu.Unlock()
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("reload config: %w", err)
 	}
-	a.Config = cfg
 
 	// Auto-start Ollama if configured
 	if cfg.Search.EmbeddingProvider == "ollama" && cfg.Search.OllamaAutoStart {
@@ -341,13 +476,26 @@ func (a *App) ReloadConfig() error {
 	}
 
 	// Reinitialize embedding service
-	a.Stores.Embeddings = embedding.New(embedding.Config{
+	embeddings := embedding.New(embedding.Config{
 		Provider:   cfg.Search.EmbeddingProvider,
 		APIKey:     config.ResolveEmbeddingAPIKey(cfg.Search.EmbeddingProvider),
 		Model:      cfg.Search.EmbeddingModel,
 		BaseURL:    cfg.Search.EmbeddingBaseURL,
 		Dimensions: cfg.Search.EmbeddingDimensions,
 	})
+
+	a.syncMu.Lock()
+	a.Config = cfg
+	if a.Stores != nil {
+		a.Stores.Embeddings = embeddings
+	}
+	a.syncMu.Unlock()
+
+	ctx := a.baseCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.reconcileSyncLoop(ctx, cfg)
 
 	return nil
 }
@@ -357,10 +505,10 @@ func (a *App) Close() error {
 	if a == nil {
 		return nil
 	}
-	if a.syncCancel != nil {
-		a.syncCancel()
-		<-a.syncDone
-	}
+	a.syncMu.Lock()
+	a.closed = true
+	a.stopSyncLocked()
+	a.syncMu.Unlock()
 	// Drain the embedding worker BEFORE closing the DB: in-flight intents must
 	// finalize (or be left leased for crash recovery) with no goroutine touching
 	// the DB after Close (REQ-EMB-001: no detached fire-and-forget goroutines).
