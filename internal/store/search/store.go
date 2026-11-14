@@ -42,6 +42,9 @@ type Store struct {
 	db    *sql.DB
 	Graph GraphEdgeProvider // Optional; enables temporal-aware graph expansion
 
+	// relaxedRescueOff disables the relaxed keyword rescue (default: enabled).
+	relaxedRescueOff bool
+
 	// --- Request-scoped feedback attribution (REQ-RET-001) ---
 	//
 	// feedbackMu protects feedbackSessions. Each Search call generates a unique
@@ -256,7 +259,7 @@ func (s *Store) RecordFeedback(ctx context.Context, searchID domain.SearchID, ob
 // The topic-exact retriever (lookupByTopicKey) and the keyword retriever
 // (searchKeywords) each emit a TRUE ranked list. The two lists are fused by RRF
 // (k=60) — a relevance score (BM25) is never treated as a rank input. After
-// fusion, recency (0.995^hours) and importance are applied as a FINAL
+// fusion, recency (bounded, see recencyFactor) and importance are applied as a FINAL
 // multiplicative re-rank over the fused candidate set; they are NOT injected as
 // pseudo-ranked-lists into RRF.
 func (s *Store) searchDualLevel(ctx context.Context, query string, opts domain.SearchOptions, limit int, factReady bool) ([]*domain.SearchResult, error) {
@@ -276,6 +279,11 @@ func (s *Store) searchDualLevel(ctx context.Context, query string, opts domain.S
 
 	// Retriever 3: fact-augmented keys (REQ-LME-001) — true ranked list.
 	factKeys := s.factKeyRankedList(ctx, query, opts, limit, factReady)
+
+	// Starvation rescue: relaxed keyword tiers only when every list is empty.
+	if rescued := s.rescueStarvedKeywords(ctx, query, opts, limit*3, topicExact, keyword, factKeys); len(rescued) > 0 {
+		keyword = rescued
+	}
 
 	// Unified assembly path (REQ-RET-002 W5.3): fuse -> revalidate vs SQLite ->
 	// multiplicative re-rank (stable-ID tie-break) -> deterministic pagination.
@@ -329,6 +337,31 @@ func (s *Store) lookupByTopicKey(ctx context.Context, query string, opts domain.
 	return results, nil
 }
 
+// SetRelaxedRescue enables or disables the relaxed keyword rescue (default enabled).
+func (s *Store) SetRelaxedRescue(enabled bool) { s.relaxedRescueOff = !enabled }
+
+// rescueStarvedKeywords returns the relaxed keyword tiers for a query whose
+// every ranked list came back empty. It is a rescue, never a second vote: the
+// caller passes the lists it already built, and any non-empty list (or a
+// disabled rescue) returns nil, so relaxed results can only fill a pool that
+// had nothing to give and never add RRF credit to a populated one.
+func (s *Store) rescueStarvedKeywords(ctx context.Context, query string, opts domain.SearchOptions, limit int, lists ...[]*domain.SearchResult) []*domain.SearchResult {
+	if s.relaxedRescueOff {
+		return nil
+	}
+	for _, list := range lists {
+		if len(list) > 0 {
+			return nil
+		}
+	}
+	relaxed, err := s.searchRelaxedKeywords(ctx, query, opts, limit)
+	if err != nil {
+		log.Printf("search: relaxed keyword rescue error (non-fatal): %v", err)
+		return nil
+	}
+	return relaxed
+}
+
 // searchKeywords performs ONE strict-AND FTS5 keyword search with BM25 ranking.
 // It uses column weighting where content has 2x weight compared to title and is
 // the recall contract: a keyword query resolves exactly as it always has.
@@ -339,9 +372,9 @@ func (s *Store) searchKeywords(ctx context.Context, query string, opts domain.Se
 
 // searchRelaxedKeywords runs ONLY the relaxed tiers of a natural-language query
 // whose strict tier already produced nothing. It is a rescue, never a
-// replacement: callers invoke it only when every other ranked list is empty, so
-// it can add candidates to a pool that had nothing to give and can never
-// displace results strict retrieval already returned.
+// replacement: rescueStarvedKeywords invokes it only when every other ranked
+// list is empty, so it can add candidates to a pool that had nothing to give
+// and can never displace results strict retrieval already returned.
 func (s *Store) searchRelaxedKeywords(ctx context.Context, query string, opts domain.SearchOptions, limit int) ([]*domain.SearchResult, error) {
 	tiers := relaxedKeywordFTSTiers(query)
 	if len(tiers) == 0 {
@@ -729,11 +762,15 @@ func (s *Store) searchEnhanced(ctx context.Context, query string, opts domain.Se
 	// Retriever 3: fact-augmented keys (REQ-LME-001) — true ranked list.
 	factKeys := s.factKeyRankedList(ctx, query, opts, limit, factReady)
 
-	// The relaxed keyword tier (searchRelaxedKeywords) stays OUT of this
-	// pipeline: its results populate the prior-stage FusionScores that
-	// SkewRoute routes on, flipping tier decisions and regressing LOCOMO
-	// 0.56 -> 0.51-0.53 in both measured rank profiles (Cortex gotcha
-	// gotchas/honest-10-retrieval-basics-fix). Seam redesign deferred.
+	// Starvation rescue: the relaxed keyword tiers (searchRelaxedKeywords) run
+	// only when every ranked list above is empty, so they never add a second
+	// RRF vote to a populated pool. A 2026-10 LOCOMO run at n=100 moved
+	// 0.56 -> 0.51-0.53 when relaxed results fed the prior-stage fusion scores
+	// that SkewRoute routes on, so SetRelaxedRescue(false) exists to A/B it and
+	// the benchmarks must be re-measured after this change.
+	if rescued := s.rescueStarvedKeywords(ctx, query, opts, limit*3, keywordResults, topicExpResults, factKeys); len(rescued) > 0 {
+		keywordResults = rescued
+	}
 
 	// Retriever 4: Pseudo-Relevance Feedback — extract distinctive terms from
 	// top results and run a second FTS5 query to improve recall (true ranked list).
@@ -765,16 +802,25 @@ func resolveFusionK(configured float64) float64 {
 	return rrfConstant
 }
 
-// recencyFactor computes the recency decay multiplier 0.995^hours where hours is
-// the age of the observation in hours since its timestamp (REQ-RET-002). A
-// recently-touched observation gets a factor near 1.0; an old one decays toward
-// 0. Negative ages (future timestamps) are clamped to 0 so the factor never
-// exceeds 1.0. This is a FINAL multiplicative re-rank input, NEVER an RRF input.
+// recencyHalfLifeHours is the half-life of the decaying part of the recency factor (30 days).
+const recencyHalfLifeHours = 720.0
+
+// recencyFloor is the minimum recency factor: an arbitrarily old observation keeps
+// this share of its fused score.
+const recencyFloor = 0.8
+
+// recencyFactor computes the bounded recency multiplier
+// floor + (1-floor) * 0.5^(hours/720), where hours is the age of the observation
+// in hours since its timestamp (REQ-RET-002). The factor is 1.0 at age 0, 0.9 at
+// 30 days, and approaches 0.8 for very old observations, so recency can reorder
+// close candidates but never dominates relevance. Negative ages (future
+// timestamps) are clamped to 0 so the factor never exceeds 1.0. This is a FINAL
+// multiplicative re-rank input, NEVER an RRF input.
 func recencyFactor(hours float64) float64 {
 	if hours < 0 {
 		hours = 0
 	}
-	return math.Pow(0.995, hours)
+	return recencyFloor + (1-recencyFloor)*math.Pow(0.5, hours/recencyHalfLifeHours)
 }
 
 // importanceFactor computes the importance multiplier applied as a FINAL
@@ -788,7 +834,7 @@ func importanceFactor(score float64, found bool) float64 {
 	return 1.0 + score
 }
 
-// rerankByRecencyImportance applies recency (0.995^hours from the observation's
+// rerankByRecencyImportance applies recency (recencyFactor of the observation's
 // timestamp) and importance as a FINAL multiplicative re-rank over the
 // RRF-fused candidate set. NEITHER signal is fed into RRF as a
 // pseudo-ranked-list (REQ-RET-002). The fused RRF score (candidate.Rank) is
@@ -1071,13 +1117,13 @@ func (s *Store) applyPagination(reranked []*domain.SearchResult, query string, o
 	if opts.Cursor != "" {
 		if p, ok := decodeCursor(opts.Cursor); ok && p.Context == wantCtx {
 			// Resume strictly AFTER the encoded stable ID. The final order is a
-			// stable total order (rank DESC, ID asc) whose relative ordering is
-			// time-invariant for fixed data: recency is a per-item multiplier
-			// whose RATIO between any two fixed observations is constant (both
-			// scale by 0.995^Δ as now advances), so locating the resume item by
-			// its stable ID is drift-free and deterministic across calls. Rank
-			// is carried in the cursor for diagnostics only, never used for
-			// resume (a stale absolute rank would drift the boundary).
+			// stable total order (rank DESC, ID asc) computed for THIS request.
+			// Recency is a bounded per-item multiplier that depends on each
+			// observation's age at request time, so the relative order of two
+			// observations can shift as time advances; the resume point is still
+			// located by its stable ID within the set computed now, so the page
+			// boundary never drifts by a stale absolute rank. Rank is carried in
+			// the cursor for diagnostics only, never used for resume.
 			resumeAt := -1
 			for i, r := range reranked {
 				if r.ID == p.ID {

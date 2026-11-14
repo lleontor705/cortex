@@ -563,8 +563,8 @@ func TestSearchStore_SearchScoreBreakdown(t *testing.T) {
 	})
 }
 
-// TestSearchEnhanced_RecencyBoost pins that recency (0.995^hours from the
-// observation's OWN timestamp, per REQ-RET-002 design decision #2) is applied as
+// TestSearchEnhanced_RecencyBoost pins that recency (the bounded recencyFactor of
+// the observation's OWN timestamp, per REQ-RET-002 design decision #2) is applied as
 // a FINAL multiplicative re-rank. Two observations with identical content differ
 // only by UpdatedAt; the more recent one receives the higher recency factor and
 // ranks above the older one.
@@ -873,8 +873,8 @@ func TestRelaxedKeywordFTSTiers(t *testing.T) {
 // candidates, empty judge input). The fixture session deliberately omits the
 // question's function words, so strict AND matches nothing and only the
 // relaxed tiers can start retrieval when they are called. The end-to-end half
-// of the probe pins the routing-neutral shipped state: Search() does not call
-// them.
+// of the probe pins the rescue contract: Search() reaches the relaxed tiers only
+// through rescueStarvedKeywords, and only when every ranked list is empty.
 func TestSearch_StarvedQuestionRescuedByRelaxedFTS(t *testing.T) {
 	t.Run("stopword drop rescues when all content terms co-occur", func(t *testing.T) {
 		db := setupTestDB(t)
@@ -903,14 +903,12 @@ func TestSearch_StarvedQuestionRescuedByRelaxedFTS(t *testing.T) {
 		}
 	})
 
-	// Both halves of the honest-03 probe are pinned: the OR tier must still
-	// rescue when invoked directly (the capability honest-10b keeps for its
-	// seam redesign), and Search() must NOT reach for it. Wiring the rescue into
-	// the pipeline populated the prior-stage FusionScores that SkewRoute routes
-	// on and regressed LOCOMO 0.56 -> 0.51-0.53 in both measured rank profiles
-	// (Cortex gotcha gotchas/honest-10-retrieval-basics-fix), so re-wiring it
-	// requires updating this contract consciously.
-	t.Run("OR tier rescues directly but stays out of Search", func(t *testing.T) {
+	// Both halves of the honest-03 probe are pinned: the OR tier must rescue when
+	// invoked directly, and Search() must reach it when every ranked list is
+	// empty (rescueStarvedKeywords). A 2026-10 LOCOMO run at n=100 moved
+	// 0.56 -> 0.51-0.53 when relaxed results fed prior-stage FusionScores, so
+	// SetRelaxedRescue(false) exists to A/B this; benchmarks must be re-measured.
+	t.Run("OR tier rescues directly and Search reaches it when every list is empty", func(t *testing.T) {
 		db := setupTestDB(t)
 		insertTestObservation(t, db, 7, "Theater night", "user: The community theater production of The Glass Menagerie was unforgettable.\nassistant: Glad you enjoyed the show.", "manual", "test-project", "project")
 
@@ -936,8 +934,8 @@ func TestSearch_StarvedQuestionRescuedByRelaxedFTS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(results) != 0 {
-			t.Fatalf("relaxed tiers leaked into Search, breaking routing neutrality: %v", idsOf(results))
+		if !containsID(results, 7) {
+			t.Fatalf("Search must rescue via the relaxed tiers when every list is empty, got %v", idsOf(results))
 		}
 	})
 
@@ -1233,7 +1231,7 @@ func insertTestObservationWithTopicKey(t *testing.T, db *sql.DB, id int64, title
 }
 
 // insertTestObservationUpdatedAt inserts an observation with an explicit
-// updated_at (and created_at), so recency (0.995^hours from the observation's
+// updated_at (and created_at), so recency (recencyFactor of the observation's
 // timestamp) can be exercised deterministically (REQ-RET-002).
 func insertTestObservationUpdatedAt(t *testing.T, db *sql.DB, id int64, title, content, obsType, project, scope string, updatedAt time.Time) {
 	t.Helper()
