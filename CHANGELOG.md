@@ -16,12 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### 🚀 Features
 
-- *(backup)* Portable logical snapshot — cortex backup --out / restore --from: JSONL parts in a tar.gz with a sha256-verified manifest, ID-preserving idempotent restore, secret fail-closed export (#164, #165)
-- *(embedding)* Optional near-duplicate detection at ingest: duplicates_of graph relations, default OFF via CORTEX_INGEST_DEDUP (#166, #167)
+- *(backup)* Portable logical snapshot — cortex backup --out / restore --from (#165)
+- *(embedding)* Optional near-duplicate detection at ingest (duplicates_of, default OFF) (#167)
 
 ### ⚡ Performance
 
-- *(embedding)* Provider-native MRL dimensions via CORTEX_EMBEDDING_DIMENSIONS (default 0 = provider default): unlocks the pgvector HNSW chain for dims ≤ 2000; live probe confirmed qwen3-embedding matryoshka support (#168, #169)
+- *(embedding)* Provider-native MRL dimensions (CORTEX_EMBEDDING_DIMENSIONS) — unlock pgvector HNSW for dims <= 2000 (#169)
+
+### ⚙️ Miscellaneous Tasks
+
+- *(changelog)* Refresh release history [skip ci]
+- *(changelog)* Release v2.4.19 [skip ci]
 
 ## [2.4.18] - 2026-10-09
 
