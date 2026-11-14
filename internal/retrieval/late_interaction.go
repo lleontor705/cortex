@@ -34,8 +34,21 @@ func TokenizeLateInteraction(text string) []string {
 	return tokens
 }
 
-// TokenSimilarity calculates token-level string overlap similarity (Jaro-Winkler / trigram-like).
-func TokenSimilarity(a, b string) float64 {
+// tokenBigrams returns the set of 2-byte substrings of s, or nil when len(s) < 2.
+func tokenBigrams(s string) map[string]struct{} {
+	if len(s) < 2 {
+		return nil
+	}
+	grams := make(map[string]struct{}, len(s)-1)
+	for i := 0; i < len(s)-1; i++ {
+		grams[s[i:i+2]] = struct{}{}
+	}
+	return grams
+}
+
+// tokenSimilarityWithGrams is TokenSimilarity(a, b) with the bigram set of a precomputed by
+// tokenBigrams(a). It is used in hot loops where a is compared against many tokens.
+func tokenSimilarityWithGrams(a string, gramsA map[string]struct{}, b string) float64 {
 	if a == b {
 		return 1.0
 	}
@@ -56,13 +69,9 @@ func TokenSimilarity(a, b string) float64 {
 
 	// 2-gram overlap
 	if len(a) >= 2 && len(b) >= 2 {
-		gramsA := make(map[string]bool)
-		for i := 0; i < len(a)-1; i++ {
-			gramsA[a[i:i+2]] = true
-		}
 		var common int
 		for i := 0; i < len(b)-1; i++ {
-			if gramsA[b[i:i+2]] {
+			if _, ok := gramsA[b[i:i+2]]; ok {
 				common++
 			}
 		}
@@ -73,6 +82,11 @@ func TokenSimilarity(a, b string) float64 {
 	}
 
 	return 0.0
+}
+
+// TokenSimilarity calculates token-level string overlap similarity (Jaro-Winkler / trigram-like).
+func TokenSimilarity(a, b string) float64 {
+	return tokenSimilarityWithGrams(a, tokenBigrams(a), b)
 }
 
 var commonStopWords = map[string]bool{
@@ -125,9 +139,10 @@ func ComputeWeightedMaxSimScore(queryTokens, docTokens []string) float64 {
 		w := TokenSpecificityWeight(q)
 		totalWeight += w
 
+		gramsQ := tokenBigrams(q)
 		var maxSim float64
 		for _, d := range docTokens {
-			sim := TokenSimilarity(q, d)
+			sim := tokenSimilarityWithGrams(q, gramsQ, d)
 			if sim > maxSim {
 				maxSim = sim
 			}
