@@ -364,30 +364,17 @@ ls bench/results/
 # dmr.json                 — Full DMR
 ```
 
-## SOTA RAG & Graph Retrieval Engines (2025/2026)
+## Retrieval & Graph Engines (paper-inspired heuristics)
 
-Cortex integrates a 4-tier state-of-the-art retrieval and graph propagation engine in 100% pure Go (Zero-CGO):
+These engines are pure-Go, training-free heuristics inspired by the cited papers; they are not reimplementations of the papers' model-based methods, and their measured contribution is recorded in `bench/reports/engine-ablation-audit.json`.
 
-| Engine / Algorithm | Origin & Reference | Latency (RAM) | Primary Use Case |
+| Engine / Algorithm | Origin & Reference | Primary Use Case | Implementation in Cortex |
 |---|---|---|---|
-| **HippoRAG (PPR)** | NeurIPS 2024 (arXiv:2405.14831) | $< 2\text{ms}$ | Multi-hop relational propagation across cognitive & AST knowledge graph edges |
-| **Adaptive-RAG** | NAACL 2024 (arXiv:2403.14403) | $< 0.1\text{ms}$ | Dynamic 4-tier query complexity routing (Direct, Hybrid, Multi-Hop, Architectural) |
-| **LightRAG** | EMNLP 2024 (arXiv:2410.05779) | $< 1\text{ms}$ | Hierarchical community modularity summaries ($C = \frac{2 E_{\text{int}}}{N(N-1)}$) |
-| **Corrective RAG (CRAG)**| arXiv:2401.15884 | $< 0.1\text{ms}$ | Confidence scoring (`high`, `medium`, `low`) and hallucination noise suppression |
-| **ColBERT MaxSim** | SIGIR / arXiv:2004.12832 | $< 0.5\text{ms}$ | Multi-token late-interaction re-ranking: $\text{MaxSim}(Q, D) = \sum_{q} \max_{d} (q \cdot d)$ |
-
----
-
-## Competitive Architecture Matrix
-
-| Capability | Cortex Server | MemPalace | Mem0 | Zep |
-|---|---|---|---|---|
-| **Runtime Architecture** | **Go Single Binary (Zero-CGO)** | Python Flat-file | Python Service | Python / LangChain |
-| **Graph Propagation** | **HippoRAG PPR in Go ($< 2\text{ms}$)** | No Graph | Basic NetworkX | Graphiti (Neo4j dependent) |
-| **Retrieval Routing** | **Adaptive-RAG (4 Tiers)** | Keyword Grep | Fixed Vector | Vector Only |
-| **Noise Gating** | **CRAG Confidence Gate** | None | None | LLM Reranker (Slow) |
-| **Multi-Tenancy & Auth** | **Postgres 16 RLS + Local SQLite** | Single User | Cloud Service | SaaS Dependent |
-| **Realtime Monitoring** | **Next.js Control Room + Sigma.js** | None | Web Dashboard | Cloud UI |
+| **HippoRAG (PPR)** | NeurIPS 2024 (arXiv:2405.14831) | Multi-hop relational propagation across cognitive & AST knowledge graph edges | Power-iteration Personalized PageRank over the observation and code-symbol graphs. |
+| **Adaptive-RAG** | NAACL 2024 (arXiv:2403.14403) | Dynamic 4-tier query complexity routing (Direct, Hybrid, Multi-Hop, Architectural) | Keyword and regex query classifier with fusion-score skew routing; no trained classifier. |
+| **LightRAG** | EMNLP 2024 (arXiv:2410.05779) | Hierarchical community modularity summaries ($C = \frac{2 E_{\text{int}}}{N(N-1)}$) | Community detection with templated Markdown summaries (hub, size, cohesion, key symbols, external dependencies); no LLM call. |
+| **Corrective RAG (CRAG)**| arXiv:2401.15884 | Confidence scoring (`high`, `medium`, `low`) and hallucination noise suppression | Score-threshold confidence grading (high 0.65, low 0.30); no evaluator model. |
+| **ColBERT MaxSim** | SIGIR / arXiv:2004.12832 | Multi-token late-interaction re-ranking: $\text{MaxSim}(Q, D) = \sum_{q} \max_{d} (q \cdot d)$ | Lexical token similarity (string containment and character-bigram overlap) with specificity weights; no contextual embeddings. |
 
 ---
 

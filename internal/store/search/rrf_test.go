@@ -8,7 +8,7 @@ package search
 // pseudo-ranked-lists inside RRF. These tests pin the corrected semantics:
 //   - RRF operates exclusively over TRUE ranked lists (position = rank).
 //   - A raw relevance SCORE (BM25/FTS5) is never treated as a rank input.
-//   - Recency (0.995^hours) and importance are a final MULTIPLICATIVE re-rank
+//   - Recency (bounded to [0.8, 1.0]) and importance are a final MULTIPLICATIVE re-rank
 //     over the RRF-fused candidate set.
 //   - '/' routing is a pure, deterministic, observable function of the query.
 
@@ -206,23 +206,50 @@ func TestClassifyQuery_DeterministicRouting(t *testing.T) {
 // Final multiplicative re-rank: recency + importance (pure helpers)
 // ---------------------------------------------------------------------------
 
-// TestRecencyFactor_Formula pins the exact recency factor 0.995^hours, with
-// negative hours clamped to 0 (future timestamps treated as now).
+// TestRecencyFactor_Formula pins the exact bounded recency factor
+// floor + (1-floor) * 0.5^(hours/720) with floor 0.8, i.e. 1.0 at age 0, 0.9 at
+// 30 days (one half-life), and approaching 0.8 for old items. Negative hours are
+// clamped to 0 (future timestamps treated as now).
 func TestRecencyFactor_Formula(t *testing.T) {
 	cases := []struct {
 		hours float64
 		want  float64
 	}{
 		{0, 1.0},
-		{1, 0.995},
-		{24, math.Pow(0.995, 24)},
-		{720, math.Pow(0.995, 720)},
+		{1, 0.8 + 0.2*math.Pow(0.5, 1.0/720)},
+		{24, 0.8 + 0.2*math.Pow(0.5, 24.0/720)},
+		{720, 0.9},
 		{-5, 1.0},
 	}
 	for _, c := range cases {
 		got := recencyFactor(c.hours)
 		if math.Abs(got-c.want) > 1e-12 {
 			t.Errorf("recencyFactor(%v) = %.12f, want %.12f", c.hours, got, c.want)
+		}
+	}
+}
+
+// TestRecencyFactor_Bounded pins that recency is bounded to [0.8, 1.0]: it is 1.0
+// at age 0, 0.9 at 30 days, never drops below the 0.8 floor however old the
+// observation, clamps negative ages to 1.0, and is monotonic non-increasing.
+func TestRecencyFactor_Bounded(t *testing.T) {
+	if got := recencyFactor(0); got != 1.0 {
+		t.Errorf("recencyFactor(0) = %v, want 1.0", got)
+	}
+	if got := recencyFactor(720); math.Abs(got-0.9) > 1e-9 {
+		t.Errorf("recencyFactor(720) = %.12f, want 0.9", got)
+	}
+	if got := recencyFactor(24 * 365 * 10); got < 0.8 || got >= 0.801 {
+		t.Errorf("recencyFactor(10 years) = %.12f, want in [0.8, 0.801)", got)
+	}
+	if got := recencyFactor(-5); got != 1.0 {
+		t.Errorf("recencyFactor(-5) = %v, want 1.0 (negative age clamped)", got)
+	}
+	samples := []float64{0, 1, 24, 168, 720, 4380, 24 * 365, 24 * 365 * 10}
+	for i := 1; i < len(samples); i++ {
+		prev, cur := recencyFactor(samples[i-1]), recencyFactor(samples[i])
+		if cur > prev {
+			t.Errorf("recencyFactor not monotonic: f(%v)=%.12f < f(%v)=%.12f", samples[i-1], prev, samples[i], cur)
 		}
 	}
 }
@@ -293,29 +320,46 @@ func TestRerank_ImportanceIsMultiplicativeNotRRFInput(t *testing.T) {
 	}
 }
 
-// TestRerank_RecencyIsFinalMultiplier pins that recency (0.995^hours from the
-// observation's timestamp) is a FINAL multiplicative re-rank, not an RRF input.
-// id2 has the LOWER RRF but wins because it is far more recent.
+// TestRerank_RecencyIsFinalMultiplier pins that recency (the bounded
+// recencyFactor of the observation's timestamp, in [0.8, 1.0]) is a FINAL
+// multiplicative re-rank, not an RRF input. Because the factor is bounded,
+// recency only reorders close candidates: a newer item wins when fusion scores
+// are equal or within 20%, while an old item with a clearly higher fusion score
+// keeps its lead.
 func TestRerank_RecencyIsFinalMultiplier(t *testing.T) {
-	db := setupTestDB(t)
-	store := NewStore(db)
 	now := time.Now()
-	candidates := []*domain.SearchResult{
-		{Observation: domain.Observation{ID: 1, UpdatedAt: now.Add(-720 * time.Hour)}, Rank: 0.030,
-			ScoreBreakdown: domain.SearchScoreBreakdown{Strategy: "enhanced", FusionScore: 0.030}},
-		{Observation: domain.Observation{ID: 2, UpdatedAt: now.Add(-1 * time.Hour)}, Rank: 0.010,
-			ScoreBreakdown: domain.SearchScoreBreakdown{Strategy: "enhanced", FusionScore: 0.010}},
+	cases := []struct {
+		name      string
+		oldRRF    float64
+		newRRF    float64
+		wantFirst int64
+	}{
+		// Equal fusion scores: id2 (1h old, factor ~1.0) beats id1 (720h, factor 0.9).
+		//   id1 = 0.010 * 0.9 = 0.0090; id2 = 0.010 * ~1.0 = 0.0100 -> order 2, 1.
+		{name: "equal fusion, newer wins", oldRRF: 0.010, newRRF: 0.010, wantFirst: 2},
+		// Within 20%: id2 has 5% lower fusion but still wins.
+		//   id1 = 0.010 * 0.9 = 0.0090; id2 = 0.0095 * ~1.0 ~ 0.0095 -> order 2, 1.
+		{name: "close fusion (within 20%), newer wins", oldRRF: 0.010, newRRF: 0.0095, wantFirst: 2},
+		// Clearly higher fusion (3x): id1 keeps its lead despite being 720h old.
+		//   id1 = 0.030 * 0.9 = 0.027; id2 = 0.010 * ~1.0 ~ 0.010 -> order 1, 2.
+		{name: "clear fusion lead, old keeps lead", oldRRF: 0.030, newRRF: 0.010, wantFirst: 1},
 	}
-	// No importance rows -> factor 1.0.
-	//   id1 = 0.030 * 0.995^720 ~ 0.000804
-	//   id2 = 0.010 * 0.995^1   ~ 0.00995
-	// Order DESC: 2, 1.
-	reranked := store.rerankByRecencyImportance(context.Background(), candidates, 100)
-	wantOrder := []int64{2, 1}
-	for i, w := range wantOrder {
-		if i >= len(reranked) || reranked[i].ID != w {
-			t.Fatalf("pos %d: got id %d, want %d (order=%v)", i, idAt(reranked, i), w, idsOf(reranked))
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			store := NewStore(db)
+			candidates := []*domain.SearchResult{
+				{Observation: domain.Observation{ID: 1, UpdatedAt: now.Add(-720 * time.Hour)}, Rank: c.oldRRF,
+					ScoreBreakdown: domain.SearchScoreBreakdown{Strategy: "enhanced", FusionScore: c.oldRRF}},
+				{Observation: domain.Observation{ID: 2, UpdatedAt: now.Add(-1 * time.Hour)}, Rank: c.newRRF,
+					ScoreBreakdown: domain.SearchScoreBreakdown{Strategy: "enhanced", FusionScore: c.newRRF}},
+			}
+			// No importance rows -> factor 1.0.
+			reranked := store.rerankByRecencyImportance(context.Background(), candidates, 100)
+			if len(reranked) != 2 || reranked[0].ID != c.wantFirst {
+				t.Fatalf("got order %v, want first id %d", idsOf(reranked), c.wantFirst)
+			}
+		})
 	}
 }
 

@@ -130,3 +130,65 @@ func BenchmarkReRankWithLateInteraction(b *testing.B) {
 		_ = ReRankWithLateInteraction(query, candidates)
 	}
 }
+
+// TestTokenSimilarity_GoldenValues pins exact TokenSimilarity outputs. Expected values were
+// captured from the reference implementation and are compared with exact float equality.
+func TestTokenSimilarity_GoldenValues(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want float64
+	}{
+		{"auth", "auth", 1},
+		{"", "", 1},
+		{"a", "a", 1},
+		{"", "abc", 0},
+		{"abc", "", 0},
+		{"a", "b", 0},
+		{"a", "abc", 0.3333333333333333},
+		{"abc", "a", 0.3333333333333333},
+		{"session", "sessions", 0.875},
+		{"sessions", "session", 0.875},
+		{"token", "tokens", 0.8333333333333334},
+		{"aaaa", "aaab", 1},
+		{"aaab", "aaaa", 1.2},
+		{"xyz", "abc", 0},
+		{"authentication", "authorization", 0.5833333333333334},
+		{"función", "funciones", 0.5333333333333333},
+		{"año", "años", 0.8},
+		{"postgres", "postgis", 0.6153846153846154},
+		{"ab", "ba", 0},
+		{"abab", "baba", 1.2},
+		{"ñandú", "andú", 0.7142857142857143},
+		{"server", "servers", 0.8571428571428571},
+		{"ab", "xab", 0.6666666666666666},
+		{"abcabc", "cabcab", 1.25},
+	}
+	for _, tt := range tests {
+		got := TokenSimilarity(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("TokenSimilarity(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// TestComputeWeightedMaxSimScore_GoldenValues pins exact weighted MaxSim outputs on realistic
+// sentences. Expected values were captured from the reference implementation.
+func TestComputeWeightedMaxSimScore_GoldenValues(t *testing.T) {
+	tests := []struct {
+		query, doc string
+		want       float64
+	}{
+		{"How does the authentication session token work?", "AuthService manages user credentials, OAuth tokens, and PostgreSQL Row-Level Security sessions across tenants.", 0.47394296951819076},
+		{"postgresql tenant isolation", "PostgreSQL Multi-Tenant Isolation. Row Level Security with tenant isolation and crypto tokens.", 1},
+		{"how to configure the sqlite database path", "SQLite single binary. Zero CGO local database stored at the configured path.", 0.8810666666666667},
+		{"función de búsqueda híbrida", "La función de búsqueda combina FTS y vectores para los resultados.", 0.7307443365695793},
+		{"database migrations rollback", "Schema migrations run at startup; rollback is not supported for the blob store.", 0.7499999999999999},
+		{"why does the retry loop ignore context cancellation?", "The retry loop checks ctx.Done() before each attempt and returns early.", 0.501510185720712},
+	}
+	for _, tt := range tests {
+		got := ComputeWeightedMaxSimScore(TokenizeLateInteraction(tt.query), TokenizeLateInteraction(tt.doc))
+		if got != tt.want {
+			t.Errorf("ComputeWeightedMaxSimScore(%q, %q) = %v, want %v", tt.query, tt.doc, got, tt.want)
+		}
+	}
+}

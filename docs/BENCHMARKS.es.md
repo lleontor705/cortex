@@ -466,31 +466,17 @@ ls bench/results/
 # dmr.json                 — Full DMR
 ```
 
-## Motores SOTA de RAG y retrieval de grafo (2025/2026)
+## Motores de retrieval y grafo (heurísticas inspiradas en papers)
 
-Cortex integra un motor de retrieval y propagación de grafo state-of-the-art de 4
-tiers en 100% Go puro (Zero-CGO):
+Estos motores son heurísticas en Go puro, sin entrenamiento, inspiradas en los papers citados; no son reimplementaciones de los métodos basados en modelos de esos papers, y su contribución medida se registra en `bench/reports/engine-ablation-audit.json`.
 
-| Motor / Algoritmo | Origen y referencia | Latencia (RAM) | Caso de uso principal |
+| Motor / Algoritmo | Origen y referencia | Caso de uso principal | Implementación en Cortex |
 |---|---|---|---|
-| **HippoRAG (PPR)** | NeurIPS 2024 (arXiv:2405.14831) | $< 2\text{ms}$ | Propagación relacional multi-hop a través de edges de grafos de conocimiento cognitivo y AST |
-| **Adaptive-RAG** | NAACL 2024 (arXiv:2403.14403) | $< 0.1\text{ms}$ | Enrutado dinámico de complejidad de queries en 4 tiers (Direct, Hybrid, Multi-Hop, Architectural) |
-| **LightRAG** | EMNLP 2024 (arXiv:2410.05779) | $< 1\text{ms}$ | Resúmenes jerárquicos de modularidad de comunidades ($C = \frac{2 E_{\text{int}}}{N(N-1)}$) |
-| **Corrective RAG (CRAG)**| arXiv:2401.15884 | $< 0.1\text{ms}$ | Puntuación de confianza (`high`, `medium`, `low`) y supresión de ruido de alucinación |
-| **ColBERT MaxSim** | SIGIR / arXiv:2004.12832 | $< 0.5\text{ms}$ | Re-ranking de interacción tardía multi-token: $\text{MaxSim}(Q, D) = \sum_{q} \max_{d} (q \cdot d)$ |
-
----
-
-## Matriz de arquitectura competitiva
-
-| Capacidad | Cortex Server | MemPalace | Mem0 | Zep |
-|---|---|---|---|---|
-| **Arquitectura de runtime** | **Binario único Go (Zero-CGO)** | Python flat-file | Servicio Python | Python / LangChain |
-| **Propagación de grafo** | **HippoRAG PPR en Go ($< 2\text{ms}$)** | Sin grafo | NetworkX básico | Graphiti (dependiente de Neo4j) |
-| **Enrutado de retrieval** | **Adaptive-RAG (4 tiers)** | Grep de keywords | Vector fijo | Solo vector |
-| **Gating de ruido** | **Gate de confianza CRAG** | Ninguno | Ninguno | LLM Reranker (lento) |
-| **Multi-tenancy y auth** | **Postgres 16 RLS + SQLite local** | Usuario único | Servicio cloud | Dependiente de SaaS |
-| **Monitorización en tiempo real** | **Control room Next.js + Sigma.js** | Ninguno | Web dashboard | UI cloud |
+| **HippoRAG (PPR)** | NeurIPS 2024 (arXiv:2405.14831) | Propagación relacional multi-hop a través de edges de grafos de conocimiento cognitivo y AST | Personalized PageRank por power iteration sobre los grafos de observaciones y de símbolos de código. |
+| **Adaptive-RAG** | NAACL 2024 (arXiv:2403.14403) | Enrutado dinámico de complejidad de queries en 4 tiers (Direct, Hybrid, Multi-Hop, Architectural) | Clasificador de queries por keywords y regex, con enrutado por skew de la puntuación de fusión; sin clasificador entrenado. |
+| **LightRAG** | EMNLP 2024 (arXiv:2410.05779) | Resúmenes jerárquicos de modularidad de comunidades ($C = \frac{2 E_{\text{int}}}{N(N-1)}$) | Detección de comunidades con resúmenes Markdown a partir de plantilla (hub, tamaño, cohesión, símbolos clave, dependencias externas); sin llamada a LLM. |
+| **Corrective RAG (CRAG)**| arXiv:2401.15884 | Puntuación de confianza (`high`, `medium`, `low`) y supresión de ruido de alucinación | Clasificación de confianza por umbrales de puntuación (high 0.65, low 0.30); sin modelo evaluador. |
+| **ColBERT MaxSim** | SIGIR / arXiv:2004.12832 | Re-ranking de interacción tardía multi-token: $\text{MaxSim}(Q, D) = \sum_{q} \max_{d} (q \cdot d)$ | Similitud léxica de tokens (containment de cadenas y solapamiento de bigramas de caracteres) con pesos de especificidad; sin embeddings contextuales. |
 
 ---
 

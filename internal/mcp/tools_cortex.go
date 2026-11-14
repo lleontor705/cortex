@@ -854,54 +854,10 @@ func handleSearchHybrid(stores *Stores) server.ToolHandlerFunc {
 			}
 		}
 
-		// HippoRAG Multi-Hop Graph Reasoning Path
-		if tier == retrieval.TierMultiHopGraph && stores.Graph != nil && len(ftsResults) > 0 {
-			var graphNodes []graphdomain.GraphAnalyticsNode
-			var graphEdges []graphdomain.GraphAnalyticsEdge
-			var seeds = make(map[string]float64)
-			seenNodes := make(map[int64]bool)
-
-			for _, r := range ftsResults {
-				seeds[fmt.Sprintf("%d", r.ID)] += r.Rank
-				if !seenNodes[r.ID] {
-					seenNodes[r.ID] = true
-					graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
-						ID:    fmt.Sprintf("%d", r.ID),
-						Label: r.Title,
-					})
-				}
-
-				edges, _ := stores.Graph.GetEdgesForObservation(ctx, r.ID)
-				for _, e := range edges {
-					graphEdges = append(graphEdges, graphdomain.GraphAnalyticsEdge{
-						Source: fmt.Sprintf("%d", e.FromObsID),
-						Target: fmt.Sprintf("%d", e.ToObsID),
-						Weight: e.Weight,
-					})
-					if !seenNodes[e.ToObsID] {
-						seenNodes[e.ToObsID] = true
-						graphNodes = append(graphNodes, graphdomain.GraphAnalyticsNode{
-							ID: fmt.Sprintf("%d", e.ToObsID),
-						})
-					}
-				}
-			}
-
-			if len(graphEdges) > 0 && len(seeds) > 0 {
-				pprScores := graphdomain.ComputePersonalizedPageRank(graphNodes, graphEdges, seeds, graphdomain.DefaultPPROptions())
-				for _, r := range ftsResults {
-					if boost, ok := pprScores[fmt.Sprintf("%d", r.ID)]; ok {
-						r.Rank += boost * 2.0
-					}
-				}
-			}
+		if tier == retrieval.TierMultiHopGraph {
+			ftsResults = applyGraphStage(ctx, stores, ftsResults)
 		}
-
-		// CRAG Confidence Gating
-		cragEval := retrieval.EvaluateCRAG(ftsResults, retrieval.DefaultCRAGConfig())
-		if len(cragEval.FilteredResults) > 0 {
-			ftsResults = cragEval.FilteredResults
-		}
+		cragEval := gateSearchResults(ftsResults)
 
 		if len(ftsResults) == 0 {
 			return textResult("No relevant context found for %q [CRAG: low confidence/suppressed]", query)
