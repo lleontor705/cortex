@@ -251,6 +251,22 @@ func TestClose_WithSyncCancel(t *testing.T) {
 
 // --- Open: ollama auto-start and auto-archive branches ---
 
+// fakeOllamaServer serves a compliant /api/tags probe over loopback with
+// Connection: close. It keeps the Ollama auto-start tests independent of any
+// real daemon on the host: the probe reaches this server and, because no
+// keepalive persists, http.DefaultTransport leaves no idle persistConn for
+// goleak to flag.
+func fakeOllamaServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 func TestOpen_OllamaAutoStart(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "cortex.db")
@@ -260,7 +276,7 @@ func TestOpen_OllamaAutoStart(t *testing.T) {
 	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
 	t.Setenv("CORTEX_EMBEDDING_PROVIDER", "ollama")
 	t.Setenv("CORTEX_SEARCH_OLLAMA_AUTO_START", "true")
-	t.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+	t.Setenv("CORTEX_EMBEDDING_BASE_URL", fakeOllamaServer(t))
 
 	a, err := Open(context.Background(), Options{})
 	if err != nil {
@@ -396,7 +412,7 @@ func TestReloadConfig_OllamaAutoStart(t *testing.T) {
 	t.Setenv("CORTEX_DATABASE_IN_MEMORY", "false")
 	t.Setenv("CORTEX_EMBEDDING_PROVIDER", "ollama")
 	t.Setenv("CORTEX_SEARCH_OLLAMA_AUTO_START", "true")
-	t.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+	t.Setenv("CORTEX_EMBEDDING_BASE_URL", fakeOllamaServer(t))
 
 	a, err := Open(context.Background(), Options{ConfigPath: cfgPath})
 	if err != nil {
@@ -422,5 +438,35 @@ func TestClose_WithWorkerCancel(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("workerCancel was not called during Close")
+	}
+}
+
+// --- Close vs reconcileSyncLoop: shutdown guard (Finding 2) ---
+
+// TestReconcileSyncLoop_NoStartAfterClose proves a reconcile completing after
+// Close is a no-op and cannot resurrect a replication loop on a closed App.
+func TestReconcileSyncLoop_NoStartAfterClose(t *testing.T) {
+	fake := &countingSyncLoop{}
+	app := &App{syncStarter: fake.start, baseCtx: context.Background()}
+	first := &config.Config{Sync: config.SyncConfig{Enabled: true, URL: "https://sync.example/mcp"}}
+	app.Config = first
+	app.reconcileSyncLoop(context.Background(), first)
+	if starts, _, running, _ := fake.snapshot(); starts != 1 || running != 1 {
+		t.Fatalf("pre-close: starts=%d running=%d", starts, running)
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if app.SyncLoopRunning() {
+		t.Fatal("loop still running after Close")
+	}
+
+	changed := &config.Config{Sync: config.SyncConfig{Enabled: true, URL: "https://sync2.example/mcp"}}
+	app.Config = changed
+	app.reconcileSyncLoop(context.Background(), changed)
+	starts, stops, running, _ := fake.snapshot()
+	if starts != 1 || stops != 1 || running != 0 {
+		t.Fatalf("post-close reconcile started a loop: starts=%d stops=%d running=%d", starts, stops, running)
 	}
 }

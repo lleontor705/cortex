@@ -286,7 +286,7 @@ func newHTTPHandlerWithHybridSearch(cfg config.Config, ops Operations, health he
 	transport := mcpserver.NewStreamableHTTPServer(mcpCore,
 		mcpserver.WithSessionIdManagerResolver(sessions),
 		mcpserver.WithSessionIdleTTL(mcpSessionIdleTTLDefault),
-		mcpserver.WithLogger(redactingLogger{next: defaultTransportLogger()}),
+		mcpserver.WithStreamableHTTPLogger(redactingLogger{next: defaultTransportLogger()}.slogLogger()),
 	)
 	guard := newMCPGuardWithTools(newMCPAdmission(mcpAdmissionLimits{
 		PerPrincipal: mcpPrincipalInflightBytes,

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/domain"
+	"github.com/lleontor705/cortex/v2/internal/domain/code"
 	"github.com/lleontor705/cortex/v2/internal/store/session"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -723,5 +725,226 @@ func TestSetupProfileCycle(t *testing.T) {
 	m = updated.(Model)
 	if m.SetupProfile != "agent" {
 		t.Fatalf("expected profile agent, got %q", m.SetupProfile)
+	}
+}
+
+// ─── Registry Dispatch (REQ-NAV-001 / REQ-NAV-002) ──────────────────────────
+
+func TestRegistryDispatch(t *testing.T) {
+	t.Run("screen bindings precede globals", func(t *testing.T) {
+		// "?" on Help must reach handleHelpKeys, not the global help opener.
+		help := newTestModel(120, 40)
+		seedNavFrom(&help, ScreenHelp, ScreenRecent)
+		if out, _ := help.handleKeyPress("?"); out.(Model).Screen != ScreenRecent {
+			t.Fatalf("? on Help: screen = %v, want %v (global ran first)", out.(Model).Screen, ScreenRecent)
+		}
+
+		// "esc" on Search must run the Search handler, not the global pop.
+		search := newTestModel(120, 40)
+		seedNavFrom(&search, ScreenSearch, ScreenHelp)
+		if out, _ := search.handleKeyPress("esc"); out.(Model).Screen != ScreenDashboard {
+			t.Fatalf("esc on Search: screen = %v, want %v (global ran first)", out.(Model).Screen, ScreenDashboard)
+		}
+
+		// "q" on Dashboard must quit via the screen binding, not reset the view.
+		dash := newTestModel(120, 40)
+		dash.Screen = ScreenDashboard
+		_, cmd := dash.handleKeyPress("q")
+		if cmd == nil {
+			t.Fatal("q on Dashboard: no command returned")
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("q on Dashboard: cmd produced %T, want tea.QuitMsg", cmd())
+		}
+	})
+
+	t.Run("T opens timeline from detail results and recent", func(t *testing.T) {
+		obs := newTestObs(1042, "decision", "Fix JWT")
+		cases := []struct {
+			name   string
+			screen Screen
+			seed   func(*Model)
+		}{
+			{"detail", ScreenObservationDetail, func(m *Model) { m.SelectedObservation = obs }},
+			{"results", ScreenSearchResults, func(m *Model) {
+				m.SearchResults = []*domain.SearchResult{{Observation: *obs}}
+				m.SearchListModel.SetItems([]list.Item{searchResultItem{result: m.SearchResults[0]}})
+			}},
+			{"recent", ScreenRecent, func(m *Model) {
+				m.RecentObservations = []*domain.Observation{obs}
+				m.RecentList.SetItems(observationItems(obs))
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := newTestModel(120, 40)
+				m.Screen = tc.screen
+				tc.seed(&m)
+				_, cmd := m.handleKeyPress("T")
+				if cmd == nil {
+					t.Fatalf("T on %s returned no command", tc.name)
+				}
+				if _, ok := cmd().(timelineMsg); !ok {
+					t.Fatalf("T on %s produced %T, want timelineMsg", tc.name, cmd())
+				}
+			})
+		}
+	})
+
+	t.Run("f types into the focused search input", func(t *testing.T) {
+		m := newTestModel(120, 40)
+		m.Screen = ScreenSearch
+		m.SearchInput.Focus()
+		m.SearchInput.SetValue("")
+		out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+		got := out.(Model)
+		if got.SearchInput.Value() != "f" {
+			t.Fatalf("search input = %q, want %q", got.SearchInput.Value(), "f")
+		}
+		if got.Screen != ScreenSearch {
+			t.Fatalf("screen = %v, want %v", got.Screen, ScreenSearch)
+		}
+	})
+
+	t.Run("removed u P and gg bindings are inert", func(t *testing.T) {
+		m := newTestModel(120, 40)
+		m.Screen = ScreenHealth
+		for _, key := range []string{"u", "U", "P", "g", "g"} {
+			out, cmd := m.handleKeyPress(key)
+			m = out.(Model)
+			if cmd != nil {
+				t.Fatalf("key %q: cmd = %v, want nil", key, cmd)
+			}
+			if m.ToastMessage != "" {
+				t.Fatalf("key %q produced toast %q", key, m.ToastMessage)
+			}
+		}
+		if m.Screen != ScreenHealth {
+			t.Fatalf("inert keys mutated state: screen=%v", m.Screen)
+		}
+
+		dash := newTestModel(120, 40)
+		dash.Screen = ScreenDashboard
+		for _, key := range []string{"u", "P"} {
+			out, cmd := dash.handleKeyPress(key)
+			dash = out.(Model)
+			if cmd != nil || dash.ToastMessage != "" {
+				t.Fatalf("dashboard key %q: cmd=%v toast=%q", key, cmd, dash.ToastMessage)
+			}
+		}
+	})
+
+	t.Run("global keys dispatch on every non-input screen", func(t *testing.T) {
+		screens := []Screen{
+			ScreenDashboard, ScreenSearch, ScreenSearchResults, ScreenRecent, ScreenObservationDetail,
+			ScreenTimeline, ScreenSessions, ScreenSessionDetail, ScreenSetup, ScreenGraph, ScreenArchive,
+			ScreenHealth, ScreenEmbeddingConfig, ScreenLocalConfig, ScreenHelp,
+		}
+		for _, screen := range screens {
+			m := newTestModel(120, 40)
+			m.Screen = screen
+			for _, key := range []string{"ctrl+k", "?", "esc", "q"} {
+				if _, _, handled := keymapRegistry.Dispatch(m, key); !handled {
+					t.Fatalf("global key %q not dispatchable on screen %v", key, screen)
+				}
+			}
+			if out, _ := m.handleKeyPress("ctrl+k"); !out.(Model).CmdPaletteOpen {
+				t.Fatalf("ctrl+k did not open the palette on screen %v", screen)
+			}
+		}
+
+		help := newTestModel(120, 40)
+		help.Screen = ScreenRecent
+		if out, _ := help.handleKeyPress("?"); out.(Model).Screen != ScreenHelp {
+			t.Fatalf("? did not open Help, screen = %v", out.(Model).Screen)
+		}
+	})
+}
+
+// TestUpdateMessageRoutingAndIntercepts covers the non-key Update() message
+// routing and the input-mode intercepts, which lie outside the registry's
+// declarative key coverage.
+func TestUpdateMessageRoutingAndIntercepts(t *testing.T) {
+	errSample := errors.New("boom")
+	obs := newTestObs(1, "decision", "T")
+	msgs := []tea.Msg{
+		tea.WindowSizeMsg{Width: 120, Height: 40}, tea.WindowSizeMsg{Width: 60, Height: 15}, updateCheckMsg{}, animTickMsg(time.Now()),
+		setupAgentsDetectedMsg{}, testConnResultMsg{success: true, message: "ok"}, testConnResultMsg{success: false, message: "bad"},
+		statsLoadedMsg{stats: &combinedStats{Projects: []string{"a"}}}, statsLoadedMsg{err: errSample},
+		searchResultsMsg{results: []*domain.SearchResult{{Observation: domain.Observation{ID: 1}}}, query: "q"}, searchResultsMsg{err: errSample},
+		codeSearchResultsMsg{results: []code.Symbol{{Name: "F"}}, query: "q"}, codeSearchResultsMsg{err: errSample},
+		recentObservationsMsg{observations: []*domain.Observation{obs}}, recentObservationsMsg{err: errSample},
+		observationDetailMsg{observation: obs}, observationDetailMsg{err: errSample}, timelineMsg{focus: obs}, timelineMsg{err: errSample},
+		recentSessionsMsg{sessions: []*session.SessionStats{{Session: &domain.Session{ID: "s"}}}}, recentSessionsMsg{err: errSample},
+		sessionObservationsMsg{observations: []*domain.Observation{obs}}, sessionObservationsMsg{err: errSample},
+		graphLoadedMsg{related: []*domain.Observation{obs}}, graphLoadedMsg{err: errSample},
+		archiveLoadedMsg{observations: []*domain.Observation{obs}}, archiveLoadedMsg{err: errSample},
+		healthLoadedMsg{obsCount: 3, edgeCount: 2}, healthLoadedMsg{err: errSample},
+		ollamaStatusMsg{running: true, hasModel: true}, ollamaStartMsg{}, ollamaPullMsg{done: true}, configSavedMsg{}, configReloadedMsg{},
+		localConfigSavedMsg{}, reindexProgressMsg{done: true, total: 4, indexed: 4}, activityDataMsg{daily: []int{1, 2, 3}},
+		deleteObservationMsg{id: 1}, unarchiveObservationMsg{id: 1}, observationCreatedMsg{observation: obs},
+	}
+	for i, msg := range msgs {
+		m := newTestModel(120, 40)
+		if out, _ := m.Update(msg); !isModel(out) {
+			t.Fatalf("msg %d (%T): %T", i, msg, out)
+		}
+	}
+	intercepts := []func(*Model){
+		func(m *Model) { m.CmdPaletteOpen = true }, func(m *Model) { m.NewObsModalOpen = true },
+		func(m *Model) { m.Screen = ScreenSearch; m.SearchInput.Focus() },
+		func(m *Model) { m.Screen = ScreenLocalConfig; m.LocalCfgFocusField = 0; m.LocalCfgLLMModel.Focus() },
+		func(m *Model) { m.Screen = ScreenLocalConfig; m.LocalCfgDatabasePath.Focus() },
+	}
+	for i, set := range intercepts {
+		m := newTestModel(120, 40)
+		set(&m)
+		if out, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); !isModel(out) {
+			t.Fatalf("intercept %d: %T", i, out)
+		}
+	}
+	for _, s := range []Screen{ScreenSearchResults, ScreenRecent, ScreenSessions, ScreenGraph, ScreenArchive} {
+		m := newTestModel(120, 40)
+		m.Screen = s
+		if out, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}); !isModel(out) {
+			t.Fatalf("list nav screen %d", s)
+		}
+	}
+	quit := newTestModel(120, 40)
+	if _, cmd := quit.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+		t.Fatal("ctrl+c should quit")
+	}
+}
+
+// TestLocalConfigKeyAndInputBranches exercises the Configuration handler's
+// field-cycling and text-input branches, which are internal to the handler and
+// therefore outside the registry's declarative coverage.
+func TestLocalConfigKeyAndInputBranches(t *testing.T) {
+	for field := 0; field <= 16; field++ {
+		for _, key := range []string{"left", "right", "h", "l", "enter", " ", "tab", "shift+tab", "up", "down"} {
+			m := newTestModel(120, 40)
+			m.Screen, m.LocalCfgFocusField = ScreenLocalConfig, field
+			if out, _ := m.handleLocalConfigKeys(key); !isModel(out) {
+				t.Fatalf("field %d key %q: %T", field, key, out)
+			}
+		}
+	}
+	for _, set := range []func(*Model){func(m *Model) { m.LocalCfgSaving = true }, func(m *Model) { m.LocalCfgSaved = true }} {
+		for _, key := range []string{"esc", "q", "enter", "z"} {
+			m := newTestModel(120, 40)
+			set(&m)
+			if out, _ := m.handleLocalConfigKeys(key); !isModel(out) {
+				t.Fatalf("state key %q: %T", key, out)
+			}
+		}
+	}
+	for _, field := range []int{0, 3, 4, 6, 7, 10, 11, 13, 14, 15, 99} {
+		for _, msg := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyRunes, Runes: []rune("a")}} {
+			m := newTestModel(120, 40)
+			m.Screen, m.LocalCfgFocusField = ScreenLocalConfig, field
+			if out, _ := m.handleLocalConfigInput(msg); !isModel(out) {
+				t.Fatalf("input field %d: %T", field, out)
+			}
+		}
 	}
 }

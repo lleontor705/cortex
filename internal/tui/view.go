@@ -46,9 +46,11 @@ func (m Model) View() string {
 	case ScreenHealth:
 		content = m.viewHealth()
 	case ScreenEmbeddingConfig:
-		content = m.viewEmbeddingConfig()
+		content = m.viewConfiguration()
 	case ScreenLocalConfig:
-		content = m.viewLocalConfig()
+		content = m.viewConfiguration()
+	case ScreenConnect:
+		content = m.viewConnect()
 	case ScreenHelp:
 		content = m.viewHelp()
 	default:
@@ -60,6 +62,7 @@ func (m Model) View() string {
 		if deckHeader != "" {
 			content = deckHeader + content
 		}
+		content = m.renderBreadcrumbChrome() + content
 	}
 
 	if m.ErrorMsg != "" {
@@ -111,11 +114,6 @@ func (m Model) View() string {
 		content = m.renderNewObsModal()
 	}
 
-	// Auth token login modal overlay
-	if m.AuthModalOpen {
-		content = m.renderAuthModal()
-	}
-
 	rendered := appStyle.Render(content)
 
 	// Status bar at the bottom
@@ -126,8 +124,36 @@ func (m Model) View() string {
 
 // ─── Status Bar ─────────────────────────────────────────────────────────────
 
+// navBreadcrumb renders the persistent header breadcrumb from the live Nav
+// stack. A screen set outside the Nav seam (the Connect flow, whose files are
+// frozen) still renders a truthful path: the stack floor followed by the screen
+// actually on display.
+func (m Model) navBreadcrumb() string {
+	if m.Nav.Current() == m.Screen {
+		return m.Nav.Breadcrumb(screenLabel)
+	}
+	if m.Screen == navFloor {
+		return screenLabel(navFloor)
+	}
+	var fallback NavStack
+	fallback.Push(m.Screen)
+	return fallback.Breadcrumb(screenLabel)
+}
+
+// renderBreadcrumbChrome renders the breadcrumb line that sits in the header
+// chrome above every non-dashboard screen.
+func (m Model) renderBreadcrumbChrome() string {
+	return "  " + helpStyle.Render(m.navBreadcrumb()) + "\n"
+}
+
 func (m Model) screenName() string {
-	switch m.Screen {
+	return screenLabel(m.Screen)
+}
+
+// screenLabel maps any screen to its stable display name. It is the single
+// vocabulary shared by the status bar and the live NavStack breadcrumb.
+func screenLabel(s Screen) string {
+	switch s {
 	case ScreenDashboard:
 		return "Dashboard"
 	case ScreenSearch:
@@ -153,9 +179,11 @@ func (m Model) screenName() string {
 	case ScreenHealth:
 		return "Health"
 	case ScreenEmbeddingConfig:
-		return "Embedding Settings"
+		return "Configuration"
 	case ScreenLocalConfig:
-		return "Local Settings"
+		return "Configuration"
+	case ScreenConnect:
+		return "Connect"
 	case ScreenHelp:
 		return "Help"
 	default:
@@ -247,7 +275,7 @@ func (m Model) renderStatusBar() string {
 	if m.Screen == ScreenDashboard {
 		parts = append(parts, "j/k nav • enter select • / search • r recent • g graph • c config • ? help • q quit")
 	} else {
-		parts = append(parts, "n new • t theme • L login • ? help • Esc back")
+		parts = append(parts, "n new • t theme • L connect • ? help • Esc back")
 	}
 
 	barContent := strings.Join(parts, "  |  ")

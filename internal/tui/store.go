@@ -6,7 +6,7 @@
 // - Update() with type switch
 // - Per-screen key handlers returning (tea.Model, tea.Cmd)
 // - Vim keys (j/k) for navigation
-// - PrevScreen for back navigation
+// - A NavStack (Nav) for forward/back navigation and the header breadcrumb
 package tui
 
 import (
@@ -100,25 +100,15 @@ func loadStats(d *Deps) tea.Cmd {
 	}
 }
 
-func loadActivityData(d *Deps) tea.Cmd {
+// loadActivityData previously issued seven per-day observation queries at every
+// launch for a dashboard sparkline that is no longer rendered (design D5). The
+// loading is dropped: the command returns a zeroed seven-day payload and never
+// touches the database. It is retained because the activityDataMsg payload
+// (model.go) and its Update handler (update.go) still consume it; the cluster
+// retires together.
+func loadActivityData(*Deps) tea.Cmd {
 	return func() tea.Msg {
-		if d == nil || d.Observations == nil {
-			return activityDataMsg{daily: make([]int, 7)}
-		}
-		ctx := context.Background()
-		daily := make([]int, 7)
-		now := time.Now()
-		for i := 0; i < 7; i++ {
-			dayStart := time.Date(now.Year(), now.Month(), now.Day()-6+i, 0, 0, 0, 0, now.Location())
-			dayEnd := dayStart.Add(24 * time.Hour)
-			obs, _ := d.Observations.List(ctx, domain.ObservationFilter{
-				CreatedAfter:  &dayStart,
-				CreatedBefore: &dayEnd,
-				Limit:         1000,
-			})
-			daily[i] = len(obs)
-		}
-		return activityDataMsg{daily: daily}
+		return activityDataMsg{daily: make([]int, 7)}
 	}
 }
 
@@ -403,6 +393,10 @@ func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
 		if err != nil {
 			return localConfigSavedMsg{err: fmt.Errorf("sync interval must be a duration such as 30s or 5m")}
 		}
+		// next is a copy of the loaded configuration, so scalar secrets such as
+		// http.token are carried over untouched: saving the form must never
+		// erase a credential the user did not edit (clearAbsentSecrets only
+		// clears secrets the desired config stops supplying).
 		next := *d.Config
 		next.Database.Path = strings.TrimSpace(values.databasePath)
 
@@ -451,6 +445,43 @@ func saveLocalConfig(d *Deps, values localConfigValues) tea.Cmd {
 		d.Config = &next
 		return localConfigSavedMsg{}
 	}
+}
+
+// syncConfigToast maps the live sync state to honest user-facing messaging. It
+// deliberately distinguishes a running loop, a saved-but-not-applied
+// configuration, and an unresolved token, so the UI never claims sync is active
+// when it is not.
+func syncConfigToast(status app.SyncStatus, hybridMode bool) (string, string) {
+	if !hybridMode {
+		return "✔ Remote MCP Proxy configured — restart Cortex to apply", "success"
+	}
+	switch {
+	case status.Running:
+		return "✔ Sync loop running — local-first with live remote replication", "success"
+	case status.Configured && !status.TokenSet:
+		return "⚠ Sync configured without a resolvable token — sync stays disabled until a token is set", "warning"
+	case status.Configured:
+		return "✔ Sync configured — restart Cortex to start the replication loop", "success"
+	default:
+		return "✔ Local mode configured", "success"
+	}
+}
+
+// authSyncStatus returns the live sync status when an App is wired, otherwise a
+// config-derived snapshot so the Configuration server chip reports honest state
+// in both the running process and config-only configurations. Hybrid mode is
+// derived from the loaded config: a configured remote proxy disables background
+// sync, which matches the retired modal's initial value.
+func (m Model) authSyncStatus() app.SyncStatus {
+	if m.deps != nil && m.deps.App != nil {
+		return m.deps.App.SyncStatus()
+	}
+	var cfg *config.Config
+	if m.deps != nil {
+		cfg = m.deps.Config
+	}
+	hybrid := cfg == nil || !cfg.MCP.Remote.Enabled
+	return app.SyncStatusFor(cfg, hybrid)
 }
 
 func saveEmbeddingConfig(d *Deps, provider int, model string, vector, autoStart bool) tea.Cmd {

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -46,13 +47,13 @@ import (
 )
 
 // Compile-time assertions: the registry and its principal-scoped views
-// satisfy the upstream streamable HTTP session contracts. The WithLogger
-// assertion pins redactingLogger to the upstream util.Logger contract
-// without importing the util package, which mcp-go v1.x removed.
+// satisfy the upstream streamable HTTP session contracts. mcp-go v1.x takes a
+// *slog.Logger for transport logging, so the assertion pins the slog bridge
+// that routes every transport record through redactingLogger.
 var (
 	_ mcpserver.SessionIdManager         = mcpSessionManager{}
 	_ mcpserver.SessionIdManagerResolver = (*mcpSessionRegistry)(nil)
-	_ mcpserver.StreamableHTTPOption     = mcpserver.WithLogger(redactingLogger{})
+	_ mcpserver.StreamableHTTPOption     = mcpserver.WithStreamableHTTPLogger(redactingLogger{}.slogLogger())
 	_ transportLogger                    = redactingLogger{}
 )
 
@@ -923,4 +924,78 @@ func (l redactingLogger) Infof(format string, v ...any) {
 
 func (l redactingLogger) Errorf(format string, v ...any) {
 	l.next.Errorf("%s", redactTransportText(fmt.Sprintf(format, v...)))
+}
+
+// slogLogger exposes the redacting logger as the *slog.Logger that the mcp-go
+// v1.x transport consumes. Message and attributes are flattened into one line
+// and redacted as a whole, so a secret carried in an attribute value is
+// scrubbed exactly like one embedded in the message.
+func (l redactingLogger) slogLogger() *slog.Logger {
+	return slog.New(redactingSlogHandler{logger: l})
+}
+
+type redactingSlogHandler struct {
+	logger redactingLogger
+	prefix string
+	attrs  []slog.Attr
+}
+
+func (h redactingSlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo
+}
+
+func (h redactingSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	if h.logger.next == nil {
+		return nil
+	}
+	var line strings.Builder
+	line.WriteString(record.Message)
+	for _, attr := range h.attrs {
+		appendTransportAttr(&line, "", attr)
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		appendTransportAttr(&line, h.prefix, attr)
+		return true
+	})
+	if record.Level >= slog.LevelError {
+		h.logger.Errorf("%s", line.String())
+	} else {
+		h.logger.Infof("%s", line.String())
+	}
+	return nil
+}
+
+func (h redactingSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := redactingSlogHandler{logger: h.logger, prefix: h.prefix}
+	next.attrs = append(next.attrs, h.attrs...)
+	for _, attr := range attrs {
+		attr.Key = h.prefix + attr.Key
+		next.attrs = append(next.attrs, attr)
+	}
+	return next
+}
+
+func (h redactingSlogHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	return redactingSlogHandler{logger: h.logger, prefix: h.prefix + name + ".", attrs: h.attrs}
+}
+
+func appendTransportAttr(line *strings.Builder, prefix string, attr slog.Attr) {
+	value := attr.Value.Resolve()
+	if value.Kind() == slog.KindGroup {
+		groupPrefix := prefix
+		if attr.Key != "" {
+			groupPrefix += attr.Key + "."
+		}
+		for _, member := range value.Group() {
+			appendTransportAttr(line, groupPrefix, member)
+		}
+		return
+	}
+	if attr.Key == "" {
+		return
+	}
+	fmt.Fprintf(line, " %s%s=%v", prefix, attr.Key, value.Any())
 }
