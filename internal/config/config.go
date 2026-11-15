@@ -1258,15 +1258,24 @@ func redactDSNPassword(dsn string) string {
 // Save writes the configuration to the specified path.
 // If path is empty, writes to the loaded path or default ~/.cortex/cortex.yaml.
 // The write is atomic: data goes to a .tmp file first, then renamed.
+//
+// When the target is a format change of the previously loaded config
+// (cortex.yaml -> cortex.json), the previous file is retired to a deterministic
+// ".bak" sibling once the new file is durably in place. This keeps exactly one
+// config file authoritative for Load's multi-format search order instead of
+// leaving a stale file the search could pick up. Same-format saves are
+// untouched, and a failed write or validation leaves the previous file intact.
 func Save(cfg *Config, path string) error {
 	if cfg == nil {
 		return fmt.Errorf("save config: configuration is nil")
 	}
 
+	previous := cfg.LoadedFrom
+
 	if path == "" {
 		// Use the same file that was loaded, or default to ~/.cortex/cortex.yaml
-		if cfg.LoadedFrom != "" {
-			path = cfg.LoadedFrom
+		if previous != "" {
+			path = previous
 		} else {
 			path = filepath.Join(CortexDir(), "cortex.yaml")
 		}
@@ -1298,6 +1307,13 @@ func Save(cfg *Config, path string) error {
 		}
 	}
 
+	// Validate the exact bytes before committing them: a marshal result that
+	// cannot be loaded back must never replace the authoritative file, nor
+	// authorize retiring the previous format in its favor.
+	if err := verifyMarshaledConfig(path, data); err != nil {
+		return err
+	}
+
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
@@ -1308,7 +1324,74 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("rename config: %w", err)
 	}
 
+	if isConfigFormatChange(previous, path) {
+		if err := retireConfigFile(previous); err != nil {
+			return fmt.Errorf("retire previous config file: %w", err)
+		}
+	}
+
+	cfg.LoadedFrom = path
 	return nil
+}
+
+// verifyMarshaledConfig re-parses freshly marshaled bytes with the parser that
+// will read the file back, so a format change never retires the previous
+// authoritative config in favor of bytes that cannot be loaded again.
+func verifyMarshaledConfig(path string, data []byte) error {
+	var probe map[string]any
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, ".json"), strings.HasSuffix(lower, ".jsonc"):
+		if err := json.Unmarshal(data, &probe); err != nil {
+			return fmt.Errorf("verify json config: %w", err)
+		}
+	case strings.HasSuffix(lower, ".toml"):
+		if err := toml.Unmarshal(data, &probe); err != nil {
+			return fmt.Errorf("verify toml config: %w", err)
+		}
+	default:
+		if err := yaml.Unmarshal(data, &probe); err != nil {
+			return fmt.Errorf("verify yaml config: %w", err)
+		}
+	}
+	return nil
+}
+
+// isConfigFormatChange reports whether target supersedes the previously loaded
+// file as a pure format change: a sibling in the same directory sharing the
+// same base name but a different extension (cortex.yaml -> cortex.json).
+// Unrelated files (different directory or base name) are never retired, so an
+// explicit save to an independent path stays side-effect free.
+func isConfigFormatChange(previous, target string) bool {
+	if previous == "" || target == "" || previous == target {
+		return false
+	}
+	if filepath.Dir(previous) != filepath.Dir(target) {
+		return false
+	}
+	if configFileStem(previous) != configFileStem(target) {
+		return false
+	}
+	return filepath.Ext(previous) != filepath.Ext(target)
+}
+
+// configFileStem returns the base name without a single trailing extension.
+func configFileStem(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// retireConfigFile moves a superseded config file to a deterministic ".bak"
+// sibling. Renaming (rather than deleting) keeps the previous configuration
+// recoverable if the new file turns out to be unusable. A stale backup is
+// cleared first because Windows os.Rename refuses to overwrite an existing
+// destination, which would otherwise make the operation non-deterministic.
+func retireConfigFile(previous string) error {
+	backup := previous + ".bak"
+	if err := os.Remove(backup); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(previous, backup)
 }
 
 func marshalConfigPreservingExisting(cfg *Config, path string) ([]byte, error) {

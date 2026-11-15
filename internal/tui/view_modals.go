@@ -100,135 +100,174 @@ func (m Model) renderNewObsModal() string {
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 }
 
-// ─── Auth Token Login Modal ────────────────────────────────────────────────
-
-func (m Model) renderAuthModal() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("🌐 Connect to Cortex Server & Authenticate"))
-	b.WriteString("\n\n")
-	b.WriteString(detailContentStyle.Render("Configure your remote Cortex Server endpoint and bearer token to synchronize memories and authenticate."))
-	b.WriteString("\n\n")
-
-	marker0 := "  "
-	marker1 := "  "
-	marker2 := "  "
-	switch m.AuthFocusField {
-	case 0:
-		marker0 = listSelectedStyle.Render("▸ ")
-	case 1:
-		marker1 = listSelectedStyle.Render("▸ ")
-	default:
-		marker2 = listSelectedStyle.Render("▸ ")
-	}
-
-	b.WriteString(marker0 + detailLabelStyle.Render("Server URL:   ") + m.AuthServerURLInput.View())
-	b.WriteString("\n")
-	b.WriteString(marker1 + detailLabelStyle.Render("Bearer Token: ") + m.AuthTokenInput.View())
-	b.WriteString("\n\n")
-
-	modeStr := "[●] Hybrid: Local-First + Sync [Recommended]   [ ] Remote MCP Proxy"
-	if !m.AuthModeHybrid {
-		modeStr = "[ ] Hybrid: Local-First + Sync                 [●] Remote MCP Proxy"
-	}
-	b.WriteString(marker2 + detailLabelStyle.Render("Mode:         ") + lipgloss.NewStyle().Foreground(colorCyan).Render(modeStr))
-	b.WriteString("\n")
-	if m.AuthModeHybrid {
-		b.WriteString("              " + helpStyle.Render("Fast local SQLite + Zero-CGO AST + background cloud sync."))
-	} else {
-		b.WriteString("              " + helpStyle.Render("Direct proxy to server (AST tools run in cloud container)."))
-	}
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Tab/↑↓: Navigate • Space: Toggle Mode • Enter: Save to YAML • Esc: Cancel"))
-
-	modal := lipgloss.NewStyle().
-		BorderStyle(lipgloss.DoubleBorder()).
-		BorderForeground(colorCyan).
-		Background(activePalette.PanelBg).
-		Foreground(colorText).
-		Padding(1, 3).
-		Width(78).
-		Render(b.String())
-
-	return lipgloss.Place(m.Width-4, m.Height-2, lipgloss.Center, lipgloss.Center, modal)
-}
-
 // ─── Keyboard Reference Help View ──────────────────────────────────────────
 
+// helpOriginScreen is the screen whose bindings the generated Help lists. The
+// help opener pushes ScreenHelp onto the live stack, so the origin is the level
+// directly below it; Help reached without that push assumes the Dashboard floor.
+func (m Model) helpOriginScreen() Screen {
+	return m.NavParent()
+}
+
+// helpEntries returns exactly the rows the Help screen shows: the canonical
+// global keys followed by the origin screen's own bindings. Both come from the
+// registry that dispatches keys, so Help can never advertise a key that has no
+// handler (REQ-NAV-004).
+func (m Model) helpEntries() []HelpEntry {
+	origin := m.helpOriginScreen()
+	all := keymapRegistry.HelpEntries(&m)
+	entries := make([]HelpEntry, 0, len(all))
+	for _, entry := range all {
+		if entry.Global || entry.Screen == origin {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+// viewHelp renders the Keyboard Reference straight from the keymap registry
+// (design.md W17/W18): the global keys, the origin screen's bindings, and the
+// command palette's entries. Hand-written rows let the reference drift from the
+// dispatch path, so nothing here is authored by hand.
 func (m Model) viewHelp() string {
 	var b strings.Builder
 
+	origin := m.helpOriginScreen()
+	globals, screenEntries := splitHelpEntries(m.helpEntries())
+
 	b.WriteString(headerStyle.Render("  Cortex TUI — Keyboard Reference"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  Generated from the live keymap registry — every key here is dispatched."))
 	b.WriteString("\n\n")
 
-	section := func(title string, bindings [][2]string) {
-		b.WriteString(sectionHeadingStyle.Render("  " + title))
-		b.WriteString("\n")
-		keyStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Width(16)
-		descStyle := lipgloss.NewStyle().Foreground(colorText)
-		for _, bind := range bindings {
-			fmt.Fprintf(&b, "  %s %s\n", keyStyle.Render(bind[0]), descStyle.Render(bind[1]))
+	writeHelpSection(&b, "Global", globals)
+	writeHelpSection(&b, (Model{Screen: origin}).screenName(), screenEntries)
+
+	b.WriteString(sectionHeadingStyle.Render("  Command palette (ctrl+k)"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  Reachable from every screen without a focused text input."))
+	b.WriteString("\n")
+	commandStyle := lipgloss.NewStyle().Foreground(colorText)
+	for _, command := range allCommands() {
+		label := command.name
+		if command.shortcut != "" {
+			label += "  (" + command.shortcut + ")"
 		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "  %s\n", commandStyle.Render(label))
 	}
+	b.WriteString("\n")
 
-	section("Global", [][2]string{
-		{"?", "Toggle this help screen"},
-		{"q / esc", "Go back / quit"},
-		{"ctrl+c", "Force quit"},
-	})
-
-	section("Navigation", [][2]string{
-		{"j / down", "Move cursor down"},
-		{"k / up", "Move cursor up"},
-		{"G", "Jump to last item"},
-		{"gg", "Jump to first item"},
-		{"enter", "Select / open"},
-		{"s / /", "Open search"},
-		{"f", "Cycle project filter"},
-	})
-
-	section("List Screens (Recent, Search Results)", [][2]string{
-		{"enter", "View observation detail"},
-		{"t", "View timeline"},
-		{"d", "Delete observation (with confirm)"},
-		{"f", "Cycle project filter"},
-	})
-
-	section("Detail View", [][2]string{
-		{"j / k", "Scroll content"},
-		{"t", "View timeline"},
-		{"g", "View graph connections"},
-		{"s", "Jump to session"},
-		{"d", "Delete observation (with confirm)"},
-	})
-
-	section("Graph", [][2]string{
-		{"enter", "View observation detail"},
-		{"r", "Re-root graph on selection"},
-	})
-
-	section("Health", [][2]string{
-		{"j / k", "Scroll dashboard"},
-		{"tab", "Cycle section"},
-		{"enter", "Expand/collapse section"},
-	})
-
-	section("Archive", [][2]string{
-		{"enter", "View observation detail"},
-		{"u", "Unarchive (restore) observation"},
-		{"d", "Delete observation (with confirm)"},
-		{"f", "Cycle project filter"},
-	})
-
-	section("Embedding Settings", [][2]string{
-		{"h / l", "Cycle provider"},
-		{"space", "Toggle checkbox"},
-		{"enter", "Edit model name / save"},
-		{"r", "Reload config from disk"},
-		{"x", "Reindex all embeddings (after save)"},
-	})
-
-	b.WriteString(helpStyle.Render("  Press esc / q / ? to close"))
+	b.WriteString(m.helpFooter())
 
 	return b.String()
+}
+
+func splitHelpEntries(entries []HelpEntry) (globals, screen []HelpEntry) {
+	for _, entry := range entries {
+		if entry.Global {
+			globals = append(globals, entry)
+			continue
+		}
+		screen = append(screen, entry)
+	}
+	return globals, screen
+}
+
+func writeHelpSection(b *strings.Builder, title string, rows []HelpEntry) {
+	b.WriteString(sectionHeadingStyle.Render("  " + title))
+	b.WriteString("\n")
+	writeHelpRows(b, rows)
+	b.WriteString("\n")
+}
+
+// writeHelpRows renders one binding per line, folding single-letter case pairs
+// (T/t) into one row so a shared action is stated once. The alias note records
+// that the lowercase form is accepted wherever the paired uppercase key is
+// shown, which the handlers already honor by matching both cases.
+func writeHelpRows(b *strings.Builder, rows []HelpEntry) {
+	keyStyle := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Width(16)
+	descStyle := lipgloss.NewStyle().Foreground(colorText)
+	folded, aliased := foldCaseAliases(rows)
+	for _, entry := range folded {
+		description := entry.Description
+		if description == "" {
+			description = "—"
+		}
+		fmt.Fprintf(b, "  %s %s\n", keyStyle.Render(entry.Key), descStyle.Render(description))
+	}
+	if aliased {
+		b.WriteString(helpStyle.Render("  Lowercase aliases are accepted wherever a paired uppercase key is shown."))
+		b.WriteString("\n")
+	}
+}
+
+// foldCaseAliases merges single-letter bindings that share a description and
+// differ only in case, labelling the pair "T/t". It reports whether any pair was
+// folded so the caller can surface the alias note.
+func foldCaseAliases(entries []HelpEntry) ([]HelpEntry, bool) {
+	byKey := make(map[string]int, len(entries))
+	for i, entry := range entries {
+		byKey[entry.Key] = i
+	}
+	skip := make(map[int]bool, len(entries))
+	folded := make([]HelpEntry, 0, len(entries))
+	aliased := false
+	for i, entry := range entries {
+		if skip[i] || len([]rune(entry.Key)) != 1 {
+			folded = append(folded, entry)
+			continue
+		}
+		upper := strings.ToUpper(entry.Key)
+		j, ok := byKey[upper]
+		if upper == entry.Key || !ok || skip[j] || entries[j].Description != entry.Description {
+			folded = append(folded, entry)
+			continue
+		}
+		skip[j] = true
+		folded = append(folded, HelpEntry{
+			Key:         upper + "/" + entry.Key,
+			Description: entry.Description,
+			Screen:      entry.Screen,
+			Global:      entry.Global,
+		})
+		aliased = true
+	}
+	return folded, aliased
+}
+
+// helpFooter renders the Help screen's own footer from its declared registry
+// bindings, so the displayed keys are exactly the dispatchable ones (its globals
+// are already listed in the body). Screen bindings win over the identically
+// keyed global so the footer states the on-screen behaviour.
+func (m Model) helpFooter() string {
+	declared := make(map[string]bool)
+	for _, binding := range helpKeymap().Bindings {
+		declared[binding.Key] = true
+	}
+	order := make([]string, 0, len(declared))
+	byKey := make(map[string]string)
+	for _, hint := range keymapRegistry.FooterHints(ScreenHelp, &m) {
+		key := hintKey(hint)
+		if !declared[key] {
+			continue
+		}
+		if _, seen := byKey[key]; !seen {
+			order = append(order, key)
+		}
+		byKey[key] = hint
+	}
+	parts := make([]string, 0, len(order))
+	for _, key := range order {
+		parts = append(parts, footerPair(byKey[key]))
+	}
+	return helpStyle.Render("  " + strings.Join(parts, " • "))
+}
+
+// hintKey extracts the key from a "[key] description" registry hint.
+func hintKey(hint string) string {
+	trimmed := strings.TrimPrefix(hint, "[")
+	if end := strings.Index(trimmed, "]"); end >= 0 {
+		return trimmed[:end]
+	}
+	return trimmed
 }

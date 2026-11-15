@@ -60,13 +60,14 @@ func (m Model) viewGraph() string {
 	if count == 0 {
 		b.WriteString(noResultsStyle.Render("No related observations found."))
 		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("  esc back"))
+		b.WriteString(m.systemFooterHint(ScreenGraph))
 		return b.String()
 	}
 
 	b.WriteString(m.GraphListModel.View())
 
-	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • r re-root • esc back"))
+	b.WriteString("\n")
+	b.WriteString(m.systemFooterHint(ScreenGraph))
 
 	return b.String()
 }

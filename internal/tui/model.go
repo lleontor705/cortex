@@ -43,7 +43,52 @@ const (
 	ScreenEmbeddingConfig
 	ScreenLocalConfig
 	ScreenHelp
+	ScreenConnect
 )
+
+// ─── Guided Connect flow (REQ-SYNC-001/002) ─────────────────────────────────
+
+// ConnectStep indexes the three steps of the guided Connect flow (design.md
+// W5/W6/W7): URL + mode, bearer token, connectivity test. The zero value is
+// step 1 so entering the flow needs no extra state.
+type ConnectStep int
+
+const (
+	// ConnectStepURL collects the server URL and the post-connect mode.
+	ConnectStepURL ConnectStep = iota
+	// ConnectStepToken collects the bearer token (masked).
+	ConnectStepToken
+	// ConnectStepTest runs the real connectivity test and commits on success.
+	ConnectStepTest
+)
+
+// String returns the stable step identifier used in diagnostics and tests.
+func (s ConnectStep) String() string {
+	switch s {
+	case ConnectStepURL:
+		return "url"
+	case ConnectStepToken:
+		return "token"
+	case ConnectStepTest:
+		return "test"
+	default:
+		return "invalid"
+	}
+}
+
+// Label renders the wireframe step counter, e.g. "step 1 of 3".
+func (s ConnectStep) Label() string {
+	n := 3
+	switch s {
+	case ConnectStepURL:
+		n = 1
+	case ConnectStepToken:
+		n = 2
+	case ConnectStepTest:
+		n = 3
+	}
+	return fmt.Sprintf("step %d of 3", n)
+}
 
 // ─── Aggregate types ────────────────────────────────────────────────────────
 
@@ -241,12 +286,17 @@ type Model struct {
 	deps       *Deps
 	Version    string
 	Screen     Screen
-	PrevScreen Screen
 	PrevCursor int
 	Width      int
 	Height     int
 	Cursor     int
 	Scroll     int
+
+	// Nav is the live multi-level navigation stack backing the header
+	// breadcrumb and canonical esc/q history. Every screen transition drives it
+	// through NavPush (forward), NavPop (esc), and NavReset (q), so the stack is
+	// the single source of navigation truth (REQ-NAV-003).
+	Nav NavStack
 
 	// Command Deck Workspaces
 	ActiveDeckWorkspace int // 0: Knowledge Hub, 1: Neural Graph, 2: System Health, 3: Control & Setup
@@ -380,12 +430,15 @@ type Model struct {
 	LocalCfgSyncURL      textinput.Model
 	LocalCfgSyncTokenEnv textinput.Model
 	LocalCfgSyncInterval textinput.Model
-	LocalCfgFocusField   int
-	LocalCfgDirty        bool
-	LocalCfgSaving       bool
-	LocalCfgSaved        bool
-	LocalCfgError        string
-	LocalCfgSpinner      spinner.Model
+	// LocalCfgEmbeddingDimensions edits search.embedding_dimensions (Provider
+	// MRL dimension, 0 = provider default) on the Configuration Advanced tab.
+	LocalCfgEmbeddingDimensions textinput.Model
+	LocalCfgFocusField          int
+	LocalCfgDirty               bool
+	LocalCfgSaving              bool
+	LocalCfgSaved               bool
+	LocalCfgError               string
+	LocalCfgSpinner             spinner.Model
 
 	// Activity sparkline (7-day observation counts)
 	ActivityData []int
@@ -420,21 +473,28 @@ type Model struct {
 	// Theme
 	IsDarkTheme bool
 
-	// Auth & Identity
-	AuthToken          string
-	CurrentUser        string
-	UserRole           string // "admin", "owner", "member", "viewer", "local"
-	AuthModalOpen      bool
-	AuthTokenInput     textinput.Model
-	AuthServerURLInput textinput.Model
-	AuthFocusField     int  // 0 = Server URL, 1 = Bearer Token, 2 = Mode Selector
-	AuthModeHybrid     bool // true = Hybrid (Local-First + Sync), false = Remote MCP Proxy
+	// Auth & Identity. The Auth modal was dissolved by tui-redesign-023b: the
+	// guided Connect flow owns the server URL and the unified Configuration owns
+	// http.token through AuthTokenInput.
+	CurrentUser    string
+	UserRole       string // "admin", "owner", "member", "viewer", "local"
+	AuthTokenInput textinput.Model
+
+	// Guided Connect flow (REQ-SYNC-001/002). The server URL has exactly one
+	// writable surface here; the Auth modal is retained only until 023 rewires
+	// the entry points to this flow.
+	ConnectStep      ConnectStep
+	ConnectURL       textinput.Model
+	ConnectToken     textinput.Model
+	ConnectProxyMode bool // false = Hybrid sync (recommended), true = Remote MCP proxy
+	ConnectFocus     int  // step 1: 0 = URL, 1 = mode selector
+	ConnectResult    *connectTestResult
+	ConnectCommitted bool
+	ConnectSummary   string
+	ConnectError     string
 
 	// Project & Upload Policy
 	UploadToCortex bool // whether current project uploads to Cortex server
-
-	// Stats display
-	StatsMode int // 0 = User personal stats, 1 = Admin global tenant stats
 
 	// List components (bubbles/list)
 	SearchListModel  list.Model
@@ -486,6 +546,7 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 	syncURL := localInput("https://server.example", 512)
 	syncTokenEnv := localInput("CORTEX_REMOTE_TOKEN", 128)
 	syncInterval := localInput("30s", 32)
+	embeddingDimensions := localInput("0", 5)
 
 	cmdInput := textinput.New()
 	cmdInput.Placeholder = "Type a command..."
@@ -528,6 +589,9 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 		syncURL.SetValue(deps.Config.Sync.URL)
 		syncTokenEnv.SetValue(deps.Config.Sync.TokenEnv)
 		syncInterval.SetValue(deps.Config.Sync.Interval.String())
+		if deps.Config.Search.EmbeddingDimensions > 0 {
+			embeddingDimensions.SetValue(fmt.Sprintf("%d", deps.Config.Search.EmbeddingDimensions))
+		}
 	}
 
 	// Create empty list models with default delegate
@@ -568,11 +632,17 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 	authInput.Width = 50
 	authInput.EchoMode = textinput.EchoPassword
 
-	authServerURLInput := textinput.New()
-	authServerURLInput.Placeholder = "e.g. http://localhost:7438 or https://cortex.example.com"
-	authServerURLInput.CharLimit = 512
-	authServerURLInput.Width = 50
-	authServerURLInput.Focus()
+	connectURLInput := textinput.New()
+	connectURLInput.Placeholder = "https://your-cortex.up.railway.app"
+	connectURLInput.CharLimit = 512
+	connectURLInput.Width = 54
+
+	connectTokenInput := textinput.New()
+	connectTokenInput.Placeholder = "ctx_..."
+	connectTokenInput.CharLimit = 256
+	connectTokenInput.Width = 54
+	connectTokenInput.EchoMode = textinput.EchoPassword
+	connectTokenInput.EchoCharacter = '•'
 
 	currentUser := "local-user"
 	if u := os.Getenv("USER"); u != "" {
@@ -590,9 +660,9 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 			userRole = "admin"
 		}
 		if deps.Config.Sync.URL != "" {
-			authServerURLInput.SetValue(deps.Config.Sync.URL)
+			connectURLInput.SetValue(deps.Config.Sync.URL)
 		} else if deps.Config.MCP.Remote.URL != "" {
-			authServerURLInput.SetValue(deps.Config.MCP.Remote.URL)
+			connectURLInput.SetValue(strings.TrimSuffix(deps.Config.MCP.Remote.URL, "/mcp"))
 		}
 		if deps.Config.Server.PrincipalSubject != "" {
 			currentUser = deps.Config.Server.PrincipalSubject
@@ -630,58 +700,66 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 		}
 	}
 
+	// Seed the live stack so a non-Dashboard launch reports the correct
+	// breadcrumb depth while the Dashboard floor stays implicit.
+	nav := NavStack{}
+	if initialScreen != navFloor {
+		nav.ResetTo(initialScreen)
+	}
+
 	return Model{
-		deps:                 deps,
-		Version:              deps.Version,
-		Screen:               initialScreen,
-		ActiveDeckWorkspace:  activeWorkspace,
-		ControlDeckTab:       controlDeckTab,
-		IsDarkTheme:          true,
-		AuthToken:            authToken,
-		CurrentUser:          currentUser,
-		UserRole:             userRole,
-		AuthTokenInput:       authInput,
-		AuthServerURLInput:   authServerURLInput,
-		AuthFocusField:       0,
-		AuthModeHybrid:       deps.Config == nil || !deps.Config.MCP.Remote.Enabled,
-		UploadToCortex:       uploadToCortex,
-		StatsMode:            0,
-		SearchInput:          ti,
-		SearchMode:           "memory",
-		SetupSpinner:         sp,
-		EmbCfgSpinner:        embSp,
-		EmbCfgModel:          embModel,
-		LocalCfgDatabasePath: databasePath,
-		LocalCfgFormat:       cfgFormat,
-		LocalCfgLLMProvider:  llmProvider,
-		LocalCfgLLMModel:     llmModel,
-		LocalCfgLLMBaseURL:   llmBaseURL,
-		LocalCfgHTTPEnabled:  deps.Config != nil && deps.Config.HTTP.Enabled,
-		LocalCfgHTTPHost:     httpHost,
-		LocalCfgHTTPPort:     httpPort,
-		LocalCfgMCPProfile:   localCfgMCPProfile,
-		LocalCfgMCPRemote:    deps.Config != nil && deps.Config.MCP.Remote.Enabled,
-		LocalCfgMCPURL:       mcpURL,
-		LocalCfgMCPTokenEnv:  mcpTokenEnv,
-		LocalCfgSyncEnabled:  deps.Config != nil && deps.Config.Sync.Enabled,
-		LocalCfgSyncURL:      syncURL,
-		LocalCfgSyncTokenEnv: syncTokenEnv,
-		LocalCfgSyncInterval: syncInterval,
-		LocalCfgSpinner:      localSp,
-		EmbCfgProvider:       embProvider,
-		EmbCfgVector:         embVector,
-		EmbCfgAutoStart:      embAutoStart,
-		ReindexProgressBar:   progress.New(progress.WithDefaultGradient()),
-		CmdPaletteInput:      cmdInput,
-		NewObsTitleInput:     obsTitle,
-		NewObsContentInput:   obsContent,
-		NewObsTypeInput:      obsType,
-		NewObsProjectInput:   obsProject,
-		SearchListModel:      newEmptyList(),
-		RecentList:           newEmptyList(),
-		SessionListModel:     newEmptyList(),
-		GraphListModel:       newEmptyList(),
-		ArchiveList:          newEmptyList(),
+		deps:                        deps,
+		Version:                     deps.Version,
+		Screen:                      initialScreen,
+		Nav:                         nav,
+		ActiveDeckWorkspace:         activeWorkspace,
+		ControlDeckTab:              controlDeckTab,
+		IsDarkTheme:                 true,
+		CurrentUser:                 currentUser,
+		UserRole:                    userRole,
+		AuthTokenInput:              authInput,
+		ConnectStep:                 ConnectStepURL,
+		ConnectURL:                  connectURLInput,
+		ConnectToken:                connectTokenInput,
+		ConnectProxyMode:            deps.Config != nil && deps.Config.MCP.Remote.Enabled,
+		UploadToCortex:              uploadToCortex,
+		SearchInput:                 ti,
+		SearchMode:                  "memory",
+		SetupSpinner:                sp,
+		EmbCfgSpinner:               embSp,
+		EmbCfgModel:                 embModel,
+		LocalCfgDatabasePath:        databasePath,
+		LocalCfgFormat:              cfgFormat,
+		LocalCfgLLMProvider:         llmProvider,
+		LocalCfgLLMModel:            llmModel,
+		LocalCfgLLMBaseURL:          llmBaseURL,
+		LocalCfgHTTPEnabled:         deps.Config != nil && deps.Config.HTTP.Enabled,
+		LocalCfgHTTPHost:            httpHost,
+		LocalCfgHTTPPort:            httpPort,
+		LocalCfgMCPProfile:          localCfgMCPProfile,
+		LocalCfgMCPRemote:           deps.Config != nil && deps.Config.MCP.Remote.Enabled,
+		LocalCfgMCPURL:              mcpURL,
+		LocalCfgMCPTokenEnv:         mcpTokenEnv,
+		LocalCfgSyncEnabled:         deps.Config != nil && deps.Config.Sync.Enabled,
+		LocalCfgSyncURL:             syncURL,
+		LocalCfgSyncTokenEnv:        syncTokenEnv,
+		LocalCfgSyncInterval:        syncInterval,
+		LocalCfgSpinner:             localSp,
+		LocalCfgEmbeddingDimensions: embeddingDimensions,
+		EmbCfgProvider:              embProvider,
+		EmbCfgVector:                embVector,
+		EmbCfgAutoStart:             embAutoStart,
+		ReindexProgressBar:          progress.New(progress.WithDefaultGradient()),
+		CmdPaletteInput:             cmdInput,
+		NewObsTitleInput:            obsTitle,
+		NewObsContentInput:          obsContent,
+		NewObsTypeInput:             obsType,
+		NewObsProjectInput:          obsProject,
+		SearchListModel:             newEmptyList(),
+		RecentList:                  newEmptyList(),
+		SessionListModel:            newEmptyList(),
+		GraphListModel:              newEmptyList(),
+		ArchiveList:                 newEmptyList(),
 	}
 }
 
@@ -689,13 +767,75 @@ func NewWithScreen(deps *Deps, initialScreen Screen) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadStats(m.deps),
-		loadActivityData(m.deps),
 		loadRecentObservations(m.deps, ""),
 		checkForUpdate(m.Version),
 		animTickCmd(),
 		detectAgentsCmd(),
 		tea.EnterAltScreen,
 	)
+}
+
+// ─── Live navigation stack ──────────────────────────────────────────────────
+//
+// The Nav field and the accessors below are the navigation seam introduced by
+// tui-redesign-022 and adopted across every screen handler and the global
+// bindings (REQ-NAV-003). NavPush is the forward transition, NavPop the esc
+// transition, and NavReset the q transition; together they make the live stack
+// the single source of navigation truth.
+
+// NavPush records forward navigation to s as a new stack level.
+func (m *Model) NavPush(s Screen) {
+	if s == m.Screen {
+		return
+	}
+	// Detach from any sibling Model copy sharing the stack backing array before
+	// appending (bubbletea passes Model by value).
+	m.Nav = m.Nav.clone()
+	m.Nav.Push(s)
+	m.Screen = s
+}
+
+// NavPop applies esc semantics: move back one level, floored at Dashboard, and
+// return the new current screen.
+func (m *Model) NavPop() Screen {
+	m.Screen = m.Nav.Pop()
+	return m.Screen
+}
+
+// NavReset applies q semantics: clear navigation history and land on the
+// Dashboard floor.
+func (m *Model) NavReset() Screen {
+	m.Nav.ResetTo(navFloor)
+	m.Screen = navFloor
+	return m.Screen
+}
+
+// NavParent returns the screen one level below the current top of the live
+// stack, or the Dashboard floor. Views that need the referring screen (the Help
+// origin, the header chrome fallback) read it here instead of carrying a shadow
+// history field.
+func (m Model) NavParent() Screen {
+	if len(m.Nav.stack) < 2 {
+		return navFloor
+	}
+	return m.Nav.stack[len(m.Nav.stack)-2]
+}
+
+// NavBreadcrumb renders the live stack path with the shared screen vocabulary.
+func (m Model) NavBreadcrumb() string {
+	return m.Nav.Breadcrumb(screenLabel)
+}
+
+// NavDepth returns the live breadcrumb segment count (Dashboard floor = 1).
+func (m Model) NavDepth() int {
+	return m.Nav.Depth()
+}
+
+// clone returns a detached copy of the stack so an append on one Model value
+// cannot overwrite the history of a sibling value sharing the same backing
+// array. It leaves the nav.go contract untouched.
+func (n NavStack) clone() NavStack {
+	return NavStack{stack: append([]Screen(nil), n.stack...)}
 }
 
 // ActiveWorkspace returns the 0-indexed active deck workspace (0..3).

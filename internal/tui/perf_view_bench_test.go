@@ -63,7 +63,7 @@ func benchmarkScreens() []benchScreen {
 			m.EmbCfgOllamaChecked, m.EmbCfgOllamaRunning, m.EmbCfgOllamaHasModel = true, true, true
 		}},
 		{"localConfig", ScreenLocalConfig, nil},
-		{"help", ScreenHelp, func(m *Model) { m.PrevScreen = ScreenDashboard }},
+		{"help", ScreenHelp, nil},
 	}
 
 	models := make([]benchScreen, 0, len(cases))

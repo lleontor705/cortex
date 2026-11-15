@@ -86,7 +86,8 @@ func (m Model) viewHealth() string {
 		}
 	}
 
-	b.WriteString(helpStyle.Render("\n  j/k scroll • tab section • enter expand/collapse • esc back"))
+	b.WriteString("\n")
+	b.WriteString(m.systemFooterHint(ScreenHealth))
 
 	return b.String()
 }

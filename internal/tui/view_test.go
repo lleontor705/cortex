@@ -560,3 +560,26 @@ func TestViewLocalConfigTestConnectionPrompt(t *testing.T) {
 		t.Error("viewLocalConfig should display test LLM instruction")
 	}
 }
+
+// TestViewConfigurationIncludesVectorDimension covers REQ-CFG-001 acceptance 2:
+// the single live Configuration screen exposes the search.embedding_dimensions
+// vector-dimension field on the Advanced tab and renders its value.
+func TestViewConfigurationIncludesVectorDimension(t *testing.T) {
+	m := New(&Deps{Config: testLocalConfig(t)})
+	m.Width, m.Height = 120, 40
+	for i, f := range unifiedConfigFields() {
+		if f.Key == "embedding_dimensions" {
+			m.LocalCfgFocusField = unifiedConfigFieldNumber(i)
+		}
+	}
+	view := m.viewConfiguration()
+	for _, want := range []string{"Configuration", "Advanced", "Vector dim"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("viewConfiguration missing %q:\n%s", want, view)
+		}
+	}
+	m.LocalCfgEmbeddingDimensions.SetValue("768")
+	if !strings.Contains(m.viewConfiguration(), "768") {
+		t.Error("viewConfiguration did not render the entered vector dimension")
+	}
+}

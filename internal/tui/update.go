@@ -2,11 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/lleontor705/cortex/v2/internal/config"
 	"github.com/lleontor705/cortex/v2/internal/domain"
 	"github.com/lleontor705/cortex/v2/internal/setup"
 	"github.com/lleontor705/cortex/v2/internal/update"
@@ -84,18 +81,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.NewObsModalOpen {
 			return m.handleNewObsModalKeys(msg)
 		}
-		// Auth token modal intercept
-		if m.AuthModalOpen {
-			return m.handleAuthModalKeys(msg)
-		}
+		// Configuration text-field intercept (unified Configuration screen)
 		if m.Screen == ScreenSearch && m.SearchInput.Focused() {
 			return m.handleSearchInputKeys(msg)
 		}
+		if (m.Screen == ScreenLocalConfig || m.Screen == ScreenEmbeddingConfig) && m.unifiedConfigInputFocused() {
+			return m.handleUnifiedConfigInput(msg)
+		}
 		if m.Screen == ScreenEmbeddingConfig && m.EmbCfgModel.Focused() {
 			return m.handleEmbeddingModelInput(msg)
-		}
-		if m.Screen == ScreenLocalConfig && m.localConfigInputFocused() {
-			return m.handleLocalConfigInput(msg)
 		}
 
 		// For list screens, pass key messages to list component for navigation
@@ -176,7 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.CodeSearchResults = nil
 		m.SearchMode = "memory"
 		m.SearchQuery = msg.query
-		m.Screen = ScreenSearchResults
+		m.NavPush(ScreenSearchResults)
 		m.Cursor = 0
 		m.Scroll = 0
 		// Populate bubbles/list
@@ -208,7 +202,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SearchResults = nil
 		m.SearchMode = "code"
 		m.SearchQuery = msg.query
-		m.Screen = ScreenSearchResults
+		m.NavPush(ScreenSearchResults)
 		items := make([]list.Item, len(msg.results))
 		for i, symbol := range msg.results {
 			items[i] = codeSymbolItem{symbol: symbol}
@@ -263,7 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.DetailScore = msg.score
 		m.DetailEntities = msg.entities
 		m.DetailEdges = msg.edges
-		m.Screen = ScreenObservationDetail
+		m.NavPush(ScreenObservationDetail)
 
 		// Build viewport content
 		contentStr := buildDetailContent(msg.observation, msg.score, msg.entities, msg.edges)
@@ -287,7 +281,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.TimelineFocus = msg.focus
 		m.TimelineBefore = msg.before
 		m.TimelineAfter = msg.after
-		m.Screen = ScreenTimeline
+		m.NavPush(ScreenTimeline)
 		m.Scroll = 0
 		return m, nil
 
@@ -320,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.SessionObservations = msg.observations
-		m.Screen = ScreenSessionDetail
+		m.NavPush(ScreenSessionDetail)
 		m.Cursor = 0
 		m.SessionDetailScroll = 0
 		return m, nil
@@ -332,7 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.GraphObservations = msg.related
 		m.GraphEdges = msg.edges
-		m.Screen = ScreenGraph
+		m.NavPush(ScreenGraph)
 		m.Cursor = 0
 		m.Scroll = 0
 		// Populate bubbles/list
@@ -614,38 +608,116 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Global help key — skip for screens with text input
-	if key == "?" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		m.PrevScreen = m.Screen
-		m.Screen = ScreenHelp
+	// Screen bindings are consulted before the canonical globals, so a key the
+	// focused screen declares can never be shadowed by a global handler.
+	if model, cmd, handled := keymapRegistry.Dispatch(m, key); handled {
+		return model, cmd
+	}
+	return m, nil
+}
+
+// ─── Keymap Registry ────────────────────────────────────────────────────────
+
+// keymapRegistry is the single key-dispatch path (REQ-NAV-001). Screen keymaps
+// are registered before the canonical global keys, so a declared screen binding
+// can never be shadowed by a global handler (REQ-NAV-002).
+var keymapRegistry = buildKeymapRegistry()
+
+func buildKeymapRegistry() *KeymapRegistry {
+	registry := NewKeymapRegistry()
+	registry.SetInputMode(TextInputFocused)
+	registry.RegisterGlobals(CanonicalGlobalBindings(GlobalHandlers{
+		Palette:   openCommandPaletteKey,
+		Help:      openHelpKey,
+		Back:      globalBackKey,
+		Dashboard: globalDashboardKey,
+	})...)
+	for _, screenMap := range screenKeymaps() {
+		registry.Register(screenMap)
+	}
+	return registry
+}
+
+func openCommandPaletteKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	m.CmdPaletteOpen = true
+	m.CmdPaletteCursor = 0
+	m.CmdPaletteInput.SetValue("")
+	m.CmdPaletteInput.Focus()
+	return m, nil
+}
+
+func openHelpKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	m.NavPush(ScreenHelp)
+	return m, nil
+}
+
+func globalBackKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	if m.Screen == ScreenDashboard {
 		return m, nil
 	}
+	m.NavPop()
+	m.Cursor = m.PrevCursor
+	return m, nil
+}
 
-	// Command palette
-	if key == "ctrl+k" {
-		m.CmdPaletteOpen = true
-		m.CmdPaletteCursor = 0
-		m.CmdPaletteInput.SetValue("")
-		m.CmdPaletteInput.Focus()
-		return m, nil
+func globalDashboardKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	m.NavReset()
+	m.Cursor = 0
+	m.Scroll = 0
+	return m, loadStats(m.deps)
+}
+
+func openNewObservationKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	m.NewObsModalOpen = true
+	m.NewObsFocusField = 0
+	m.NewObsTitleInput.SetValue("")
+	m.NewObsContentInput.SetValue("")
+	m.NewObsTypeInput.SetValue("decision")
+	m.NewObsProjectInput.SetValue(m.FilterProject)
+	m.NewObsTitleInput.Focus()
+	return m, textinput.Blink
+}
+
+func openConnectFlowKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	return m.openConnectFlow()
+}
+
+func cycleFilterKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	return m.cycleProjectFilter()
+}
+
+func togglePreviewKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	m.PreviewVisible = !m.PreviewVisible
+	if m.PreviewVisible {
+		m.updatePreviewContent()
 	}
+	return m, nil
+}
 
-	// Command Deck Workspace Switchers (1: Knowledge Hub, 2: Neural Graph, 3: System Health, 4: Control & Setup)
-	if (key == "1" || key == "2" || key == "3" || key == "4") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		switch key {
-		case "1":
-			m.ActiveDeckWorkspace = 0
-			m.PrevScreen = m.Screen
-			m.Screen = ScreenRecent
-			m.Cursor = 0
-			m.Scroll = 0
+func toggleThemeKey(m Model, _ string) (tea.Model, tea.Cmd) {
+	dark := ToggleTheme()
+	m.IsDarkTheme = dark
+	if dark {
+		m.ToastMessage = "Theme: Dark Mode activated"
+	} else {
+		m.ToastMessage = "Theme: Light Mode activated"
+	}
+	m.ToastType = "success"
+	return m, nil
+}
+
+// switchWorkspaceKey reproduces the Command Deck workspace switchers that lived
+// in the global router; the target screen selects the data reload to issue.
+func switchWorkspaceKey(workspace int, screen Screen) func(Model, string) (tea.Model, tea.Cmd) {
+	return func(m Model, _ string) (tea.Model, tea.Cmd) {
+		m.ActiveDeckWorkspace = workspace
+		m.NavPush(screen)
+		m.Cursor = 0
+		m.Scroll = 0
+		switch screen {
+		case ScreenRecent:
 			return m, loadRecentObservations(m.deps, m.FilterProject)
-		case "2":
-			m.ActiveDeckWorkspace = 1
-			m.PrevScreen = m.Screen
-			m.Screen = ScreenGraph
-			m.Cursor = 0
-			m.Scroll = 0
+		case ScreenGraph:
 			if m.GraphRootID != 0 {
 				return m, loadGraphRelated(m.deps, m.GraphRootID)
 			}
@@ -654,220 +726,159 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 				return m, loadGraphRelated(m.deps, m.GraphRootID)
 			}
 			return m, loadRecentObservations(m.deps, m.FilterProject)
-		case "3":
-			m.ActiveDeckWorkspace = 2
-			m.PrevScreen = m.Screen
-			m.Screen = ScreenHealth
-			m.Cursor = 0
-			m.Scroll = 0
+		case ScreenHealth:
 			project := ""
 			if m.Stats != nil && len(m.Stats.Projects) > 0 {
 				project = m.Stats.Projects[0]
 			}
 			return m, loadHealthData(m.deps, project)
-		case "4":
-			m.ActiveDeckWorkspace = 3
-			m.PrevScreen = m.Screen
-			m.Screen = ScreenSetup
-			m.Cursor = 0
+		case ScreenSetup:
 			return m, detectAgentsCmd()
 		}
-	}
-
-	// Quick memory creation modal — available from list and dashboard screens
-	if (key == "n" || key == "N") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		m.NewObsModalOpen = true
-		m.NewObsFocusField = 0
-		m.NewObsTitleInput.SetValue("")
-		m.NewObsContentInput.SetValue("")
-		m.NewObsTypeInput.SetValue("decision")
-		m.NewObsProjectInput.SetValue(m.FilterProject)
-		m.NewObsTitleInput.Focus()
-		return m, textinput.Blink
-	}
-
-	// Theme toggle (Light / Dark mode)
-	if (key == "t" || key == "T") && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		dark := ToggleTheme()
-		m.IsDarkTheme = dark
-		if dark {
-			m.ToastMessage = "Theme: Dark Mode activated"
-		} else {
-			m.ToastMessage = "Theme: Light Mode activated"
-		}
-		m.ToastType = "success"
 		return m, nil
 	}
-
-	// Auth token / connect server modal
-	if key == "L" && m.Screen != ScreenSearch && m.Screen != ScreenEmbeddingConfig && m.Screen != ScreenLocalConfig && m.Screen != ScreenHelp {
-		m.openAuthModal()
-		return m, textinput.Blink
-	}
-
-	// Stats view toggle (Personal vs Admin Global)
-	if (key == "u" || key == "U") && m.Screen == ScreenDashboard {
-		if m.StatsMode == 0 {
-			m.StatsMode = 1
-			m.ToastMessage = "Dashboard: Admin Global View"
-		} else {
-			m.StatsMode = 0
-			m.ToastMessage = "Dashboard: User Personal View"
-		}
-		m.ToastType = "info"
-		return m, nil
-	}
-
-	// Project upload / sync toggle
-	if key == "P" && (m.Screen == ScreenDashboard || m.Screen == ScreenLocalConfig) {
-		m.UploadToCortex = !m.UploadToCortex
-		if m.UploadToCortex {
-			m.ToastMessage = "Project sync: Upload to Cortex enabled"
-		} else {
-			m.ToastMessage = "Project sync: Local only (upload disabled)"
-		}
-		m.ToastType = "info"
-		return m, nil
-	}
-
-	// Project filter cycler
-	if key == "p" && (m.Screen == ScreenDashboard || m.Screen == ScreenRecent || m.Screen == ScreenSearchResults || m.Screen == ScreenGraph || m.Screen == ScreenSessions) {
-		return m.cycleProjectFilter()
-	}
-
-	// Split preview toggle
-	if (key == "v" || key == "V") && (m.Screen == ScreenRecent || m.Screen == ScreenSearchResults || m.Screen == ScreenArchive) {
-		m.PreviewVisible = !m.PreviewVisible
-		if m.PreviewVisible {
-			m.updatePreviewContent()
-		}
-		return m, nil
-	}
-
-	switch m.Screen {
-	case ScreenHelp:
-		return m.handleHelpKeys(key)
-	case ScreenDashboard:
-		return m.handleDashboardKeys(key)
-	case ScreenSearch:
-		return m.handleSearchKeys(key)
-	case ScreenSearchResults:
-		return m.handleSearchResultsKeys(key)
-	case ScreenRecent:
-		return m.handleRecentKeys(key)
-	case ScreenObservationDetail:
-		return m.handleObservationDetailKeys(key)
-	case ScreenTimeline:
-		return m.handleTimelineKeys(key)
-	case ScreenSessions:
-		return m.handleSessionsKeys(key)
-	case ScreenSessionDetail:
-		return m.handleSessionDetailKeys(key)
-	case ScreenSetup:
-		return m.handleSetupKeys(key)
-	case ScreenGraph:
-		return m.handleGraphKeys(key)
-	case ScreenArchive:
-		return m.handleArchiveKeys(key)
-	case ScreenHealth:
-		return m.handleHealthKeys(key)
-	case ScreenEmbeddingConfig:
-		return m.handleEmbeddingConfigKeys(key)
-	case ScreenLocalConfig:
-		return m.handleLocalConfigKeys(key)
-	}
-	return m, nil
 }
 
-// ─── Dashboard ──────────────────────────────────────────────────────────────
-
-var dashboardMenuItems = []string{
-	"Configuration Center (Modular Settings)",
-	"Recent observations",
-	"Browse sessions",
-	"Knowledge graph",
-	"Memory health",
-	"Archived observations",
-	"Search memories",
-	"Local settings",
-	"Connect to server",
-	"Setup agent plugin",
-	"Quit",
+// timelineFrom binds the advertised T key to the screen handler's existing
+// lowercase timeline action so Detail/Results/Recent share one code path.
+func timelineFrom(handler func(Model, string) (tea.Model, tea.Cmd)) func(Model, string) (tea.Model, tea.Cmd) {
+	return func(m Model, _ string) (tea.Model, tea.Cmd) {
+		return handler(m, "t")
+	}
 }
 
-func (m Model) handleDashboardKeys(key string) (tea.Model, tea.Cmd) {
-	maxItems := len(dashboardMenuItems)
-
-	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-		}
-	case "down", "j":
-		if m.Cursor < maxItems-1 {
-			m.Cursor++
-		}
-	case "enter", " ":
-		return m.handleDashboardSelection()
-	case "1":
-		m.Cursor = 0
-		return m.handleDashboardSelection()
-	case "2":
-		m.Cursor = 1
-		return m.handleDashboardSelection()
-	case "3":
-		m.Cursor = 2
-		return m.handleDashboardSelection()
-	case "4":
-		m.Cursor = 3
-		return m.handleDashboardSelection()
-	case "5":
-		m.Cursor = 4
-		return m.handleDashboardSelection()
-	case "6":
-		m.Cursor = 5
-		return m.handleDashboardSelection()
-	case "7":
-		m.Cursor = 6
-		return m.handleDashboardSelection()
-	case "8":
-		m.Cursor = 7
-		return m.handleDashboardSelection()
-	case "9":
-		m.Cursor = 8
-		return m.handleDashboardSelection()
-	case "t", "T":
-		ToggleTheme()
-		return m, nil
-	case "s", "/":
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSearch
-		m.Cursor = 0
-		m.SearchInput.SetValue("")
-		m.SearchInput.Focus()
-		return m, nil
-	case "r", "R":
-		m.Cursor = 1
-		return m.handleDashboardSelection()
-	case "g", "G":
-		m.Cursor = 3
-		return m.handleDashboardSelection()
-	case "c", "C":
-		m.Cursor = 7
-		return m.handleDashboardSelection()
-	case "i", "I":
-		m.Cursor = 9
-		return m.handleDashboardSelection()
-	case "u", "U":
-		if m.UpdateResult != nil {
-			m.ToastMessage = fmt.Sprintf("Downloading & installing %s...", m.UpdateResult.Latest)
-			m.ToastType = "warning"
-			return m, m.performSelfUpdateCmd()
-		}
-	case "q":
-		return m, tea.Quit
+func workspaceBindings() []Binding {
+	return []Binding{
+		{Key: "1", Description: "Knowledge hub", Handler: switchWorkspaceKey(0, ScreenRecent)},
+		{Key: "2", Description: "Knowledge graph", Handler: switchWorkspaceKey(1, ScreenGraph)},
+		{Key: "3", Description: "System health", Handler: switchWorkspaceKey(2, ScreenHealth)},
+		{Key: "4", Description: "Control and setup", Handler: switchWorkspaceKey(3, ScreenSetup)},
 	}
-	return m, nil
+}
+
+func newObservationBindings() []Binding {
+	return []Binding{
+		{Key: "n", Description: "New memory", Handler: openNewObservationKey},
+		{Key: "N", Description: "New memory", Handler: openNewObservationKey},
+	}
+}
+
+func authBindings() []Binding {
+	return []Binding{{Key: "L", Description: "Connect to server", Handler: openConnectFlowKey}}
+}
+
+func filterBindings() []Binding {
+	return []Binding{{Key: "p", Description: "Project filter", Handler: cycleFilterKey}}
+}
+
+func previewBindings() []Binding {
+	return []Binding{
+		{Key: "v", Description: "Toggle preview", Handler: togglePreviewKey},
+		{Key: "V", Description: "Toggle preview", Handler: togglePreviewKey},
+	}
+}
+
+func themeBindings() []Binding {
+	return []Binding{
+		{Key: "t", Description: "Toggle theme", Handler: toggleThemeKey},
+		{Key: "T", Description: "Toggle theme", Handler: toggleThemeKey},
+	}
+}
+
+func timelineBinding(handler func(Model, string) (tea.Model, tea.Cmd)) []Binding {
+	return []Binding{{Key: "T", Description: "Timeline", Handler: timelineFrom(handler)}}
+}
+
+func combineBindings(groups ...[]Binding) []Binding {
+	var merged []Binding
+	for _, group := range groups {
+		merged = append(merged, group...)
+	}
+	return merged
+}
+
+// delegateKeymap binds every declared key to the screen's extracted handler,
+// with explicit overrides taking precedence for keys re-homed from the registry.
+func delegateKeymap(screen Screen, handler func(Model, string) (tea.Model, tea.Cmd), keys []string, overrides []Binding) Keymap {
+	keymap := Keymap{Screen: screen}
+	overridden := make(map[string]bool, len(overrides))
+	for _, binding := range overrides {
+		overridden[binding.Key] = true
+		keymap.Bindings = append(keymap.Bindings, binding)
+	}
+	for _, key := range keys {
+		if overridden[key] {
+			continue
+		}
+		keymap.Bindings = append(keymap.Bindings, Binding{Key: key, Description: keyHint(key), Handler: handler})
+	}
+	return keymap
+}
+
+func keyHint(key string) string { return keyHints[key] }
+
+var keyHints = map[string]string{
+	"up": "Move up", "k": "Move up",
+	"down": "Move down", "j": "Move down",
+	"enter": "Open", " ": "Select",
+	"esc": "Back", "q": "Back",
+	"tab": "Next section", "shift+tab": "Previous section",
+	"pgup": "Scroll up", "pgdown": "Scroll down",
+	"left": "Cycle left", "right": "Cycle right", "h": "Cycle left", "l": "Cycle right",
+	"/": "Search", "s": "Search", "i": "Search",
+	"r": "Reload", "R": "Reload",
+	"d": "Delete", "f": "Filter",
+	"g": "Graph", "G": "Graph",
+	"c": "Configuration", "C": "Configuration",
+	"y": "Confirm", "Y": "Confirm",
+	"x": "Reindex", "X": "Reindex",
+	"p": "Cycle", "P": "Cycle",
+	"u": "Action", "U": "Action",
+	"5": "Select", "6": "Select", "7": "Select", "8": "Select", "9": "Select",
+}
+
+func screenKeymaps() []Keymap {
+	return []Keymap{
+		delegateKeymap(ScreenDashboard, Model.handleDashboardKeys,
+			[]string{"up", "k", "down", "j", "enter", " ", "5", "6", "7", "8", "9", "s", "/", "r", "R", "g", "G", "c", "C", "i", "I", "u", "U", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), filterBindings(), themeBindings())),
+		delegateKeymap(ScreenSearch, Model.handleSearchKeys,
+			[]string{"esc", "q", "i", "/"}, nil),
+		delegateKeymap(ScreenSearchResults, Model.handleSearchResultsKeys,
+			[]string{"enter", "t", "f", "d", "/", "s", "esc", "q", "y", "Y"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), filterBindings(), previewBindings(), timelineBinding(Model.handleSearchResultsKeys))),
+		delegateKeymap(ScreenRecent, Model.handleRecentKeys,
+			[]string{"enter", "t", "g", "d", "f", "esc", "q", "y", "Y"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), filterBindings(), previewBindings(), timelineBinding(Model.handleRecentKeys))),
+		delegateKeymap(ScreenObservationDetail, Model.handleObservationDetailKeys,
+			[]string{"up", "k", "down", "j", "pgup", "pgdown", "t", "g", "s", "S", "d", "esc", "q", "y", "Y"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), timelineBinding(Model.handleObservationDetailKeys))),
+		delegateKeymap(ScreenTimeline, Model.handleTimelineKeys,
+			[]string{"up", "k", "down", "j", "esc", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings())),
+		delegateKeymap(ScreenSessions, Model.handleSessionsKeys,
+			[]string{"enter", "esc", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), filterBindings())),
+		delegateKeymap(ScreenSessionDetail, Model.handleSessionDetailKeys,
+			[]string{"up", "k", "down", "j", "enter", "t", "esc", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), timelineBinding(Model.handleSessionDetailKeys))),
+		delegateKeymap(ScreenSetup, Model.handleSetupKeys,
+			[]string{"p", "P", "up", "k", "down", "j", "enter", "c", "C", "esc", "q", "y", "Y", "n", "N"},
+			combineBindings(workspaceBindings(), authBindings())),
+		delegateKeymap(ScreenGraph, Model.handleGraphKeys,
+			[]string{"enter", "r", "esc", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), filterBindings())),
+		delegateKeymap(ScreenArchive, Model.handleArchiveKeys,
+			[]string{"enter", "u", "d", "f", "esc", "q", "y", "Y"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings(), previewBindings())),
+		delegateKeymap(ScreenHealth, Model.handleHealthKeys,
+			[]string{"up", "k", "down", "j", "tab", "enter", "esc", "q"},
+			combineBindings(workspaceBindings(), newObservationBindings(), authBindings())),
+		unifiedConfigKeymap(ScreenEmbeddingConfig),
+		unifiedConfigKeymap(ScreenLocalConfig),
+		delegateKeymap(ScreenHelp, Model.handleHelpKeys,
+			[]string{"esc", "q", "?"}, nil),
+	}
 }
 
 type updateFinishedMsg struct {
@@ -879,81 +890,6 @@ func (m Model) performSelfUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
 		res, err := update.SelfUpdate(m.Version, nil)
 		return updateFinishedMsg{result: res, err: err}
-	}
-}
-
-func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
-	switch m.Cursor {
-	case 0: // Configuration Center
-		return m.openLocalConfig(), nil
-	case 1: // Recent observations
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenRecent
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadRecentObservations(m.deps, m.FilterProject)
-	case 2: // Sessions
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSessions
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadRecentSessions(m.deps)
-	case 3: // Knowledge graph
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenGraph
-		m.Cursor = 0
-		m.Scroll = 0
-		if len(m.RecentObservations) > 0 {
-			m.GraphRootID = m.RecentObservations[0].ID
-			return m, loadGraphRelated(m.deps, m.GraphRootID)
-		}
-		return m, loadRecentObservations(m.deps, m.FilterProject)
-	case 4: // Memory health
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenHealth
-		m.Cursor = 0
-		m.Scroll = 0
-		project := ""
-		if m.Stats != nil && len(m.Stats.Projects) > 0 {
-			project = m.Stats.Projects[0]
-		}
-		return m, loadHealthData(m.deps, project)
-	case 5: // Archived
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenArchive
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadArchivedObservations(m.deps, m.FilterProject)
-	case 6: // Search
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSearch
-		m.Cursor = 0
-		m.SearchInput.SetValue("")
-		m.SearchInput.Focus()
-		return m, nil
-	case 7: // Local settings
-		return m.openLocalConfig(), nil
-	case 8: // Connect to server
-		m.openAuthModal()
-		return m, textinput.Blink
-	case 9: // Setup
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSetup
-		m.Cursor = 0
-		m.SetupAgents = setup.SupportedAgents()
-		m.SetupResult = nil
-		m.SetupDone = false
-		m.SetupInstalling = false
-		m.SetupInstallingName = ""
-		m.SetupError = ""
-		m.SetupAllowlistPrompt = false
-		m.SetupAllowlistApplied = false
-		m.SetupAllowlistError = ""
-		return m, detectAgentsCmd()
-	case 10: // Quit
-		return m, tea.Quit
-	default:
-		return m.openLocalConfig(), nil
 	}
 }
 
@@ -986,8 +922,6 @@ func (m Model) handleSearchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.SearchInput.Placeholder = "Search symbol or file path..."
 		}
 		return m, nil
-	case "f":
-		return m.cycleProjectFilter()
 	case "up":
 		if len(m.SearchHistory) > 0 {
 			if m.SearchHistoryIdx > 0 {
@@ -1009,7 +943,7 @@ func (m Model) handleSearchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "esc":
 		m.SearchInput.Blur()
-		m.Screen = ScreenDashboard
+		m.NavReset()
 		m.Cursor = 0
 		return m, nil
 	}
@@ -1017,497 +951,6 @@ func (m Model) handleSearchInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.SearchInput, cmd = m.SearchInput.Update(msg)
 	return m, cmd
-}
-
-func (m Model) handleSearchKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		return m, nil
-	case "i", "/":
-		m.SearchInput.Focus()
-		return m, nil
-	}
-	return m, nil
-}
-
-// ─── Search Results ─────────────────────────────────────────────────────────
-
-func (m Model) handleSearchResultsKeys(key string) (tea.Model, tea.Cmd) {
-	// Confirm delete
-	if m.ConfirmDelete {
-		switch key {
-		case "y", "Y":
-			m.ConfirmDelete = false
-			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
-		case "n", "N", "esc":
-			m.ConfirmDelete = false
-		}
-		return m, nil
-	}
-
-	if key != "g" {
-		m.PendingKey = ""
-	}
-
-	// Confirm delete
-	if m.ConfirmDelete {
-		if key == "y" || key == "Y" {
-			id := m.ConfirmDeleteID
-			m.ConfirmDelete = false
-			m.ConfirmDeleteID = 0
-			return m, deleteObservationCmd(m.deps, id)
-		}
-		return m, nil
-	}
-
-	switch key {
-	case "enter":
-		if m.SearchMode == "code" {
-			m.PreviewVisible = true
-			m.updatePreviewContent()
-			return m, nil
-		}
-		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
-			m.PrevScreen = ScreenSearchResults
-			m.PrevCursor = m.SearchListModel.Index()
-			m.DetailLoading = true
-			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.result.ID))
-		}
-	case "t":
-		if m.SearchMode == "code" {
-			return m, nil
-		}
-		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
-			m.PrevScreen = ScreenSearchResults
-			m.PrevCursor = m.SearchListModel.Index()
-			return m, loadTimeline(m.deps, item.result.ID)
-		}
-	case "f":
-		if m.Stats != nil && len(m.Stats.Projects) > 0 {
-			projects := append([]string{""}, m.Stats.Projects...)
-			currentIdx := 0
-			for i, p := range projects {
-				if p == m.FilterProject {
-					currentIdx = i
-					break
-				}
-			}
-			m.FilterProject = projects[(currentIdx+1)%len(projects)]
-			if m.SearchMode == "code" {
-				return m, searchCode(m.deps, m.SearchQuery, m.FilterProject)
-			}
-			return m, searchMemories(m.deps, m.SearchQuery, m.FilterProject)
-		}
-	case "d":
-		if m.SearchMode == "code" {
-			return m, nil
-		}
-		if item, ok := m.SearchListModel.SelectedItem().(searchResultItem); ok {
-			m.ConfirmDelete = true
-			m.ConfirmDeleteID = item.result.ID
-			m.DeleteTargetTitle = item.result.Title
-		}
-		return m, nil
-	case "/", "s":
-		m.PrevScreen = ScreenSearchResults
-		m.Screen = ScreenSearch
-		m.SearchInput.Focus()
-		return m, nil
-	case "p":
-		if m.Width >= 100 {
-			m.PreviewVisible = !m.PreviewVisible
-			if m.PreviewVisible {
-				m.PreviewViewport = viewport.New(m.Width*3/5-6, m.Height-10)
-				m.updatePreviewContent()
-				// Shrink list to left pane
-				listWidth := m.Width * 2 / 5
-				m.SearchListModel.SetSize(listWidth-4, m.Height-10)
-			} else {
-				// Restore full-width list
-				w := m.Width - 4
-				if w < 20 {
-					w = 20
-				}
-				m.SearchListModel.SetSize(w, m.Height-10)
-			}
-		}
-		return m, nil
-	case "esc", "q":
-		m.PreviewVisible = false
-		m.PrevScreen = ScreenDashboard
-		m.Screen = ScreenSearch
-		m.Cursor = 0
-		m.Scroll = 0
-		m.SearchInput.Focus()
-		return m, nil
-	}
-	return m, nil
-}
-
-// ─── Recent Observations ────────────────────────────────────────────────────
-
-func (m Model) handleRecentKeys(key string) (tea.Model, tea.Cmd) {
-	// Confirm delete
-	if m.ConfirmDelete {
-		switch key {
-		case "y", "Y":
-			m.ConfirmDelete = false
-			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
-		case "n", "N", "esc":
-			m.ConfirmDelete = false
-		}
-		return m, nil
-	}
-
-	if key != "g" {
-		m.PendingKey = ""
-	}
-
-	switch key {
-	}
-
-	// Confirm delete
-	if m.ConfirmDelete {
-		if key == "y" || key == "Y" {
-			id := m.ConfirmDeleteID
-			m.ConfirmDelete = false
-			m.ConfirmDeleteID = 0
-			return m, deleteObservationCmd(m.deps, id)
-		}
-		return m, nil
-	}
-
-	switch key {
-	case "enter":
-		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
-			m.PrevScreen = ScreenRecent
-			m.PrevCursor = m.RecentList.Index()
-			m.DetailLoading = true
-			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
-		}
-	case "t":
-		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
-			m.PrevScreen = ScreenRecent
-			m.PrevCursor = m.RecentList.Index()
-			return m, loadTimeline(m.deps, item.obs.ID)
-		}
-	case "g":
-		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
-			m.PrevScreen = ScreenRecent
-			m.PrevCursor = m.RecentList.Index()
-			m.GraphRootID = item.obs.ID
-			m.Screen = ScreenGraph
-			m.ActiveDeckWorkspace = 1
-			return m, loadGraphRelated(m.deps, m.GraphRootID)
-		}
-	case "d":
-		if item, ok := m.RecentList.SelectedItem().(observationItem); ok {
-			m.ConfirmDelete = true
-			m.ConfirmDeleteID = item.obs.ID
-			m.DeleteTargetTitle = item.obs.Title
-		}
-		return m, nil
-	case "f":
-		if m.Stats != nil && len(m.Stats.Projects) > 0 {
-			projects := append([]string{""}, m.Stats.Projects...)
-			currentIdx := 0
-			for i, p := range projects {
-				if p == m.FilterProject {
-					currentIdx = i
-					break
-				}
-			}
-			m.FilterProject = projects[(currentIdx+1)%len(projects)]
-			return m, loadRecentObservations(m.deps, m.FilterProject)
-		}
-	case "p":
-		if m.Width >= 100 {
-			m.PreviewVisible = !m.PreviewVisible
-			if m.PreviewVisible {
-				m.PreviewViewport = viewport.New(m.Width*3/5-6, m.Height-10)
-				m.updatePreviewContent()
-				// Shrink list to left pane
-				listWidth := m.Width * 2 / 5
-				m.RecentList.SetSize(listWidth-4, m.Height-8)
-			} else {
-				// Restore full-width list
-				w := m.Width - 4
-				if w < 20 {
-					w = 20
-				}
-				m.RecentList.SetSize(w, m.Height-8)
-			}
-		}
-		return m, nil
-	case "esc", "q":
-		m.PreviewVisible = false
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
-}
-
-// ─── Observation Detail ─────────────────────────────────────────────────────
-
-func (m Model) handleObservationDetailKeys(key string) (tea.Model, tea.Cmd) {
-	if m.ConfirmDelete {
-		switch key {
-		case "y", "Y":
-			m.ConfirmDelete = false
-			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
-		case "n", "N", "esc":
-			m.ConfirmDelete = false
-		}
-		return m, nil
-	}
-
-	switch key {
-	case "up", "k":
-		m.DetailViewport.ScrollUp(1)
-	case "down", "j":
-		m.DetailViewport.ScrollDown(1)
-	case "pgup":
-		m.DetailViewport.HalfPageUp()
-	case "pgdown":
-		m.DetailViewport.HalfPageDown()
-	case "t":
-		if m.SelectedObservation != nil {
-			m.PrevScreen = ScreenObservationDetail
-			return m, loadTimeline(m.deps, m.SelectedObservation.ID)
-		}
-	case "g":
-		// Jump to graph view for this observation
-		if m.SelectedObservation != nil {
-			m.GraphRootID = m.SelectedObservation.ID
-			m.PrevScreen = ScreenObservationDetail
-			return m, loadGraphRelated(m.deps, m.SelectedObservation.ID)
-		}
-	case "s", "S":
-		if m.SelectedObservation != nil && m.SelectedObservation.SessionID != "" {
-			m.PrevScreen = ScreenObservationDetail
-			m.Screen = ScreenSessionDetail
-			m.Cursor = 0
-			m.SessionDetailScroll = 0
-			return m, loadSessionObservations(m.deps, m.SelectedObservation.SessionID)
-		}
-	case "d":
-		if m.SelectedObservation != nil {
-			m.ConfirmDelete = true
-			m.ConfirmDeleteID = m.SelectedObservation.ID
-			m.DeleteTargetTitle = m.SelectedObservation.Title
-		}
-		return m, nil
-	case "esc", "q":
-		m.Screen = m.PrevScreen
-		m.Cursor = m.PrevCursor
-		m.DetailViewport.GotoTop()
-		return m, m.refreshScreen(m.PrevScreen)
-	}
-	return m, nil
-}
-
-// ─── Timeline ───────────────────────────────────────────────────────────────
-
-func (m Model) handleTimelineKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
-		if m.Scroll > 0 {
-			m.Scroll--
-		}
-	case "down", "j":
-		m.Scroll++
-		if m.Scroll > maxScrollOffset {
-			m.Scroll = maxScrollOffset
-		}
-	case "esc", "q":
-		m.Screen = m.PrevScreen
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, m.refreshScreen(m.PrevScreen)
-	}
-	return m, nil
-}
-
-// ─── Sessions ───────────────────────────────────────────────────────────────
-
-func (m Model) handleSessionsKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
-		if item, ok := m.SessionListModel.SelectedItem().(sessionItem); ok {
-			m.SelectedSessionIdx = m.SessionListModel.Index()
-			m.PrevScreen = ScreenSessions
-			return m, loadSessionObservations(m.deps, item.session.Session.ID)
-		}
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
-}
-
-// ─── Session Detail ─────────────────────────────────────────────────────────
-
-func (m Model) handleSessionDetailKeys(key string) (tea.Model, tea.Cmd) {
-	visibleItems := (m.Height - 12) / linesPerItem
-	if visibleItems < minVisibleItems {
-		visibleItems = minVisibleItems
-	}
-
-	switch key {
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-			if m.Cursor < m.SessionDetailScroll {
-				m.SessionDetailScroll = m.Cursor
-			}
-		}
-	case "down", "j":
-		if m.Cursor < len(m.SessionObservations)-1 {
-			m.Cursor++
-			if m.Cursor >= m.SessionDetailScroll+visibleItems {
-				m.SessionDetailScroll = m.Cursor - visibleItems + 1
-			}
-		}
-	case "enter":
-		if len(m.SessionObservations) > 0 && m.Cursor < len(m.SessionObservations) {
-			obsID := m.SessionObservations[m.Cursor].ID
-			m.PrevScreen = ScreenSessionDetail
-			m.DetailLoading = true
-			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, obsID))
-		}
-	case "t":
-		if len(m.SessionObservations) > 0 && m.Cursor < len(m.SessionObservations) {
-			obsID := m.SessionObservations[m.Cursor].ID
-			m.PrevScreen = ScreenSessionDetail
-			return m, loadTimeline(m.deps, obsID)
-		}
-	case "esc", "q":
-		m.Screen = ScreenSessions
-		m.Cursor = m.SelectedSessionIdx
-		m.SessionDetailScroll = 0
-		return m, loadRecentSessions(m.deps)
-	}
-	return m, nil
-}
-
-// ─── Graph (Cortex-exclusive) ───────────────────────────────────────────────
-
-func (m Model) handleGraphKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "enter":
-		if item, ok := m.GraphListModel.SelectedItem().(graphItem); ok {
-			m.PrevScreen = ScreenGraph
-			m.DetailLoading = true
-			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
-		}
-	case "r":
-		// Re-root graph on selected observation
-		if item, ok := m.GraphListModel.SelectedItem().(graphItem); ok {
-			m.GraphRootID = item.obs.ID
-			m.Cursor = 0
-			m.Scroll = 0
-			return m, loadGraphRelated(m.deps, item.obs.ID)
-		}
-	case "esc", "q":
-		m.Screen = m.PrevScreen
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, m.refreshScreen(m.PrevScreen)
-	}
-	return m, nil
-}
-
-// ─── Archive (Cortex-exclusive) ─────────────────────────────────────────────
-
-func (m Model) handleArchiveKeys(key string) (tea.Model, tea.Cmd) {
-	if m.ConfirmDelete {
-		switch key {
-		case "y", "Y":
-			m.ConfirmDelete = false
-			return m, deleteObservationCmd(m.deps, m.ConfirmDeleteID)
-		case "n", "N", "esc":
-			m.ConfirmDelete = false
-		}
-		return m, nil
-	}
-
-	if key != "g" {
-		m.PendingKey = ""
-	}
-
-	switch key {
-	case "enter":
-		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
-			m.PrevScreen = ScreenArchive
-			m.DetailLoading = true
-			return m, tea.Batch(m.SetupSpinner.Tick, loadObservationDetail(m.deps, item.obs.ID))
-		}
-	case "u":
-		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
-			return m, unarchiveObservationCmd(m.deps, item.obs.ID)
-		}
-	case "d":
-		if item, ok := m.ArchiveList.SelectedItem().(observationItem); ok {
-			m.ConfirmDelete = true
-			m.ConfirmDeleteID = item.obs.ID
-			m.DeleteTargetTitle = item.obs.Title
-		}
-		return m, nil
-	case "f":
-		if m.Stats != nil && len(m.Stats.Projects) > 0 {
-			projects := append([]string{""}, m.Stats.Projects...)
-			currentIdx := 0
-			for i, p := range projects {
-				if p == m.FilterProject {
-					currentIdx = i
-					break
-				}
-			}
-			m.FilterProject = projects[(currentIdx+1)%len(projects)]
-			return m, loadArchivedObservations(m.deps, m.FilterProject)
-		}
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
-}
-
-// ─── Health (Cortex-exclusive) ───────────────────────────────────────────
-
-func (m Model) handleHealthKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
-		if m.Scroll > 0 {
-			m.Scroll--
-		}
-	case "down", "j":
-		m.Scroll++
-		if m.Scroll > maxScrollOffset {
-			m.Scroll = maxScrollOffset
-		}
-	case "tab":
-		m.HealthSection = (m.HealthSection + 1) % 3
-		m.HealthExpanded = false
-		m.Scroll = 0
-	case "enter":
-		m.HealthExpanded = !m.HealthExpanded
-		m.Scroll = 0
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		m.Scroll = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
 }
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
@@ -1532,86 +975,6 @@ func installAgentWithProfile(agentName, profile string) tea.Cmd {
 		result, err := installAgentFn(agentName)
 		return setupInstallMsg{result: result, err: err}
 	}
-}
-
-func (m Model) handleSetupKeys(key string) (tea.Model, tea.Cmd) {
-	if m.SetupInstalling {
-		return m, nil
-	}
-
-	// Allowlist prompt: y/n
-	if m.SetupAllowlistPrompt {
-		switch key {
-		case "y", "Y":
-			m.SetupAllowlistPrompt = false
-			m.SetupDone = true
-			if err := addClaudeCodeAllowlistFn(); err != nil {
-				m.SetupAllowlistError = err.Error()
-			} else {
-				m.SetupAllowlistApplied = true
-			}
-			return m, nil
-		case "n", "N", "esc":
-			m.SetupAllowlistPrompt = false
-			m.SetupDone = true
-			return m, nil
-		}
-		return m, nil
-	}
-
-	if m.SetupDone {
-		switch key {
-		case "esc", "q", "enter":
-			m.Screen = ScreenDashboard
-			m.Cursor = 0
-			m.SetupDone = false
-			m.SetupResult = nil
-			m.SetupError = ""
-			m.SetupAllowlistApplied = false
-			m.SetupAllowlistError = ""
-			return m, loadStats(m.deps)
-		}
-		return m, nil
-	}
-
-	switch key {
-	case "p", "P":
-		switch m.SetupProfile {
-		case "agent":
-			m.SetupProfile = "dev"
-		case "dev":
-			m.SetupProfile = "minimal"
-		default:
-			m.SetupProfile = "agent"
-		}
-		return m, nil
-	case "up", "k":
-		if m.Cursor > 0 {
-			m.Cursor--
-		}
-	case "down", "j":
-		if m.Cursor < len(m.SetupAgents)-1 {
-			m.Cursor++
-		}
-	case "enter":
-		if len(m.SetupAgents) > 0 && m.Cursor < len(m.SetupAgents) {
-			agent := m.SetupAgents[m.Cursor]
-			m.SetupInstalling = true
-			m.SetupInstallingName = agent.Name
-			profile := m.SetupProfile
-			if profile == "" {
-				profile = "agent"
-			}
-			return m, tea.Batch(m.SetupSpinner.Tick, installAgentWithProfile(agent.Name, profile))
-		}
-	case "c", "C":
-		return m.openLocalConfig(), nil
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
 }
 
 // ──�� Embedding Config ───────────────────────────────────────────────────────
@@ -1639,7 +1002,8 @@ func prevMCPProfile(p string) string {
 }
 
 func (m Model) openLocalConfig() Model {
-	m.PrevScreen, m.Screen, m.LocalCfgFocusField = ScreenDashboard, ScreenLocalConfig, 0
+	m.NavPush(ScreenLocalConfig)
+	m.LocalCfgFocusField = 0
 	m.LocalCfgDirty, m.LocalCfgSaving, m.LocalCfgSaved, m.LocalCfgError = false, false, false, ""
 	if m.deps == nil || m.deps.Config == nil {
 		m.LocalCfgError = "config not available"
@@ -1663,6 +1027,10 @@ func (m Model) openLocalConfig() Model {
 	m.LocalCfgSyncURL.SetValue(cfg.Sync.URL)
 	m.LocalCfgSyncTokenEnv.SetValue(cfg.Sync.TokenEnv)
 	m.LocalCfgSyncInterval.SetValue(cfg.Sync.Interval.String())
+	m.LocalCfgEmbeddingDimensions.SetValue("")
+	if cfg.Search.EmbeddingDimensions > 0 {
+		m.LocalCfgEmbeddingDimensions.SetValue(fmt.Sprintf("%d", cfg.Search.EmbeddingDimensions))
+	}
 	return m
 }
 
@@ -1746,140 +1114,6 @@ func (m Model) handleLocalConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleLocalConfigKeys(key string) (tea.Model, tea.Cmd) {
-	if m.LocalCfgSaving {
-		return m, nil
-	}
-	if m.LocalCfgSaved {
-		if key == "esc" || key == "q" || key == "enter" {
-			m.Screen, m.Cursor = ScreenDashboard, 0
-			return m, loadStats(m.deps)
-		}
-		return m, nil
-	}
-	switch key {
-	case "shift+tab":
-		m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
-	case "tab":
-		m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
-	case "left", "h":
-		switch m.LocalCfgFocusField {
-		case 1:
-			m.LocalCfgFormat = (m.LocalCfgFormat + 2) % 3
-			m.LocalCfgDirty = true
-		case 2:
-			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 7) % 8
-			m.LocalCfgDirty = true
-		case 8:
-			m.LocalCfgMCPProfile = prevMCPProfile(m.LocalCfgMCPProfile)
-			m.LocalCfgDirty = true
-		default:
-			m.LocalCfgFocusField = localConfigSectionStart(max(0, localConfigSection(m.LocalCfgFocusField)-1))
-		}
-	case "right", "l":
-		switch m.LocalCfgFocusField {
-		case 1:
-			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
-			m.LocalCfgDirty = true
-		case 2:
-			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
-			m.LocalCfgDirty = true
-		case 8:
-			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
-			m.LocalCfgDirty = true
-		default:
-			m.LocalCfgFocusField = localConfigSectionStart(min(5, localConfigSection(m.LocalCfgFocusField)+1))
-		}
-	case "up", "k":
-		if m.LocalCfgFocusField > 0 {
-			m.LocalCfgFocusField--
-		}
-	case "down", "j":
-		if m.LocalCfgFocusField < 16 {
-			m.LocalCfgFocusField++
-		}
-	case " ":
-		switch m.LocalCfgFocusField {
-		case 1:
-			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
-		case 2:
-			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
-		case 5:
-			m.LocalCfgHTTPEnabled = !m.LocalCfgHTTPEnabled
-		case 8:
-			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
-		case 9:
-			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
-		case 12:
-			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
-		default:
-			return m, nil
-		}
-		m.LocalCfgDirty = true
-	case "enter":
-		switch m.LocalCfgFocusField {
-		case 0:
-			m.LocalCfgDatabasePath.Focus()
-		case 1:
-			m.LocalCfgFormat = (m.LocalCfgFormat + 1) % 3
-			m.LocalCfgDirty = true
-		case 2:
-			m.LocalCfgLLMProvider = (m.LocalCfgLLMProvider + 1) % 8
-			m.LocalCfgDirty = true
-		case 3:
-			m.LocalCfgLLMModel.Focus()
-		case 4:
-			m.LocalCfgLLMBaseURL.Focus()
-		case 6:
-			m.LocalCfgHTTPHost.Focus()
-		case 7:
-			m.LocalCfgHTTPPort.Focus()
-		case 8:
-			m.LocalCfgMCPProfile = nextMCPProfile(m.LocalCfgMCPProfile)
-			m.LocalCfgDirty = true
-		case 9:
-			m.LocalCfgMCPRemote = !m.LocalCfgMCPRemote
-			m.LocalCfgDirty = true
-		case 10:
-			m.LocalCfgMCPURL.Focus()
-		case 11:
-			m.LocalCfgMCPTokenEnv.Focus()
-		case 12:
-			m.LocalCfgSyncEnabled = !m.LocalCfgSyncEnabled
-			m.LocalCfgDirty = true
-		case 13:
-			m.LocalCfgSyncURL.Focus()
-		case 14:
-			m.LocalCfgSyncTokenEnv.Focus()
-		case 15:
-			m.LocalCfgSyncInterval.Focus()
-		case 16:
-			return m.startLocalConfigSave()
-		}
-	case "t", "T":
-		providers := []string{"None", "Ollama", "OpenAI", "Anthropic", "OpenRouter", "Groq", "DeepSeek", "Custom"}
-		provName := "Ollama"
-		if m.LocalCfgLLMProvider >= 0 && m.LocalCfgLLMProvider < len(providers) {
-			provName = providers[m.LocalCfgLLMProvider]
-		}
-		m.TestConnTesting = true
-		m.TestConnStatus = ""
-		return m, testConnectionCmd(provName, m.LocalCfgLLMBaseURL.Value())
-	case "i", "I":
-		m.Screen = ScreenSetup
-		m.Cursor = 0
-		return m, detectAgentsCmd()
-	case "s", "S":
-		return m.startLocalConfigSave()
-	case "r", "R":
-		return m.openLocalConfig(), nil
-	case "esc", "q":
-		m.Screen, m.Cursor = ScreenDashboard, 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
-}
-
 func localConfigSection(field int) int {
 	switch {
 	case field <= 1:
@@ -1935,135 +1169,6 @@ func (m Model) handleEmbeddingModelInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleEmbeddingConfigKeys(key string) (tea.Model, tea.Cmd) {
-	// If async operation running, only allow esc
-	if m.EmbCfgPulling || m.EmbCfgStarting || m.EmbCfgSaving || m.EmbCfgReindexing {
-		return m, nil
-	}
-
-	// Post-save: reindex key available when warning is shown
-	if m.EmbCfgSaved && m.EmbCfgReindexWarning && !m.EmbCfgReindexing {
-		if key == "x" || key == "X" {
-			m.EmbCfgReindexing = true
-			m.EmbCfgReindexWarning = false
-			m.EmbCfgError = ""
-			return m, tea.Batch(m.EmbCfgSpinner.Tick, startReindexCmd(m.deps))
-		}
-	}
-
-	// Post-save Ollama actions
-	if m.EmbCfgSaved && m.EmbCfgProvider == 1 && m.EmbCfgOllamaChecked {
-		switch key {
-		case "s", "S":
-			if !m.EmbCfgOllamaRunning {
-				m.EmbCfgStarting = true
-				m.EmbCfgError = ""
-				baseURL := ""
-				if m.deps.Config != nil {
-					baseURL = m.deps.Config.Search.EmbeddingBaseURL
-				}
-				return m, tea.Batch(m.EmbCfgSpinner.Tick, startOllamaCmd(baseURL))
-			}
-		case "p", "P":
-			if m.EmbCfgOllamaRunning && !m.EmbCfgOllamaHasModel {
-				m.EmbCfgPulling = true
-				m.EmbCfgError = ""
-				baseURL := ""
-				model := m.EmbCfgModel.Value()
-				if m.deps.Config != nil {
-					baseURL = m.deps.Config.Search.EmbeddingBaseURL
-				}
-				return m, tea.Batch(m.EmbCfgSpinner.Tick, pullOllamaModelCmd(baseURL, model))
-			}
-		case "esc", "q", "enter":
-			m.Screen = ScreenDashboard
-			m.Cursor = 0
-			return m, loadStats(m.deps)
-		}
-		return m, nil
-	}
-
-	// Post-save (non-ollama or not yet checked)
-	if m.EmbCfgSaved {
-		switch key {
-		case "esc", "q", "enter":
-			m.Screen = ScreenDashboard
-			m.Cursor = 0
-			return m, loadStats(m.deps)
-		}
-		return m, nil
-	}
-
-	// Reload config from disk (r key works in any non-editing state)
-	if key == "r" || key == "R" {
-		m.EmbCfgSaving = true
-		m.EmbCfgError = ""
-		return m, tea.Batch(m.EmbCfgSpinner.Tick, reloadConfigCmd(m.deps))
-	}
-
-	maxField := 4 // provider(0), model(1), vector(2), autostart(3), save(4)
-
-	switch key {
-	case "up", "k":
-		if m.EmbCfgFocusField > 0 {
-			m.EmbCfgFocusField--
-		}
-	case "down", "j":
-		if m.EmbCfgFocusField < maxField {
-			m.EmbCfgFocusField++
-		}
-	case "left", "h":
-		if m.EmbCfgFocusField == 0 {
-			m.EmbCfgProvider = (m.EmbCfgProvider + 2) % 3 // cycle left
-			m.EmbCfgDirty = true
-		}
-	case "right", "l":
-		if m.EmbCfgFocusField == 0 {
-			m.EmbCfgProvider = (m.EmbCfgProvider + 1) % 3 // cycle right
-			m.EmbCfgDirty = true
-		}
-	case " ":
-		switch m.EmbCfgFocusField {
-		case 2:
-			m.EmbCfgVector = !m.EmbCfgVector
-			m.EmbCfgDirty = true
-		case 3:
-			m.EmbCfgAutoStart = !m.EmbCfgAutoStart
-			m.EmbCfgDirty = true
-		}
-	case "enter":
-		switch m.EmbCfgFocusField {
-		case 1: // Focus model text input
-			m.EmbCfgModel.Focus()
-			return m, nil
-		case 4: // Save
-			m.EmbCfgSaving = true
-			m.EmbCfgSaved = false
-			m.EmbCfgError = ""
-			return m, tea.Batch(
-				m.EmbCfgSpinner.Tick,
-				saveEmbeddingConfig(m.deps, m.EmbCfgProvider, m.EmbCfgModel.Value(), m.EmbCfgVector, m.EmbCfgAutoStart),
-			)
-		}
-	case "esc", "q":
-		m.Screen = ScreenDashboard
-		m.Cursor = 0
-		return m, loadStats(m.deps)
-	}
-	return m, nil
-}
-
-// ─── Help ──────────────────────────────────────────────────────────────────
-
-func (m Model) handleHelpKeys(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc", "q", "?":
-		m.Screen = m.PrevScreen
-		return m, nil
-	}
-	return m, nil
-}
-
 // ─── Command Palette ──────────────────────────────────────────────────────
 
 type paletteCommand struct {
@@ -2075,51 +1180,47 @@ type paletteCommand struct {
 func allCommands() []paletteCommand {
 	return []paletteCommand{
 		{"Search memories", "/", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenSearch
+			m.NavPush(ScreenSearch)
 			m.SearchInput.Focus()
 			return m, nil
 		}},
 		{"Recent observations", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenRecent
+			m.NavPush(ScreenRecent)
 			return m, loadRecentObservations(m.deps, m.FilterProject)
 		}},
 		{"Browse sessions", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenSessions
+			m.NavPush(ScreenSessions)
 			return m, loadRecentSessions(m.deps)
 		}},
 		{"Knowledge graph", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenGraph
+			m.NavPush(ScreenGraph)
 			return m, nil
 		}},
 		{"Memory health", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenHealth
+			m.NavPush(ScreenHealth)
 			return m, loadHealthData(m.deps, "")
 		}},
 		{"Archived observations", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenArchive
+			m.NavPush(ScreenArchive)
 			return m, loadArchivedObservations(m.deps, m.FilterProject)
 		}},
-		{"Embedding settings", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenEmbeddingConfig
-			return m, nil
-		}},
-		{"Local settings", "", func(m Model) (Model, tea.Cmd) {
+		{"Configuration", "c", func(m Model) (Model, tea.Cmd) {
 			return m.openLocalConfig(), nil
 		}},
 		{"Connect to server", "L", func(m Model) (Model, tea.Cmd) {
-			m.openAuthModal()
-			return m, textinput.Blink
+			next, cmd := m.openConnectFlow()
+			return next.(Model), cmd
 		}},
 		{"Setup agent plugin", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenSetup
+			m.NavPush(ScreenSetup)
 			return m, nil
 		}},
 		{"Help / Keyboard shortcuts", "?", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenHelp
+			m.NavPush(ScreenHelp)
 			return m, nil
 		}},
 		{"Go to Dashboard", "", func(m Model) (Model, tea.Cmd) {
-			m.Screen = ScreenDashboard
+			m.NavReset()
 			return m, loadStats(m.deps)
 		}},
 	}
@@ -2413,164 +1514,4 @@ func (m Model) submitNewObservation() (tea.Model, tea.Cmd) {
 
 	m.NewObsModalOpen = false
 	return m, createObservationCmd(m.deps, obs)
-}
-
-func (m *Model) openAuthModal() {
-	m.AuthModalOpen = true
-	m.AuthFocusField = 0
-	m.AuthModeHybrid = true
-	if m.deps != nil && m.deps.Config != nil {
-		if m.deps.Config.Sync.URL != "" {
-			m.AuthServerURLInput.SetValue(m.deps.Config.Sync.URL)
-		} else if m.deps.Config.MCP.Remote.URL != "" {
-			m.AuthServerURLInput.SetValue(m.deps.Config.MCP.Remote.URL)
-		}
-		if m.deps.Config.HTTP.Token != "" {
-			m.AuthTokenInput.SetValue(m.deps.Config.HTTP.Token)
-		}
-		if m.deps.Config.MCP.Remote.Enabled {
-			m.AuthModeHybrid = false
-		}
-	}
-	m.focusAuthField()
-}
-
-func (m *Model) focusAuthField() {
-	m.AuthServerURLInput.Blur()
-	m.AuthTokenInput.Blur()
-	switch m.AuthFocusField {
-	case 0:
-		m.AuthServerURLInput.Focus()
-	case 1:
-		m.AuthTokenInput.Focus()
-	}
-}
-
-func (m Model) submitAuthModal() (tea.Model, tea.Cmd) {
-	serverURL := strings.TrimSpace(m.AuthServerURLInput.Value())
-	token := strings.TrimSpace(m.AuthTokenInput.Value())
-
-	m.AuthToken = token
-	m.AuthModalOpen = false
-
-	if m.deps != nil && m.deps.Config != nil {
-		m.deps.Config.HTTP.Token = token
-		if serverURL != "" {
-			if m.AuthModeHybrid {
-				m.deps.Config.Sync.URL = serverURL
-				m.deps.Config.Sync.Enabled = true
-				if m.deps.Config.Sync.TokenEnv == "" {
-					m.deps.Config.Sync.TokenEnv = "CORTEX_HTTP_TOKEN"
-				}
-				if m.deps.Config.MCP.Remote.URL == "" {
-					m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
-				}
-				m.deps.Config.MCP.Remote.Enabled = false
-				m.UploadToCortex = true
-			} else {
-				m.deps.Config.MCP.Remote.URL = strings.TrimRight(serverURL, "/") + "/mcp"
-				m.deps.Config.MCP.Remote.Enabled = true
-				if m.deps.Config.MCP.Remote.TokenEnv == "" {
-					m.deps.Config.MCP.Remote.TokenEnv = "CORTEX_HTTP_TOKEN"
-				}
-				m.deps.Config.Sync.Enabled = false
-				m.UploadToCortex = false
-			}
-			if token != "" {
-				_ = os.Setenv("CORTEX_HTTP_TOKEN", token)
-			}
-		} else if token == "" {
-			m.deps.Config.Sync.Enabled = false
-			m.deps.Config.MCP.Remote.Enabled = false
-			m.UploadToCortex = false
-		}
-		targetPath := m.deps.Config.LoadedFrom
-		if targetPath == "" {
-			targetPath = filepath.Join(config.CortexDir(), "cortex.yaml")
-		}
-		if err := config.Save(m.deps.Config, targetPath); err != nil {
-			m.ToastMessage = fmt.Sprintf("Error saving config: %v", err)
-			m.ToastType = "error"
-			return m, nil
-		}
-		m.deps.Config.LoadedFrom = targetPath
-	}
-
-	if token != "" || serverURL != "" {
-		if m.deps != nil && m.deps.Config != nil && m.deps.Config.Server.PrincipalSubject != "" {
-			m.CurrentUser = m.deps.Config.Server.PrincipalSubject
-		} else {
-			u := os.Getenv("USER")
-			if u == "" {
-				u = os.Getenv("USERNAME")
-			}
-			if u != "" {
-				m.CurrentUser = u
-			}
-		}
-		if m.deps != nil && m.deps.Config != nil && len(m.deps.Config.Server.Roles) > 0 {
-			m.UserRole = m.deps.Config.Server.Roles[0]
-		} else {
-			m.UserRole = "admin"
-		}
-		if m.AuthModeHybrid {
-			m.ToastMessage = "✔ Connected in Hybrid Mode (Local-First + Sync)"
-		} else {
-			m.ToastMessage = "✔ Configured Remote MCP Proxy Mode"
-		}
-		m.ToastType = "success"
-	} else {
-		u := os.Getenv("USER")
-		if u == "" {
-			u = os.Getenv("USERNAME")
-		}
-		if u == "" {
-			u = "local-user"
-		}
-		m.CurrentUser = u
-		m.UserRole = "local"
-		m.ToastMessage = "Session cleared: unauthenticated local mode"
-		m.ToastType = "warning"
-	}
-
-	return m, nil
-}
-
-func (m Model) handleAuthModalKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.AuthModalOpen = false
-		return m, nil
-	case "tab", "down":
-		m.AuthFocusField = (m.AuthFocusField + 1) % 3
-		m.focusAuthField()
-		return m, textinput.Blink
-	case "shift+tab", "up":
-		m.AuthFocusField = (m.AuthFocusField + 2) % 3
-		m.focusAuthField()
-		return m, textinput.Blink
-	case " ", "left", "right":
-		if m.AuthFocusField == 2 {
-			m.AuthModeHybrid = !m.AuthModeHybrid
-			return m, nil
-		}
-	case "enter":
-		if m.AuthFocusField == 0 {
-			m.AuthFocusField = 1
-			m.focusAuthField()
-			return m, textinput.Blink
-		}
-		return m.submitAuthModal()
-	case "ctrl+s":
-		return m.submitAuthModal()
-	}
-
-	var cmd tea.Cmd
-	switch m.AuthFocusField {
-	case 0:
-		m.AuthServerURLInput, cmd = m.AuthServerURLInput.Update(msg)
-	case 1:
-		m.AuthTokenInput, cmd = m.AuthTokenInput.Update(msg)
-	}
-	return m, cmd
 }

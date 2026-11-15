@@ -314,6 +314,208 @@ func TestSaveRejectsInvalidExistingYAMLWithoutMutation(t *testing.T) {
 	}
 }
 
+// activeConfigFiles lists the sibling files Load's multi-format search would
+// consider as candidates for the base name "cortex" in dir. Backups (.bak) and
+// temp files are deliberately excluded: they are never load candidates.
+func activeConfigFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	exts := map[string]bool{".yaml": true, ".yml": true, ".json": true, ".toml": true}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "cortex.") && exts[filepath.Ext(name)] {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
+func TestSaveFormatChangeRetiresPreviousFile(t *testing.T) {
+	cases := []struct {
+		name    string
+		fromExt string
+		toExt   string
+	}{
+		{name: "yaml to json", fromExt: ".yaml", toExt: ".json"},
+		{name: "json to toml", fromExt: ".json", toExt: ".toml"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldPath := filepath.Join(dir, "cortex"+tc.fromExt)
+			newPath := filepath.Join(dir, "cortex"+tc.toExt)
+
+			cfg := DefaultConfig()
+			cfg.Logging.Level = "debug"
+			cfg.LoadedFrom = oldPath
+			if err := Save(cfg, oldPath); err != nil {
+				t.Fatalf("seed %s: %v", tc.fromExt, err)
+			}
+
+			cfg.Logging.Level = "warn"
+			if err := Save(cfg, newPath); err != nil {
+				t.Fatalf("format change save: %v", err)
+			}
+
+			active := activeConfigFiles(t, dir)
+			if len(active) != 1 || active[0] != filepath.Base(newPath) {
+				t.Fatalf("active config files = %v, want [%s]", active, filepath.Base(newPath))
+			}
+			if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+				t.Fatalf("previous config file still present: %v", err)
+			}
+
+			backup, err := os.ReadFile(oldPath + ".bak")
+			if err != nil {
+				t.Fatalf("backup missing: %v", err)
+			}
+			if !strings.Contains(string(backup), "debug") {
+				t.Errorf("backup lost previous value:\n%s", backup)
+			}
+
+			reloaded, err := Load(newPath)
+			if err != nil {
+				t.Fatalf("reload new file: %v", err)
+			}
+			if reloaded.Logging.Level != "warn" {
+				t.Errorf("reloaded level = %q, want warn", reloaded.Logging.Level)
+			}
+			if reloaded.LoadedFrom != newPath {
+				t.Errorf("LoadedFrom = %q, want %q", reloaded.LoadedFrom, newPath)
+			}
+		})
+	}
+}
+
+func TestSaveFormatChangeFailureKeepsPreviousFile(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "cortex.yaml")
+	newPath := filepath.Join(dir, "cortex.json")
+
+	cfg := DefaultConfig()
+	cfg.Logging.Level = "debug"
+	cfg.LoadedFrom = oldPath
+	if err := Save(cfg, oldPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory occupying the atomic temp path makes os.WriteFile fail
+	// deterministically, exercising the write-failure branch.
+	if err := os.Mkdir(newPath+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Logging.Level = "warn"
+	if err := Save(cfg, newPath); err == nil {
+		t.Fatal("Save accepted a blocked atomic write")
+	}
+
+	after, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("previous config removed on failed save: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("previous config mutated on failed save")
+	}
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Fatalf("new config unexpectedly committed: %v", err)
+	}
+	if _, err := os.Stat(oldPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf(".bak created on failed save: %v", err)
+	}
+
+	reloaded, err := Load(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Logging.Level != "debug" {
+		t.Errorf("previous config no longer authoritative: level = %q", reloaded.Logging.Level)
+	}
+}
+
+func TestSaveSameFormatDoesNotRetireOrBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cortex.yaml")
+
+	cfg := DefaultConfig()
+	cfg.Logging.Level = "debug"
+	cfg.LoadedFrom = path
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Logging.Level = "warn"
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("explicit same-path save: %v", err)
+	}
+	if err := Save(cfg, ""); err != nil {
+		t.Fatalf("implicit same-path save: %v", err)
+	}
+
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("same-format save created a backup: %v", err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Logging.Level != "warn" {
+		t.Errorf("level = %q, want warn", reloaded.Logging.Level)
+	}
+}
+
+func TestLoadResolvesNewFileAfterFormatChange(t *testing.T) {
+	clearEnvVars(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+
+	work := t.TempDir()
+	t.Chdir(work)
+
+	oldPath := filepath.Join(work, "cortex.json")
+	newPath := filepath.Join(work, "cortex.toml")
+
+	cfg := DefaultConfig()
+	cfg.Logging.Level = "debug"
+	cfg.LoadedFrom = oldPath
+	if err := Save(cfg, oldPath); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Logging.Level = "warn"
+	if err := Save(cfg, newPath); err != nil {
+		t.Fatal(err)
+	}
+
+	active := activeConfigFiles(t, work)
+	if len(active) != 1 || active[0] != "cortex.toml" {
+		t.Fatalf("active config files = %v, want [cortex.toml]", active)
+	}
+
+	resolved, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(resolved.LoadedFrom) != "cortex.toml" {
+		t.Fatalf("Load resolved %q, want cortex.toml", resolved.LoadedFrom)
+	}
+	if resolved.Logging.Level != "warn" {
+		t.Errorf("resolved level = %q, want warn", resolved.Logging.Level)
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	// Clear environment variables
 	clearEnvVars(t)
