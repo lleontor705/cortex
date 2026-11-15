@@ -69,7 +69,9 @@ test.describe("settings", () => {
       await page.goto("/settings");
       await connectControlRoom(page);
     }
-    await expect(page).toHaveURL(/\/settings$/);
+    // The static export sets trailingSlash, so a direct load lands on
+    // /settings/ while client-side navigation may keep /settings.
+    await expect(page).toHaveURL(/\/settings\/?$/);
 
     await expect(
       page.getByRole("heading", { name: /Configuración de Servidor/ }),
