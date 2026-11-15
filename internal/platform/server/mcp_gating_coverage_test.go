@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -221,6 +223,48 @@ func TestCoverageRedactingLogger(t *testing.T) {
 	logger := redactingLogger{next: coverageNoopLogger{}}
 	logger.Infof("request with Bearer secret-key-12345 to %s", "internal.example.com:5432/sql")
 	logger.Errorf("session abc-123 failed: %s", "driver: bad connection")
+}
+
+type coverageCaptureLogger struct{ lines []string }
+
+func (l *coverageCaptureLogger) Infof(format string, v ...any) {
+	l.lines = append(l.lines, "INFO "+fmt.Sprintf(format, v...))
+}
+
+func (l *coverageCaptureLogger) Errorf(format string, v ...any) {
+	l.lines = append(l.lines, "ERROR "+fmt.Sprintf(format, v...))
+}
+
+// The mcp-go v1.x transport logs through slog; attribute values must be
+// redacted like message text, and the level must pick the INFO/ERROR sink.
+func TestRedactingLoggerSlogBridge(t *testing.T) {
+	capture := &coverageCaptureLogger{}
+	logger := redactingLogger{next: capture}.slogLogger()
+
+	logger.Info("request received", "authorization", "Bearer secret-key-12345")
+	logger.With("cause", "pgx: pool closed").WithGroup("req").Error("write failed",
+		slog.Group("conn", slog.String("err", "sql: connection refused")))
+	logger.Debug("dropped below info")
+
+	if len(capture.lines) != 2 {
+		t.Fatalf("lines = %d (%q), want 2", len(capture.lines), capture.lines)
+	}
+	if !strings.HasPrefix(capture.lines[0], "INFO request received") {
+		t.Errorf("info line = %q", capture.lines[0])
+	}
+	if !strings.HasPrefix(capture.lines[1], "ERROR write failed") {
+		t.Errorf("error line = %q", capture.lines[1])
+	}
+	for _, line := range capture.lines {
+		for _, canary := range []string{"secret-key-12345", "pgx:", "sql:"} {
+			if strings.Contains(line, canary) {
+				t.Errorf("line %q still contains %q", line, canary)
+			}
+		}
+	}
+
+	// A zero-value logger (the compile-time assertion form) must not panic.
+	redactingLogger{}.slogLogger().Info("no sink")
 }
 
 type coverageNoopLogger struct{}
