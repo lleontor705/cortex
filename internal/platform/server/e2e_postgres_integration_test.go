@@ -1875,6 +1875,16 @@ func TestE2EPrincipalRWConcurrentAuthAndRevocationSafety(t *testing.T) {
 	// must observe 401, and in-flight pre-commit requests may finish.
 	stop := make(chan struct{})
 	samples := make(chan e2eConcurrentAuthSample, workers*64)
+	// Drain while the workers run: post-revoke 401s return fast enough to
+	// fill any fixed buffer, and a worker blocked on send never sees stop.
+	var collected []e2eConcurrentAuthSample
+	collectDone := make(chan struct{})
+	go func() {
+		defer close(collectDone)
+		for sample := range samples {
+			collected = append(collected, sample)
+		}
+	}()
 	var loopWG sync.WaitGroup
 	client := &http.Client{Timeout: 5 * time.Second}
 	for w := 0; w < 8; w++ {
@@ -1929,10 +1939,11 @@ func TestE2EPrincipalRWConcurrentAuthAndRevocationSafety(t *testing.T) {
 	close(stop)
 	loopWG.Wait()
 	close(samples)
+	<-collectDone
 	stale := 0
 	harnessFailures := 0
 	cutoff := revokeDone.Add(25 * time.Millisecond)
-	for sample := range samples {
+	for _, sample := range collected {
 		if sample.Failed {
 			harnessFailures++
 			continue
