@@ -45,29 +45,45 @@ cortex --mode=hybrid search "release notes"
 cortex search "release notes" --mode=hybrid
 ```
 
-`--mode` parsing is strict. The valid set is exactly `local`, `hybrid`, and
-`server`. Before the subcommand, any other value fails closed with exit code `2`
-and the error message shown below. After the subcommand, a value outside the
-triad is left for the subcommand's own flag parser, so
+`--mode` parsing is strict. The valid set is exactly `local`, `hybrid`, `remote`,
+and `server`. Before the subcommand, any other value fails closed with exit code `2`
+and the error message shown below. After the subcommand, a value outside that
+set is left for the subcommand's own flag parser, so
 `cortex search "q" --mode=multi_hop` selects the search retrieval mode instead of
 being rejected as a runtime mode:
 
 ```text
-cortex: unknown mode "…": use --mode local, --mode hybrid, or --mode server
+cortex: unknown mode "…": use --mode local, --mode hybrid, --mode remote, or --mode server
 ```
 
-When `--mode` is absent the effective mode is `local`.
+When `--mode` is absent the mode comes from `CORTEX_MODE`, the config file's
+`mode:` key, legacy keys, and finally `local` (see §1.2).
 
-### 1.2 The mode triad
+### 1.2 Runtime modes
 
 | Mode | Backend | Network surface | Notes |
 |---|---|---|---|
 | `local` | Single-binary SQLite (`~/.cortex/cortex.db`) with local stdio MCP | None required | Default. Byte-compatible with the standalone local composition. |
 | `hybrid` | Local SQLite plus the remote sync/replication loop | Remote sync endpoint | Not a separate store: it is the local composition with replication layered on. The binary exports `CORTEX_MODE=hybrid` for the process. |
+| `remote` | Thin client: `cortex mcp` proxies every tool to a Cortex server | Remote `/mcp` endpoint | Replaces the legacy `mcp.remote.enabled` switch. Background sync never runs. |
 | `server` | Single-tenant PostgreSQL over authenticated HTTP and Streamable HTTP MCP | HTTP listener + `/mcp` | Wired by `cmd/cortex`; see [`--mode server`](#137-mode-server). |
 
-`cortex status` (alias `cortex mode`) reports the active triad and its
-description. Server-mode PostgreSQL is single-tenant; tenant and workspace scope
+**One resolver.** Every subsystem executes and reports the same mode, resolved
+in this order:
+
+1. `--mode` (before the subcommand) or `CORTEX_MODE` — an invalid value exits `2`;
+2. the top-level `mode:` key of the config file;
+3. legacy keys: `mcp.remote.enabled` → `remote`, `sync.enabled` + `sync.url` → `hybrid`;
+4. `local`.
+
+A `server.storage.dsn` alone no longer reports `server`. With `mode: server` in
+the config file, starting `cortex` without a subcommand runs the server with that
+file; management commands (`mode`, `status`, `config`, `doctor`) keep working,
+and commands that need the local database fail with a hint.
+
+`cortex mode` shows the resolved mode, its source and warnings; `cortex mode set`
+persists it (see [§3.27](#327-status--mode)). `cortex status` reports the same
+mode and its description. Server-mode PostgreSQL is single-tenant; tenant and workspace scope
 are configuration constants, never client input.
 
 ### 1.3 Exit-code contract
@@ -1297,11 +1313,27 @@ cortex web key regenerate
 
 ```text
 cortex status [--json]
-cortex mode [--json]
+cortex mode [show] [--json]
+cortex mode set <local|hybrid|remote|server> [--url URL] [--token-env NAME] [--config PATH]
+cortex mode test
 ```
 
-Prints the operational mode, database path, sync status, embeddings, and config
-path. `mode` is an alias for `status`.
+`status` prints the operational mode, database path, sync status, embeddings, and
+config path.
+
+`mode` (or `mode show`) prints the resolved mode, its **source** (`CORTEX_MODE /
+--mode`, `config file (mode:)`, a legacy key, or `default`), the server and MCP
+URLs, the config file, and warnings for inconsistent settings (for example
+`sync.enabled` in remote mode). `--json` emits the same fields.
+
+`mode set` writes `mode:` to the config file and keeps the legacy switches
+consistent: `hybrid --url URL` sets `sync.url` and enables sync; `remote --url URL`
+sets `mcp.remote.url` to `URL/mcp` and disables sync; `local`/`server` turn both
+switches off but keep the URLs. `--token-env` names the token variable for hybrid
+or remote.
+
+`mode test` probes the configured server for hybrid/remote (`/health`,
+`/health/ready`, `/api/me`, same checks as `doctor --server`).
 
 | Flag | Default | Environment override | Description |
 |---|---|---|---|
@@ -1320,8 +1352,7 @@ The JSON shape is:
 }
 ```
 
-The effective mode is resolved from `CORTEX_MODE`, then `server.storage.dsn`, then
-`sync.enabled` + `sync.url`, then `local`.
+The effective mode follows the single resolver in [§1.2](#12-runtime-modes).
 
 **Exit codes:** `0` success. **Authentication:** none.
 
@@ -1331,9 +1362,11 @@ The effective mode is resolved from `CORTEX_MODE`, then `server.storage.dsn`, th
 cortex status
 cortex status --json
 cortex mode --json
+cortex mode set remote --url https://cortex.example.com
+cortex mode test
 ```
 
-**See also:** [doctor](#318-doctor), [§1.2 mode triad](#12-the-mode-triad).
+**See also:** [doctor](#318-doctor), [§1.2 runtime modes](#12-runtime-modes).
 
 ### 3.28 `migrate`
 
@@ -1413,7 +1446,7 @@ variable is set.
 
 | Variable | Config key | Default | Meaning |
 |---|---|---|---|
-| `CORTEX_MODE` | — | *(empty → `local`)* | Selects the mode triad: `local`, `hybrid`, `server`. |
+| `CORTEX_MODE` | — | *(empty → `mode:` key, then legacy keys, then `local`)* | Selects the runtime mode: `local`, `hybrid`, `remote`, `server`. Invalid values exit `2`. |
 | `CORTEX_SERVER_NAME` | `server.name` | `cortex` | Server name. |
 | `CORTEX_SERVER_VERSION` | `server.version` | `2.0.0` | Server version label. |
 | `CORTEX_SERVER_TENANT_ID` | `server.tenant_id` | *(empty)* | Tenant UUID bound to the synthetic principal. Required in server mode. |

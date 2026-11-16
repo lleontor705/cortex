@@ -9,7 +9,7 @@ import (
 )
 
 // Mode selects which backend the binary runs. The set is closed and contains
-// exactly three stable values:
+// exactly four stable values:
 //
 //   - ModeLocal ("local") — the single-binary SQLite composition with the local
 //     stdio MCP server. It has no network dependency and is byte-compatible
@@ -22,6 +22,10 @@ import (
 //     part of the public surface (CORTEX_MODE / --mode) and its meaning is
 //     locked by decision D2; it must never be renamed and must never acquire
 //     new semantics.
+//
+//   - ModeRemote ("remote") — a thin client: the local CLI composition whose
+//     `cortex mcp` proxies every tool to a Cortex server instead of serving
+//     the local database. It replaces the legacy mcp.remote.enabled switch.
 //
 //   - ModeServer ("server") — the single-tenant PostgreSQL composition served
 //     over authenticated HTTP and streamable MCP. cmd/cortex is the sole bridge
@@ -40,6 +44,10 @@ const (
 	// enabled. It is ModeLocal plus the sync loop, never a separate store.
 	ModeHybrid Mode = "hybrid"
 
+	// ModeRemote runs the local CLI composition with `cortex mcp` proxying to
+	// a Cortex server (config.RuntimeRemote).
+	ModeRemote Mode = "remote"
+
 	// ModeServer runs the single-tenant PostgreSQL + authenticated HTTP path.
 	// cmd/cortex is the sole bridge to the server composition root.
 	ModeServer Mode = "server"
@@ -48,10 +56,10 @@ const (
 // DefaultMode is used when no --mode flag is provided on the command line.
 const DefaultMode Mode = ModeLocal
 
-// Valid reports whether m is one of the three closed-set triad modes.
+// Valid reports whether m is one of the closed-set modes.
 func (m Mode) Valid() bool {
 	switch m {
-	case ModeLocal, ModeHybrid, ModeServer:
+	case ModeLocal, ModeHybrid, ModeRemote, ModeServer:
 		return true
 	default:
 		return false
@@ -87,12 +95,12 @@ func (r *Runtime) Close() error {
 // import the server composition root. cmd/cortex performs that bridge.
 func Select(mode Mode, ctx context.Context, opts app.Options) (*Runtime, error) {
 	switch mode {
-	case ModeLocal, ModeHybrid:
+	case ModeLocal, ModeHybrid, ModeRemote:
 		return Local(ctx, opts)
 	case ModeServer:
 		return nil, fmt.Errorf("server mode is wired by cmd/cortex, not platform.Select")
 	default:
-		return nil, fmt.Errorf("unknown mode %q: use --mode local, --mode hybrid, or --mode server", mode)
+		return nil, fmt.Errorf("unknown mode %q: use --mode local, --mode hybrid, --mode remote, or --mode server", mode)
 	}
 }
 
@@ -162,7 +170,7 @@ func ParseMode(args []string) (Mode, []string) {
 func resolveMode(raw string, args []string, start, end int) (Mode, []string, error) {
 	mode := Mode(raw)
 	if !mode.Valid() {
-		return mode, args, fmt.Errorf("unknown mode %q: use --mode local, --mode hybrid, or --mode server", raw)
+		return mode, args, fmt.Errorf("unknown mode %q: use --mode local, --mode hybrid, --mode remote, or --mode server", raw)
 	}
 
 	clean := make([]string, 0, len(args)-(end-start))

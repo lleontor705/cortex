@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ func DefaultDBPath() string {
 
 // Config represents the main configuration structure
 type Config struct {
+	// Mode selects the runtime mode (local, hybrid, remote, server). Empty
+	// means "derive from legacy keys"; see ResolveMode for the precedence.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty" toml:"mode,omitempty" mapstructure:"mode"`
+
 	AI        AIConfig        `yaml:"ai,omitempty" json:"ai,omitempty" toml:"ai,omitempty" mapstructure:"ai"`
 	Database  DatabaseConfig  `yaml:"database,omitempty" json:"database,omitempty" toml:"database,omitempty" mapstructure:"database"`
 	HTTP      HTTPConfig      `yaml:"http,omitempty" json:"http,omitempty" toml:"http,omitempty" mapstructure:"http"`
@@ -609,6 +614,12 @@ func setDefaults(v *viper.Viper) {
 
 // validate checks if the configuration values are valid
 func validate(cfg *Config) error {
+	if strings.TrimSpace(cfg.Mode) != "" {
+		if _, err := ParseRuntimeMode(cfg.Mode); err != nil {
+			return fmt.Errorf("invalid mode: %w", err)
+		}
+	}
+
 	// Validate logging level
 	validLevels := map[string]bool{
 		"debug": true,
@@ -822,6 +833,8 @@ func (cfg *Config) GetProperty(key string) (string, error) {
 		return fmt.Sprintf("%t", cfg.Search.FTS5), nil
 	case "search.ollama_auto_start":
 		return fmt.Sprintf("%t", cfg.Search.OllamaAutoStart), nil
+	case "mode":
+		return cfg.Mode, nil
 	case "mcp.enabled":
 		return fmt.Sprintf("%t", cfg.MCP.Enabled), nil
 	case "mcp.profile":
@@ -902,6 +915,16 @@ func (cfg *Config) SetProperty(key, value string) error {
 		cfg.Search.FTS5 = parseBool(value)
 	case "search.ollama_auto_start":
 		cfg.Search.OllamaAutoStart = parseBool(value)
+	case "mode":
+		if value == "" {
+			cfg.Mode = ""
+			break
+		}
+		mode, err := ParseRuntimeMode(value)
+		if err != nil {
+			return err
+		}
+		cfg.Mode = string(mode)
 	case "mcp.enabled":
 		cfg.MCP.Enabled = parseBool(value)
 	case "mcp.profile":
@@ -1418,6 +1441,7 @@ func marshalConfigPreservingExisting(cfg *Config, path string) ([]byte, error) {
 		return nil, fmt.Errorf("parse existing config: document root must be a mapping")
 	}
 	clearAbsentSecrets(existing.Content[0], desired.Content[0])
+	zeroAbsentKnownKeys(existing.Content[0], desired.Content[0], reflect.TypeOf(Config{}))
 	mergeYAMLNode(existing.Content[0], desired.Content[0])
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
@@ -1462,6 +1486,77 @@ func mergeYAMLNode(existing, desired *yaml.Node) {
 	if foot != "" {
 		existing.FootComment = foot
 	}
+}
+
+// zeroAbsentKnownKeys rewrites every key that the existing file sets but the
+// desired document omits — which, with omitempty tags, means the in-memory
+// value is the zero value — to that explicit zero (false, 0, "", []).
+// Without it a value turned off in memory (sync.enabled: false,
+// mcp.remote.enabled: false) could never be persisted: mergeYAMLNode only
+// visits desired keys, so the stale `true` survived every save. Writing the
+// explicit zero (instead of deleting the key) keeps fields whose default is
+// non-zero from silently reverting to that default on the next load.
+// Keys that are not Config fields are left untouched.
+func zeroAbsentKnownKeys(existing, desired *yaml.Node, t reflect.Type) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if existing == nil || existing.Kind != yaml.MappingNode || t.Kind() != reflect.Struct {
+		return
+	}
+	fields := yamlFieldTypes(t)
+	for i := 0; i+1 < len(existing.Content); i += 2 {
+		key, value := existing.Content[i].Value, existing.Content[i+1]
+		fieldType, known := fields[key]
+		if !known {
+			continue
+		}
+		desiredValue := mappingValue(desired, key)
+		for fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if fieldType.Kind() == reflect.Struct && fieldType != reflect.TypeOf(time.Time{}) {
+			zeroAbsentKnownKeys(value, desiredValue, fieldType)
+			continue
+		}
+		if desiredValue != nil {
+			continue
+		}
+		if zero, ok := zeroYAMLNode(fieldType); ok {
+			zero.HeadComment, zero.LineComment, zero.FootComment = value.HeadComment, value.LineComment, value.FootComment
+			existing.Content[i+1] = zero
+		}
+	}
+}
+
+// yamlFieldTypes maps each yaml tag name of struct t to its field type.
+func yamlFieldTypes(t reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		if name == "" || name == "-" || !field.IsExported() {
+			continue
+		}
+		fields[name] = field.Type
+	}
+	return fields
+}
+
+// zeroYAMLNode renders the zero value of t as a YAML node.
+func zeroYAMLNode(t reflect.Type) (*yaml.Node, bool) {
+	var node yaml.Node
+	if err := node.Encode(reflect.Zero(t).Interface()); err != nil {
+		return nil, false
+	}
+	if t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+		// nil slices/maps encode as null; an explicit empty collection reads back identically.
+		node = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		if t.Kind() == reflect.Map {
+			node = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
+		}
+	}
+	return &node, true
 }
 
 // secretClearList enumerates dotted scalar-secret paths that must not survive
@@ -1579,36 +1674,5 @@ const (
 	ModeLocal  OperatingMode = "local"
 	ModeHybrid OperatingMode = "hybrid"
 	ModeServer OperatingMode = "server"
+	ModeRemote OperatingMode = "remote"
 )
-
-// DetectMode resolves the active operational mode (local, hybrid, server) and descriptive context.
-func (c *Config) DetectMode() (OperatingMode, string) {
-	if c == nil {
-		return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
-	}
-
-	if envMode := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))); envMode != "" {
-		switch envMode {
-		case "server":
-			return ModeServer, "Server (PostgreSQL Multi-Tenant with RLS & Enterprise Governance)"
-		case "hybrid":
-			target := c.Sync.URL
-			if target == "" {
-				target = "remote replication endpoint"
-			}
-			return ModeHybrid, fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", target)
-		case "local":
-			return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
-		}
-	}
-
-	if c.Server.Storage.DSN != "" {
-		return ModeServer, "Server (PostgreSQL Multi-Tenant with RLS & Enterprise Governance)"
-	}
-
-	if c.Sync.Enabled && c.Sync.URL != "" {
-		return ModeHybrid, fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", c.Sync.URL)
-	}
-
-	return ModeLocal, "Local (Zero-CGO SQLite Standalone Memory)"
-}

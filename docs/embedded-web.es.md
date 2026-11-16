@@ -117,8 +117,10 @@ digest=<base64url-hmac-sha256>
 
 ## Modos
 
-La tríada de modos es un conjunto cerrado: `local`, `hybrid`, `server`
-(`internal/platform/mode.go`). La superficie web embebida se monta en los tres; lo
+Los modos de ejecución son un conjunto cerrado: `local`, `hybrid`, `remote`, `server`
+(`internal/platform/mode.go`). `remote` es la composición local cuyo `cortex mcp`
+hace de proxy hacia un servidor, así que la superficie web se comporta como en
+`local`. La superficie web embebida se monta en todos; lo
 que cambia es el store subyacente, la autorización de la API y cómo se conecta la
 superficie.
 

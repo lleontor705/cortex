@@ -876,6 +876,7 @@ func unifiedConfigSaveFrom(prev config.Config, a *app.App, in unifiedConfigInput
 	next.Sync.Enabled, next.Sync.URL, next.Sync.TokenEnv, next.Sync.Interval = in.syncEnabled, strings.TrimSpace(in.syncURL), strings.TrimSpace(in.syncTokenEnv), interval
 	next.Search.OllamaAutoStart = in.autoStart
 	next.Search.EmbeddingDimensions = dims
+	next.Mode = modeForSwitches(prev.Mode, next.MCP.Remote.Enabled, next.Sync.Enabled && strings.TrimSpace(next.Sync.URL) != "")
 
 	targetPath, formatChanged := unifiedConfigTargetPath(prev.LoadedFrom, in.format)
 
@@ -1091,4 +1092,21 @@ func unifiedConfigKeymap(screen Screen) Keymap {
 		bind("esc", "Back"),
 		bind("q", "Back"),
 	}}
+}
+
+// modeForSwitches keeps the top-level `mode:` key consistent with the
+// remote/sync switches edited in the form, so the explicit key can never
+// silently override what the user just chose. A server (or unset) mode with no
+// switch on is left untouched.
+func modeForSwitches(prevMode string, remote, sync bool) string {
+	switch {
+	case remote:
+		return string(config.RuntimeRemote)
+	case sync:
+		return string(config.RuntimeHybrid)
+	case prevMode == string(config.RuntimeRemote) || prevMode == string(config.RuntimeHybrid):
+		return string(config.RuntimeLocal)
+	default:
+		return prevMode
+	}
 }

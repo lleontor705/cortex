@@ -61,10 +61,13 @@ type App struct {
 	syncDone      <-chan struct{}
 	syncSignature string
 	syncHybrid    bool
-	syncDisabled  bool
-	closed        bool
-	baseCtx       context.Context
-	syncStarter   syncLoopStarter
+	// syncSuppressed is true when the resolved mode (remote, server, or an
+	// explicit local) forbids the replication loop.
+	syncSuppressed bool
+	syncDisabled   bool
+	closed         bool
+	baseCtx        context.Context
+	syncStarter    syncLoopStarter
 }
 
 // syncLoopStarter starts a replication loop and returns its cancel function and
@@ -77,6 +80,13 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	cfg, err := loadConfig(opts)
 	if err != nil {
 		return nil, err
+	}
+	if res, err := config.ResolveMode(cfg); err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	} else if res.Mode == config.RuntimeServer {
+		// The local SQLite composition must never stand in for a server
+		// deployment: fail closed with the command that starts the server.
+		return nil, fmt.Errorf("app: this command needs the local database, but the resolved mode is server (%s); start the server with `cortex --mode server` or switch modes with `cortex mode set local`", res.SourceLabel)
 	}
 
 	dbCfg := database.DefaultConfig()
@@ -240,7 +250,6 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		a.archivalCancel = archivalSvc.Start(ctx)
 	}
 
-	a.syncHybrid = hybridRequested()
 	a.syncDisabled = opts.DisableRemoteSync
 	a.baseCtx = ctx
 	a.syncStarter = startHybridReplication
@@ -249,12 +258,29 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 	return a, nil
 }
 
-// hybridRequested reports whether the hybrid composition was selected through
-// the stable CORTEX_MODE surface. cmd/cortex sets CORTEX_MODE=hybrid when it
-// resolves --mode hybrid, so this predicate covers both entry surfaces without
-// creating an import cycle (internal/platform already imports internal/app).
-func hybridRequested() bool {
-	return strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_MODE"))) == "hybrid"
+// modeSyncIntent derives the replication intent from the single mode
+// resolver (config.ResolveMode), so the loop always matches the mode that
+// `cortex status` / `cortex mode` report:
+//   - hybrid: the loop runs (even without sync.enabled, decision D2);
+//   - remote, server, or an explicitly selected local mode: the loop is
+//     suppressed even if legacy sync.enabled is still set;
+//   - default local: legacy behavior (sync.enabled alone starts the loop).
+//
+// An invalid mode setting keeps the legacy behavior; Load / main already
+// reject it before an App is opened.
+func modeSyncIntent(cfg *config.Config) (isHybrid, suppressed bool) {
+	res, err := config.ResolveMode(cfg)
+	if err != nil {
+		return false, false
+	}
+	switch res.Mode {
+	case config.RuntimeHybrid:
+		return true, false
+	case config.RuntimeRemote, config.RuntimeServer:
+		return false, true
+	default:
+		return false, res.Source != config.ModeSourceDefault
+	}
 }
 
 // hybridDegradedWarning is the named degradation notice emitted when the hybrid
@@ -370,7 +396,9 @@ func (a *App) reconcileSyncLoop(ctx context.Context, cfg *config.Config) {
 		return
 	}
 
-	signature := syncSignature(cfg, a.syncHybrid, a.syncDisabled)
+	a.syncHybrid, a.syncSuppressed = modeSyncIntent(cfg)
+	disabled := a.syncDisabled || a.syncSuppressed
+	signature := syncSignature(cfg, a.syncHybrid, disabled)
 	if signature == a.syncSignature {
 		return
 	}
@@ -380,7 +408,7 @@ func (a *App) reconcileSyncLoop(ctx context.Context, cfg *config.Config) {
 	if starter == nil {
 		starter = startHybridReplication
 	}
-	a.syncCancel, a.syncDone = starter(ctx, cfg, a.DB, a.Stores, a.syncHybrid, a.syncDisabled)
+	a.syncCancel, a.syncDone = starter(ctx, cfg, a.DB, a.Stores, a.syncHybrid, disabled)
 	a.syncSignature = signature
 }
 
@@ -412,7 +440,7 @@ func (a *App) SyncStatus() SyncStatus {
 	a.syncMu.Lock()
 	defer a.syncMu.Unlock()
 	status := SyncStatusFor(a.Config, a.syncHybrid)
-	if a.syncDisabled {
+	if a.syncDisabled || a.syncSuppressed {
 		status.Configured = false
 	}
 	status.Running = a.syncCancel != nil

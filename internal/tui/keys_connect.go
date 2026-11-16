@@ -308,9 +308,11 @@ func connectCommit(d *Deps, rawURL, rawToken string, proxyMode bool) SaveResult 
 	if proxyMode {
 		next.Sync.Enabled, next.Sync.URL = false, ""
 		next.MCP.Remote.Enabled, next.MCP.Remote.URL = true, base+"/mcp"
+		next.Mode = string(config.RuntimeRemote)
 	} else {
 		next.Sync.Enabled, next.Sync.URL = true, base
 		next.MCP.Remote.Enabled = false
+		next.Mode = string(config.RuntimeHybrid)
 	}
 
 	targetPath := prev.LoadedFrom

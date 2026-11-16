@@ -281,3 +281,22 @@ func TestUnifiedConfigSavedMsgIsHandled(t *testing.T) {
 		t.Fatalf("toast = %q (%s)", m.ToastMessage, m.ToastType)
 	}
 }
+
+func TestModeForSwitchesKeepsModeKeyConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		prev         string
+		remote, sync bool
+		want         string
+	}{
+		{"", true, false, "remote"},
+		{"local", false, true, "hybrid"},
+		{"remote", false, false, "local"},
+		{"hybrid", false, false, "local"},
+		{"", false, false, ""},
+		{"server", false, false, "server"},
+	} {
+		if got := modeForSwitches(tc.prev, tc.remote, tc.sync); got != tc.want {
+			t.Errorf("modeForSwitches(%q, %v, %v) = %q, want %q", tc.prev, tc.remote, tc.sync, got, tc.want)
+		}
+	}
+}
