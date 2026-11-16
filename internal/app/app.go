@@ -266,14 +266,7 @@ const hybridDegradedWarning = "hybrid mode running without remote sync: sync.url
 // variable named by sync.token_env, then a literal token embedded in
 // sync.token_env, then the local HTTP token.
 func resolveSyncToken(cfg *config.Config) string {
-	token := os.Getenv(cfg.Sync.TokenEnv)
-	if token == "" && (strings.HasPrefix(cfg.Sync.TokenEnv, "ctx_") || strings.HasPrefix(cfg.Sync.TokenEnv, "ey")) {
-		token = cfg.Sync.TokenEnv
-	}
-	if token == "" && cfg.HTTP.Token != "" {
-		token = cfg.HTTP.Token
-	}
-	return token
+	return config.ResolveRemoteToken(cfg.Sync.TokenEnv, cfg.HTTP.Token)
 }
 
 // startHybridReplication wires the hybrid composition's remote sync/replication

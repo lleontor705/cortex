@@ -138,6 +138,7 @@ func TestUnifiedConfigEmptyTokenPreservesHTTPToken(t *testing.T) {
 	if result := unifiedConfigSave(m2.deps, m2.unifiedConfigInput()); result.Err != nil {
 		t.Fatalf("save: %v", result.Err)
 	}
+	cfg2 = m2.deps.Config // the save installs a new config rather than writing through
 	if cfg2.HTTP.Token != "ctx_new" {
 		t.Fatalf("entered token not applied: %q", cfg2.HTTP.Token)
 	}
@@ -202,6 +203,7 @@ func TestUnifiedConfigFreshInstallDefaults(t *testing.T) {
 	if result.Kind() != ToastSavedApplied {
 		t.Fatalf("fresh save kind = %v, want applied", result.Kind())
 	}
+	cfg = m.deps.Config // the save installs a new config rather than writing through
 	if cfg.AI.Provider != "ollama" {
 		t.Errorf("AI provider default = %q, want ollama", cfg.AI.Provider)
 	}
@@ -246,5 +248,36 @@ func TestUnifiedConfigTabsEditKeys(t *testing.T) {
 		if !strings.Contains(m.viewUnifiedConfig(), f.Label+":") {
 			t.Errorf("field %q not rendered on %s", f.Key, f.Tab)
 		}
+	}
+}
+
+// TestUnifiedConfigSavedMsgIsHandled pins the async save round trip: the Cmd
+// never mutates Deps, and Update installs the new config, clears the saving
+// spinner and raises an honest toast.
+func TestUnifiedConfigSavedMsgIsHandled(t *testing.T) {
+	cfg := testLocalConfig(t)
+	cfg.HTTP.Token = "ctx_old"
+	m := New(&Deps{Config: cfg})
+	m.LocalCfgDirty = true
+	m.AuthTokenInput.SetValue("ctx_new")
+	m.LocalCfgSaving = true
+
+	msg := saveUnifiedConfig(m.deps, m.unifiedConfigInput())()
+	if m.deps.Config != cfg || cfg.HTTP.Token != "ctx_old" {
+		t.Fatal("background save mutated shared Deps state")
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+	if m.LocalCfgSaving {
+		t.Fatal("saving spinner never cleared")
+	}
+	if !m.LocalCfgSaved || m.LocalCfgError != "" {
+		t.Fatalf("saved=%v error=%q", m.LocalCfgSaved, m.LocalCfgError)
+	}
+	if m.deps.Config.HTTP.Token != "ctx_new" {
+		t.Fatalf("installed config token = %q, want ctx_new", m.deps.Config.HTTP.Token)
+	}
+	if m.ToastType != "success" || !strings.Contains(m.ToastMessage, "Saved") {
+		t.Fatalf("toast = %q (%s)", m.ToastMessage, m.ToastType)
 	}
 }

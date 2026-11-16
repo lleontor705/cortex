@@ -46,7 +46,11 @@ cortex search "release notes" --mode=hybrid
 ```
 
 `--mode` parsing is strict. The valid set is exactly `local`, `hybrid`, and
-`server`; any other value fails closed with exit code `2` and the error message:
+`server`. Before the subcommand, any other value fails closed with exit code `2`
+and the error message shown below. After the subcommand, a value outside the
+triad is left for the subcommand's own flag parser, so
+`cortex search "q" --mode=multi_hop` selects the search retrieval mode instead of
+being rejected as a runtime mode:
 
 ```text
 cortex: unknown mode "…": use --mode local, --mode hybrid, or --mode server

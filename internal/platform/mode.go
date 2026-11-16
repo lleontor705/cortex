@@ -109,17 +109,37 @@ func Select(mode Mode, ctx context.Context, opts app.Options) (*Runtime, error) 
 // DefaultMode (ModeLocal) is returned and args are returned unchanged (same
 // slice values, no allocation).
 //
-// Unknown values fail closed: the returned error enumerates the three valid
-// modes and args are returned unchanged, so a caller can abort startup without
-// observing a partially parsed command line.
+// Before the subcommand, unknown values fail closed: the returned error
+// enumerates the three valid modes and args are returned unchanged, so a
+// caller can abort startup without observing a partially parsed command line.
+//
+// After the subcommand, only a value from the triad is consumed as the global
+// runtime mode. Any other value is left in place for the subcommand's own flag
+// parser, so `cortex search "q" --mode=multi_hop` reaches the search command
+// instead of being rejected as an unknown runtime mode.
 func ParseModeStrict(args []string) (Mode, []string, error) {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--mode" && i+1 < len(args) {
-			return resolveMode(args[i+1], args, i, i+2)
+	seenSubcommand := false
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		var raw string
+		var end int
+		switch {
+		case arg == "--mode" && i+1 < len(args):
+			raw, end = args[i+1], i+2
+		case strings.HasPrefix(arg, "--mode="):
+			raw, end = strings.TrimPrefix(arg, "--mode="), i+1
+		default:
+			if !strings.HasPrefix(arg, "-") {
+				seenSubcommand = true
+			}
+			continue
 		}
-		if strings.HasPrefix(args[i], "--mode=") {
-			return resolveMode(strings.TrimPrefix(args[i], "--mode="), args, i, i+1)
+		if seenSubcommand && !Mode(raw).Valid() {
+			// Subcommand-scoped --mode (e.g. search retrieval mode).
+			i = end - 1
+			continue
 		}
+		return resolveMode(raw, args, i, end)
 	}
 
 	return DefaultMode, args, nil

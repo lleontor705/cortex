@@ -180,15 +180,15 @@ func TestDetectAgents_AllConfigured(t *testing.T) {
 		t.Fatalf("seed opencode plugin: %v", err)
 	}
 
-	// Gemini: .gemini/antigravity/mcp.json
-	geminiMcp := filepath.Join(home, ".gemini", "antigravity", "mcp.json")
-	if err := writeFile(geminiMcp, "{}"); err != nil {
+	// Gemini: .gemini/settings.json registers mcpServers.cortex
+	geminiMcp := filepath.Join(home, ".gemini", "settings.json")
+	if err := writeFile(geminiMcp, `{"mcpServers":{"cortex":{"command":"cortex"}}}`); err != nil {
 		t.Fatalf("seed gemini mcp: %v", err)
 	}
 
-	// Codex: .codex/config.toml
+	// Codex: .codex/config.toml with the [mcp_servers.cortex] table
 	codexCfg := filepath.Join(home, ".codex", "config.toml")
-	if err := writeFile(codexCfg, ""); err != nil {
+	if err := writeFile(codexCfg, "[mcp_servers.cortex]\ncommand = \"cortex\"\n"); err != nil {
 		t.Fatalf("seed codex config: %v", err)
 	}
 

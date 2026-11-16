@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -754,22 +755,73 @@ func (m Model) unifiedConfigInput() unifiedConfigInput {
 	}
 }
 
-type unifiedConfigSavedMsg struct{ result SaveResult }
+// unifiedConfigSavedMsg carries a finished save back to Update. Config is the
+// configuration now in effect (nil when nothing was written); Update installs
+// it on the UI goroutine so the background save never mutates shared state
+// that View reads concurrently.
+type unifiedConfigSavedMsg struct {
+	result SaveResult
+	config *config.Config
+}
 
+// saveUnifiedConfig snapshots the current configuration on the UI goroutine
+// and performs validation, the file write and the hot reload in a tea.Cmd.
 func saveUnifiedConfig(d *Deps, in unifiedConfigInput) tea.Cmd {
+	if d == nil || d.Config == nil {
+		return func() tea.Msg {
+			return unifiedConfigSavedMsg{result: SaveResult{Err: fmt.Errorf("config not available")}}
+		}
+	}
+	prev := *d.Config
+	reloader := d.App
 	return func() tea.Msg {
-		return unifiedConfigSavedMsg{result: unifiedConfigSave(d, in)}
+		result, cfg := unifiedConfigSaveFrom(prev, reloader, in)
+		return unifiedConfigSavedMsg{result: result, config: cfg}
 	}
 }
 
-// unifiedConfigSave writes the unified form, hot-reloads everything reloadable,
-// and reports exactly what happened (REQ-CFG-003). An empty token field carries
-// the loaded credential forward instead of erasing it (REQ-CFG-004).
+// applyUnifiedConfigSaved installs a finished save's outcome (UI goroutine).
+func (m Model) applyUnifiedConfigSaved(msg unifiedConfigSavedMsg) (tea.Model, tea.Cmd) {
+	m.LocalCfgSaving = false
+	if msg.config != nil && m.deps != nil {
+		m.deps.Config = msg.config
+	}
+	if msg.result.Err != nil {
+		m.LocalCfgSaved, m.LocalCfgError = false, msg.result.Err.Error()
+	} else {
+		m.LocalCfgSaved, m.LocalCfgDirty, m.LocalCfgError = true, false, ""
+	}
+	m.ToastMessage = msg.result.ToastMessage()
+	switch msg.result.Kind() {
+	case ToastFailed:
+		m.ToastType = "error"
+	case ToastSavedRestartRequired:
+		m.ToastType = "warning"
+	default:
+		m.ToastType = "success"
+	}
+	return m, nil
+}
+
+// unifiedConfigSave is the synchronous form used by tests and non-UI callers:
+// it saves and installs the resulting configuration on d.
 func unifiedConfigSave(d *Deps, in unifiedConfigInput) SaveResult {
 	if d == nil || d.Config == nil {
 		return SaveResult{Err: fmt.Errorf("config not available")}
 	}
-	prev := *d.Config
+	result, cfg := unifiedConfigSaveFrom(*d.Config, d.App, in)
+	if cfg != nil {
+		d.Config = cfg
+	}
+	return result
+}
+
+// unifiedConfigSaveFrom writes the unified form, hot-reloads everything
+// reloadable, and reports exactly what happened (REQ-CFG-003). An empty token
+// field carries the loaded credential forward instead of erasing it
+// (REQ-CFG-004). It never mutates prev or any shared Deps state; the returned
+// config is the one now in effect (nil when nothing was written).
+func unifiedConfigSaveFrom(prev config.Config, a *app.App, in unifiedConfigInput) (SaveResult, *config.Config) {
 	next := prev // carries http.token and every value the form did not edit
 
 	next.AI.Provider = aiProviderConfigValue(in.aiProvider)
@@ -795,11 +847,11 @@ func unifiedConfigSave(d *Deps, in unifiedConfigInput) SaveResult {
 
 	port, err := strconv.Atoi(strings.TrimSpace(in.httpPort))
 	if err != nil {
-		return SaveResult{Err: fmt.Errorf("HTTP port must be a number between 1 and 65535")}
+		return SaveResult{Err: fmt.Errorf("HTTP port must be a number between 1 and 65535")}, nil
 	}
 	interval, err := time.ParseDuration(strings.TrimSpace(in.syncInterval))
 	if err != nil {
-		return SaveResult{Err: fmt.Errorf("sync interval must be a duration such as 30s or 5m")}
+		return SaveResult{Err: fmt.Errorf("sync interval must be a duration such as 30s or 5m")}, nil
 	}
 	// An empty Vector dim field preserves the loaded value; a supplied value is
 	// validated against search.embedding_dimensions by config.Validate below.
@@ -807,7 +859,7 @@ func unifiedConfigSave(d *Deps, in unifiedConfigInput) SaveResult {
 	if raw := strings.TrimSpace(in.embeddingDims); raw != "" {
 		v, err := strconv.Atoi(raw)
 		if err != nil {
-			return SaveResult{Err: fmt.Errorf("embedding dimensions must be a whole number between 8 and 4096, or 0 for the provider default")}
+			return SaveResult{Err: fmt.Errorf("embedding dimensions must be a whole number between 8 and 4096, or 0 for the provider default")}, nil
 		}
 		dims = v
 	}
@@ -828,22 +880,21 @@ func unifiedConfigSave(d *Deps, in unifiedConfigInput) SaveResult {
 	targetPath, formatChanged := unifiedConfigTargetPath(prev.LoadedFrom, in.format)
 
 	if err := config.Validate(&next); err != nil {
-		return SaveResult{Err: err}
+		return SaveResult{Err: err}, nil
 	}
 	if err := config.Save(&next, targetPath); err != nil {
-		return SaveResult{Err: err}
+		return SaveResult{Err: err}, nil
 	}
 	next.LoadedFrom = targetPath
-	*d.Config = next
-	d.Config = &next
+	installed := &next
 
-	if d.App != nil {
-		if err := d.App.ReloadConfig(); err != nil {
-			return SaveResult{Err: fmt.Errorf("config saved but reload failed: %w", err)}
+	if a != nil {
+		if err := a.ReloadConfig(); err != nil {
+			return SaveResult{Err: fmt.Errorf("config saved but reload failed: %w", err)}, installed
 		}
-		d.Config = d.App.Config
+		installed = a.Config
 	}
-	return SaveResult{RestartFields: restartFieldsFor(prev, next, formatChanged)}
+	return SaveResult{RestartFields: restartFieldsFor(prev, next, formatChanged)}, installed
 }
 
 // unifiedConfigTargetPath resolves the save destination from the selected

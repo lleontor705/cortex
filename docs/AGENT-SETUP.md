@@ -64,9 +64,11 @@ Setup always writes both files, including when Cortex was installed from a relea
 cortex setup gemini-cli
 ```
 
-This creates:
-- `~/.gemini/settings.json` — MCP server registration
-- `~/.gemini/system.md` — Memory Protocol system prompt
+This creates or updates:
+- `~/.gemini/settings.json` — merges `mcpServers.cortex`; every other setting and
+  MCP server is preserved. An unparseable file is left untouched and setup fails.
+- `~/.gemini/system.md` — Memory Protocol system prompt (only written when the file
+  is absent or was written by Cortex; a custom prompt is never replaced)
 
 ## Codex
 
@@ -74,8 +76,11 @@ This creates:
 cortex setup codex
 ```
 
-This creates:
-- `~/.codex/config.toml` — MCP server registration
+This creates or updates:
+- `~/.codex/config.toml` — replaces only the `[mcp_servers.cortex]` table and adds the
+  root keys `model_instructions_file` / `experimental_compact_prompt_file` when you
+  have not set them; the rest of the file is preserved. Invalid TOML is left untouched
+  and setup fails.
 - `~/.codex/cortex-instructions.md` — Memory Protocol instructions
 - `~/.codex/cortex-compact-prompt.md` — Compaction recovery instructions
 

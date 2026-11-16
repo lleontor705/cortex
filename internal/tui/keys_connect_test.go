@@ -31,12 +31,20 @@ func connectTestServer(t *testing.T, tokenOK bool) *httptest.Server {
 func driveConnect(t *testing.T, m Model, keys ...string) Model {
 	t.Helper()
 	for _, key := range keys {
-		updated, _ := m.handleConnectKeys(key)
+		updated, cmd := m.handleConnectKeys(key)
 		next, ok := updated.(Model)
 		if !ok {
 			t.Fatalf("handleConnectKeys(%q) did not return a Model", key)
 		}
 		m = next
+		// The connectivity probe runs as a tea.Cmd; deliver its result through
+		// Update exactly as the bubbletea runtime would.
+		if m.ConnectTesting && cmd != nil {
+			if done, isDone := cmd().(connectTestDoneMsg); isDone {
+				applied, _ := m.Update(done)
+				m = applied.(Model)
+			}
+		}
 	}
 	return m
 }
@@ -125,6 +133,7 @@ func TestConnectFlowProxyModeStatesConsequence(t *testing.T) {
 	if !m.ConnectCommitted {
 		t.Fatal("proxy connect was not committed")
 	}
+	cfg = m.deps.Config // the commit installs a new config rather than writing through
 	if cfg.Sync.Enabled || cfg.Sync.URL != "" {
 		t.Fatalf("proxy wrote sync config (enabled=%v url=%q)", cfg.Sync.Enabled, cfg.Sync.URL)
 	}
@@ -188,6 +197,7 @@ func TestConnectFlowSuccessSavesAndReportsLoopState(t *testing.T) {
 	if !m.ConnectCommitted {
 		t.Fatalf("hybrid connect not committed (error=%q)", m.ConnectError)
 	}
+	cfg = m.deps.Config // the commit installs a new config rather than writing through
 	if !cfg.Sync.Enabled || cfg.Sync.URL != srv.URL {
 		t.Fatalf("hybrid sync config = enabled:%v url:%q", cfg.Sync.Enabled, cfg.Sync.URL)
 	}
@@ -207,6 +217,7 @@ func TestConnectFlowSuccessSavesAndReportsLoopState(t *testing.T) {
 	m2.ConnectURL.SetValue(srv.URL)
 	m2.ConnectToken.SetValue("ctx_new")
 	m2 = driveConnect(t, m2, "enter", "enter", "enter")
+	cfg2 = m2.deps.Config
 	if cfg2.HTTP.Token != "ctx_new" {
 		t.Fatalf("entered token not applied: %q", cfg2.HTTP.Token)
 	}
@@ -245,5 +256,35 @@ func TestConnectFlowKeymapRegistered(t *testing.T) {
 		if _, _, handled := keymapRegistry.Dispatch(m, binding.Key); !handled {
 			t.Fatalf("binding %q is not dispatchable on ScreenConnect", binding.Key)
 		}
+	}
+}
+
+// TestConnectTestRunsAsyncAndDropsStaleResults pins the non-blocking probe:
+// entering step 3 returns immediately in a testing state, enter is ignored
+// while in flight, and a result arriving after the user went back is dropped.
+func TestConnectTestRunsAsyncAndDropsStaleResults(t *testing.T) {
+	srv := connectTestServer(t, true)
+	m := openConnect(t, &Deps{Config: testLocalConfig(t)})
+	m.ConnectURL.SetValue(srv.URL)
+	m = driveConnect(t, m, "enter")
+
+	updated, cmd := m.handleConnectKeys("enter")
+	m = updated.(Model)
+	if !m.ConnectTesting || m.ConnectResult != nil || cmd == nil {
+		t.Fatalf("step 3 did not start an async probe: testing=%v result=%v cmd=%v", m.ConnectTesting, m.ConnectResult, cmd != nil)
+	}
+	if view := m.viewConnect(); !strings.Contains(view, "checking server") {
+		t.Fatalf("testing state not rendered:\n%s", view)
+	}
+	if again, extra := m.handleConnectKeys("enter"); extra != nil || again.(Model).ConnectCommitted {
+		t.Fatal("enter while testing must be a no-op")
+	}
+
+	done := cmd().(connectTestDoneMsg)
+	m = driveConnect(t, m, "esc") // user walks back before the result lands
+	applied, _ := m.Update(done)
+	m = applied.(Model)
+	if m.ConnectResult != nil || m.ConnectStep != ConnectStepToken {
+		t.Fatalf("stale probe result was applied: step=%v result=%v", m.ConnectStep, m.ConnectResult)
 	}
 }

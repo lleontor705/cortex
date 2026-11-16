@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // setupHome points HOME and USERPROFILE at a fresh temporary directory and
@@ -751,5 +753,137 @@ func TestInstallOpenCode_WithModularProfiles(t *testing.T) {
 	entryMin := cfgMin.MCP["cortex"]
 	if len(entryMin.Command) != 3 || entryMin.Command[2] != "--tools=minimal" {
 		t.Errorf("entryMin.Command = %v, want [<bin> mcp --tools=minimal]", entryMin.Command)
+	}
+}
+
+// --- Non-destructive merges --------------------------------------------------
+
+func TestInstallGeminiCLI_PreservesExistingSettings(t *testing.T) {
+	home := setupHome(t)
+	configPath := filepath.Join(home, ".gemini", "settings.json")
+	systemPath := filepath.Join(home, ".gemini", "system.md")
+	if err := writeFile(configPath, `{"theme":"Dracula","mcpServers":{"other":{"command":"other-mcp"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(systemPath, "my own system prompt"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Install("gemini-cli")
+	if err != nil {
+		t.Fatalf("Install(gemini-cli) error = %v", err)
+	}
+	if res.Files != 1 {
+		t.Errorf("Result.Files = %d, want 1 (user system.md left alone)", res.Files)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(assertFile(t, configPath), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["theme"] != "Dracula" {
+		t.Errorf("theme = %v, want preserved", cfg["theme"])
+	}
+	servers, _ := cfg["mcpServers"].(map[string]interface{})
+	if _, ok := servers["other"]; !ok {
+		t.Errorf("mcpServers.other was dropped: %v", servers)
+	}
+	if _, ok := servers["cortex"]; !ok {
+		t.Errorf("mcpServers.cortex missing: %v", servers)
+	}
+	if got := string(assertFile(t, systemPath)); got != "my own system prompt" {
+		t.Errorf("system.md overwritten: %q", got)
+	}
+}
+
+func TestInstallGeminiCLI_RefusesInvalidJSON(t *testing.T) {
+	home := setupHome(t)
+	configPath := filepath.Join(home, ".gemini", "settings.json")
+	if err := writeFile(configPath, `{not json`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install("gemini-cli"); err == nil {
+		t.Fatal("expected an error for invalid settings.json")
+	}
+	if got := string(assertFile(t, configPath)); got != `{not json` {
+		t.Errorf("invalid settings.json was clobbered: %q", got)
+	}
+}
+
+func TestInstallCodex_PreservesExistingConfigAndRootKeys(t *testing.T) {
+	home := setupHome(t)
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	existing := `model = "o4"
+model_instructions_file = "/custom/instructions.md"
+
+[mcp_servers.cortex]
+command = "old-cortex"
+args = ["mcp"]
+model_instructions_file = "/misplaced.md"
+
+[mcp_servers.cortex.env]
+FOO = "bar"
+
+[mcp_servers.github]
+command = "gh-mcp"
+`
+	if err := writeFile(configPath, existing); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install("codex"); err != nil {
+		t.Fatalf("Install(codex) error = %v", err)
+	}
+	raw := assertFile(t, configPath)
+	var cfg struct {
+		Model                 string `toml:"model"`
+		ModelInstructionsFile string `toml:"model_instructions_file"`
+		CompactPromptFile     string `toml:"experimental_compact_prompt_file"`
+		MCPServers            map[string]struct {
+			Command string            `toml:"command"`
+			Args    []string          `toml:"args"`
+			Env     map[string]string `toml:"env"`
+			Extra   string            `toml:"model_instructions_file"`
+		} `toml:"mcp_servers"`
+	}
+	if err := toml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("merged config.toml invalid: %v\n%s", err, raw)
+	}
+	if cfg.Model != "o4" {
+		t.Errorf("model = %q, want preserved", cfg.Model)
+	}
+	if cfg.ModelInstructionsFile != "/custom/instructions.md" {
+		t.Errorf("model_instructions_file = %q, want the user's value kept", cfg.ModelInstructionsFile)
+	}
+	if want := filepath.Join(home, ".codex", "cortex-compact-prompt.md"); cfg.CompactPromptFile != want {
+		t.Errorf("experimental_compact_prompt_file = %q, want root key %q", cfg.CompactPromptFile, want)
+	}
+	if cfg.MCPServers["github"].Command != "gh-mcp" {
+		t.Errorf("mcp_servers.github dropped: %+v", cfg.MCPServers)
+	}
+	cortex := cfg.MCPServers["cortex"]
+	if cortex.Command == "old-cortex" || len(cortex.Args) != 2 || cortex.Extra != "" || cortex.Env != nil {
+		t.Errorf("mcp_servers.cortex not replaced cleanly: %+v", cortex)
+	}
+	if strings.Count(string(raw), "[mcp_servers.cortex]") != 1 {
+		t.Errorf("expected exactly one cortex table:\n%s", raw)
+	}
+
+	// Idempotent: a second install yields the same file.
+	if _, err := Install("codex"); err != nil {
+		t.Fatal(err)
+	}
+	if again := assertFile(t, configPath); string(again) != string(raw) {
+		t.Errorf("second install changed config.toml:\nfirst:\n%s\nsecond:\n%s", raw, again)
+	}
+}
+
+func TestInstallCodex_RefusesInvalidTOML(t *testing.T) {
+	home := setupHome(t)
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := writeFile(configPath, "model = \n[broken"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install("codex"); err == nil {
+		t.Fatal("expected an error for invalid config.toml")
 	}
 }
