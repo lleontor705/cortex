@@ -604,8 +604,9 @@ func mergeCodexConfig(existing, bin, instructionsPath, compactPath string) strin
 		root = append(root, "experimental_compact_prompt_file = "+jsonString(compactPath))
 	}
 
-	out := make([]string, 0, len(kept)+len(root)+6)
-	out = append(out, root...)
+	// No arithmetic capacity hint: the size derives from the user's file, and
+	// append grows the slice safely (CodeQL go/allocation-size-overflow).
+	out := append([]string(nil), root...)
 	if len(root) > 0 && firstTable > 0 {
 		out = append(out, "")
 	}
