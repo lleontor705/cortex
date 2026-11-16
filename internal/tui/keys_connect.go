@@ -10,6 +10,7 @@ import (
 
 	"github.com/lleontor705/cortex/v2/internal/app"
 	"github.com/lleontor705/cortex/v2/internal/config"
+	"github.com/lleontor705/cortex/v2/internal/credential"
 	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -220,7 +221,15 @@ func (m Model) effectiveConnectToken() string {
 		return t
 	}
 	if m.deps != nil && m.deps.Config != nil {
-		return strings.TrimSpace(m.deps.Config.HTTP.Token)
+		cfg := m.deps.Config
+		// Reuse the token already stored for this same server (keychain or
+		// env reference), else the legacy http.token.
+		if config.NormalizeServerURL(cfg.RemoteServerURL()) == config.NormalizeServerURL(m.ConnectURL.Value()) {
+			if token, _, err := config.ResolveRemoteBearer(cfg, cfg.Sync.TokenEnv); err == nil && token != "" {
+				return token
+			}
+		}
+		return strings.TrimSpace(cfg.HTTP.Token)
 	}
 	return ""
 }
@@ -299,18 +308,35 @@ func connectCommit(d *Deps, rawURL, rawToken string, proxyMode bool) SaveResult 
 	if base == "" {
 		return SaveResult{Err: fmt.Errorf("server URL is required")}
 	}
+	base = config.NormalizeServerURL(base)
 	prev := *d.Config
-	next := prev // carries http.token forward unless a new one is supplied
+	next := prev // carries the stored credential forward unless a new one is supplied
 
-	if token := strings.TrimSpace(rawToken); token != "" {
-		next.HTTP.Token = token
+	// Keep the existing token reference only when it belongs to this server.
+	tokenRef := ""
+	if config.NormalizeServerURL(prev.RemoteServerURL()) == base {
+		tokenRef = prev.Remote.Token
 	}
+	if token := strings.TrimSpace(rawToken); token != "" {
+		if err := connectStoreToken(base, token); err == nil {
+			tokenRef = config.RemoteTokenKeychain
+			if strings.TrimSpace(next.HTTP.Token) == token {
+				next.HTTP.Token = "" // drop the plaintext copy an older connect left
+			}
+		} else {
+			// No usable OS keychain (headless Linux, CI): keep the legacy
+			// plaintext http.token so the connection still works.
+			next.HTTP.Token = token
+			tokenRef = ""
+		}
+	}
+	next.SetRemote(base, tokenRef)
 	if proxyMode {
-		next.Sync.Enabled, next.Sync.URL = false, ""
-		next.MCP.Remote.Enabled, next.MCP.Remote.URL = true, base+"/mcp"
+		next.Sync.Enabled = false
+		next.MCP.Remote.Enabled = true
 		next.Mode = string(config.RuntimeRemote)
 	} else {
-		next.Sync.Enabled, next.Sync.URL = true, base
+		next.Sync.Enabled = true
 		next.MCP.Remote.Enabled = false
 		next.Mode = string(config.RuntimeHybrid)
 	}
@@ -481,3 +507,6 @@ func connectKeymap() Keymap {
 func init() {
 	keymapRegistry.Register(connectKeymap())
 }
+
+// connectStoreToken stores the bearer in the OS keychain (a seam for tests).
+var connectStoreToken = credential.Set

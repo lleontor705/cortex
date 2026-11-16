@@ -119,6 +119,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runStatus(args[2:], stdout, stderr)
 	case "mode":
 		exitCode = runMode(args[2:], stdout, stderr)
+	case "connect":
+		exitCode = runConnect(args[2:], stdout, stderr)
+	case "disconnect":
+		exitCode = runDisconnect(args[2:], stdout, stderr)
 	case "ingest":
 		exitCode = runIngest(args[2:], stdout, stderr)
 	case "code":
@@ -171,7 +175,10 @@ Commands:
   watch [path]           Watch repository for real-time incremental AST indexing
   config <subcommand>    Manage configuration without editing files (get, set, show, validate, init, wizard [--cli|--tui])
   web <subcommand>       Manage the embedded web UI credential (key show, key regenerate)
-  status                 Display operational mode (local, hybrid, server) and status
+  status                 Display operational mode (local, hybrid, remote, server) and status
+  mode [show|set|test]   Show, persist or test the runtime mode (cortex mode help)
+  connect <url>          Verify a Cortex server + token, store the token in the OS keychain, switch mode
+  disconnect             Forget the stored server token and return to local mode
   mode                   Alias for status
   code <subcommand>      Code AST intelligence (scan, symbols, analyze, impact, diff, graph, map)
   migrate <up|down|status> Manage database migrations
@@ -670,7 +677,12 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		if timeout <= 0 {
 			timeout = 30 * time.Second
 		}
-		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: res.MCPURL, TokenEnv: tokenEnv, FallbackToken: cfg.HTTP.Token, Timeout: timeout})
+		token, _, err := config.ResolveRemoteBearer(cfg, tokenEnv)
+		if err != nil {
+			writef(stderr, "cortex: %v\n", err)
+			return 1
+		}
+		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: res.MCPURL, TokenEnv: tokenEnv, Token: token, Timeout: timeout})
 		if err != nil {
 			writef(stderr, "cortex: %v\n", err)
 			return 1
@@ -1306,7 +1318,11 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 			writef(stderr, "sync remote: sync.url is not configured\n")
 			return 1
 		}
-		token := config.ResolveRemoteToken(a.Config.Sync.TokenEnv, a.Config.HTTP.Token)
+		token, _, err := config.ResolveRemoteBearer(a.Config, a.Config.Sync.TokenEnv)
+		if err != nil {
+			writef(stderr, "sync remote: %v\n", err)
+			return 1
+		}
 		remote, err := cortsync.NewRemoteSyncer(a.DB.DB(), a.Config.Sync.URL, token, a.Config.Sync.Timeout)
 		if err != nil {
 			writef(stderr, "sync remote: %v\n", err)
@@ -1817,9 +1833,9 @@ func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
 	}
 	if token == "" {
 		if cfg, err := config.Load(""); err == nil {
-			token = config.ResolveRemoteToken(cfg.MCP.Remote.TokenEnv, "")
+			token, _, _ = config.ResolveRemoteBearer(cfg, cfg.MCP.Remote.TokenEnv)
 			if token == "" {
-				token = config.ResolveRemoteToken(cfg.Sync.TokenEnv, cfg.HTTP.Token)
+				token, _, _ = config.ResolveRemoteBearer(cfg, cfg.Sync.TokenEnv)
 			}
 		}
 	}
@@ -1991,11 +2007,13 @@ func runGC(args []string, stdout, stderr io.Writer) int {
 
 func runConfig(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		writef(stderr, "Usage: cortex config <show|validate|path|init> [options]\n")
+		writef(stderr, "Usage: cortex config <show|validate|path|init|set|get|migrate> [options]\n")
 		return 1
 	}
 
 	switch args[0] {
+	case "migrate":
+		return runConfigMigrate(args[1:], stdout, stderr)
 	case "path":
 		cfg, err := config.Load("")
 		if err != nil {

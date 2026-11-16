@@ -76,12 +76,22 @@ type ModeResolution struct {
 // An invalid CORTEX_MODE or `mode:` value is returned as an error so callers
 // fail closed instead of silently running a different mode.
 func ResolveMode(cfg *Config) (ModeResolution, error) {
+	return resolveMode(cfg, os.Getenv(ModeEnvVar))
+}
+
+// ResolveFileMode resolves the mode the config file alone selects, ignoring
+// CORTEX_MODE (used by `cortex config migrate`, which persists it).
+func ResolveFileMode(cfg *Config) (ModeResolution, error) {
+	return resolveMode(cfg, "")
+}
+
+func resolveMode(cfg *Config, envValue string) (ModeResolution, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
 	var res ModeResolution
 
-	switch env := strings.TrimSpace(os.Getenv(ModeEnvVar)); {
+	switch env := strings.TrimSpace(envValue); {
 	case env != "":
 		mode, err := ParseRuntimeMode(env)
 		if err != nil {

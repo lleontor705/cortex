@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -25,7 +26,10 @@ type RemoteProxyConfig struct {
 	// FallbackToken is used when TokenEnv resolves to nothing; callers pass
 	// the stored http.token written by `cortex auth login` / TUI connect.
 	FallbackToken string
-	Timeout       time.Duration
+	// Token, when set, is the already-resolved bearer (config.ResolveRemoteBearer,
+	// which also reads the OS keychain) and takes precedence over TokenEnv.
+	Token   string
+	Timeout time.Duration
 }
 
 // RemoteProxy owns the remote client and the local stdio-facing MCP server.
@@ -63,7 +67,10 @@ func OpenRemoteProxy(ctx context.Context, cfg RemoteProxyConfig) (*RemoteProxy, 
 	if err := transportpolicy.ValidateBearerDestination(cfg.URL); err != nil {
 		return nil, fmt.Errorf("remote MCP destination rejected: %w", err)
 	}
-	token := config.ResolveRemoteToken(cfg.TokenEnv, cfg.FallbackToken)
+	token := strings.TrimSpace(cfg.Token)
+	if token == "" {
+		token = config.ResolveRemoteToken(cfg.TokenEnv, cfg.FallbackToken)
+	}
 	if token == "" {
 		return nil, fmt.Errorf("remote MCP token not found: token environment variable %s is empty and no stored token is configured (run `cortex auth login`)", cfg.TokenEnv)
 	}
