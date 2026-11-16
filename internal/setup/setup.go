@@ -7,6 +7,7 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -148,8 +149,7 @@ func DetectAgents() []AgentStatus {
 	// 1. Claude Code
 	claudeDir := filepath.Join(home, ".claude")
 	claudeDetected := dirOrFileExists(claudeDir) || commandExists("claude")
-	claudeMcp := filepath.Join(claudeDir, "mcp", "cortex.json")
-	claudeConfigured := fileExists(claudeMcp)
+	claudeConfigured := isClaudeCodeConfigured(home)
 	statusClaude := "Not detected"
 	if claudeConfigured {
 		statusClaude = "Configured (Plugin Active)"
@@ -160,7 +160,7 @@ func DetectAgents() []AgentStatus {
 		Name:        "claude-code",
 		DisplayName: "Claude Code",
 		Description: "Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
-		InstallDir:  filepath.Join(claudeDir, "mcp"),
+		InstallDir:  filepath.Join(home, ".claude.json"),
 		Detected:    claudeDetected,
 		Configured:  claudeConfigured,
 		StatusText:  statusClaude,
@@ -278,7 +278,7 @@ func SupportedAgents() []Agent {
 		{
 			Name:        "claude-code",
 			Description: "Claude Code -- Native plugin via marketplace (hooks, skills, MCP, compaction recovery)",
-			InstallDir:  filepath.Join(home, ".claude", "mcp"),
+			InstallDir:  filepath.Join(home, ".claude.json"),
 		},
 		{
 			Name:        "opencode",
@@ -346,25 +346,65 @@ func AddClaudeCodeAllowlist() error {
 
 // --- Claude Code ------------------------------------------------------------
 
+// claudeMCPCommand runs `claude mcp ...` (a seam so tests never touch a real
+// Claude Code installation). It returns errClaudeCLIUnavailable when the
+// claude binary is not on PATH.
+var claudeMCPCommand = func(args ...string) error {
+	if !commandExists("claude") {
+		return errClaudeCLIUnavailable
+	}
+	out, err := exec.Command("claude", append([]string{"mcp"}, args...)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("claude mcp %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+var errClaudeCLIUnavailable = errors.New("claude CLI not found on PATH")
+
+// installClaudeCodeWithOptions registers Cortex as a user-scope MCP server
+// named "cortex" (tools mcp__cortex__*) — the location Claude Code actually
+// reads. It prefers the official `claude mcp add-json --scope user`; without
+// the claude CLI it merges the entry into ~/.claude.json, preserving every
+// other key. The Claude Code plugin ships the same server itself
+// (plugin/claude-code/.mcp.json, tools mcp__plugin_cortex_cortex__*), so the
+// allowlist covers both namespaces.
 func installClaudeCodeWithOptions(home, bin string, opts Options) (*Result, error) {
 	profile := strings.TrimSpace(opts.Profile)
 	if profile == "" {
 		profile = "agent"
 	}
-	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
-	mcpContent := fmt.Sprintf(`{
-  "name": "cortex",
-  "type": "stdio",
-  "command": %s,
-  "args": ["mcp", "--tools=%s"]
-}
-`, jsonString(bin), profile)
-
-	if err := writeFile(mcpPath, mcpContent); err != nil {
-		return nil, fmt.Errorf("write MCP config: %w", err)
+	entry := map[string]interface{}{
+		"type":    "stdio",
+		"command": bin,
+		"args":    []string{"mcp", "--tools=" + profile},
+	}
+	entryJSON, err := json.Marshal(entry)
+	if err != nil {
+		return nil, err
 	}
 
-	// Add tool allowlist to settings.json based on profile
+	claudeJSON := filepath.Join(home, ".claude.json")
+	destination := claudeJSON
+	// Re-registering replaces a previous entry; a missing one is fine.
+	_ = claudeMCPCommand("remove", "cortex", "--scope", "user")
+	switch err := claudeMCPCommand("add-json", "cortex", string(entryJSON), "--scope", "user"); {
+	case err == nil:
+	case errors.Is(err, errClaudeCLIUnavailable):
+		if err := mergeClaudeUserServer(claudeJSON, entry); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+
+	// The pre-fix installer wrote ~/.claude/mcp/cortex.json, which Claude
+	// Code never reads; remove that misleading leftover.
+	legacy := filepath.Join(home, ".claude", "mcp", "cortex.json")
+	if ownedOrMissing(legacy, `"name": "cortex"`) {
+		_ = os.Remove(legacy)
+	}
+
 	allowTools := cortexMCPTools
 	switch profile {
 	case "minimal":
@@ -373,14 +413,88 @@ func installClaudeCodeWithOptions(home, bin string, opts Options) (*Result, erro
 		allowTools = cortexDevMCPTools
 	}
 	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	addClaudeCodeAllowlistWithTools(settingsPath, allowTools)
+	addClaudeCodeAllowlistWithTools(settingsPath, claudeAllowRules(allowTools))
 
-	return &Result{Agent: "claude-code", Destination: mcpPath, Files: 1}, nil
+	return &Result{Agent: "claude-code", Destination: destination, Files: 2}, nil
+}
+
+// mergeClaudeUserServer writes mcpServers.cortex at the top level of
+// ~/.claude.json (user scope) without disturbing any other key. An
+// unparseable file is never rewritten.
+func mergeClaudeUserServer(path string, entry map[string]interface{}) error {
+	state, err := readJSONObject(path)
+	if err != nil {
+		return fmt.Errorf("setup claude-code: %s is not valid JSON; fix it or install the claude CLI and retry: %w", path, err)
+	}
+	servers, _ := state["mcpServers"].(map[string]interface{})
+	if servers == nil {
+		servers = map[string]interface{}{}
+	}
+	servers["cortex"] = entry
+	state["mcpServers"] = servers
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, append(out, '\n'), 0o600)
+}
+
+// isClaudeCodeConfigured reports whether ~/.claude.json registers the cortex
+// user-scope server.
+func isClaudeCodeConfigured(home string) bool {
+	state, err := readJSONObject(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		return false
+	}
+	servers, _ := state["mcpServers"].(map[string]interface{})
+	_, ok := servers["cortex"]
+	return ok
+}
+
+// claudeAllowRules turns plugin-namespaced tool rules into rules for both the
+// user-scope server (mcp__cortex__) and the plugin server
+// (mcp__plugin_cortex_cortex__).
+func claudeAllowRules(pluginRules []string) []string {
+	const pluginPrefix = "mcp__plugin_cortex_cortex__"
+	rules := make([]string, 0, 2*len(pluginRules))
+	for _, rule := range pluginRules {
+		tool := strings.TrimPrefix(rule, pluginPrefix)
+		rules = append(rules, "mcp__cortex__"+tool, pluginPrefix+tool)
+	}
+	return rules
+}
+
+// writeFileAtomic writes via a temp file + rename so a crash never leaves a
+// truncated file (important for ~/.claude.json, Claude Code's state file).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // addClaudeCodeAllowlist adds cortex MCP tool permissions to Claude Code settings.
 func addClaudeCodeAllowlist(settingsPath string) {
-	addClaudeCodeAllowlistWithTools(settingsPath, cortexMCPTools)
+	addClaudeCodeAllowlistWithTools(settingsPath, claudeAllowRules(cortexMCPTools))
 }
 
 func addClaudeCodeAllowlistWithTools(settingsPath string, tools []string) {

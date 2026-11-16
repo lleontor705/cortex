@@ -291,7 +291,7 @@ func TestViewSetup(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
 	m.SetupAgents = []setup.Agent{
-		{Name: "claude-code", Description: "Claude Code plugin", InstallDir: "/tmp/.claude/mcp"},
+		{Name: "claude-code", Description: "Claude Code plugin", InstallDir: "/tmp/.claude.json"},
 	}
 
 	output := m.viewSetup()
@@ -528,7 +528,7 @@ func TestViewSetupWithDetectedAgents(t *testing.T) {
 	m := New(&Deps{})
 	m.Width, m.Height = 120, 40
 	m.SetupAgents = []setup.Agent{
-		{Name: "claude-code", Description: "Claude Code plugin", InstallDir: "/tmp/.claude/mcp"},
+		{Name: "claude-code", Description: "Claude Code plugin", InstallDir: "/tmp/.claude.json"},
 		{Name: "opencode", Description: "OpenCode plugin", InstallDir: "/tmp/.config/opencode"},
 		{Name: "gemini-cli", Description: "Gemini CLI plugin", InstallDir: "/tmp/.gemini"},
 	}

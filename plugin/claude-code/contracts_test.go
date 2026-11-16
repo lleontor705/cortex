@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -307,5 +308,28 @@ func TestUserPromptSubmitAuthenticatesProtectedReads(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("user-prompt-submit.sh missing response validation %q", want)
 		}
+	}
+}
+
+// TestPluginShipsCortexMCPServer pins the plugin's MCP server declaration: the
+// skill and hooks reference tools as mcp__plugin_cortex_cortex__*, which only
+// exist when the plugin "cortex" provides a server named "cortex".
+func TestPluginShipsCortexMCPServer(t *testing.T) {
+	raw, err := os.ReadFile(".mcp.json")
+	if err != nil {
+		t.Fatalf("plugin must ship .mcp.json: %v", err)
+	}
+	var manifest struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf(".mcp.json: %v", err)
+	}
+	server, ok := manifest.MCPServers["cortex"]
+	if !ok || server.Command != "cortex" || len(server.Args) == 0 || server.Args[0] != "mcp" {
+		t.Fatalf("mcpServers.cortex = %+v, want `cortex mcp ...`", server)
 	}
 }

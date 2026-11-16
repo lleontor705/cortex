@@ -92,3 +92,5 @@ tools/e2e-web/test-results/
 !.golangci.yml
 # Intentional tracked web lint config (see REQ-HYG-002).
 !web/.eslintrc.json
+# The Claude Code plugin's MCP server declaration (tools mcp__plugin_cortex_cortex__*).
+!plugin/claude-code/.mcp.json

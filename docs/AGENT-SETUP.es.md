@@ -17,11 +17,28 @@ cortex setup opencode --profile=agent
 cortex setup claude-code [--profile=agent|dev|minimal]
 ```
 
-Esto crea:
-- `~/.claude/mcp/cortex.json` — registro del servidor MCP (duradero, sobrevive a las actualizaciones del plugin)
-- Actualiza `~/.claude/settings.json` — añade listas de permitidas de herramientas específicas del perfil para la aprobación automática
+Esto hace:
+- Registra un servidor MCP de **ámbito usuario** llamado `cortex`
+  (`cortex mcp --tools=<perfil>`) con `claude mcp add-json cortex … --scope user`. Sin
+  la CLI `claude`, fusiona `mcpServers.cortex` en `~/.claude.json` conservando todo lo
+  demás (un fichero que no se puede parsear no se toca y setup falla). Las
+  herramientas aparecen como `mcp__cortex__*`.
+- Actualiza `~/.claude/settings.json` con la lista de permitidas del perfil para
+  `mcp__cortex__*` y para el espacio del plugin `mcp__plugin_cortex_cortex__*`.
+- Elimina `~/.claude/mcp/cortex.json` que dejaban versiones anteriores (Claude Code
+  nunca lo leía).
+
+El servidor sigue el modo de ejecución: en modo `remote` la misma entrada
+`cortex mcp` hace de proxy hacia tu Cortex server, así que no hace falta URL ni token
+por agente (ver `cortex connect`).
 
 ### Plugin (opcional)
+
+El plugin incluye su propio servidor MCP (`plugin/claude-code/.mcp.json`,
+herramientas `mcp__plugin_cortex_cortex__*`, requiere `cortex` en el `PATH`). Usa
+**o bien** el plugin **o bien** `cortex setup claude-code` para no tener dos copias del
+mismo servidor; si instalas el plugin, quita la entrada de usuario con
+`claude mcp remove cortex --scope user`.
 
 Para la integración completa con hooks (seguimiento de sesión, recuperación tras compactación, recordatorios de guardado):
 
