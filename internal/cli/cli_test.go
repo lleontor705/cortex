@@ -626,7 +626,8 @@ func TestRunSetupOllama(t *testing.T) {
 }
 
 func TestRunStatusAndMode(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := filepath.Dir(setCLIEnv(t)) // isolate from the developer's ~/.cortex/cortex.yaml
+	t.Chdir(tmpDir)
 	t.Setenv("CORTEX_HOME", tmpDir)
 	t.Setenv("CORTEX_DATABASE_PATH", filepath.Join(tmpDir, "cortex.db"))
 	t.Setenv("CORTEX_MODE", "")
@@ -642,13 +643,13 @@ func TestRunStatusAndMode(t *testing.T) {
 		t.Fatalf("expected mode local, got: %s", out)
 	}
 
-	// 2. Text output for cortex mode (alias)
+	// 2. Text output for cortex mode (resolved mode report)
 	stdout.Reset()
 	stderr.Reset()
 	if code := Run([]string{"cortex", "mode"}, stdout, stderr); code != 0 {
 		t.Fatalf("mode code = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Operating Mode: local") {
+	if !strings.Contains(stdout.String(), "Mode:        local") || !strings.Contains(stdout.String(), "Source:      default") {
 		t.Fatalf("expected mode local, got: %s", stdout.String())
 	}
 

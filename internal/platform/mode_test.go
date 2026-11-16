@@ -19,6 +19,7 @@ func TestModeTriadEnumeration(t *testing.T) {
 	}{
 		{ModeLocal, "local"},
 		{ModeHybrid, "hybrid"},
+		{ModeRemote, "remote"},
 		{ModeServer, "server"},
 	}
 	for _, tc := range cases {
@@ -30,7 +31,7 @@ func TestModeTriadEnumeration(t *testing.T) {
 		}
 	}
 
-	for _, invalid := range []Mode{"", "legacy", "LOCAL", "remote"} {
+	for _, invalid := range []Mode{"", "legacy", "LOCAL", "proxy"} {
 		if invalid.Valid() {
 			t.Errorf("mode %q should not be Valid()", invalid)
 		}

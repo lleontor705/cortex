@@ -112,8 +112,10 @@ digest=<base64url-hmac-sha256>
 
 ## Modes
 
-The mode triad is a closed set: `local`, `hybrid`, `server`
-(`internal/platform/mode.go`). The embedded web surface is mounted in all three;
+The runtime modes are a closed set: `local`, `hybrid`, `remote`, `server`
+(`internal/platform/mode.go`). `remote` is the local composition whose `cortex mcp`
+proxies to a server, so the web surface behaves as in `local`. The embedded web
+surface is mounted in all of them;
 what differs is the backing store, the API authorization, and how the surface is
 wired.
 

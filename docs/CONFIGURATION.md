@@ -353,6 +353,7 @@ fake clock.
 
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `mode` | `CORTEX_MODE` | `""` (derived) | Runtime mode: `local`, `hybrid`, `remote`, `server`. Empty derives it from the legacy keys below. Set it with `cortex mode set`; inspect it with `cortex mode`. The environment variable wins over the file. |
 | `database.path` | `CORTEX_DATABASE_PATH` | `~/.cortex/cortex.db` | Local SQLite database file path. |
 | `sync.enabled` | `CORTEX_SYNC_ENABLED` | `false` | Enables background bidirectional SQLite-to-Server replication. |
 | `sync.url` | `CORTEX_SYNC_URL` | `""` | Cortex Server base URL (strictly HTTPS off-loopback). |

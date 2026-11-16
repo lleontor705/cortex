@@ -115,8 +115,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		exitCode = runAuth(args[2:], stdout, stderr)
 	case "web":
 		exitCode = runWeb(args[2:], stdout, stderr)
-	case "status", "mode":
+	case "status":
 		exitCode = runStatus(args[2:], stdout, stderr)
+	case "mode":
+		exitCode = runMode(args[2:], stdout, stderr)
 	case "ingest":
 		exitCode = runIngest(args[2:], stdout, stderr)
 	case "code":
@@ -650,8 +652,25 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		writef(stderr, "cortex: %v\n", err)
 		return 1
 	}
-	if cfg.MCP.Remote.Enabled {
-		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: cfg.MCP.Remote.URL, TokenEnv: cfg.MCP.Remote.TokenEnv, FallbackToken: cfg.HTTP.Token, Timeout: cfg.MCP.Remote.Timeout})
+	res, err := config.ResolveMode(cfg)
+	if err != nil {
+		writef(stderr, "cortex: %v\n", err)
+		return 1
+	}
+	if res.Mode == config.RuntimeRemote {
+		if res.MCPURL == "" {
+			writef(stderr, "cortex: remote mode needs a server URL: run `cortex mode set remote --url https://your-cortex-server`\n")
+			return 1
+		}
+		tokenEnv := cfg.MCP.Remote.TokenEnv
+		if strings.TrimSpace(tokenEnv) == "" {
+			tokenEnv = cfg.Sync.TokenEnv
+		}
+		timeout := cfg.MCP.Remote.Timeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: res.MCPURL, TokenEnv: tokenEnv, FallbackToken: cfg.HTTP.Token, Timeout: timeout})
 		if err != nil {
 			writef(stderr, "cortex: %v\n", err)
 			return 1
@@ -855,7 +874,11 @@ func writeServeBanner(w io.Writer, cfg *config.Config, addr string, webMounted b
 	if webMounted {
 		webState = "mounted"
 	}
-	writeServeField(w, "mode", "local")
+	mode := string(config.RuntimeLocal)
+	if res, err := config.ResolveMode(cfg); err == nil {
+		mode = string(res.Mode)
+	}
+	writeServeField(w, "mode", mode)
 	writeServeField(w, "store", cfg.Database.Path)
 	writeServeField(w, "sync", syncState)
 	writeServeField(w, "web", webState)
@@ -2271,12 +2294,7 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		writef(stdout, "\n=== 👤 Cortex Authentication Status ===\n")
-		mode := "Local (Zero-CGO SQLite)"
-		if cfg.Sync.Enabled && cfg.Sync.URL != "" {
-			mode = fmt.Sprintf("Hybrid (Local SQLite + Remote Sync to %s)", cfg.Sync.URL)
-		} else if cfg.Server.Storage.DSN != "" {
-			mode = "Server (PostgreSQL Multi-Tenant)"
-		}
+		_, mode := cfg.DetectMode()
 		writef(stdout, "Mode:      %s\n", mode)
 		if cfg.HTTP.Token != "" {
 			writef(stdout, "Token:     %s\n", maskSecret(cfg.HTTP.Token))

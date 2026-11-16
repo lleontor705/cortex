@@ -140,6 +140,9 @@ func TestConnectFlowProxyModeStatesConsequence(t *testing.T) {
 	if !cfg.MCP.Remote.Enabled || cfg.MCP.Remote.URL != srv.URL+"/mcp" {
 		t.Fatalf("proxy MCP config = enabled:%v url:%q", cfg.MCP.Remote.Enabled, cfg.MCP.Remote.URL)
 	}
+	if cfg.Mode != "remote" {
+		t.Fatalf("proxy connect wrote mode %q, want remote", cfg.Mode)
+	}
 	if !strings.Contains(m.ConnectSummary, "background sync disabled") {
 		t.Fatalf("summary not honest about proxy: %q", m.ConnectSummary)
 	}
@@ -200,6 +203,9 @@ func TestConnectFlowSuccessSavesAndReportsLoopState(t *testing.T) {
 	cfg = m.deps.Config // the commit installs a new config rather than writing through
 	if !cfg.Sync.Enabled || cfg.Sync.URL != srv.URL {
 		t.Fatalf("hybrid sync config = enabled:%v url:%q", cfg.Sync.Enabled, cfg.Sync.URL)
+	}
+	if cfg.Mode != "hybrid" {
+		t.Fatalf("hybrid connect wrote mode %q, want hybrid", cfg.Mode)
 	}
 	if cfg.HTTP.Token != "ctx_existing" {
 		t.Fatalf("empty token field erased http.token: %q", cfg.HTTP.Token)

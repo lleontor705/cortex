@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -126,11 +127,31 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		_, _ = fmt.Fprintf(stderr, "cortex: %v\n", err)
 		return 2
 	}
-	switch mode {
-	case platform.ModeLocal, platform.ModeHybrid:
-		if mode == platform.ModeHybrid {
-			_ = os.Setenv("CORTEX_MODE", "hybrid")
+	if len(cleanArgs) != len(args) && mode != platform.ModeServer {
+		// An explicit client --mode is exported so the single resolver
+		// (config.ResolveMode) sees it with the highest precedence and every
+		// subsystem executes and reports the same mode.
+		_ = os.Setenv(config.ModeEnvVar, string(mode))
+	} else if raw := strings.TrimSpace(os.Getenv(config.ModeEnvVar)); raw != "" {
+		envMode, err := config.ParseRuntimeMode(raw)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "cortex: %s: %v\n", config.ModeEnvVar, err)
+			return 2
 		}
+		mode = platform.Mode(envMode)
+	} else if fileMode, filePath, err := config.FileMode(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "cortex: config mode: %v\n", err)
+		return 2
+	} else if fileMode == config.RuntimeServer && isServerEntryInvocation(cleanArgs) {
+		// `mode: server` in the config file selects the server composition
+		// with that same file, exactly like `--mode server --config FILE`.
+		// Management commands (status, mode, config, doctor…) keep running
+		// through the CLI so the mode can be inspected and changed back.
+		mode = platform.ModeServer
+		cleanArgs = withServerConfig(cleanArgs, filePath)
+	}
+	switch mode {
+	case platform.ModeLocal, platform.ModeHybrid, platform.ModeRemote:
 		// If invoked interactively with no command arguments (e.g. user double-clicked
 		// the binary on Windows or launched 'cortex' directly in an interactive terminal),
 		// launch the interactive TUI interface rather than exiting immediately.
@@ -219,7 +240,7 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local, --mode hybrid, or --mode server)\n", mode)
+		_, _ = fmt.Fprintf(stderr, "cortex: unknown mode %q (use --mode local, --mode hybrid, --mode remote, or --mode server)\n", mode)
 		return 2
 	}
 }
@@ -277,6 +298,42 @@ func isInteractive(w io.Writer) bool {
 	}
 	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
 		return false
+	}
+	return true
+}
+
+// withServerConfig injects --config PATH for a server run selected by the
+// config file's `mode: server`, unless the caller already passed one.
+func withServerConfig(args []string, path string) []string {
+	for _, arg := range args {
+		if arg == "--config" || strings.HasPrefix(arg, "--config=") {
+			return args
+		}
+	}
+	out := make([]string, 0, len(args)+2)
+	if len(args) > 0 {
+		out = append(out, args[0])
+	}
+	out = append(out, "--config", path)
+	if len(args) > 1 {
+		out = append(out, args[1:]...)
+	}
+	return out
+}
+
+// isServerEntryInvocation reports whether args start the server itself (no
+// subcommand, or the server-only reindex job) rather than a CLI command.
+func isServerEntryInvocation(args []string) bool {
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--config" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg == "reindex"
 	}
 	return true
 }

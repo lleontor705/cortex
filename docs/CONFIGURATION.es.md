@@ -334,6 +334,7 @@ idéntica byte a byte a una compilación sin la función.
 
 | Clave de configuración | Variable de entorno | Por defecto | Descripción |
 | :--- | :--- | :--- | :--- |
+| `mode` | `CORTEX_MODE` | `""` (derivado) | Modo de ejecución: `local`, `hybrid`, `remote`, `server`. Vacío lo deriva de las claves heredadas de abajo. Se fija con `cortex mode set` y se inspecciona con `cortex mode`. La variable de entorno gana al archivo. |
 | `database.path` | `CORTEX_DATABASE_PATH` | `~/.cortex/cortex.db` | Ruta al fichero de base de datos SQLite local. |
 | `sync.enabled` | `CORTEX_SYNC_ENABLED` | `false` | Habilita la replicación bidireccional en segundo plano de SQLite al servidor. |
 | `sync.url` | `CORTEX_SYNC_URL` | `""` | URL base del Cortex Server (estrictamente HTTPS fuera de loopback). |
