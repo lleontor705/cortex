@@ -8,7 +8,6 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	clienttransport "github.com/mark3labs/mcp-go/client/transport"
 	protocol "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -68,15 +67,13 @@ func OpenRemoteProxy(ctx context.Context, cfg RemoteProxyConfig) (*RemoteProxy, 
 	if token == "" {
 		return nil, fmt.Errorf("remote MCP token not found: token environment variable %s is empty and no stored token is configured (run `cortex auth login`)", cfg.TokenEnv)
 	}
-	remote, err := mcpclient.NewStreamableHttpClient(
-		cfg.URL,
-		clienttransport.WithHTTPBasicClient(newBearerHTTPClient()),
-		clienttransport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + token}),
-		clienttransport.WithHTTPTimeout(cfg.Timeout),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create remote MCP client: %w", err)
-	}
+	// Cortex's own Streamable HTTP transport (remote_transport.go) replaces
+	// mcp-go's transport.StreamableHTTP, which is affected by GO-2026-6911
+	// (redirect-following credential leak, no upstream fix). The bearer is set
+	// per request and every hop is checked by the shared transport policy.
+	httpClient := newBearerHTTPClient()
+	httpClient.Timeout = cfg.Timeout
+	remote := mcpclient.NewClient(newBearerStreamableTransport(cfg.URL, token, httpClient))
 	proxy, err := openRemoteProxy(ctx, remote)
 	if err != nil {
 		_ = remote.Close()
