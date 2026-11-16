@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
+
 	opencodeplugin "github.com/lleontor705/cortex/v2/plugin/opencode"
 )
 
@@ -190,8 +192,7 @@ func DetectAgents() []AgentStatus {
 	// 3. Gemini CLI
 	geminiDir := filepath.Join(home, ".gemini")
 	geminiDetected := dirOrFileExists(geminiDir) || commandExists("gemini")
-	geminiConfig := filepath.Join(geminiDir, "antigravity", "mcp.json")
-	geminiConfigured := fileExists(geminiConfig)
+	geminiConfigured := isGeminiConfigured(filepath.Join(geminiDir, "settings.json"))
 	statusGemini := "Not detected"
 	if geminiConfigured {
 		statusGemini = "Configured (MCP Registered)"
@@ -211,8 +212,7 @@ func DetectAgents() []AgentStatus {
 	// 4. Codex
 	codexDir := filepath.Join(home, ".codex")
 	codexDetected := dirOrFileExists(codexDir) || commandExists("codex")
-	codexConfig := filepath.Join(codexDir, "config.toml")
-	codexConfigured := fileExists(codexConfig)
+	codexConfigured := isCodexConfigured(filepath.Join(codexDir, "config.toml"))
 	statusCodex := "Not detected"
 	if codexConfigured {
 		statusCodex = "Configured"
@@ -471,66 +471,211 @@ func installOpenCodeWithOptions(home, bin string, opts Options) (*Result, error)
 
 // --- Gemini CLI -------------------------------------------------------------
 
+// geminiProtocolMarker identifies a system.md that Cortex owns and may refresh.
+const geminiProtocolMarker = "Cortex Persistent Memory"
+
 func installGeminiCLI(home, bin string) (*Result, error) {
 	configPath := filepath.Join(home, ".gemini", "settings.json")
-	content := fmt.Sprintf(`{
-  "mcpServers": {
-    "cortex": {
-      "command": %s,
-      "args": ["mcp", "--tools=agent"]
-    }
-  }
-}
-`, jsonString(bin))
-
-	if err := writeFile(configPath, content); err != nil {
+	settings, err := readJSONObject(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("setup gemini-cli: %s is not valid JSON; fix or move it and retry: %w", configPath, err)
+	}
+	servers, _ := settings["mcpServers"].(map[string]interface{})
+	if servers == nil {
+		servers = make(map[string]interface{})
+	}
+	servers["cortex"] = map[string]interface{}{
+		"command": bin,
+		"args":    []string{"mcp", "--tools=agent"},
+	}
+	settings["mcpServers"] = servers
+	if err := writeJSONObject(configPath, settings); err != nil {
 		return nil, err
 	}
 
 	files := 1
 	systemPath := filepath.Join(home, ".gemini", "system.md")
-	if err := writeFile(systemPath, memoryProtocol); err != nil {
-		log.Printf("setup: failed to write system prompt %s: %v", systemPath, err)
+	if ownedOrMissing(systemPath, geminiProtocolMarker) {
+		if err := writeFile(systemPath, memoryProtocol); err != nil {
+			log.Printf("setup: failed to write system prompt %s: %v", systemPath, err)
+		} else {
+			files++
+		}
 	} else {
-		files++
+		log.Printf("setup: %s already exists and is not managed by Cortex; left unchanged", systemPath)
 	}
 
 	return &Result{Agent: "gemini-cli", Destination: configPath, Files: files}, nil
 }
 
+// isGeminiConfigured reports whether settings.json registers the cortex server.
+func isGeminiConfigured(configPath string) bool {
+	settings, err := readJSONObject(configPath)
+	if err != nil {
+		return false
+	}
+	servers, _ := settings["mcpServers"].(map[string]interface{})
+	_, ok := servers["cortex"]
+	return ok
+}
+
 // --- Codex ------------------------------------------------------------------
+
+const codexCortexTable = "[mcp_servers.cortex]"
 
 func installCodex(home, bin string) (*Result, error) {
 	configDir := filepath.Join(home, ".codex")
 	configPath := filepath.Join(configDir, "config.toml")
+	instructionsPath := filepath.Join(configDir, "cortex-instructions.md")
+	compactPath := filepath.Join(configDir, "cortex-compact-prompt.md")
 
-	content := fmt.Sprintf(`[mcp_servers.cortex]
-command = %s
-args = ["mcp", "--tools=agent"]
-
-model_instructions_file = "%s"
-experimental_compact_prompt_file = "%s"
-`, jsonString(bin),
-		filepath.Join(configDir, "cortex-instructions.md"),
-		filepath.Join(configDir, "cortex-compact-prompt.md"))
-
-	if err := writeFile(configPath, content); err != nil {
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("setup codex: read %s: %w", configPath, err)
+	}
+	if len(existing) > 0 {
+		var probe map[string]interface{}
+		if err := toml.Unmarshal(existing, &probe); err != nil {
+			return nil, fmt.Errorf("setup codex: %s is not valid TOML; fix or move it and retry: %w", configPath, err)
+		}
+	}
+	merged := mergeCodexConfig(string(existing), bin, instructionsPath, compactPath)
+	var probe map[string]interface{}
+	if err := toml.Unmarshal([]byte(merged), &probe); err != nil {
+		return nil, fmt.Errorf("setup codex: merged config is not valid TOML: %w", err)
+	}
+	if err := writeFile(configPath, merged); err != nil {
 		return nil, err
 	}
 
 	files := 1
-	if err := writeFile(filepath.Join(configDir, "cortex-instructions.md"), memoryProtocol); err != nil {
+	if err := writeFile(instructionsPath, memoryProtocol); err != nil {
 		log.Printf("setup: failed to write instructions: %v", err)
 	} else {
 		files++
 	}
-	if err := writeFile(filepath.Join(configDir, "cortex-compact-prompt.md"), compactPrompt); err != nil {
+	if err := writeFile(compactPath, compactPrompt); err != nil {
 		log.Printf("setup: failed to write compact prompt: %v", err)
 	} else {
 		files++
 	}
 
 	return &Result{Agent: "codex", Destination: configPath, Files: files}, nil
+}
+
+// mergeCodexConfig upserts the Cortex MCP table into an existing Codex
+// config.toml without disturbing the user's other settings:
+//   - any previous [mcp_servers.cortex] table (and its sub-tables) is replaced;
+//   - model_instructions_file / experimental_compact_prompt_file are added as
+//     ROOT keys (before the first table) only when the user has not set them.
+func mergeCodexConfig(existing, bin, instructionsPath, compactPath string) string {
+	lines := strings.Split(strings.ReplaceAll(existing, "\r\n", "\n"), "\n")
+
+	kept := make([]string, 0, len(lines))
+	inCortex := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inCortex = trimmed == codexCortexTable || strings.HasPrefix(trimmed, "[mcp_servers.cortex.")
+		}
+		if !inCortex {
+			kept = append(kept, line)
+		}
+	}
+
+	firstTable := len(kept)
+	rootKeys := map[string]bool{}
+	for i, line := range kept {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			firstTable = i
+			break
+		}
+		if key, _, ok := strings.Cut(trimmed, "="); ok {
+			rootKeys[strings.TrimSpace(key)] = true
+		}
+	}
+
+	var root []string
+	if !rootKeys["model_instructions_file"] {
+		root = append(root, "model_instructions_file = "+jsonString(instructionsPath))
+	}
+	if !rootKeys["experimental_compact_prompt_file"] {
+		root = append(root, "experimental_compact_prompt_file = "+jsonString(compactPath))
+	}
+
+	// No arithmetic capacity hint: the size derives from the user's file, and
+	// append grows the slice safely (CodeQL go/allocation-size-overflow).
+	out := append([]string(nil), root...)
+	if len(root) > 0 && firstTable > 0 {
+		out = append(out, "")
+	}
+	out = append(out, kept...)
+
+	body := strings.TrimRight(strings.Join(out, "\n"), "\n")
+	block := codexCortexTable + "\ncommand = " + jsonString(bin) + "\nargs = [\"mcp\", \"--tools=agent\"]\n"
+	if body == "" {
+		return block
+	}
+	return body + "\n\n" + block
+}
+
+// isCodexConfigured reports whether config.toml registers the cortex server.
+func isCodexConfigured(configPath string) bool {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == codexCortexTable {
+			return true
+		}
+	}
+	return false
+}
+
+// --- JSON merge helpers -----------------------------------------------------
+
+// readJSONObject returns the JSON object stored at path, an empty object when
+// the file is missing or blank, and an error when it holds invalid JSON (so
+// callers never clobber a file they could not parse).
+func readJSONObject(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]interface{}{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return map[string]interface{}{}, nil
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, err
+	}
+	if obj == nil {
+		obj = map[string]interface{}{}
+	}
+	return obj, nil
+}
+
+func writeJSONObject(path string, obj map[string]interface{}) error {
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFile(path, string(out)+"\n")
+}
+
+// ownedOrMissing reports whether path is absent or already carries marker
+// (i.e. was written by Cortex and may be refreshed).
+func ownedOrMissing(path, marker string) bool {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return true
+	}
+	return err == nil && strings.Contains(string(data), marker)
 }
 
 // --- Helpers ----------------------------------------------------------------

@@ -91,6 +91,29 @@ func TestParseModeFlagPositionFlexible(t *testing.T) {
 	}
 }
 
+func TestParseModeLeavesSubcommandModeFlag(t *testing.T) {
+	for _, args := range [][]string{
+		{"cortex", "search", "foo", "--mode=multi_hop"},
+		{"cortex", "search", "foo", "--mode", "semantic"},
+		{"cortex", "search", "--mode", "direct", "foo", "--mode=hybrid"},
+	} {
+		mode, clean, err := ParseModeStrict(args)
+		if err != nil {
+			t.Fatalf("ParseModeStrict(%v) error = %v, want subcommand --mode left alone", args, err)
+		}
+		wantMode, wantLen := ModeLocal, len(args)
+		if args[len(args)-1] == "--mode=hybrid" {
+			wantMode, wantLen = ModeHybrid, len(args)-1
+		}
+		if mode != wantMode {
+			t.Errorf("ParseModeStrict(%v) mode = %q, want %q", args, mode, wantMode)
+		}
+		if len(clean) != wantLen {
+			t.Errorf("ParseModeStrict(%v) clean = %v, want %d elements", args, clean, wantLen)
+		}
+	}
+}
+
 // --- ParseModeStrict: fail-closed unknown values ---
 
 func TestParseModeUnknownModeFailsClosed(t *testing.T) {

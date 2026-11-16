@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleontor705/cortex/v2/internal/mcp/memorycontract"
 	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
@@ -80,6 +81,24 @@ func TestOpenRemoteProxyRequiresTokenEnvironment(t *testing.T) {
 	_, err := OpenRemoteProxy(context.Background(), RemoteProxyConfig{URL: "https://example.test/mcp", TokenEnv: "CORTEX_TEST_REMOTE_TOKEN"})
 	if err == nil {
 		t.Fatal("expected missing token error")
+	}
+}
+
+// TestOpenRemoteProxyUsesFallbackToken pins the TUI connect / auth login path:
+// the token they store in http.token is passed as FallbackToken and must get
+// the proxy past the token stage (failing later at connect on a closed port).
+func TestOpenRemoteProxyUsesFallbackToken(t *testing.T) {
+	t.Setenv("CORTEX_TEST_REMOTE_TOKEN", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := OpenRemoteProxy(ctx, RemoteProxyConfig{
+		URL: "http://127.0.0.1:1/mcp", TokenEnv: "CORTEX_TEST_REMOTE_TOKEN", FallbackToken: "stored-token", Timeout: time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected connection failure against a closed port")
+	}
+	if strings.Contains(err.Error(), "token") {
+		t.Fatalf("error = %v, want a transport failure after the fallback token was accepted", err)
 	}
 }
 

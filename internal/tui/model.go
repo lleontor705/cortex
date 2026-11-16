@@ -489,6 +489,8 @@ type Model struct {
 	ConnectProxyMode bool // false = Hybrid sync (recommended), true = Remote MCP proxy
 	ConnectFocus     int  // step 1: 0 = URL, 1 = mode selector
 	ConnectResult    *connectTestResult
+	ConnectTesting   bool // a connectivity probe is in flight
+	ConnectTestSeq   int  // id of the latest probe; stale results are dropped
 	ConnectCommitted bool
 	ConnectSummary   string
 	ConnectError     string

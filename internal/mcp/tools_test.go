@@ -705,6 +705,13 @@ func TestHandleResolveQuery(t *testing.T) {
 }
 
 func TestHandleGetStatus(t *testing.T) {
+	// The status tool loads the user's config; isolate it so a developer's own
+	// ~/.cortex/cortex.yaml (e.g. hybrid) cannot change the reported mode.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CORTEX_MODE", "")
+	t.Chdir(home)
 	stores := setupTestStores(t)
 	handler := handleGetStatus(stores)
 	result := callTool(t, handler, map[string]interface{}{})

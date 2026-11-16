@@ -142,9 +142,9 @@ func TestCoverageDoctorServerHealth(t *testing.T) {
 	status := http.StatusOK
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/health":
+		case "/health", "/health/ready":
 			w.WriteHeader(status)
-		case "/mcp":
+		case "/api/me":
 			if r.Header.Get("Authorization") == "Bearer ctx_doctor_token" {
 				w.WriteHeader(http.StatusOK)
 				return
@@ -155,6 +155,8 @@ func TestCoverageDoctorServerHealth(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+
+	setCLIEnv(t)
 
 	t.Run("healthy server without a bearer token", func(t *testing.T) {
 		status = http.StatusOK
@@ -194,6 +196,61 @@ func TestCoverageDoctorServerHealth(t *testing.T) {
 		code, out, errB := run(t, "cortex", "doctor", "--server", srv.URL)
 		if code != 1 || !strings.Contains(out, "returned status 500") {
 			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, out, errB)
+		}
+	})
+
+	t.Run("server error on the identity endpoint is not reported as OK", func(t *testing.T) {
+		status = http.StatusOK
+		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/me" {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer failing.Close()
+		t.Setenv("CORTEX_REMOTE_TOKEN", "")
+		t.Setenv("CORTEX_HTTP_TOKEN", "ctx_doctor_token")
+		code, out, errB := run(t, "cortex", "doctor", "--server", failing.URL)
+		if code != 1 || !strings.Contains(out, "unexpected status 502") {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, out, errB)
+		}
+	})
+
+	t.Run("bearer is not sent to a plain-HTTP remote host", func(t *testing.T) {
+		t.Setenv("CORTEX_REMOTE_TOKEN", "")
+		t.Setenv("CORTEX_HTTP_TOKEN", "ctx_doctor_token")
+		code, out, _ := run(t, "cortex", "doctor", "--server", "http://cortex.invalid")
+		if code != 1 || strings.Contains(out, "Bearer Authentication: verified") {
+			t.Fatalf("code = %d, stdout = %q", code, out)
+		}
+	})
+
+	t.Run("redirects never forward the bearer cross-origin", func(t *testing.T) {
+		var leaked bool
+		other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "" {
+				leaked = true
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer other.Close()
+		redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/me" {
+				http.Redirect(w, r, other.URL+"/api/me", http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer redirecting.Close()
+		t.Setenv("CORTEX_REMOTE_TOKEN", "")
+		t.Setenv("CORTEX_HTTP_TOKEN", "ctx_doctor_token")
+		code, _, _ := run(t, "cortex", "doctor", "--server", redirecting.URL)
+		if leaked {
+			t.Fatal("bearer token was forwarded across origins on redirect")
+		}
+		if code != 1 {
+			t.Fatalf("code = %d, want 1 for a blocked redirect", code)
 		}
 	})
 

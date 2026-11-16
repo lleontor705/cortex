@@ -438,6 +438,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case unifiedConfigSavedMsg:
+		return m.applyUnifiedConfigSaved(msg)
+
 	case localConfigSavedMsg:
 		m.LocalCfgSaving = false
 		if msg.err != nil {
@@ -550,6 +553,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ToastMessage = "Memory created: " + msg.observation.Title
 		m.ToastType = "success"
 		return m, tea.Batch(loadStats(m.deps), loadRecentObservations(m.deps, m.FilterProject))
+
+	case connectTestDoneMsg:
+		return m.applyConnectTestResult(msg), nil
 
 	case spinner.TickMsg:
 		if m.DetailLoading {

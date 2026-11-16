@@ -115,8 +115,12 @@ func (m Model) advanceConnect() (tea.Model, tea.Cmd) {
 		m.ConnectStep = ConnectStepTest
 		m.ConnectURL.Blur()
 		m.ConnectToken.Blur()
-		return m.runConnectTest(), nil
+		return m.runConnectTest()
 	case ConnectStepTest:
+		if m.ConnectTesting {
+			// A probe is in flight; enter must not double-submit or commit.
+			return m, nil
+		}
 		if m.ConnectCommitted {
 			return m.closeConnect()
 		}
@@ -125,7 +129,7 @@ func (m Model) advanceConnect() (tea.Model, tea.Cmd) {
 		}
 		// A failed test re-runs instead of committing: nothing is ever written
 		// from a non-passing connectivity result (REQ-SYNC-001).
-		return m.runConnectTest(), nil
+		return m.runConnectTest()
 	}
 	return m, nil
 }
@@ -140,6 +144,8 @@ func (m Model) connectBack() (tea.Model, tea.Cmd) {
 		m.ConnectError = ""
 	case ConnectStepTest:
 		m.ConnectStep = ConnectStepToken
+		m.ConnectTesting = false
+		m.ConnectTestSeq++ // invalidate any in-flight probe
 		m.ConnectResult = nil
 		m.ConnectSummary = ""
 		m.ConnectCommitted = false
@@ -152,6 +158,8 @@ func (m Model) connectBack() (tea.Model, tea.Cmd) {
 func (m Model) closeConnect() (tea.Model, tea.Cmd) {
 	m.Screen = ScreenDashboard
 	m.ConnectStep = ConnectStepURL
+	m.ConnectTesting = false
+	m.ConnectTestSeq++ // invalidate any in-flight probe
 	m.ConnectFocus = 0
 	m.ConnectResult = nil
 	m.ConnectCommitted = false
@@ -217,11 +225,39 @@ func (m Model) effectiveConnectToken() string {
 	return ""
 }
 
-func (m Model) runConnectTest() Model {
+// connectTestDoneMsg carries a finished connectivity probe back to Update.
+// Seq ties it to the request that started it so a stale result (the user went
+// back or closed the wizard meanwhile) is dropped instead of applied.
+type connectTestDoneMsg struct {
+	Seq    int
+	Result connectTestResult
+}
+
+// runConnectTest starts the connectivity probe off the UI goroutine. The view
+// shows a "testing" state until connectTestDoneMsg arrives, so slow or dead
+// endpoints never freeze the TUI.
+func (m Model) runConnectTest() (Model, tea.Cmd) {
 	m.ConnectError = ""
 	m.ConnectCommitted = false
 	m.ConnectSummary = ""
-	res := runConnectivityTest(strings.TrimSpace(m.ConnectURL.Value()), m.effectiveConnectToken())
+	m.ConnectResult = nil
+	m.ConnectTesting = true
+	m.ConnectTestSeq++
+	seq := m.ConnectTestSeq
+	url := strings.TrimSpace(m.ConnectURL.Value())
+	token := m.effectiveConnectToken()
+	return m, func() tea.Msg {
+		return connectTestDoneMsg{Seq: seq, Result: runConnectivityTest(url, token)}
+	}
+}
+
+// applyConnectTestResult records a finished probe if it is still current.
+func (m Model) applyConnectTestResult(msg connectTestDoneMsg) Model {
+	if msg.Seq != m.ConnectTestSeq || m.Screen != ScreenConnect || m.ConnectStep != ConnectStepTest {
+		return m
+	}
+	res := msg.Result
+	m.ConnectTesting = false
 	m.ConnectResult = &res
 	if !res.OK {
 		m.ConnectSummary = "Result: Not connected. Nothing was saved."
@@ -288,7 +324,8 @@ func connectCommit(d *Deps, rawURL, rawToken string, proxyMode bool) SaveResult 
 		return SaveResult{Err: err}
 	}
 	next.LoadedFrom = targetPath
-	*d.Config = next
+	// Swap the pointer rather than writing through it: the previous struct may
+	// be shared with *app.App goroutines that read it concurrently.
 	d.Config = &next
 
 	if d.App != nil {

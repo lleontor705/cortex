@@ -87,6 +87,10 @@ func (m Model) viewConnectTestStep() string {
 	var b strings.Builder
 	b.WriteString("  " + lipgloss.NewStyle().Foreground(colorText).
 		Render("Testing "+strings.TrimSpace(m.ConnectURL.Value())+" ...") + "\n\n")
+	if m.ConnectTesting {
+		b.WriteString("  " + dim.Render("… checking server, token and sync endpoint") + "\n")
+		return b.String()
+	}
 	if m.ConnectResult == nil {
 		return b.String()
 	}

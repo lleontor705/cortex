@@ -30,6 +30,7 @@ import (
 	"github.com/lleontor705/cortex/v2/internal/projection/obsidian"
 	"github.com/lleontor705/cortex/v2/internal/setup"
 	cortsync "github.com/lleontor705/cortex/v2/internal/sync"
+	"github.com/lleontor705/cortex/v2/internal/transportpolicy"
 	"github.com/lleontor705/cortex/v2/internal/tui"
 	"github.com/lleontor705/cortex/v2/internal/update"
 	"github.com/lleontor705/cortex/v2/internal/web"
@@ -650,7 +651,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if cfg.MCP.Remote.Enabled {
-		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: cfg.MCP.Remote.URL, TokenEnv: cfg.MCP.Remote.TokenEnv, Timeout: cfg.MCP.Remote.Timeout})
+		proxy, err := mcp.OpenRemoteProxy(context.Background(), mcp.RemoteProxyConfig{URL: cfg.MCP.Remote.URL, TokenEnv: cfg.MCP.Remote.TokenEnv, FallbackToken: cfg.HTTP.Token, Timeout: cfg.MCP.Remote.Timeout})
 		if err != nil {
 			writef(stderr, "cortex: %v\n", err)
 			return 1
@@ -1282,13 +1283,7 @@ func runSync(args []string, stdout, stderr io.Writer) int {
 			writef(stderr, "sync remote: sync.url is not configured\n")
 			return 1
 		}
-		token := os.Getenv(a.Config.Sync.TokenEnv)
-		if token == "" && (strings.HasPrefix(a.Config.Sync.TokenEnv, "ctx_") || strings.HasPrefix(a.Config.Sync.TokenEnv, "ey")) {
-			token = a.Config.Sync.TokenEnv
-		}
-		if token == "" && a.Config.HTTP.Token != "" {
-			token = a.Config.HTTP.Token
-		}
+		token := config.ResolveRemoteToken(a.Config.Sync.TokenEnv, a.Config.HTTP.Token)
 		remote, err := cortsync.NewRemoteSyncer(a.DB.DB(), a.Config.Sync.URL, token, a.Config.Sync.Timeout)
 		if err != nil {
 			writef(stderr, "sync remote: %v\n", err)
@@ -1754,66 +1749,89 @@ func runDoctorServer(serverURL string, stdout, stderr io.Writer) int {
 	writeln(stdout, "Cortex Doctor — Server Health Check")
 	writef(stdout, "Target: %s\n\n", serverURL)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	base := strings.TrimRight(strings.TrimSpace(serverURL), "/")
+	base = strings.TrimSuffix(base, "/mcp")
+	// Every probe that may carry a bearer uses the shared transport policy, so
+	// a redirect can never forward the token cross-origin or over plain HTTP.
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: transportpolicy.CheckBearerRedirect}
 	issues := 0
 
-	// 1. Health endpoint
-	start := time.Now()
-	resp, err := client.Get(strings.TrimRight(serverURL, "/") + "/health")
-	duration := time.Since(start)
-
-	if err != nil {
-		writef(stdout, "  [FAIL] Server Connectivity: %v\n", err)
-		issues++
-	} else {
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode == http.StatusOK {
-			writef(stdout, "  [OK]   Server Health: operational (HTTP 200, %dms)\n", duration.Milliseconds())
-		} else {
-			writef(stdout, "  [FAIL] Server Health: returned status %d\n", resp.StatusCode)
+	// 1. Liveness and readiness (public endpoints).
+	for _, probe := range []struct{ label, path string }{
+		{"Server Health", "/health"},
+		{"Server Readiness", "/health/ready"},
+	} {
+		start := time.Now()
+		resp, err := client.Get(base + probe.path)
+		duration := time.Since(start)
+		if err != nil {
+			if probe.path == "/health" {
+				writef(stdout, "  [FAIL] Server Connectivity: %v\n", err)
+				issues++
+				break
+			}
+			writef(stdout, "  [FAIL] %s: %v\n", probe.label, err)
+			issues++
+			continue
+		}
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			writef(stdout, "  [OK]   %s: operational (HTTP 200, %dms)\n", probe.label, duration.Milliseconds())
+		case probe.path == "/health/ready" && resp.StatusCode == http.StatusNotFound:
+			writef(stdout, "  [INFO] %s: endpoint not available (older server)\n", probe.label)
+		default:
+			writef(stdout, "  [FAIL] %s: returned status %d\n", probe.label, resp.StatusCode)
 			issues++
 		}
 	}
 
-	// 2. Authentication token check if provided
-	token := os.Getenv("CORTEX_HTTP_TOKEN")
+	// 2. Authenticated identity check. Token precedence: explicit env vars,
+	// then the configured remote/sync token references, then the stored token.
+	token := strings.TrimSpace(os.Getenv("CORTEX_HTTP_TOKEN"))
 	if token == "" {
-		token = os.Getenv("CORTEX_REMOTE_TOKEN")
+		token = strings.TrimSpace(os.Getenv("CORTEX_REMOTE_TOKEN"))
 	}
-
-	if token != "" {
-		req, reqErr := http.NewRequest("GET", strings.TrimRight(serverURL, "/")+"/mcp", nil)
-		if reqErr == nil {
-			req.Header.Set("Authorization", "Bearer "+token)
-			authResp, authErr := client.Do(req)
-			if authErr != nil {
-				writef(stdout, "  [FAIL] Authenticated Endpoint: %v\n", authErr)
-				issues++
-			} else {
-				defer func() { _ = authResp.Body.Close() }()
-				switch authResp.StatusCode {
-				case http.StatusOK, http.StatusMethodNotAllowed, http.StatusNoContent:
-					writef(stdout, "  [OK]   Bearer Authentication: verified\n")
-				case http.StatusUnauthorized, http.StatusForbidden:
-					writef(stdout, "  [FAIL] Bearer Authentication: invalid or rejected token\n")
-					issues++
-				default:
-					writef(stdout, "  [OK]   Bearer Authentication: responded (status %d)\n", authResp.StatusCode)
-				}
+	if token == "" {
+		if cfg, err := config.Load(""); err == nil {
+			token = config.ResolveRemoteToken(cfg.MCP.Remote.TokenEnv, "")
+			if token == "" {
+				token = config.ResolveRemoteToken(cfg.Sync.TokenEnv, cfg.HTTP.Token)
 			}
 		}
-	} else {
-		writef(stdout, "  [INFO] Bearer Token: not configured in environment (set CORTEX_HTTP_TOKEN)\n")
 	}
 
-	// 3. Web UI check on standard port 3000
-	uiURL := "http://localhost:3000"
-	uiResp, uiErr := client.Get(uiURL)
-	if uiErr == nil {
-		_ = uiResp.Body.Close()
-		writef(stdout, "  [OK]   Web UI Control Room: running on %s\n", uiURL)
-	} else {
-		writef(stdout, "  [INFO] Web UI Control Room: not detected on %s (optional)\n", uiURL)
+	switch {
+	case token == "":
+		writef(stdout, "  [INFO] Bearer Token: not configured (set CORTEX_REMOTE_TOKEN or run `cortex auth login`)\n")
+	case transportpolicy.ValidateBearerDestination(base) != nil:
+		writef(stdout, "  [FAIL] Bearer Authentication: refusing to send the token to %s (%v)\n", base, transportpolicy.ValidateBearerDestination(base))
+		issues++
+	default:
+		req, reqErr := http.NewRequest(http.MethodGet, base+"/api/me", nil)
+		if reqErr != nil {
+			writef(stdout, "  [FAIL] Bearer Authentication: %v\n", reqErr)
+			issues++
+			break
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		authResp, authErr := client.Do(req)
+		if authErr != nil {
+			writef(stdout, "  [FAIL] Authenticated Endpoint: %v\n", authErr)
+			issues++
+			break
+		}
+		_ = authResp.Body.Close()
+		switch {
+		case authResp.StatusCode >= 200 && authResp.StatusCode < 300:
+			writef(stdout, "  [OK]   Bearer Authentication: verified\n")
+		case authResp.StatusCode == http.StatusUnauthorized || authResp.StatusCode == http.StatusForbidden:
+			writef(stdout, "  [FAIL] Bearer Authentication: invalid or rejected token (HTTP %d)\n", authResp.StatusCode)
+			issues++
+		default:
+			writef(stdout, "  [FAIL] Bearer Authentication: unexpected status %d from /api/me\n", authResp.StatusCode)
+			issues++
+		}
 	}
 
 	writeln(stdout, "")
