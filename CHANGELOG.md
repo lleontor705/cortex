@@ -12,6 +12,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Upgrade gRPC to v1.82.1 and `golang.org/x/text` to v0.39.0 to remediate reachable vulnerabilities.
 - Require Go toolchain 1.26.5 across modules, CI, release builds, and Docker builds.
 
+## [2.4.20] - 2026-11-15
+
+### 🚀 Features
+
+- *(tui)* Declarative keymap registry, unified Configuration, guided Connect flow, navigation stack, onboarding
+
+### 🐛 Bug Fixes
+
+- *(search)* Bound recency, rescue starved queries, re-order after PPR (#192)
+- *(sync)* Hot-reload sync loop, token preservation, honest status; config format .bak retirement
+- *(web)* Refresh embedded index.html after the web dependency updates (#198)
+
+### 🧪 Testing
+
+- *(server)* Drain revocation samples while workers run
+- *(e2e)* Accept the trailing slash on the settings URL (#196)
+
+### ⚙️ Miscellaneous Tasks
+
+- *(changelog)* Refresh release history [skip ci]
+
+### 💼 Other
+
+- *(deps-dev)* Bump vitest
+- *(deps)* Bump codecov/codecov-action from 5.5.5 to 7.1.1
+- *(deps)* Bump golangci/golangci-lint-action from 7.0.1 to 9.3.0
+- *(deps)* Bump goreleaser/goreleaser-action from 6.4.0 to 7.2.3
+- *(deps)* Bump actions/stale from 9.1.0 to 11.0.0
+- *(deps-dev)* Bump @types/node from 22.20.1 to 26.6.4 in /web
+- *(deps)* Bump the web-minor-patch group across 1 directory with 11 updates
+- *(deps)* Bump the go-minor-patch group across 1 directory with 5 updates
+- *(deps)* Bump golang
+- *(deps)* Bump github/codeql-action/analyze from 3.38.2 to 4.38.2
+- Align Go toolchain pins to 1.27.4 and CodeQL init with analyze v4
+- *(deps)* Bump github.com/mark3labs/mcp-go from 0.46.0 to 1.1.1
+
 ## [2.4.19] - 2026-10-09
 
 ### 🚀 Features
