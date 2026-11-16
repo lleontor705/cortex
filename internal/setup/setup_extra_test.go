@@ -18,6 +18,7 @@ package setup
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,7 @@ import (
 // returns it so each installer writes only inside that isolated tree.
 func setupHome(t *testing.T) string {
 	t.Helper()
+	stubClaudeCLI(t, nil)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -91,23 +93,16 @@ func TestInstallClaudeCode_ExactContentAndResult(t *testing.T) {
 		t.Errorf("Result.Agent = %q, want claude-code", res.Agent)
 	}
 
-	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
-	if res.Destination != mcpPath {
-		t.Errorf("Result.Destination = %q, want %q", res.Destination, mcpPath)
+	claudeJSON := filepath.Join(home, ".claude.json")
+	if res.Destination != claudeJSON {
+		t.Errorf("Result.Destination = %q, want %q", res.Destination, claudeJSON)
 	}
-	if res.Files != 1 {
-		t.Errorf("Result.Files = %d, want 1", res.Files)
+	if res.Files != 2 {
+		t.Errorf("Result.Files = %d, want 2", res.Files)
 	}
 
-	// The MCP config must be valid JSON with the exact contract fields.
-	raw := assertFile(t, mcpPath)
-	var cfg map[string]any
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		t.Fatalf("cortex.json is not valid JSON: %v\nraw=%s", err, raw)
-	}
-	if got, want := cfg["name"], "cortex"; got != want {
-		t.Errorf("cfg.name = %v, want %v", got, want)
-	}
+	// Without the claude CLI the user-scope entry is merged into ~/.claude.json.
+	cfg := claudeUserEntry(t, home)
 	if got, want := cfg["type"], "stdio"; got != want {
 		t.Errorf("cfg.type = %v, want %v", got, want)
 	}
@@ -139,10 +134,13 @@ func TestInstallClaudeCode_ExactContentAndResult(t *testing.T) {
 		t.Fatalf("settings.json is not valid JSON: %v", err)
 	}
 	allow := allowListFromSettings(t, settings)
-	for _, tool := range cortexMCPTools {
-		if !allow[tool] {
-			t.Errorf("settings.json missing allow entry %q", tool)
+	for _, rule := range claudeAllowRules(cortexMCPTools) {
+		if !allow[rule] {
+			t.Errorf("settings.json missing allow entry %q", rule)
 		}
+	}
+	if !allow["mcp__cortex__cortex_save"] || !allow["mcp__plugin_cortex_cortex__cortex_save"] {
+		t.Error("allowlist must cover both the user-scope and the plugin namespace")
 	}
 }
 
@@ -634,12 +632,7 @@ func TestInstallClaudeCode_WithModularProfiles(t *testing.T) {
 		t.Fatal("resDev is nil")
 	}
 
-	mcpPath := filepath.Join(home, ".claude", "mcp", "cortex.json")
-	rawDev := assertFile(t, mcpPath)
-	var cfgDev map[string]any
-	if err := json.Unmarshal(rawDev, &cfgDev); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
+	cfgDev := claudeUserEntry(t, home)
 	argsDev := cfgDev["args"].([]any)
 	if len(argsDev) != 2 || argsDev[1] != "--tools=dev" {
 		t.Errorf("argsDev = %v, want [mcp --tools=dev]", argsDev)
@@ -652,7 +645,7 @@ func TestInstallClaudeCode_WithModularProfiles(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	allow := allowListFromSettings(t, settings)
-	for _, tool := range cortexDevMCPTools {
+	for _, tool := range claudeAllowRules(cortexDevMCPTools) {
 		if !allow[tool] {
 			t.Errorf("settings missing dev tool %q", tool)
 		}
@@ -672,12 +665,7 @@ func TestInstallClaudeCode_WithModularProfiles(t *testing.T) {
 		t.Fatal("resMin is nil")
 	}
 
-	mcpPath2 := filepath.Join(home2, ".claude", "mcp", "cortex.json")
-	rawMin := assertFile(t, mcpPath2)
-	var cfgMin map[string]any
-	if err := json.Unmarshal(rawMin, &cfgMin); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
+	cfgMin := claudeUserEntry(t, home2)
 	argsMin := cfgMin["args"].([]any)
 	if len(argsMin) != 2 || argsMin[1] != "--tools=minimal" {
 		t.Errorf("argsMin = %v, want [mcp --tools=minimal]", argsMin)
@@ -689,7 +677,7 @@ func TestInstallClaudeCode_WithModularProfiles(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	allow2 := allowListFromSettings(t, settings2)
-	for _, tool := range cortexMinimalMCPTools {
+	for _, tool := range claudeAllowRules(cortexMinimalMCPTools) {
 		if !allow2[tool] {
 			t.Errorf("settings missing minimal tool %q", tool)
 		}
@@ -885,5 +873,111 @@ func TestInstallCodex_RefusesInvalidTOML(t *testing.T) {
 	}
 	if _, err := Install("codex"); err == nil {
 		t.Fatal("expected an error for invalid config.toml")
+	}
+}
+
+// stubClaudeCLI replaces the claude CLI seam. With record == nil the CLI is
+// reported as unavailable (forcing the ~/.claude.json merge path); otherwise
+// every call is recorded and succeeds.
+func stubClaudeCLI(t *testing.T, record *[][]string) {
+	t.Helper()
+	prev := claudeMCPCommand
+	claudeMCPCommand = func(args ...string) error {
+		if record == nil {
+			return errClaudeCLIUnavailable
+		}
+		*record = append(*record, append([]string(nil), args...))
+		return nil
+	}
+	t.Cleanup(func() { claudeMCPCommand = prev })
+}
+
+// claudeUserEntry returns mcpServers.cortex from ~/.claude.json.
+func claudeUserEntry(t *testing.T, home string) map[string]any {
+	t.Helper()
+	raw := assertFile(t, filepath.Join(home, ".claude.json"))
+	var state map[string]any
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("~/.claude.json is not valid JSON: %v\n%s", err, raw)
+	}
+	servers, _ := state["mcpServers"].(map[string]any)
+	entry, ok := servers["cortex"].(map[string]any)
+	if !ok {
+		t.Fatalf("~/.claude.json missing mcpServers.cortex: %s", raw)
+	}
+	return entry
+}
+
+func TestInstallClaudeCode_PreservesClaudeStateAndRemovesLegacyFile(t *testing.T) {
+	home := setupHome(t)
+	claudeJSON := filepath.Join(home, ".claude.json")
+	if err := writeFile(claudeJSON, `{"numStartups":42,"projects":{"/x":{"mcpServers":{}}},"mcpServers":{"other":{"command":"other-mcp"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(home, ".claude", "mcp", "cortex.json")
+	if err := writeFile(legacy, "{\n  \"name\": \"cortex\",\n  \"type\": \"stdio\"\n}\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install("claude-code"); err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(assertFile(t, claudeJSON), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["numStartups"] != float64(42) || state["projects"] == nil {
+		t.Errorf("unrelated Claude Code state lost: %v", state)
+	}
+	servers := state["mcpServers"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Error("other user-scope server dropped")
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy ~/.claude/mcp/cortex.json not removed: %v", err)
+	}
+	if status := findStatus(DetectAgents(), "claude-code"); status == nil || !status.Configured {
+		t.Errorf("claude-code not detected as configured: %+v", status)
+	}
+}
+
+func TestInstallClaudeCode_RefusesInvalidClaudeJSON(t *testing.T) {
+	home := setupHome(t)
+	claudeJSON := filepath.Join(home, ".claude.json")
+	if err := writeFile(claudeJSON, "{broken"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install("claude-code"); err == nil {
+		t.Fatal("expected an error for an invalid ~/.claude.json")
+	}
+	if got := string(assertFile(t, claudeJSON)); got != "{broken" {
+		t.Errorf("invalid ~/.claude.json rewritten: %q", got)
+	}
+}
+
+func TestInstallClaudeCode_UsesClaudeCLIWhenAvailable(t *testing.T) {
+	home := setupHome(t)
+	var calls [][]string
+	stubClaudeCLI(t, &calls)
+
+	if _, err := InstallWithOptions("claude-code", Options{Profile: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[0][0] != "remove" || calls[1][0] != "add-json" {
+		t.Fatalf("claude CLI calls = %v, want remove then add-json", calls)
+	}
+	add := calls[1]
+	if add[1] != "cortex" || add[len(add)-2] != "--scope" || add[len(add)-1] != "user" {
+		t.Fatalf("add-json args = %v", add)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(add[2]), &entry); err != nil {
+		t.Fatalf("add-json payload: %v", err)
+	}
+	if entry["type"] != "stdio" || fmt.Sprint(entry["args"]) != "[mcp --tools=dev]" {
+		t.Fatalf("payload = %v", entry)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
+		t.Error("~/.claude.json must not be edited directly when the claude CLI is available")
 	}
 }

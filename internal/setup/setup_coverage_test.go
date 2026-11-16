@@ -168,9 +168,9 @@ func TestDetectAgents_AllConfigured(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	// Claude: .claude/mcp/cortex.json
-	claudeMcp := filepath.Join(home, ".claude", "mcp", "cortex.json")
-	if err := writeFile(claudeMcp, "{}"); err != nil {
+	// Claude: user-scope mcpServers.cortex in ~/.claude.json
+	claudeMcp := filepath.Join(home, ".claude.json")
+	if err := writeFile(claudeMcp, `{"mcpServers":{"cortex":{"command":"cortex"}}}`); err != nil {
 		t.Fatalf("seed claude mcp: %v", err)
 	}
 
