@@ -353,6 +353,10 @@ fake clock.
 
 | Configuration Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `version` | — | `1` (absent) | Config schema version. `cortex config migrate` / `cortex connect` write `2`. Version 1 files keep loading unchanged. |
+| `remote.url` | — | `""` | **Schema v2.** Cortex server base URL shared by hybrid sync and the remote MCP proxy; replaces `sync.url` / `mcp.remote.url` (they are derived from it in memory). |
+| `remote.token` | — | `""` | Where the server bearer lives: `keychain` (OS keychain entry for `remote.url`, written by `cortex connect`) or `env:NAME`. Plaintext tokens are rejected. Empty falls back to the legacy `*.token_env` keys and `http.token`. |
+| `remote.timeout` | — | `0` (keep legacy) | Request timeout applied to both sync and the proxy. |
 | `mode` | `CORTEX_MODE` | `""` (derived) | Runtime mode: `local`, `hybrid`, `remote`, `server`. Empty derives it from the legacy keys below. Set it with `cortex mode set`; inspect it with `cortex mode`. The environment variable wins over the file. |
 | `database.path` | `CORTEX_DATABASE_PATH` | `~/.cortex/cortex.db` | Local SQLite database file path. |
 | `sync.enabled` | `CORTEX_SYNC_ENABLED` | `false` | Enables background bidirectional SQLite-to-Server replication. |

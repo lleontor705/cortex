@@ -68,15 +68,15 @@ func (m Model) viewConnectTokenStep() string {
 	var b strings.Builder
 	b.WriteString("  " + label.Render("Bearer token") + "\n")
 	b.WriteString("  " + inputValue(m.ConnectToken, value, dim, m.connectTokenFallback()) + "\n\n")
-	b.WriteString("  " + dim.Render("Stored in config as http.token.") + "\n")
-	b.WriteString("  " + dim.Render("A token set via `cortex auth login` is preserved if you leave this empty.") + "\n")
+	b.WriteString("  " + dim.Render("Stored in the OS keychain (falls back to http.token if the keychain is unavailable).") + "\n")
+	b.WriteString("  " + dim.Render("An already stored token is preserved if you leave this empty.") + "\n")
 	return b.String()
 }
 
 // connectTokenFallback labels an untouched token field so the user can see an
 // existing credential will be preserved rather than erased (REQ-CFG-004).
 func (m Model) connectTokenFallback() string {
-	if m.deps != nil && m.deps.Config != nil && strings.TrimSpace(m.deps.Config.HTTP.Token) != "" {
+	if m.deps != nil && m.deps.Config != nil && (strings.TrimSpace(m.deps.Config.HTTP.Token) != "" || m.deps.Config.Remote.Token != "") {
 		return "•••••••• (existing token preserved — leave empty to keep)"
 	}
 	return "ctx_..."

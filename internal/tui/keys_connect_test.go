@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lleontor705/cortex/v2/internal/credential"
 )
 
 // connectTestServer is a real HTTP server exposing the three probed endpoints,
@@ -51,6 +53,7 @@ func driveConnect(t *testing.T, m Model, keys ...string) Model {
 
 func openConnect(t *testing.T, cfgDeps *Deps) Model {
 	t.Helper()
+	credential.UseInMemoryStore()
 	updated, _ := New(cfgDeps).openConnectFlow()
 	m, ok := updated.(Model)
 	if !ok {
@@ -82,7 +85,7 @@ func TestConnectFlowStepsAndBackNav(t *testing.T) {
 
 	m = driveConnect(t, m, "enter")
 	step2 := m.viewConnect()
-	for _, want := range []string{"step 2 of 3", "Bearer token", "http.token", "leave this empty"} {
+	for _, want := range []string{"step 2 of 3", "Bearer token", "OS keychain", "leave this empty"} {
 		if !strings.Contains(step2, want) {
 			t.Fatalf("step 2 missing %q:\n%s", want, step2)
 		}
@@ -134,8 +137,10 @@ func TestConnectFlowProxyModeStatesConsequence(t *testing.T) {
 		t.Fatal("proxy connect was not committed")
 	}
 	cfg = m.deps.Config // the commit installs a new config rather than writing through
-	if cfg.Sync.Enabled || cfg.Sync.URL != "" {
-		t.Fatalf("proxy wrote sync config (enabled=%v url=%q)", cfg.Sync.Enabled, cfg.Sync.URL)
+	// remote.url is shared by sync and the proxy; proxy mode only has to
+	// keep the background sync loop off.
+	if cfg.Sync.Enabled {
+		t.Fatalf("proxy enabled background sync (url=%q)", cfg.Sync.URL)
 	}
 	if !cfg.MCP.Remote.Enabled || cfg.MCP.Remote.URL != srv.URL+"/mcp" {
 		t.Fatalf("proxy MCP config = enabled:%v url:%q", cfg.MCP.Remote.Enabled, cfg.MCP.Remote.URL)
@@ -224,8 +229,21 @@ func TestConnectFlowSuccessSavesAndReportsLoopState(t *testing.T) {
 	m2.ConnectToken.SetValue("ctx_new")
 	m2 = driveConnect(t, m2, "enter", "enter", "enter")
 	cfg2 = m2.deps.Config
-	if cfg2.HTTP.Token != "ctx_new" {
-		t.Fatalf("entered token not applied: %q", cfg2.HTTP.Token)
+	if cfg2.Remote.Token != "keychain" || cfg2.Remote.URL != srv.URL {
+		t.Fatalf("entered token not stored by reference: remote=%+v", cfg2.Remote)
+	}
+	if stored, err := credential.Get(srv.URL); err != nil || stored != "ctx_new" {
+		t.Fatalf("keychain token = %q, %v", stored, err)
+	}
+	if cfg2.HTTP.Token != "ctx_old" {
+		t.Fatalf("unrelated http.token changed: %q", cfg2.HTTP.Token)
+	}
+	raw, err := os.ReadFile(cfg2.LoadedFrom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "ctx_new") {
+		t.Fatalf("new token written to the config file:\n%s", raw)
 	}
 }
 

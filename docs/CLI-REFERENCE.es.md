@@ -1226,6 +1226,7 @@ Gestiona la configuración sin editar ficheros a mano.
 | `init` | Escribir un fichero de configuración mínimo. |
 | `path` | Imprimir la ruta resuelta del fichero de configuración. |
 | `wizard` / `interactive` | Lanzar el asistente de configuración. |
+| `migrate [--dry-run] [--config PATH]` | Actualizar el fichero al esquema v2: `mode:` explícito, un solo `remote.url` en lugar de `sync.url` / `mcp.remote.url`, y cualquier token del servidor en texto plano movido al llavero del sistema (`remote.token: keychain`) o referenciado como `env:NAME`. Conserva claves desconocidas y comentarios; `--dry-run` solo imprime el plan. |
 
 | Flag | Aplica a | Default | Sobrescritura por entorno | Descripción |
 |---|---|---|---|---|
@@ -1387,6 +1388,33 @@ El modo efectivo sigue el resolvedor único de [§1.2](#12-modos-de-ejecucion).
 cortex status
 cortex status --json
 cortex mode --json
+```
+
+#### `connect` / `disconnect`
+
+```text
+cortex connect <server-url> [--as remote|hybrid] [--token-stdin | --token-env NAME] [--config PATH]
+cortex disconnect [--keep-mode] [--config PATH]
+```
+
+`connect` comprueba `/health` y `/api/me` con el token **antes** de guardar nada;
+después guarda el token en el llavero del sistema (Llavero de macOS, Administrador
+de credenciales de Windows, Secret Service en Linux) y escribe `version: 2`,
+`mode`, `remote.url` y `remote.token: keychain`. `--as remote` (por defecto) hace
+que `cortex mcp` actúe de proxy hacia el servidor; `--as hybrid` conserva la base
+de datos local y la sincroniza. El token se lee de stdin si llega por tubería (o
+`--token-stdin`), de un prompt oculto, o se referencia con `--token-env NAME`
+(`remote.token: env:NAME`, sin guardar nada). `--token` se rechaza para que el
+secreto nunca quede en el historial del shell. Se elimina una copia en texto plano
+del mismo token en `http.token`.
+
+`disconnect` borra la entrada del llavero, limpia `remote.token` y vuelve a `local`
+(salvo `--keep-mode`).
+
+```bash
+printf '%s' "$TOKEN" | cortex connect https://cortex.example.com
+cortex connect https://cortex.example.com --as hybrid   # pide el token
+cortex disconnect
 ```
 
 **Ver también:** [doctor](#318-doctor), [§1.2 modos de ejecución](#12-modos-de-ejecucion).

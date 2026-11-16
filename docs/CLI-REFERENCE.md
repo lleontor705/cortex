@@ -1201,6 +1201,7 @@ Manages configuration without editing files by hand.
 | `init` | Write a minimal config file. |
 | `path` | Print the resolved config file path. |
 | `wizard` / `interactive` | Launch the configuration wizard. |
+| `migrate [--dry-run] [--config PATH]` | Upgrade the file to schema v2: explicit `mode:`, one `remote.url` instead of `sync.url` / `mcp.remote.url`, and any plaintext server token moved into the OS keychain (`remote.token: keychain`) or referenced as `env:NAME`. Unknown keys and comments are preserved; `--dry-run` prints the plan only. |
 
 | Flag | Applies to | Default | Environment override | Description |
 |---|---|---|---|---|
@@ -1364,6 +1365,32 @@ cortex status --json
 cortex mode --json
 cortex mode set remote --url https://cortex.example.com
 cortex mode test
+```
+
+#### `connect` / `disconnect`
+
+```text
+cortex connect <server-url> [--as remote|hybrid] [--token-stdin | --token-env NAME] [--config PATH]
+cortex disconnect [--keep-mode] [--config PATH]
+```
+
+`connect` checks `/health` and `/api/me` with the token **before** saving anything,
+then stores the token in the OS keychain (macOS Keychain, Windows Credential
+Manager, Linux Secret Service) and writes `version: 2`, `mode`, `remote.url` and
+`remote.token: keychain`. `--as remote` (default) makes `cortex mcp` proxy to the
+server; `--as hybrid` keeps the local database and syncs it. The token comes from
+stdin when piped (or `--token-stdin`), from a hidden prompt, or is referenced with
+`--token-env NAME` (`remote.token: env:NAME`, nothing stored). `--token` is rejected
+so the secret never lands in shell history. A plaintext copy of the same token in
+`http.token` is removed.
+
+`disconnect` deletes the keychain entry, clears `remote.token`, and returns to
+`local` (unless `--keep-mode`).
+
+```bash
+printf '%s' "$TOKEN" | cortex connect https://cortex.example.com
+cortex connect https://cortex.example.com --as hybrid   # prompts for the token
+cortex disconnect
 ```
 
 **See also:** [doctor](#318-doctor), [§1.2 runtime modes](#12-runtime-modes).

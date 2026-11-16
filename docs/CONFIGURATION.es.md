@@ -334,6 +334,10 @@ idéntica byte a byte a una compilación sin la función.
 
 | Clave de configuración | Variable de entorno | Por defecto | Descripción |
 | :--- | :--- | :--- | :--- |
+| `version` | — | `1` (ausente) | Versión del esquema de config. `cortex config migrate` / `cortex connect` escriben `2`. Los ficheros versión 1 siguen cargando igual. |
+| `remote.url` | — | `""` | **Esquema v2.** URL base del Cortex server compartida por el sync híbrido y el proxy MCP remoto; reemplaza `sync.url` / `mcp.remote.url` (se derivan de ella en memoria). |
+| `remote.token` | — | `""` | Dónde vive el bearer del servidor: `keychain` (entrada del llavero del sistema para `remote.url`, escrita por `cortex connect`) o `env:NAME`. Los tokens en texto plano se rechazan. Vacío recurre a las claves heredadas `*.token_env` y `http.token`. |
+| `remote.timeout` | — | `0` (mantiene el heredado) | Timeout de petición aplicado al sync y al proxy. |
 | `mode` | `CORTEX_MODE` | `""` (derivado) | Modo de ejecución: `local`, `hybrid`, `remote`, `server`. Vacío lo deriva de las claves heredadas de abajo. Se fija con `cortex mode set` y se inspecciona con `cortex mode`. La variable de entorno gana al archivo. |
 | `database.path` | `CORTEX_DATABASE_PATH` | `~/.cortex/cortex.db` | Ruta al fichero de base de datos SQLite local. |
 | `sync.enabled` | `CORTEX_SYNC_ENABLED` | `false` | Habilita la replicación bidireccional en segundo plano de SQLite al servidor. |

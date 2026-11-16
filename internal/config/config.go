@@ -41,6 +41,10 @@ func DefaultDBPath() string {
 
 // Config represents the main configuration structure
 type Config struct {
+	// Version is the config schema version (empty = 1). `cortex config
+	// migrate` and `cortex connect` write CurrentConfigVersion.
+	Version int `yaml:"version,omitempty" json:"version,omitempty" toml:"version,omitempty" mapstructure:"version"`
+
 	// Mode selects the runtime mode (local, hybrid, remote, server). Empty
 	// means "derive from legacy keys"; see ResolveMode for the precedence.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty" toml:"mode,omitempty" mapstructure:"mode"`
@@ -57,10 +61,17 @@ type Config struct {
 	Vector    VectorConfig    `yaml:"vector,omitempty" json:"vector,omitempty" toml:"vector,omitempty" mapstructure:"vector"`
 	Sync      SyncConfig      `yaml:"sync,omitempty" json:"sync,omitempty" toml:"sync,omitempty" mapstructure:"sync"`
 
+	// Remote is the shared server description used by hybrid sync and the
+	// remote MCP proxy (schema v2). See RemoteConfig.
+	Remote RemoteConfig `yaml:"remote,omitempty" json:"remote,omitempty" toml:"remote,omitempty" mapstructure:"remote"`
+
 	// LoadedFrom is the path of the config file that was loaded.
 	// Used by Save() and ReloadConfig() to always use the same file.
 	// Not serialized to YAML, JSON, or TOML.
 	LoadedFrom string `yaml:"-" json:"-" toml:"-" mapstructure:"-"`
+
+	// remote records the legacy values derived from Remote at load time.
+	remote remoteDerived
 }
 
 // AIConfig holds unified AI and embedding model settings
@@ -468,6 +479,9 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	// Schema v2: project remote.* onto the legacy keys every consumer reads.
+	applyRemoteBlock(&cfg)
+
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
@@ -614,6 +628,9 @@ func setDefaults(v *viper.Viper) {
 
 // validate checks if the configuration values are valid
 func validate(cfg *Config) error {
+	if err := validateRemote(cfg); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.Mode) != "" {
 		if _, err := ParseRuntimeMode(cfg.Mode); err != nil {
 			return fmt.Errorf("invalid mode: %w", err)
@@ -1295,6 +1312,15 @@ func Save(cfg *Config, path string) error {
 
 	previous := cfg.LoadedFrom
 
+	// Schema v2: persist remote.* instead of the legacy URLs derived from it,
+	// folding a legacy edit (TUI, config set) back into remote.url.
+	onDisk := *cfg
+	foldRemoteBlock(&onDisk)
+	if onDisk.Remote.URL != cfg.Remote.URL {
+		cfg.Remote.URL = onDisk.Remote.URL
+		applyRemoteBlock(cfg)
+	}
+
 	if path == "" {
 		// Use the same file that was loaded, or default to ~/.cortex/cortex.yaml
 		if previous != "" {
@@ -1313,18 +1339,18 @@ func Save(cfg *Config, path string) error {
 	var err error
 	lower := strings.ToLower(path)
 	if strings.HasSuffix(lower, ".json") || strings.HasSuffix(lower, ".jsonc") {
-		data, err = json.MarshalIndent(cfg, "", "  ")
+		data, err = json.MarshalIndent(&onDisk, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal json config: %w", err)
 		}
 		data = append(data, '\n')
 	} else if strings.HasSuffix(lower, ".toml") {
-		data, err = toml.Marshal(cfg)
+		data, err = toml.Marshal(&onDisk)
 		if err != nil {
 			return fmt.Errorf("marshal toml config: %w", err)
 		}
 	} else {
-		data, err = marshalConfigPreservingExisting(cfg, path)
+		data, err = marshalConfigPreservingExisting(&onDisk, path)
 		if err != nil {
 			return err
 		}
